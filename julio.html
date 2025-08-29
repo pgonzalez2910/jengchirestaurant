@@ -383,7 +383,6 @@
             height: calc(50px * 1.75);
             cursor: pointer;
         }
-
     </style>
 </head>
 <body>
@@ -459,7 +458,6 @@
             const today = new Date().toISOString().split('T')[0];
             document.getElementById('order-date').value = today;
             await loadInventory('Supermarket');
-            await displayLastOrder();
         });
         
         async function loadInventory(vendorList) {
@@ -547,7 +545,8 @@
                     categorySection.appendChild(productGrid);
                     container.appendChild(categorySection);
                 }
-
+                 // ✅ Fixed: Calling the correct function name.
+                 await fetchAndDisplayLastOrder();
             } catch (e) {
                 console.error("Error loading inventory:", e);
                 container.innerHTML = `<p style="text-align:center; color:red;">Failed to load inventory. Please check your database connection.</p>`;
@@ -564,10 +563,11 @@
             }
             input.value = newValue;
 
+            // ✅ Corrected: use .eq() instead of .in() for a single product update
             const { error } = await supabaseClient
                 .from("inventory_management")
                 .update({ on_hand: newValue })
-                .in("product_name", productName)
+                .eq("product_name", productName) // 🐛 Fix here
                 .eq('user', currentUser);
 
             if (error) {
@@ -634,38 +634,13 @@
                 </div>
             `;
         }
-async function displayLastOrder() {
-    const footer = document.getElementById('order-history-footer');
-    const detailsContainer = document.getElementById('last-order-details');
-    detailsContainer.innerHTML = `<p style="text-align:center; color: #6b7280;">Loading last order...</p>`;
-    
-    try {
-        const { data, error } = await supabaseClient
-            .from('submitted_orders')
-            .select('order_date, order_details, vendor_list, user')
-            .eq('user', currentUser)
-            .eq('vendor_list', currentVendorList)
-            .order('order_date', { ascending: false })
-            .limit(1);
+        
+        // New function to handle the rendering of the last order
+        function displaySubmittedOrder(orderList, orderDate, vendorList) {
+            const footer = document.getElementById('order-history-footer');
+            const detailsContainer = document.getElementById('last-order-details');
+            document.getElementById('footer-vendor').textContent = vendorList;
 
-        if (error) throw error;
-
-        if (data && data.length > 0) {
-            const lastOrder = data[0];
-            const orderDate = new Date(lastOrder.order_date).toLocaleString();
-
-            // ✅ Parse order_details safely (works if it's text OR jsonb)
-            let orderList = [];
-            try {
-                orderList = typeof lastOrder.order_details === "string"
-                    ? JSON.parse(lastOrder.order_details)
-                    : lastOrder.order_details;
-            } catch (err) {
-                console.error("Failed to parse order_details:", err);
-                orderList = [];
-            }
-
-            // Build HTML
             let orderDetailsHtml = '';
             orderList.forEach(item => {
                 orderDetailsHtml += `
@@ -678,28 +653,59 @@ async function displayLastOrder() {
 
             detailsContainer.innerHTML = `
                 <p style="font-size:0.9rem; color:#6b7280; margin-bottom:0.5rem;">
-                    <strong>Vendor List:</strong> ${lastOrder.vendor_list}
+                    <strong>Vendor List:</strong> ${vendorList}
                 </p>
                 <p style="font-size:0.9rem; color:#6b7280; margin-bottom:1rem;">
-                    <strong>Submitted On:</strong> ${orderDate}
+                    <strong>Submitted On:</strong> ${new Date(orderDate).toLocaleString()}
                 </p>
                 <ul class="order-summary-list">
                     ${orderDetailsHtml}
                 </ul>
             `;
             footer.style.display = 'block';
-        } else {
-            detailsContainer.innerHTML = `<p style="text-align:center; color: #6b7280;">No orders found for ${currentUser} in this list.</p>`;
-            footer.style.display = 'block';
+            footer.scrollIntoView({ behavior: 'smooth' });
         }
 
-    } catch (e) {
-        console.error("Error fetching last order:", e);
-        detailsContainer.innerHTML = `<p style="text-align:center; color:red;">Failed to load order history.</p>`;
-        footer.style.display = 'block';
-    }
-}
+        // Renamed and updated from `displayLastOrder` for clarity
+        async function fetchAndDisplayLastOrder() {
+            const footer = document.getElementById('order-history-footer');
+            const detailsContainer = document.getElementById('last-order-details');
+            detailsContainer.innerHTML = `<p style="text-align:center; color: #6b7280;">Loading last order...</p>`;
+            document.getElementById('footer-vendor').textContent = currentVendorList;
+            
+            try {
+                const { data, error } = await supabaseClient
+                    .from('submitted_orders')
+                    .select('order_date, order_details, vendor_list, user')
+                    .eq('user', currentUser)
+                    .eq('vendor_list', currentVendorList)
+                    .order('order_date', { ascending: false })
+                    .limit(1);
 
+                if (error) throw error;
+
+                if (data && data.length > 0) {
+                    const lastOrder = data[0];
+                    let orderList = [];
+                    try {
+                        orderList = typeof lastOrder.order_details === "string"
+                            ? JSON.parse(lastOrder.order_details)
+                            : lastOrder.order_details;
+                    } catch (err) {
+                        console.error("Failed to parse order_details:", err);
+                        orderList = [];
+                    }
+                    displaySubmittedOrder(orderList, lastOrder.order_date, lastOrder.vendor_list);
+                } else {
+                    detailsContainer.innerHTML = `<p style="text-align:center; color: #6b7280;">No orders found for ${currentUser} in this list.</p>`;
+                    footer.style.display = 'block';
+                }
+            } catch (e) {
+                console.error("Error fetching last order:", e);
+                detailsContainer.innerHTML = `<p style="text-align:center; color:red;">Failed to load order history.</p>`;
+                footer.style.display = 'block';
+            }
+        }
         
         function openConfirmModal() {
             const message = `Are you sure you want to submit the order for ${currentVendorList}? This will reset the quantities to zero.`;
@@ -728,15 +734,12 @@ async function displayLastOrder() {
                 // Submit to database
                 const { data: newOrder, error: insertError } = await supabaseClient
                     .from('submitted_orders')
-
                     .insert([{
-    order_date: orderDate,
-    order_details: JSON.stringify(productsToSubmit), // ✅ save as text
-    vendor_list: currentVendorList,
-    user: currentUser
-}])
-
-
+                        order_date: orderDate,
+                        order_details: JSON.stringify(productsToSubmit),
+                        vendor_list: currentVendorList,
+                        user: currentUser
+                    }])
                     .select()
                     .single();
                 
@@ -770,10 +773,10 @@ async function displayLastOrder() {
                     }
                 });
 
-                // Update and scroll to the order history
-                await displayLastOrder();
-                document.getElementById('order-history-footer').scrollIntoView({ behavior: 'smooth' });
-
+                // ✅ Refactored: Pass the submitted order details directly to the rendering function
+                displaySubmittedOrder(productsToSubmit, orderDate, currentVendorList);
+                
+                // Final success message
                 openModal('Success', `Gracias ${currentUser}, no se olvide revisar tu orden que acabas de enviar`);
 
             } catch (e) {
@@ -815,7 +818,8 @@ async function displayLastOrder() {
 
         <!-- ✅ Order History Footer -->
         <footer id="order-history-footer" class="footer-history">
-            <h2>Last Submitted Order</h2>
+            <h2>Last Submitted Order (<span id="footer-vendor"></span>)</h2>
+
             <div id="last-order-details">
                 <p style="text-align:center; color: #6b7280;">No order submitted yet.</p>
             </div>
