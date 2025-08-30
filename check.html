@@ -222,29 +222,53 @@
       }
     }
 
-    async function loadPaidInvoices() {
-      const vendor = document.getElementById("paidVendorFilter").value;
-      let query = supabase.from("public_invoices").select("*").eq("Status","Paid").order("InvoiceDate",{ascending:false});
-      if (vendor) query = query.eq("VendorName", vendor);
-      const { data: invoices } = await query;
-      const tableBody = document.getElementById("dgvPaidInvoices");
-      tableBody.innerHTML = "";
-      if (!invoices || invoices.length===0) {
-        tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4 text-gray-500">No paid invoices.</td></tr>`;
-        return;
-      }
-      invoices.forEach(inv=>{
-        const row=document.createElement("tr");
-        row.innerHTML = `
-          <td class="p-3">${inv.InvoiceNumber}</td>
-          <td class="p-3">${inv.VendorName}</td>
-          <td class="p-3">${new Date(inv.InvoiceDate).toLocaleDateString()}</td>
-          <td class="p-3">$${Number(inv.InvoiceTotal).toFixed(2)}</td>
-          <td class="p-3">${inv.CheckNumber || ""}</td>
-        `;
-        tableBody.appendChild(row);
-      });
-    }
+async function loadPaidInvoices() {
+  const vendor = document.getElementById("paidVendorFilter").value;
+  let query = supabase.from("public_invoices")
+    .select("*")
+    .eq("Status", "Paid")
+    .order("InvoiceDate", { ascending: false });
+
+  if (vendor) query = query.eq("VendorName", vendor);
+
+  const { data: invoices } = await query;
+  const tableBody = document.getElementById("dgvPaidInvoices");
+  tableBody.innerHTML = "";
+
+  if (!invoices || invoices.length === 0) {
+    tableBody.innerHTML = `<tr><td colspan="5" class="text-center py-4 text-gray-500">No paid invoices.</td></tr>`;
+    return;
+  }
+
+  let subtotal = 0;
+
+  invoices.forEach(inv => {
+    subtotal += Number(inv.InvoiceTotal);
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <td class="p-3">${inv.InvoiceNumber}</td>
+      <td class="p-3">${inv.VendorName}</td>
+      <td class="p-3">${new Date(inv.InvoiceDate).toLocaleDateString()}</td>
+      <td class="p-3">$${Number(inv.InvoiceTotal).toFixed(2)}</td>
+      <td class="p-3">${inv.CheckNumber || ""}</td>
+    `;
+    tableBody.appendChild(row);
+  });
+
+  // 🔹 Subtotal row
+  const subtotalRow = document.createElement("tr");
+  subtotalRow.classList.add("bg-gray-100", "font-bold");
+  subtotalRow.innerHTML = `
+    <td colspan="3" class="p-3 text-right">Subtotal:</td>
+    <td class="p-3">$${subtotal.toFixed(2)}</td>
+    <td></td>
+  `;
+  tableBody.appendChild(subtotalRow);
+}
+    
+
+
+
 
     function autoSetReportDates() {
       const now = new Date();
@@ -255,69 +279,110 @@
     }
 
     async function generateMonthlyChecksReport() {
-      const startDate = document.getElementById("reportStartDate").value;
-      const endDate = document.getElementById("reportEndDate").value;
-      if (!startDate || !endDate) {
-        showMessageModal('Validation Error','Select start and end dates.');
-        return;
+  const startDate = document.getElementById('reportStartDate').value;
+  const endDate = document.getElementById('reportEndDate').value;
+
+  if (!startDate || !endDate) {
+    showMessageModal("Validation Error", "Select start and end dates.");
+    return;
+  }
+
+  const { data: paidInvoices, error } = await supabase
+    .from("public_invoices")
+    .select("*")
+    .eq("Status", "Paid")   // only paid
+    .gte("CheckDate", startDate)
+    .lte("CheckDate", endDate)
+    .order("VendorName", { ascending: true })
+    .order("InvoiceDate", { ascending: true });
+
+  if (error || !paidInvoices || paidInvoices.length === 0) {
+    showMessageModal("No Data", "No paid invoices for this range.");
+    return;
+  }
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF("p", "pt", "a4");
+  const pageWidth = doc.internal.pageSize.getWidth();
+  let y = 60;
+
+  // 🔹 Add logo
+  const logo = new Image();
+  logo.src = "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg";
+
+  await new Promise(resolve => { logo.onload = resolve; });
+  doc.addImage(logo, "JPEG", pageWidth / 2 - 40, 10, 80, 60);
+
+  y = 90;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text("Inventory Management System", pageWidth / 2, y, { align: "center" });
+  y += 20;
+  doc.setFontSize(14);
+  doc.text("Monthly Checks Report", pageWidth / 2, y, { align: "center" });
+  y += 20;
+  doc.setFontSize(12);
+  doc.text(`Period: ${startDate} to ${endDate}`, pageWidth / 2, y, { align: "center" });
+  y += 30;
+
+  // 🔹 Group invoices by Vendor
+  const grouped = paidInvoices.reduce((acc, inv) => {
+    (acc[inv.VendorName] = acc[inv.VendorName] || []).push(inv);
+    return acc;
+  }, {});
+
+  let grandTotal = 0;
+
+  for (const vendor of Object.keys(grouped)) {
+    doc.setFillColor(230, 240, 255);
+    doc.rect(40, y, pageWidth - 80, 20, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text(vendor, 50, y + 14);
+    y += 30;
+
+    let subtotal = 0;
+
+    grouped[vendor].forEach((inv, idx) => {
+      if (idx % 2 === 0) {
+        doc.setFillColor(245, 245, 245);
+        doc.rect(40, y - 10, pageWidth - 80, 20, "F");
       }
 
-      const { data: paidInvoices } = await supabase
-        .from("public_invoices")
-        .select("*")
-        .gte("CheckDate", startDate)
-        .lte("CheckDate", endDate)
-        .eq("Status", "Paid")
-        .order("VendorName",{ascending:true});
+      subtotal += inv.InvoiceTotal;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.text(`Invoice#: ${inv.InvoiceNumber}`, 50, y);
+      doc.text(`Date: ${new Date(inv.InvoiceDate).toLocaleDateString()}`, 180, y);
+      doc.text(`Amount: $${Number(inv.InvoiceTotal).toFixed(2)}`, 330, y);
+      doc.text(`Check#: ${inv.CheckNumber}`, 480, y);
 
-      if (!paidInvoices || paidInvoices.length===0) {
-        showMessageModal("No Data","No paid invoices for this range.");
-        return;
+      y += 18;
+      if (y > doc.internal.pageSize.getHeight() - 60) {
+        doc.addPage();
+        y = 60;
       }
+    });
 
-      const doc = new jsPDF();
-      let y = 20, margin = 15;
-      const pageWidth = doc.internal.pageSize.getWidth();
+    grandTotal += subtotal;
 
-      doc.addImage("https://github.com/pgonzalez2910/jengchi-product-images/blob/main/jengchilogo.jpg?raw=true","JPEG",pageWidth/2-20,5,40,20);
-      doc.setFontSize(18);
-      doc.text("Inventory Management System", pageWidth/2, y+20,{align:"center"});
-      doc.setFontSize(14);
-      doc.text("Monthly Checks Report", pageWidth/2, y+30,{align:"center"});
-      doc.setFontSize(12);
-      doc.text(`Period: ${startDate} to ${endDate}`, pageWidth/2, y+40,{align:"center"});
-      y += 55;
+    // Vendor subtotal box
+    doc.setFont("helvetica", "bold");
+    doc.text(`Subtotal: $${subtotal.toFixed(2)}`, pageWidth - 60, y, { align: "right" });
+    y += 25;
+  }
 
-      const grouped = paidInvoices.reduce((acc,inv)=>{(acc[inv.VendorName]=acc[inv.VendorName]||[]).push(inv);return acc;}, {});
-      let grand=0;
+  // 🔹 Grand Total
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.setFillColor(200, 230, 200);
+  doc.rect(40, y, pageWidth - 80, 30, "F");
+  doc.text(`Grand Total: $${grandTotal.toFixed(2)}`, pageWidth - 60, y + 20, { align: "right" });
 
-      Object.keys(grouped).sort().forEach(vendor=>{
-        doc.setFillColor(230,240,255);
-        doc.rect(margin,y,pageWidth-margin*2,8,"F");
-        doc.setFontSize(13);
-        doc.text(vendor,margin+2,y+6);
-        y+=12;
+  doc.save(`JengChi_Checks_Report_${startDate}_to_${endDate}.pdf`);
+  showMessageModal("Report Generated", "PDF downloaded.");
+}
 
-        let subtotal=0;
-        grouped[vendor].forEach((inv,idx)=>{
-          if(idx%2===0){doc.setFillColor(245,245,245);doc.rect(margin,y,pageWidth-margin*2,8,"F");}
-          doc.setFontSize(10);
-          doc.text(`Invoice#: ${inv.InvoiceNumber} | Date: ${inv.InvoiceDate} | Amount: $${inv.InvoiceTotal.toFixed(2)} | Check#: ${inv.CheckNumber}`, margin+2,y+6);
-          y+=10;
-          subtotal+=inv.InvoiceTotal;
-          if(y>270){doc.addPage();y=20;}
-        });
-
-        grand+=subtotal;
-        doc.setFontSize(11);
-        doc.text(`Subtotal: $${subtotal.toFixed(2)}`, pageWidth-margin, y, {align:"right"});
-        y+=15;
-      });
-
-      doc.setFontSize(14);
-      doc.text(`Grand Total: $${grand.toFixed(2)}`, pageWidth-margin,y,{align:"right"});
-      doc.save(`JengChi_Checks_Report_${startDate}_to_${endDate}.pdf`);
-    }
   </script>
 </body>
 </html>
