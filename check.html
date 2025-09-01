@@ -222,16 +222,25 @@
     <!-- Generate Report -->
     <div id="generate-report-section" class="tab-content hidden">
       <h3 class="text-lg font-semibold text-gray-800 mb-4">Generate Monthly Checks Report</h3>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+        <div class="lg:col-span-1">
+          <label class="block mb-1 font-medium">Whole Month</label>
+          <select id="quickMonth" class="w-full p-2 border rounded-md">
+            <option value="custom">— Custom Range —</option>
+          </select>
+          <p class="muted mt-1">Pick a whole month (Aug 2025 → Dec 2030). Choose “Custom Range” to type exact dates.</p>
+        </div>
         <div>
-          <label class="block">Start Date</label>
+          <label class="block mb-1 font-medium">Start Date</label>
           <input type="date" id="reportStartDate" class="w-full p-2 border border-gray-300 rounded-md">
         </div>
         <div>
-          <label class="block">End Date</label>
+          <label class="block mb-1 font-medium">End Date</label>
           <input type="date" id="reportEndDate" class="w-full p-2 border border-gray-300 rounded-md">
         </div>
       </div>
+
       <div class="text-center">
         <button id="btnGenerateReport" class="btn btn-primary px-8">Download PDF Report</button>
       </div>
@@ -258,14 +267,21 @@
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // Central Time helpers and date formatters
-    const CT_TZ = "America/Chicago";
-    const fmtInput = new Intl.DateTimeFormat("en-CA", { timeZone: CT_TZ }); // YYYY-MM-DD
-    const fmtUS = new Intl.DateTimeFormat("en-US", { timeZone: CT_TZ, year:"numeric", month:"2-digit", day:"2-digit" });
-    const fmtPretty = new Intl.DateTimeFormat("en-US", { timeZone: CT_TZ, year:"numeric", month:"long", day:"2-digit" });
-    const ymd = d => fmtInput.format(d);
-    const ymdStartOfMonth = (y, m0) => ymd(new Date(Date.UTC(y, m0, 1)));
-    const ymdEndOfMonth   = (y, m0) => ymd(new Date(Date.UTC(y, m0+1, 0)));
+    // Central Time display formatters (we store/send plain YYYY-MM-DD strings)
+    const fmtUS = (d)=> {
+      const mm = String(d.getMonth()+1).padStart(2,'0');
+      const dd = String(d.getDate()).padStart(2,'0');
+      const yyyy = d.getFullYear();
+      return `${mm}/${dd}/${yyyy}`;
+    };
+    const parseYMDLocal = (s)=>{ // parse 'YYYY-MM-DD' as a local date (no timezone shift)
+      const [y,m,d] = s.split('-').map(Number);
+      return new Date(y, m-1, d);
+    };
+    const ymd = (y,m0,d)=> `${y}-${String(m0+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const firstOfMonth = (y,m0)=> ymd(y,m0,1);
+    const lastOfMonth  = (y,m0)=> ymd(y,m0, new Date(y, m0+1, 0).getDate());
+    const mmddyyyyFromYMD = (s)=> fmtUS(parseYMDLocal(s));
 
     // Logos
     const companyLogoUrl = "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg";
@@ -322,21 +338,14 @@
     // Images preload
     async function preloadImages() {
       try {
-        const r = await fetch(companyLogoUrl);
-        const b = await r.blob();
-        const reader = new FileReader();
-        await new Promise(res => { reader.onloadend = () => { logoDataUrls['company'] = reader.result; res(); }; reader.readAsDataURL(b); });
-      } catch { logoDataUrls['company'] = null; }
-
-      const vendorPromises = Object.keys(vendorLogos).map(async (vendorName) => {
-        try {
-          const r = await fetch(vendorLogos[vendorName]);
-          const b = await r.blob();
-          const reader = new FileReader();
-          await new Promise(res => { reader.onloadend = () => { logoDataUrls[vendorName] = reader.result; res(); }; reader.readAsDataURL(b); });
-        } catch { logoDataUrls[vendorName] = null; }
-      });
-      await Promise.allSettled(vendorPromises);
+        const r = await fetch(companyLogoUrl); const b = await r.blob(); const fr = new FileReader();
+        await new Promise(res=>{ fr.onloadend=()=>{ logoDataUrls.company = fr.result; res(); }; fr.readAsDataURL(b); });
+      } catch { logoDataUrls.company = null; }
+      await Promise.allSettled(Object.keys(vendorLogos).map(async(v)=>{
+        try{ const r=await fetch(vendorLogos[v]); const b=await r.blob(); const fr=new FileReader();
+          await new Promise(res=>{ fr.onloadend=()=>{ logoDataUrls[v]=fr.result; res(); }; fr.readAsDataURL(b); });
+        } catch{ logoDataUrls[v]=null; }
+      }));
     }
 
     // Vendors
@@ -366,10 +375,10 @@
       refreshVendorSelectorsInRows();
     }
 
-    // Checks: create/update from Invoice Management (CST-safe strings)
+    // Check create/update
     async function upsertCheckFromForm() {
       const number = (document.getElementById('newCheckNumber').value || '').trim();
-      const dateStr = document.getElementById('newCheckDate').value || null; // YYYY-MM-DD
+      const dateStr = document.getElementById('newCheckDate').value || null; // 'YYYY-MM-DD'
       const notesInput = (document.getElementById('newCheckNotes').value || '').trim();
       const isVoid = document.getElementById('chkVoid').checked;
       const amtStr = document.getElementById('newCheckAmount').value;
@@ -442,7 +451,7 @@
       document.getElementById('invoiceRows').appendChild(row);
     }
 
-    // Save multiple invoices (enforce sum matches check amount; CST-safe)
+    // Save multiple invoices
     async function saveMultipleInvoices() {
       let checkRef;
       try { checkRef = await upsertCheckFromForm(); } catch { return; }
@@ -462,7 +471,7 @@
       let invoiceSum = 0;
       for (const r of rows) {
         const vendor = r.querySelector('.vendor').value;
-        const invdate = r.querySelector('.invdate').value;   // already YYYY-MM-DD
+        const invdate = r.querySelector('.invdate').value; // 'YYYY-MM-DD'
         const invnum = r.querySelector('.invnum').value.trim();
         const invtotal = parseFloat(r.querySelector('.invtotal').value);
         if (!vendor || !invdate || !invnum || isNaN(invtotal)) {
@@ -491,7 +500,7 @@
       resetInvoiceManagementForm();
     }
 
-    // View Invoices (invoice list can stay by invoice date)
+    // View Invoices (list still filters by invoice date)
     async function loadInvoices() {
       const selectedVendor = document.getElementById("invoiceVendorFilter").value;
       const selectedStatus = document.getElementById("invoiceStatusFilter").value;
@@ -508,10 +517,9 @@
       if (selectedVendor) query = query.eq("VendorName", selectedVendor);
       if (selectedStatus !== "All") query = query.eq("Status", selectedStatus);
 
-      // month/year filter in CST (no toISOString)
       if (selectedMonth && selectedYear) {
-        const startOfMonth = ymdStartOfMonth(Number(selectedYear), Number(selectedMonth)-1);
-        const endOfMonth   = ymdEndOfMonth(Number(selectedYear), Number(selectedMonth)-1);
+        const startOfMonth = firstOfMonth(Number(selectedYear), Number(selectedMonth)-1);
+        const endOfMonth   = lastOfMonth(Number(selectedYear), Number(selectedMonth)-1);
         query = query.gte("InvoiceDate", startOfMonth).lte("InvoiceDate", endOfMonth);
       } else if (selectedYear) {
         query = query.gte("InvoiceDate", `${selectedYear}-01-01`).lte("InvoiceDate", `${selectedYear}-12-31`);
@@ -524,7 +532,7 @@
       tableBody.innerHTML = "";
       invoices.forEach(inv => {
         const row = document.createElement("tr");
-        const formattedDate = inv.InvoiceDate ? fmtUS.format(new Date(inv.InvoiceDate)) : "N/A";
+        const formattedDate = inv.InvoiceDate ? mmddyyyyFromYMD(inv.InvoiceDate) : "N/A";
         const chk = inv.check || {};
         row.innerHTML = `
           <td class="py-2 px-3 text-sm text-gray-700">${inv.InvoiceNumber}</td>
@@ -589,7 +597,7 @@
         row.innerHTML = `
           <div class="grid-sm items-center">
             <div><div class="text-sm"><span class="font-semibold">${inv.VendorName}</span></div></div>
-            <div><div class="text-sm">${inv.InvoiceDate ? fmtUS.format(new Date(inv.InvoiceDate)) : ''}</div></div>
+            <div><div class="text-sm">${inv.InvoiceDate ? mmddyyyyFromYMD(inv.InvoiceDate) : ''}</div></div>
             <div><div class="text-sm">${inv.InvoiceNumber}</div></div>
             <div><div class="text-sm">$${Number(inv.InvoiceTotal).toFixed(2)}</div></div>
           </div>
@@ -644,9 +652,9 @@
       await loadInvoices();
     }
 
-    // ===== REPORT by CHECK DATE with totals/mismatch flags =====
+    // ===== REPORT by CHECK DATE =====
     async function generateMonthlyChecksReport() {
-      const startDate = document.getElementById('reportStartDate').value; // YYYY-MM-DD
+      const startDate = document.getElementById('reportStartDate').value; // 'YYYY-MM-DD'
       const endDate   = document.getElementById('reportEndDate').value;
 
       const { data: checks, error: chkErr } = await supabase
@@ -681,7 +689,7 @@
       y = 90;
       doc.setFont("helvetica","bold").setFontSize(18).text("Jeng Chi - Inventory Management System", pageWidth/2, y, {align:"center"});
       y += 20; doc.setFontSize(14).text("Monthly Checks Report (by Check Date)", pageWidth/2, y, {align:"center"});
-      y += 20; doc.setFontSize(12).text(`Period: ${fmtPretty.format(new Date(startDate))} to ${fmtPretty.format(new Date(endDate))}`, pageWidth/2, y, {align:"center"});
+      y += 20; doc.setFontSize(12).text(`Period: ${mmddyyyyFromYMD(startDate)} to ${mmddyyyyFromYMD(endDate)}`, pageWidth/2, y, {align:"center"});
       y += 30;
 
       let grandTotal = 0;
@@ -697,7 +705,7 @@
         doc.setFont("helvetica","bold").setFontSize(12);
         doc.text(`Check #${check.check_number || ''}`, margin + 10, y + 16);
         doc.setFont("helvetica","normal");
-        doc.text(`Date: ${check.check_date ? fmtUS.format(new Date(check.check_date)) : '—'}`, margin + 200, y + 16);
+        doc.text(`Date: ${check.check_date ? mmddyyyyFromYMD(check.check_date) : '—'}`, margin + 200, y + 16);
         doc.text(`Check Amount: $${(Number(check.check_amount)||0).toFixed(2)}`, pageWidth - margin - 10, y + 16, { align:"right" });
         y += 32;
 
@@ -717,7 +725,7 @@
           for (const inv of list) {
             if (y + 16 > doc.internal.pageSize.getHeight() - margin) { doc.addPage(); y = margin; }
             doc.text(inv.VendorName || '', margin+5, y);
-            doc.text(inv.InvoiceDate ? fmtUS.format(new Date(inv.InvoiceDate)) : '', margin+colW+5, y);
+            doc.text(inv.InvoiceDate ? mmddyyyyFromYMD(inv.InvoiceDate) : '', margin+colW+5, y);
             doc.text(inv.InvoiceNumber || '', margin+colW*2+5, y);
             doc.text(`$${(Number(inv.InvoiceTotal)||0).toFixed(2)}`, margin+colW*3+5, y);
             y += 14;
@@ -751,6 +759,39 @@
       showMessageModal("Report Generated", "PDF downloaded.");
     }
 
+    // ====== QUICK MONTH (Aug 2025 → Dec 2030) ======
+    function populateQuickMonth() {
+      const sel = document.getElementById('quickMonth');
+      const startYear = 2025, startMonth0 = 7; // August is 7 (0-based)
+      const endYear = 2030, endMonth0 = 11; // December
+      for (let y = startYear; y <= endYear; y++) {
+        const mStart = (y === startYear) ? startMonth0 : 0;
+        const mEnd   = (y === endYear)   ? endMonth0   : 11;
+        for (let m0 = mStart; m0 <= mEnd; m0++) {
+          const monthName = new Date(y, m0, 1).toLocaleString('en-US', { month: 'long' });
+          const val = `${y}-${String(m0+1).padStart(2,'0')}`;
+          const opt = document.createElement('option');
+          opt.value = val;
+          opt.textContent = `${monthName} ${y}`;
+          sel.appendChild(opt);
+        }
+      }
+    }
+    function applyQuickMonthSelection() {
+      const sel = document.getElementById('quickMonth');
+      const rs = document.getElementById('reportStartDate');
+      const re = document.getElementById('reportEndDate');
+      if (sel.value === 'custom') {
+        rs.disabled = false; re.disabled = false;
+        return;
+      }
+      const [yy, mm] = sel.value.split('-').map(Number);
+      const m0 = mm - 1;
+      rs.value = firstOfMonth(yy, m0);
+      re.value = lastOfMonth(yy, m0);
+      rs.disabled = true; re.disabled = true;
+    }
+
     // DOM Ready
     document.addEventListener("DOMContentLoaded", async () => {
       document.getElementById("modal-close-btn").onclick = hideMessageModal;
@@ -759,7 +800,7 @@
       await preloadImages();
       document.getElementById('company-logo').src = logoDataUrls['company'];
 
-      // month/year filters
+      // month/year filters in list
       const invoiceMonthFilter = document.getElementById('invoiceMonthFilter');
       const invoiceYearFilter = document.getElementById('invoiceYearFilter');
       const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -791,12 +832,14 @@
       });
       document.getElementById("btnSaveInvoicesEdit").addEventListener("click", saveNewInvoicesForThisCheck);
 
-      // Report default dates (CST current month) and button
+      // Report controls
+      populateQuickMonth();
       const rs = document.getElementById('reportStartDate');
       const re = document.getElementById('reportEndDate');
       const now = new Date();
-      rs.value = ymdStartOfMonth(now.getFullYear(), now.getMonth());
-      re.value = ymdEndOfMonth(now.getFullYear(), now.getMonth());
+      rs.value = firstOfMonth(now.getFullYear(), now.getMonth());
+      re.value = lastOfMonth(now.getFullYear(), now.getMonth());
+      document.getElementById('quickMonth').addEventListener('change', applyQuickMonthSelection);
       document.getElementById("btnGenerateReport").addEventListener("click", generateMonthlyChecksReport);
 
       // Start with one invoice row
