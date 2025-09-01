@@ -267,20 +267,12 @@
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // Central Time display formatters (we store/send plain YYYY-MM-DD strings)
-    const fmtUS = (d)=> {
-      const mm = String(d.getMonth()+1).padStart(2,'0');
-      const dd = String(d.getDate()).padStart(2,'0');
-      const yyyy = d.getFullYear();
-      return `${mm}/${dd}/${yyyy}`;
-    };
-    const parseYMDLocal = (s)=>{ // parse 'YYYY-MM-DD' as a local date (no timezone shift)
-      const [y,m,d] = s.split('-').map(Number);
-      return new Date(y, m-1, d);
-    };
+    // Local date helpers (display MM/DD/YYYY)
+    const fmtUS = (d)=> `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;
+    const parseYMDLocal = (s)=>{ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); };
     const ymd = (y,m0,d)=> `${y}-${String(m0+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const firstOfMonth = (y,m0)=> ymd(y,m0,1);
-    const lastOfMonth  = (y,m0)=> ymd(y,m0, new Date(y, m0+1, 0).getDate());
+    const lastOfMonth  = (y,m0)=> ymd(y,m0,new Date(y,m0+1,0).getDate());
     const mmddyyyyFromYMD = (s)=> fmtUS(parseYMDLocal(s));
 
     // Logos
@@ -652,7 +644,7 @@
       await loadInvoices();
     }
 
-    // ===== REPORT by CHECK DATE =====
+    // ===== REPORT by CHECK DATE with Vendor Summary Cards =====
     async function generateMonthlyChecksReport() {
       const startDate = document.getElementById('reportStartDate').value; // 'YYYY-MM-DD'
       const endDate   = document.getElementById('reportEndDate').value;
@@ -673,15 +665,21 @@
         .in("check_id", checkIds);
       if (invErr) { console.error(invErr); showMessageModal("Error","Could not load invoices."); return; }
 
+      // Group invoices by check & accumulate per-vendor totals for summary cards
       const byCheck = new Map();
+      const vendorTotals = new Map(); // vendor -> sum
       (invoices || []).forEach(inv => {
         if (!byCheck.has(inv.check_id)) byCheck.set(inv.check_id, []);
         byCheck.get(inv.check_id).push(inv);
+        const key = inv.VendorName || 'Unknown Vendor';
+        const cur = vendorTotals.get(key) || 0;
+        vendorTotals.set(key, cur + (Number(inv.InvoiceTotal)||0));
       });
 
       const { jsPDF } = window.jspdf;
       const doc = new jsPDF("p","pt","a4");
       const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
       let y = 60, margin = 40;
       const colW = (pageWidth - margin*2) / 4;
 
@@ -699,7 +697,7 @@
         const invTotal = list.reduce((s,i)=> s + (Number(i.InvoiceTotal)||0), 0);
         grandTotal += invTotal;
 
-        if (y + 90 > doc.internal.pageSize.getHeight() - margin) { doc.addPage(); y = margin; }
+        if (y + 90 > pageHeight - margin) { doc.addPage(); y = margin; }
         doc.setFillColor("#E0E8F8");
         doc.rect(margin, y, pageWidth - margin*2, 24, "F");
         doc.setFont("helvetica","bold").setFontSize(12);
@@ -723,7 +721,7 @@
         } else {
           doc.setFont("helvetica","normal").setFontSize(10);
           for (const inv of list) {
-            if (y + 16 > doc.internal.pageSize.getHeight() - margin) { doc.addPage(); y = margin; }
+            if (y + 16 > pageHeight - margin) { doc.addPage(); y = margin; }
             doc.text(inv.VendorName || '', margin+5, y);
             doc.text(inv.InvoiceDate ? mmddyyyyFromYMD(inv.InvoiceDate) : '', margin+colW+5, y);
             doc.text(inv.InvoiceNumber || '', margin+colW*2+5, y);
@@ -746,7 +744,8 @@
         }
       }
 
-      if (y + 70 > doc.internal.pageSize.getHeight() - margin) { doc.addPage(); y = margin; }
+      // Grand total section
+      if (y + 70 > pageHeight - margin) { doc.addPage(); y = margin; }
       y += 10;
       doc.setFillColor(200, 230, 200);
       doc.roundedRect(margin, y, pageWidth - margin * 2, 60, 8, 8, "F");
@@ -754,7 +753,60 @@
       doc.text("Grand Total (sum of all invoices in range)", margin + 10, y + 25);
       doc.setFont("helvetica","normal").setFontSize(14);
       doc.text(`$${grandTotal.toFixed(2)}`, pageWidth - margin - 10, y + 25, { align:"right" });
+      y += 80;
 
+      // ======== SUMMARY CARDS BY VENDOR (with logos) ========
+      const vendorEntries = Array.from(vendorTotals.entries())
+        .sort((a,b)=> b[1]-a[1]); // top spend first
+
+      // Title
+      if (y + 40 > pageHeight - margin) { doc.addPage(); y = margin; }
+      doc.setFont("helvetica","bold").setFontSize(12);
+      doc.text("Summary by Vendor", pageWidth/2, y, { align:"center" });
+      y += 20;
+
+      // Card layout (2 columns)
+      const cardW = (pageWidth - margin*3) / 2;
+      const cardH = 110;
+      let x = margin;
+      for (let i=0; i<vendorEntries.length; i++) {
+        const [vendor, total] = vendorEntries[i];
+        if (y + cardH > pageHeight - margin) { doc.addPage(); y = margin; }
+
+        // card background
+        doc.setFillColor(245,245,245);
+        doc.roundedRect(x, y, cardW, cardH, 8, 8, "F");
+
+        // logo (if any)
+        if (logoDataUrls[vendor]) {
+          try {
+            doc.addImage(logoDataUrls[vendor], "JPEG", x + cardW/2 - 25, y + 12, 50, 40);
+          } catch(e) {
+            // ignore bad format, show placeholder text
+            doc.setFont("helvetica","bold").setFontSize(10);
+            doc.text("Logo", x + cardW/2, y + 32, { align:"center" });
+          }
+        } else {
+          doc.setFont("helvetica","bold").setFontSize(10);
+          doc.text("Logo", x + cardW/2, y + 32, { align:"center" });
+        }
+
+        // vendor name + total
+        doc.setFont("helvetica","bold").setFontSize(11);
+        doc.text(vendor, x + cardW/2, y + 66, { align:"center" });
+        doc.setFont("helvetica","normal").setFontSize(12);
+        doc.text(`$${total.toFixed(2)}`, x + cardW/2, y + 90, { align:"center" });
+
+        // next column / row
+        if (x === margin) {
+          x = margin + cardW + margin;
+        } else {
+          x = margin;
+          y += cardH + 14;
+        }
+      }
+
+      // Save
       doc.save(`JengChi_Checks_Report_${startDate}_to_${endDate}.pdf`);
       showMessageModal("Report Generated", "PDF downloaded.");
     }
@@ -762,8 +814,8 @@
     // ====== QUICK MONTH (Aug 2025 → Dec 2030) ======
     function populateQuickMonth() {
       const sel = document.getElementById('quickMonth');
-      const startYear = 2025, startMonth0 = 7; // August is 7 (0-based)
-      const endYear = 2030, endMonth0 = 11; // December
+      const startYear = 2025, startMonth0 = 7; // August
+      const endYear = 2030, endMonth0 = 11;    // December
       for (let y = startYear; y <= endYear; y++) {
         const mStart = (y === startYear) ? startMonth0 : 0;
         const mEnd   = (y === endYear)   ? endMonth0   : 11;
@@ -844,6 +896,11 @@
 
       // Start with one invoice row
       addInvoiceRowInManagement();
+    });
+
+    // Wire edit save button
+    document.addEventListener('click', (e)=>{
+      if (e.target && e.target.id === 'btnSaveCheckEdits') { saveCheckEdits(); }
     });
   </script>
 </body>
