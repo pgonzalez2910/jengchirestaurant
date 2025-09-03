@@ -8,7 +8,7 @@
   <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root{
       --jc-accent:#7A3D36;
@@ -68,7 +68,7 @@
       box-shadow:0 2px 8px rgba(0,0,0,.06);
     }
     .nav-inner{ max-width:1200px; margin:0 auto; padding:10px 16px; display:flex; align-items:center; gap:16px; }
-    .logo-mini{ height:36px; width:auto; border-radius:6px; mix-blend:multiply; }
+    .logo-mini{ height:32px; width:auto; border-radius:6px; mix-blend:multiply; }
     .app-title{ font-weight:900; letter-spacing:.2px; color:#111827; white-space:nowrap; }
     .tabs{ display:flex; gap:8px; margin-left:auto; }
     .tab{
@@ -82,13 +82,8 @@
 
     .main{ flex:1; display:flex; flex-direction:column; min-height:0; }
     .frame-wrap{ position:relative; flex:1; min-height:0; }
-    .module-frame{
-      position:relative; z-index:1; width:100%; height:100%;
-      border:0; background:#fff;
-    }
-    .loader{
-      position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:2; background:rgba(255,255,255,.6);
-    }
+    .module-frame{ position:relative; z-index:1; width:100%; height:100%; border:0; background:#fff; }
+    .loader{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:2; background:rgba(255,255,255,.6); }
     .spin{ width:44px; height:44px; border-radius:999px; border:4px solid #e5e7eb; border-top-color:var(--jc-accent); animation:spin .9s linear infinite; }
     @keyframes spin{ to { transform:rotate(360deg); } }
 
@@ -110,7 +105,6 @@
       <div class="form-side">
         <form id="loginForm" class="form">
           <h2>Sign in</h2>
-          <!-- dummy inputs to discourage autofill -->
           <input type="text" style="display:none" autocomplete="off">
           <input type="password" style="display:none" autocomplete="off">
           <div class="fg">
@@ -158,14 +152,19 @@
     </footer>
   </section>
 
-  <!-- ============ APP LOGIC ============ -->
   <script>
-    // ---------- Supabase ----------
+    // ------------ CONFIG: where do your module files live? ------------
+    // If check.html / placeorder.html / rony.html / julio.html are in the same folder:
+    const MODULE_BASE = './';
+    // If they are in GitHub repo instead, uncomment this line and comment the one above:
+    // const MODULE_BASE = 'https://raw.githubusercontent.com/pgonzalez2910/jengchirestaurant/main/';
+
+    // ------------ Supabase ------------
     const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
     const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // ---------- ACL ----------
+    // ------------ ACL ------------
     const ACL = {
       PG:{tabs:['check','order','rony','julio'], default:'check'},
       JT:{tabs:['check','order','rony','julio'], default:'check'},
@@ -173,6 +172,8 @@
       RC:{tabs:['rony'], default:'rony'},
       JM:{tabs:['julio'], default:'julio'}
     };
+
+    // Just the filenames; we’ll prepend MODULE_BASE when loading:
     const TAB_MAP = {
       check: 'check.html',
       order: 'placeorder.html',
@@ -180,44 +181,63 @@
       julio: 'julio.html'
     };
 
-    // ---------- DOM ----------
-    const $ = (s, r=document) => r.querySelector(s);
-    const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
-
+    // ------------ DOM ------------
+    const $  = (s, r=document)=>r.querySelector(s);
+    const $$ = (s, r=document)=>Array.from(r.querySelectorAll(s));
     const loginSec = $('#login');
     const appSec   = $('#app');
-    const loginForm= $('#loginForm');
     const uInput   = $('#u');
     const pInput   = $('#p');
     const errBox   = $('#err');
-
+    const logoutBtn= $('#logoutBtn');
     const tabsWrap = $('#tabs');
     const frame    = $('#frame');
     const loader   = $('#loader');
-    const logoutBtn= $('#logoutBtn');
 
-    // ---------- helpers ----------
-    function showError(msg){ errBox.textContent = msg; errBox.style.display='block'; }
+    function showError(m){ errBox.textContent=m; errBox.style.display='block'; }
     function hideError(){ errBox.style.display='none'; }
-    function setActiveTab(key){
-      $$('.tab', tabsWrap).forEach(b=>{
-        b.classList.toggle('active', b.dataset.page===key);
-      });
-    }
-    function loadModule(key){
-      const href = TAB_MAP[key] || TAB_MAP.check;
+    function setActiveTab(key){ $$('.tab',tabsWrap).forEach(b=>b.classList.toggle('active', b.dataset.page===key)); }
+
+    // Robust loader: fetch → inject <base> → Blob → iframe (bypasses X-Frame-Options)
+    async function mountModule(key){
+      const filename = TAB_MAP[key] || TAB_MAP.check;
+      const url = new URL(filename, MODULE_BASE).toString();
       setActiveTab(key);
-      loader.style.display = 'flex';
-      frame.src = href;
+      loader.style.display='flex';
+
+      try{
+        const res = await fetch(url, { mode:'cors' });
+        if(!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+        const html = await res.text();
+
+        // Ensure relative assets in the module resolve correctly
+        const baseHref = url.replace(/[^/]+$/, '');
+        const withBase = html.replace('<head>', `<head><base href="${baseHref}">`);
+
+        const blob = new Blob([withBase], { type:'text/html' });
+        const blobUrl = URL.createObjectURL(blob);
+        frame.src = blobUrl;
+
+        frame.onload = () => {
+          loader.style.display='none';
+          setTimeout(()=>URL.revokeObjectURL(blobUrl), 4000);
+        };
+      }catch(err){
+        console.error('[MODULE_LOAD_ERROR]', err);
+        loader.style.display='none';
+        frame.srcdoc = `<div style="padding:24px;font-family:Inter">
+            <h2>Failed to load <code>${filename}</code></h2>
+            <p>URL tried: <code>${url}</code></p>
+            <pre style="white-space:pre-wrap;background:#f8fafc;border:1px solid #e5e7eb;padding:12px;border-radius:8px">${String(err)}</pre>
+          </div>`;
+      }
     }
-    frame.addEventListener('load', ()=> loader.style.display='none');
 
     function showApp(defaultKey){
       loginSec.style.display='none';
       appSec.style.display='flex';
-      loadModule(defaultKey);
+      mountModule(defaultKey);
     }
-
     function logout(){
       localStorage.clear();
       appSec.style.display='none';
@@ -226,26 +246,21 @@
       uInput.focus();
     }
 
-    // ---------- tab clicks ----------
     tabsWrap.addEventListener('click', (e)=>{
-      const btn = e.target.closest('.tab'); if(!btn) return;
+      const btn=e.target.closest('.tab'); if(!btn) return;
       e.preventDefault();
       const key = btn.dataset.page;
       localStorage.setItem('lastPage', key);
-      loadModule(key);
+      mountModule(key);
     });
-
     logoutBtn.addEventListener('click', logout);
 
-    // ---------- restore session ----------
+    // Restore session if present
     (function init(){
       const session = JSON.parse(localStorage.getItem('userPermissions')||'null');
       if(session?.username){
         const acl = ACL[session.username] || {tabs:['check'], default:'check'};
-        // Hide tabs not allowed (if any)
-        $$('.tab', tabsWrap).forEach(b => {
-          b.style.display = acl.tabs.includes(b.dataset.page) ? '' : 'none';
-        });
+        $$('.tab', tabsWrap).forEach(b => { b.style.display = acl.tabs.includes(b.dataset.page) ? '' : 'none'; });
         const last = localStorage.getItem('lastPage') || acl.default;
         showApp(last);
       }else{
@@ -253,17 +268,12 @@
       }
     })();
 
-    // ---------- login ----------
-    loginForm.addEventListener('submit', async (ev)=>{
+    // Login
+    $('#loginForm').addEventListener('submit', async (ev)=>{
       ev.preventDefault(); hideError();
-
       const username = (uInput.value||'').trim();
       const password = pInput.value;
-
-      if(!username || !password){
-        showError('Please enter both username and password.'); return;
-      }
-
+      if(!username || !password){ return showError('Please enter both username and password.'); }
       try{
         const {data, error} = await supabaseClient
           .from('users')
@@ -285,11 +295,7 @@
           username: canonicalUser,
           tabs: acl.tabs
         }));
-
-        // Hide tabs not allowed
-        $$('.tab', tabsWrap).forEach(b=>{
-          b.style.display = acl.tabs.includes(b.dataset.page) ? '' : 'none';
-        });
+        $$('.tab', tabsWrap).forEach(b => { b.style.display = acl.tabs.includes(b.dataset.page) ? '' : 'none'; });
 
         const start = localStorage.getItem('lastPage') || acl.default;
         showApp(start);
