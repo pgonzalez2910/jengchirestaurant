@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jeng Chi — Executive Enterprise Timesheet</title>
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { inter: ['Inter', 'ui-sans-serif', 'system-ui'] },
+          colors: { jc: { accent: '#7A3D36', accentDark: '#5c2e29', ink: '#0f172a' } },
+          boxShadow: { glossy: '0 10px 30px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.06)' }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Supabase JS v2 -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- jsPDF & AutoTable for PDF export -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.4/jspdf.plugin.autotable.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <style>
+    :root{ color-scheme: light dark; }
+    html, body { height: 100%; }
+    body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, 'Apple Color Emoji','Segoe UI Emoji'; }
+    .glass { background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(255,255,255,.85)); backdrop-filter: saturate(140%) blur(8px); }
+    .dark .glass { background: linear-gradient(180deg, rgba(17,24,39,.65), rgba(17,24,39,.55)); }
+    .btn { display:inline-flex; align-items:center; gap:.5rem; border-radius:1rem; padding:.5rem 1rem; font-weight:600; box-shadow:0 10px 30px rgba(0,0,0,.08), inset 0 1px 0 rgba(255,255,255,.06); transition:transform .08s ease; }
+    .btn:hover { transform: scale(1.02); }
+    .btn:active { transform: none; }
+    .btn-primary { background:#7A3D36; color:#fff; }
+    .btn-primary:hover { background:#5c2e29; }
+    .btn-soft { background:rgba(255,255,255,.6); color:#0f172a; border:1px solid rgba(255,255,255,.4); }
+    .dark .btn-soft { background:rgba(255,255,255,.06); color:#e5e7eb; border-color:rgba(255,255,255,.1); }
+    .badge { display:inline-flex; align-items:center; gap:.25rem; border-radius:999px; border:1px solid rgba(148,163,184,.6); padding:.25rem .625rem; font-size:.75rem; font-weight:600; color:#475569; }
+    .dark .badge{ border-color:rgba(255,255,255,.12); color:#cbd5e1;}
+    dialog::backdrop{ background:rgba(0,0,0,.35); }
+  </style>
+</head>
+<body class="min-h-full bg-gradient-to-b from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900 text-slate-900 dark:text-slate-100">
+
+  <!-- Top Bar -->
+  <header class="sticky top-0 z-50">
+    <div class="glass shadow-glossy border-b border-white/40 dark:border-white/10">
+      <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <img id="companyLogo" src="" alt="Logo" class="h-9 w-auto hidden" />
+          <div>
+            <div class="text-lg sm:text-xl font-extrabold tracking-tight">JENG CHI — Employee Timesheet</div>
+            <div class="text-xs sm:text-sm text-slate-500 dark:text-slate-400">Executive · Professional · Enterprise</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="btnExportCsv" class="btn btn-soft" title="Export CSV"><i data-lucide="file-down"></i><span class="hidden sm:inline">CSV</span></button>
+          <button id="btnExportPdf" class="btn btn-soft" title="Export PDF (Letter)"><i data-lucide="file-text"></i><span class="hidden sm:inline">PDF</span></button>
+          <div class="w-px h-6 bg-slate-300/60 dark:bg-white/10 mx-1"></div>
+          <button id="btnManagePositions" class="btn btn-soft" title="Manage Positions"><i data-lucide="briefcase"></i><span class="hidden md:inline">Positions</span></button>
+          <button id="btnManageEmployees" class="btn btn-soft" title="Manage Employees"><i data-lucide="users"></i><span class="hidden md:inline">Employees</span></button>
+          <button id="btnTheme" class="btn btn-soft" title="Toggle Theme"><i data-lucide="moon-star"></i></button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Content -->
+  <main class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- Filters & Presets -->
+    <section class="glass rounded-3xl p-4 sm:p-6 shadow-glossy">
+      <div class="flex flex-col lg:flex-row gap-6">
+        <!-- Employee Identification -->
+        <div class="flex-1">
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="text-base font-bold">Employee Identification</h2>
+            <span id="employeeBadge" class="badge">—</span>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label class="text-sm font-medium">Employee
+              <select id="cboEmployee" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-jc-accent/60"></select>
+            </label>
+            <label class="text-sm font-medium">Hourly Salary ($/hr)
+              <input id="txtHourlySalary" type="number" step="0.01" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" />
+            </label>
+          </div>
+        </div>
+
+        <!-- Time Period -->
+        <div class="flex-1">
+          <h2 class="text-base font-bold mb-2">Time Period</h2>
+          <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 items-end">
+            <label class="text-sm font-medium">Starting Date
+              <input id="dtpStartingDate" type="date" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" />
+            </label>
+            <label class="text-sm font-medium">End Date
+              <input id="dtpEndDate" type="date" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" />
+            </label>
+            <div class="grid grid-cols-4 gap-2 xl:col-span-3">
+              <label class="col-span-3 text-sm font-medium">Presets
+                <select id="cboPayPeriod" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2"></select>
+              </label>
+              <button id="btnApplyPeriod" class="btn btn-primary justify-center"><i data-lucide="calendar-range"></i>Apply</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Add / Update Entry -->
+    <section class="glass rounded-3xl p-4 sm:p-6 shadow-glossy">
+      <h2 class="text-base font-bold mb-4">Add Timesheet Entry</h2>
+      <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 items-end">
+        <label class="text-sm font-medium">Date
+          <input id="dtpDate" type="date" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" />
+        </label>
+        <label class="text-sm font-medium">Time In
+          <input id="mtbIn" type="time" step="60" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" value="09:00" />
+        </label>
+        <label class="text-sm font-medium">Time Out
+          <input id="mtbOut" type="time" step="60" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" value="17:00" />
+        </label>
+        <label class="text-sm font-medium">Break In
+          <input id="mtbBreakIn" type="time" step="60" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" />
+        </label>
+        <label class="text-sm font-medium">Break Out
+          <input id="mtbBreakOut" type="time" step="60" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" />
+        </label>
+        <label class="text-sm font-medium">Wage $/hr
+          <input id="txtWage" type="number" step="0.01" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" value="0.00" />
+        </label>
+        <label class="flex items-center gap-2 text-sm mt-7 select-none">
+          <input id="chkUnpaidBreak" type="checkbox" class="rounded border-slate-300/70 dark:border-white/10" checked>
+          Unpaid Break
+        </label>
+        <div class="flex gap-2 mt-6">
+          <button id="btnAdd" class="btn btn-primary"><i data-lucide="plus"></i><span id="btnAddLabel">Add</span></button>
+          <button id="btnCancelEdit" class="btn btn-soft hidden"><i data-lucide="x"></i>Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Grid & Totals -->
+    <section class="space-y-3">
+      <div class="glass rounded-3xl shadow-glossy overflow-hidden">
+        <div class="px-4 py-3 border-b border-white/40 dark:border-white/10 flex items-center justify-between">
+          <h3 class="text-sm font-semibold">Entries</h3>
+          <div class="text-xs text-slate-500 dark:text-slate-400">Double-click a row to edit</div>
+        </div>
+        <div class="overflow-x-auto">
+          <table id="tblEntries" class="min-w-full text-sm">
+            <thead class="bg-slate-100/70 dark:bg-white/5">
+              <tr>
+                <th class="px-3 py-2 text-left">Employee</th>
+                <th class="px-3 py-2">Date</th>
+                <th class="px-3 py-2">In</th>
+                <th class="px-3 py-2">Out</th>
+                <th class="px-3 py-2">Break In</th>
+                <th class="px-3 py-2">Break Out</th>
+                <th class="px-3 py-2 text-right">Wage</th>
+                <th class="px-3 py-2 text-right">Hours</th>
+                <th class="px-3 py-2 text-right">Pay</th>
+                <th class="px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody id="tbodyEntries" class="divide-y divide-slate-200/70 dark:divide-white/10"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="glass rounded-3xl p-4 sm:p-5 shadow-glossy flex items-center justify-between">
+        <div class="text-sm font-semibold">Grand Totals</div>
+        <div class="text-sm">
+          <span id="lblTotalHours" class="mr-6">Total Hours: 0</span>
+          <span id="lblTotalPay">Total Pay: $0.00</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Employees Modal -->
+  <dialog id="dlgEmployees" class="w-[min(720px,calc(100%-2rem))] rounded-3xl p-0 bg-transparent">
+    <div class="glass rounded-3xl shadow-glossy">
+      <div class="px-5 py-3 border-b border-white/40 dark:border-white/10 flex items-center justify-between">
+        <h3 class="font-semibold">Manage Employees</h3>
+        <button class="btn btn-soft" onclick="closeDialog('dlgEmployees')"><i data-lucide="x"></i>Close</button>
+      </div>
+      <div class="p-5 space-y-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <label class="text-sm font-medium">Name
+            <input id="empName" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" />
+          </label>
+          <label class="text-sm font-medium">Position
+            <select id="empPosition" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2"></select>
+          </label>
+          <label class="text-sm font-medium">Default Wage ($/hr)
+            <input id="empWage" type="number" step="0.01" value="15.00" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" />
+          </label>
+          <div class="flex items-end">
+            <button id="btnEmpAdd" class="btn btn-primary w-full"><i data-lucide="save"></i>Add / Save</button>
+          </div>
+        </div>
+        <div class="overflow-x-auto rounded-2xl border border-white/40 dark:border-white/10">
+          <table class="min-w-full text-sm">
+            <thead class="bg-slate-100/70 dark:bg-white/5">
+              <tr>
+                <th class="px-3 py-2 text-left">Name</th>
+                <th class="px-3 py-2">Position</th>
+                <th class="px-3 py-2 text-right">Wage</th>
+                <th class="px-3 py-2"></th>
+              </tr>
+            </thead>
+            <tbody id="tbodyEmployees" class="divide-y divide-slate-200/70 dark:divide-white/10"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Positions Modal -->
+  <dialog id="dlgPositions" class="w-[min(560px,calc(100%-2rem))] rounded-3xl p-0 bg-transparent">
+    <div class="glass rounded-3xl shadow-glossy">
+      <div class="px-5 py-3 border-b border-white/40 dark:border-white/10 flex items-center justify-between">
+        <h3 class="font-semibold">Manage Positions</h3>
+        <button class="btn btn-soft" onclick="closeDialog('dlgPositions')"><i data-lucide="x"></i>Close</button>
+      </div>
+      <div class="p-5 space-y-4">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label class="text-sm font-medium md:col-span-2">Position Name
+            <input id="posName" class="mt-1 w-full rounded-xl border border-slate-300/70 dark:border-white/10 bg-white/70 dark:bg-white/5 px-3 py-2" />
+          </label>
+          <button id="btnPosAdd" class="btn btn-primary"><i data-lucide="save"></i>Add / Save</button>
+        </div>
+        <ul id="lstPositions" class="divide-y divide-slate-200/70 dark:divide-white/10 rounded-2xl border border-white/40 dark:border-white/10"></ul>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Toasts -->
+  <div id="toastHost" class="fixed inset-x-0 bottom-4 z-[60] flex flex-col items-center gap-2"></div>
+
+  <script>
+  // =================== CONFIG ===================
+  const SUPABASE_URL = 'https://snkddhmysevgfujqaft.supabase.co';
+  const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNua2RkaG15c2V2Z2Z1anFqYWZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQ3Njk5NzYsImV4cCI6MjA3MDM0NTk3Nn0.gmGW_UsqWLoZUcYsNt9c9HvSaque_Zibc1HiawfpWZI';
+  const COMPANY_NAME = 'JENG CHI RESTAURANT';
+  const COMPANY_LOGO_URL = 'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg';
+
+  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false } });
+
+  // =================== UTILITIES ===================
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+  const fmt = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  function iconify() { lucide.createIcons(); }
+
+  function toast(msg, type='ok') {
+    const el = document.createElement('div');
+    el.className = `glass border ${type==='err'?'border-rose-300/60 text-rose-600 dark:text-rose-300':'border-emerald-300/60 text-emerald-700 dark:text-emerald-300'} rounded-2xl px-4 py-2 shadow-glossy`;
+    el.textContent = msg;
+    $('#toastHost').appendChild(el);
+    setTimeout(()=>{ el.remove(); }, 2600);
+  }
+
+  function parseHHMM(str){ if(!str) return null; const [h,m] = str.split(':').map(Number); if(isNaN(h)||isNaN(m)) return null; return {h, m}; }
+
+  function hoursBetween(dateStr, t1, t2){
+    if(!t1 || !t2) return 0;
+    const d = new Date(dateStr + 'T00:00:00');
+    const a = new Date(d); a.setHours(t1.h, t1.m, 0, 0);
+    const b = new Date(d); b.setHours(t2.h, t2.m, 0, 0);
+    if (b < a) b.setDate(b.getDate() + 1); // crosses midnight
+    return Math.max(0, (b - a) / 36e5);
+  }
+
+  function computePaidHours(date, inStr, outStr, brIn, brOut, unpaid=true){
+    const ti = parseHHMM(inStr), to = parseHHMM(outStr);
+    const bi = parseHHMM(brIn), bo = parseHHMM(brOut);
+    const work = hoursBetween(date, ti, to);
+    const br = (bi && bo) ? hoursBetween(date, bi, bo) : 0;
+    const paid = Math.max(0, Math.round((work - (unpaid?br:0))*100)/100);
+    return { work, br, paid };
+  }
+
+  function setLoading(el, yes){ if(!el) return; el.disabled = !!yes; el.classList.toggle('opacity-60', !!yes); }
+
+  function isoDate(val){ return (new Date(val)).toISOString().slice(0,10); }
+
+  // =================== SUPABASE I/O ===================
+  async function loadPositions(){
+    const { data, error } = await sb.from('positions').select().order('name');
+    if(error) throw error; return data || [];
+  }
+  async function addPosition(name){ return await sb.from('positions').insert({ id: crypto.randomUUID(), name, created_at: new Date().toISOString() }); }
+  async function deletePositionByName(name){ return await sb.from('positions').delete().eq('name', name); }
+
+  async function loadEmployees(){
+    const { data, error } = await sb
+      .from('employees')
+      .select(`
+        id,
+        name,
+        position_id,
+        default_wage,
+        positions!employees_position_id_fkey ( name )
+      `)
+      .order('name');
+    if(error) throw error;
+    return (data||[]).map(r => ({
+      id: r.id, name: r.name, position_id: r.position_id,
+      position: Array.isArray(r.positions) ? (r.positions[0]?.name || '') : (r.positions?.name || ''),
+      default_wage: r.default_wage
+    }));
+  }
+  async function upsertEmployee(emp){
+    const row = { id: emp.id||crypto.randomUUID(), name: emp.name, position_id: emp.position_id||null, default_wage: Number(emp.default_wage||0) };
+    return await sb.from('employees').upsert(row).select().single();
+  }
+  async function deleteEmployee(id){ return await sb.from('employees').delete().eq('id', id); }
+
+  async function loadEntries(employeeId, startDate, endDate){
+    const { data, error } = await sb.from('timesheet_entries')
+      .select('*')
+      .eq('employee_id', employeeId)
+      .gte('work_date', startDate)
+      .lte('work_date', endDate)
+      .order('work_date');
+    if(error) throw error; return data || [];
+  }
+  async function insertEntry(row){
+    const payload = { id: crypto.randomUUID(), ...row };
+    const { data, error } = await sb.from('timesheet_entries').insert(payload).select().single();
+    if(error) throw error; return data;
+  }
+  async function updateEntry(id, row){
+    const { data, error } = await sb.from('timesheet_entries').update(row).eq('id', id).select().single();
+    if(error) throw error; return data;
+  }
+  async function deleteEntry(id){ return await sb.from('timesheet_entries').delete().eq('id', id); }
+
+  // =================== PERIOD PRESETS (Biweekly) ===================
+  function biweeklyPresets(firstStart='2025-07-27', count=30){
+    const start0 = new Date(firstStart+'T00:00:00');
+    const periods = [];
+    for(let i=-count; i<=count; i++){
+      const s = new Date(start0); s.setDate(s.getDate() + i*14);
+      const e = new Date(s); e.setDate(e.getDate() + 13);
+      periods.push({ start: isoDate(s), end: isoDate(e) });
+    }
+    const today = isoDate(new Date());
+    let current = periods.findIndex(p => p.start <= today && today <= p.end);
+    if(current < 0) current = periods.findIndex(p => today < p.start) - 1;
+    return { periods, current: Math.max(0, current) };
+  }
+
+  // =================== STATE ===================
+  let employees = [];
+  let positions = [];
+  let rows = []; // current grid rows
+  let editingId = null;
+
+  // =================== UI BINDING ===================
+  async function init(){
+    iconify();
+    if(COMPANY_LOGO_URL){ const img = $('#companyLogo'); img.src = COMPANY_LOGO_URL; img.classList.remove('hidden'); }
+
+    // Theme
+    $('#btnTheme').addEventListener('click', ()=>{
+      const d = document.documentElement.classList; d.toggle('dark'); localStorage.setItem('theme', d.contains('dark')?'dark':'light');
+    });
+    if(localStorage.getItem('theme')==='dark') document.documentElement.classList.add('dark');
+
+    // Wire buttons
+    $('#btnManageEmployees').onclick = async ()=>{ await refreshEmployeesModal(); openDialog('dlgEmployees'); };
+    $('#btnManagePositions').onclick = async ()=>{ await refreshPositionsModal(); openDialog('dlgPositions'); };
+    $('#btnEmpAdd').onclick = addEmployeeFromModal;
+    $('#btnPosAdd').onclick = addPositionFromModal;
+
+    $('#btnApplyPeriod').onclick = applySelectedPeriod;
+    $('#btnExportCsv').onclick = exportCsv;
+    $('#btnExportPdf').onclick = exportPdf;
+
+    $('#btnAdd').onclick = onAddOrUpdate;
+    $('#btnCancelEdit').onclick = cancelEditUI;
+
+    // Load reference data
+    await loadReferenceData();
+
+    // Defaults
+    const { periods, current } = biweeklyPresets('2025-07-27', 30);
+    const cbo = $('#cboPayPeriod'); cbo.innerHTML = periods.map(p=>`<option value="${p.start}|${p.end}">${p.start} - ${p.end}</option>`).join('');
+    cbo.selectedIndex = current;
+    $('#dtpStartingDate').value = periods[current].start;
+    $('#dtpEndDate').value = periods[current].end;
+
+    // Entry defaults
+    $('#dtpDate').value = periods[current].start;
+    $('#txtWage').value = $('#txtHourlySalary').value || '0.00';
+
+    // Events to reload grid
+    $('#cboEmployee').addEventListener('change', onEmployeeChanged);
+    $('#dtpStartingDate').addEventListener('change', reloadEntriesForSelection);
+    $('#dtpEndDate').addEventListener('change', reloadEntriesForSelection);
+
+    await reloadEntriesForSelection();
+  }
+
+  async function loadReferenceData(){
+    positions = await loadPositions().catch(e=>{ toast('Error loading positions','err'); console.error(e); return []; });
+    employees = await loadEmployees().catch(e=>{ toast('Error loading employees','err'); console.error(e); return []; });
+
+    // Fill combos
+    const posSel = $('#empPosition');
+    posSel.innerHTML = `<option value="">—</option>` + positions.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
+
+    const empSel = $('#cboEmployee');
+    empSel.innerHTML = employees.map(e=>`<option value="${e.id}">${e.name}</option>`).join('');
+    if (employees.length) { empSel.selectedIndex = 0; onEmployeeChanged(); }
+  }
+
+  function onEmployeeChanged(){
+    const id = $('#cboEmployee').value;
+    const emp = employees.find(e=>e.id===id);
+    $('#employeeBadge').textContent = emp ? (emp.position || '—') : '—';
+    $('#txtHourlySalary').value = emp ? Number(emp.default_wage||0).toFixed(2) : '0.00';
+    $('#txtWage').value = $('#txtHourlySalary').value;
+    reloadEntriesForSelection();
+  }
+
+  async function applySelectedPeriod(){
+    const val = $('#cboPayPeriod').value; if(!val) return; const [s,e] = val.split('|');
+    $('#dtpStartingDate').value = s; $('#dtpEndDate').value = e;
+    await reloadEntriesForSelection();
+  }
+
+  // =================== GRID ===================
+  function renderGrid(){
+    const tbody = $('#tbodyEntries'); tbody.innerHTML = '';
+    let totalHours = 0, totalPay = 0;
+    rows.forEach((r, idx)=>{
+      totalHours += r.paid_hours; totalPay += r.pay;
+      const tr = document.createElement('tr');
+      tr.className = idx%2? 'bg-white/40 dark:bg-white/5' : '';
+      tr.innerHTML = `
+        <td class="px-3 py-2">${r.employee_name}</td>
+        <td class="px-3 py-2 text-center">${r.work_date}</td>
+        <td class="px-3 py-2 text-center">${r.time_in}</td>
+        <td class="px-3 py-2 text-center">${r.time_out}</td>
+        <td class="px-3 py-2 text-center">${r.break_in||''}</td>
+        <td class="px-3 py-2 text-center">${r.break_out||''}</td>
+        <td class="px-3 py-2 text-right">${fmt.format(r.wage)}</td>
+        <td class="px-3 py-2 text-right">${r.paid_hours.toFixed(2)}</td>
+        <td class="px-3 py-2 text-right">${fmt.format(r.pay)}</td>
+        <td class="px-3 py-2 text-right">
+          <button class="btn btn-soft px-2 py-1" title="Edit" data-id="${r.id}" onclick="editRow('${r.id}')"><i data-lucide="pencil"></i></button>
+          <button class="btn btn-soft px-2 py-1" title="Delete" data-id="${r.id}" onclick="removeRow('${r.id}')"><i data-lucide="trash-2"></i></button>
+        </td>`;
+      tr.ondblclick = ()=> editRow(r.id);
+      tbody.appendChild(tr);
+    });
+    $('#lblTotalHours').textContent = `Total Hours: ${totalHours.toFixed(2)}`;
+    $('#lblTotalPay').textContent = `Total Pay: $${fmt.format(totalPay)}`;
+    iconify();
+  }
+
+  async function reloadEntriesForSelection(){
+    const empId = $('#cboEmployee').value; if(!empId) return;
+    const s = $('#dtpStartingDate').value; const e = $('#dtpEndDate').value;
+    const data = await loadEntries(empId, s, e).catch(err=>{ toast('Load entries failed','err'); console.error(err); return []; });
+
+    const emp = employees.find(x=>x.id===empId);
+    rows = data.map(d=>{
+      const paid = computePaidHours(d.work_date, d.time_in?.slice(0,5), d.time_out?.slice(0,5), d.break_in?.slice(0,5), d.break_out?.slice(0,5), d.unpaid_break!==false);
+      const pay = Math.round(paid.paid * Number(d.wage||0) * 100)/100;
+      return {
+        id: d.id,
+        employee_id: d.employee_id,
+        employee_name: emp?.name || '',
+        work_date: d.work_date,
+        time_in: d.time_in?.slice(0,5) || '',
+        time_out: d.time_out?.slice(0,5) || '',
+        break_in: d.break_in?.slice(0,5) || '',
+        break_out: d.break_out?.slice(0,5) || '',
+        unpaid_break: d.unpaid_break!==false,
+        wage: Number(d.wage||0),
+        paid_hours: paid.paid,
+        pay: pay
+      };
+    });
+    renderGrid();
+  }
+
+  function beginEditUI(){
+    $('#btnAddLabel').textContent = 'Update';
+    $('#btnCancelEdit').classList.remove('hidden');
+  }
+  function cancelEditUI(){ editingId = null; $('#btnAddLabel').textContent = 'Add'; $('#btnCancelEdit').classList.add('hidden'); clearEntryInputs(); }
+  function clearEntryInputs(){ $('#mtbIn').value='09:00'; $('#mtbOut').value='17:00'; $('#mtbBreakIn').value=''; $('#mtbBreakOut').value=''; $('#txtWage').value = $('#txtHourlySalary').value || '0.00'; }
+
+  function editRow(id){
+    const r = rows.find(x=>x.id===id); if(!r) return;
+    $('#dtpDate').value = r.work_date;
+    $('#mtbIn').value = r.time_in || '';
+    $('#mtbOut').value = r.time_out || '';
+    $('#mtbBreakIn').value = r.break_in || '';
+    $('#mtbBreakOut').value = r.break_out || '';
+    $('#txtWage').value = r.wage.toFixed(2);
+    $('#chkUnpaidBreak').checked = !!r.unpaid_break;
+    beginEditUI(); editingId = id;
+  }
+
+  async function removeRow(id){
+    if(!confirm('Delete this entry?')) return;
+    await deleteEntry(id).catch(e=>{ toast('Delete failed','err'); console.error(e); return; });
+    rows = rows.filter(x=>x.id!==id); renderGrid();
+  }
+
+  async function onAddOrUpdate(){
+    try {
+      const empId = $('#cboEmployee').value; if(!empId) { toast('Choose an employee','err'); return; }
+      const workDate = $('#dtpDate').value; if(!workDate){ toast('Choose a date','err'); return; }
+      const timeIn = $('#mtbIn').value; const timeOut = $('#mtbOut').value; if(!timeIn||!timeOut){ toast('Enter Time In/Out','err'); return; }
+      const breakIn = $('#mtbBreakIn').value || null; const breakOut = $('#mtbBreakOut').value || null;
+      const unpaid = $('#chkUnpaidBreak').checked;
+      const wage = Number($('#txtWage').value||0);
+
+      const payload = {
+        employee_id: empId,
+        work_date: workDate,
+        time_in: timeIn+':00',
+        time_out: timeOut+':00',
+        break_in: breakIn? breakIn+':00' : null,
+        break_out: breakOut? breakOut+':00' : null,
+        unpaid_break: unpaid,
+        wage: wage
+      };
+
+      if(editingId){
+        await updateEntry(editingId, payload);
+        toast('Entry updated');
+      } else {
+        await insertEntry(payload);
+        toast('Entry added');
+      }
+      cancelEditUI();
+      await reloadEntriesForSelection();
+    } catch(e){ console.error(e); toast('Save failed','err'); }
+  }
+
+  // =================== MODALS ===================
+  function openDialog(id){ const d = document.getElementById(id); d.showModal(); }
+  function closeDialog(id){ const d = document.getElementById(id); d.close(); }
+
+  async function refreshEmployeesModal(){
+    employees = await loadEmployees().catch(()=>employees);
+    positions = await loadPositions().catch(()=>positions);
+    // table
+    const tbody = $('#tbodyEmployees');
+    tbody.innerHTML = employees.map(e=>`
+      <tr>
+        <td class="px-3 py-2">${e.name}</td>
+        <td class="px-3 py-2 text-center">${e.position||''}</td>
+        <td class="px-3 py-2 text-right">${fmt.format(Number(e.default_wage||0))}</td>
+        <td class="px-3 py-2 text-right">
+          <button class="btn btn-soft px-2 py-1" title="Delete" onclick="deleteEmployeeRow('${e.id}')"><i data-lucide="trash-2"></i></button>
+        </td>
+      </tr>`).join('');
+    iconify();
+
+    // combos
+    const posSel = $('#empPosition'); posSel.innerHTML = `<option value="">—</option>` + positions.map(p=>`<option value="${p.id}">${p.name}</option>`).join('');
+
+    // top badges
+    const empSel = $('#cboEmployee'); empSel.innerHTML = employees.map(e=>`<option value="${e.id}">${e.name}</option>`).join('');
+    if (employees.length && !empSel.value) empSel.selectedIndex = 0;
+  }
+
+  async function addEmployeeFromModal(){
+    const name = $('#empName').value.trim(); if(!name){ toast('Enter employee name','err'); return; }
+    const position_id = $('#empPosition').value || null;
+    const default_wage = Number($('#empWage').value||0); if(default_wage<0){ toast('Wage must be non-negative','err'); return; }
+    setLoading($('#btnEmpAdd'), true);
+    try{
+      await upsertEmployee({ name, position_id, default_wage });
+      $('#empName').value=''; $('#empPosition').value=''; $('#empWage').value='15.00';
+      await refreshEmployeesModal(); await loadReferenceData(); toast('Employee saved');
+    } catch(e){ console.error(e); toast('Save failed','err'); } finally{ setLoading($('#btnEmpAdd'), false); }
+  }
+
+  async function deleteEmployeeRow(id){
+    if(!confirm('Delete this employee? This cannot be undone.')) return;
+    await deleteEmployee(id).catch(e=>{ console.error(e); toast('Delete failed','err'); return; });
+    await refreshEmployeesModal(); await loadReferenceData(); toast('Employee deleted');
+  }
+
+  async function refreshPositionsModal(){
+    positions = await loadPositions().catch(()=>positions);
+    const ul = $('#lstPositions');
+    ul.innerHTML = positions.map(p=>`
+      <li class="flex items-center justify-between px-4 py-2">
+        <span>${p.name}</span>
+        <button class="btn btn-soft px-2 py-1" onclick="deletePositionByNameUI('${p.name.replace(/'/g,"&#39;")}')"><i data-lucide='trash-2'></i></button>
+      </li>`).join('');
+    iconify();
+  }
+
+  async function addPositionFromModal(){
+    const name = $('#posName').value.trim(); if(!name){ toast('Enter position name','err'); return; }
+    setLoading($('#btnPosAdd'), true);
+    try{ await addPosition(name); $('#posName').value=''; await refreshPositionsModal(); await loadReferenceData(); toast('Position saved'); }
+    catch(e){ console.error(e); toast('Save failed','err'); }
+    finally{ setLoading($('#btnPosAdd'), false); }
+  }
+
+  async function deletePositionByNameUI(name){
+    if(!confirm(`Delete '${name}'?`)) return;
+    await deletePositionByName(name).catch(e=>{ console.error(e); toast('Delete failed','err'); return; });
+    await refreshPositionsModal(); await loadReferenceData(); toast('Position deleted');
+  }
+
+  // =================== EXPORTS ===================
+  function buildCsv(){
+    if(!rows.length) return '';
+    const cols = ['Employee','Date','TimeIn','TimeOut','BreakIn','BreakOut','Wage','Hours','Pay'];
+    const lines = [cols.join(',')];
+    for(const r of rows){
+      const t = [r.employee_name, r.work_date, r.time_in, r.time_out, r.break_in||'', r.break_out||'', r.wage.toFixed(2), r.paid_hours.toFixed(2), r.pay.toFixed(2)]
+        .map(x => typeof x==='string' && /[",\n]/.test(x) ? '"'+x.replace(/"/g,'""')+'"' : x);
+      lines.push(t.join(','));
+    }
+    return lines.join('\n');
+  }
+
+  function exportCsv(){
+    const csv = buildCsv(); if(!csv){ toast('No rows to export'); return; }
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    const s = $('#dtpStartingDate').value; const e = $('#dtpEndDate').value;
+    a.download = `Timesheet_${s.replaceAll('-','')}_${e.replaceAll('-','')}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  async function exportPdf(){
+    if(!rows.length){ toast('No rows to export'); return; }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'pt', format: 'letter', compress: true }); // 612x792
+    const margin = 36; const full = 612 - margin*2;
+    const start = $('#dtpStartingDate').value; const end = $('#dtpEndDate').value;
+
+    // Header
+    doc.setFont('helvetica','bold'); doc.setFontSize(12);
+    doc.text(COMPANY_NAME, margin, 48);
+    doc.setFontSize(11);
+    doc.text('Employee Time Entry Report', margin, 66);
+    doc.setFont('helvetica','normal'); doc.setFontSize(10);
+    doc.text(`Period: ${start} – ${end}`, margin, 82);
+    doc.setDrawColor(180); doc.line(margin, 92, margin+full, 92);
+
+    // Group by employee
+    const groups = {};
+    for(const r of rows){ (groups[r.employee_name] ||= []).push(r); }
+
+    let y = 108;
+    for(const [emp, arr] of Object.entries(groups)){
+      doc.setFont('helvetica','bold'); doc.setFontSize(11);
+      doc.text(`Employee: ${emp}`, margin, y); y += 8;
+
+      const body = arr.map(r => [r.work_date, r.time_in, r.time_out, r.break_in||'', r.break_out||'', r.wage.toFixed(2), r.paid_hours.toFixed(2), r.pay.toFixed(2)]);
+
+      doc.autoTable({
+        startY: y,
+        margin: { left: margin, right: margin },
+        head: [['Date','In','Out','Break In','Break Out','Wage','Hours','Pay']],
+        body,
+        styles: { font: 'helvetica', fontSize: 9, cellPadding: 3, lineColor: [220,220,220], lineWidth: 0.5 },
+        headStyles: { fillColor: [64,64,64], textColor: 255, halign: 'center' },
+        columnStyles: { 5:{halign:'right'}, 6:{halign:'right'}, 7:{halign:'right'} },
+        theme: 'grid',
+        didDrawPage: (d)=>{ y = d.cursor.y + 14; },
+      });
+
+      // Subtotals
+      const h = arr.reduce((s,x)=>s+x.paid_hours,0);
+      const p = arr.reduce((s,x)=>s+x.pay,0);
+      doc.setFillColor(240); doc.rect(margin, y-4, full, 18, 'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(10);
+      doc.text(`Employee Totals`, margin+8, y+8);
+      doc.text(`Hours: ${h.toFixed(2)}    Pay: ${p.toFixed(2)}`, margin+full-200, y+8, { align: 'right', maxWidth: 200 });
+      y += 30;
+    }
+
+    // Grand totals
+    const th = rows.reduce((s,x)=>s+x.paid_hours,0); const tp = rows.reduce((s,x)=>s+x.pay,0);
+    doc.setDrawColor(180); doc.line(margin, y, margin+full, y); y += 14;
+    doc.setFont('helvetica','bold'); doc.text(`Grand Totals`, margin, y); doc.text(`Hours: ${th.toFixed(2)}    Pay: ${tp.toFixed(2)}`, margin+full, y, { align: 'right' });
+
+    doc.save(`Timesheet_${start.replaceAll('-','')}_${end.replaceAll('-','')}.pdf`);
+  }
+
+  // =================== STARTUP ===================
+  window.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>
