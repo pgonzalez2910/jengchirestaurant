@@ -14,13 +14,13 @@
 
   <style>
     :root{
-      --jc-primary:#7A3D36; /* brand color */
+      --jc-primary:#7A3D36;
       --jc-primary-dark:#5c2e29;
     }
     html,body{height:100%}
     body{font-family:Montserrat,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial,'Noto Sans',sans-serif;background:#120706;color:#fff;margin:0}
 
-    /* Glossy animated background (matches your theme) */
+    /* Glossy animated background */
     .bg-waves{position:fixed;inset:0;z-index:-1;overflow:hidden;background:
       radial-gradient(1200px 800px at 50% 20%, rgba(255,219,200,.18), transparent 60%),
       radial-gradient(1200px 800px at 50% 80%, rgba(255,219,200,.12), transparent 60%),
@@ -35,8 +35,10 @@
     .btn{background:var(--jc-primary);color:#fff;border-radius:1rem;padding:.8rem 1rem;font-weight:700;box-shadow:0 12px 28px rgba(122,61,54,.38);transition:.25s ease}
     .btn:hover{transform:translateY(-2px) scale(1.01);background:var(--jc-primary-dark);box-shadow:0 18px 40px rgba(122,61,54,.5)}
     .btn-outline{background:transparent;border:1px solid rgba(255,255,255,.4);color:#fff;border-radius:1rem;padding:.6rem .9rem}
-    .badge{display:inline-block;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.25);border-radius:9999px;padding:.2rem .6rem;font-size:.75rem}
     .price{font-weight:800}
+    .section-head{display:flex;align-items:center;justify-content:space-between;gap:.75rem}
+    .section-title{font-size:1.25rem;font-weight:800;letter-spacing:.3px}
+    .badge{display:inline-block;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.25);border-radius:9999px;padding:.2rem .6rem;font-size:.75rem}
   </style>
 </head>
 <body class="min-h-full">
@@ -46,31 +48,18 @@
   <header class="w-full pt-8 pb-4 flex flex-col items-center gap-3">
     <img src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg" alt="Jeng Chi" class="h-24 w-auto logo-glow" />
     <h1 class="text-3xl md:text-4xl font-extrabold">Mooncake 2025 — Pre-Order</h1>
-    <p class="opacity-90 text-center px-4">Reserve now — pay later (or use “Buy Now” per item).</p>
+    <p class="opacity-90 text-center px-4">Grouped by category. Reserve now — pay later (or use “Buy Now” per item).</p>
   </header>
 
   <!-- MAIN -->
   <main class="mx-auto max-w-7xl px-5 pb-24">
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <!-- Product Grid -->
-      <section class="lg:col-span-2 glass rounded-3xl p-6">
-        <div class="flex items-center justify-between gap-3 flex-wrap">
-          <h2 class="text-2xl font-bold">Menu</h2>
-
-          <!-- Category Filter -->
-          <div class="flex items-center gap-2">
-            <label for="categoryFilter" class="text-sm opacity-90">Category</label>
-            <select id="categoryFilter" class="glass rounded-xl px-3 py-2 text-sm">
-              <option value="__ALL__">All</option>
-            </select>
-            <span id="productCount" class="badge">0 items</span>
-          </div>
-        </div>
-
-        <div id="productGrid" class="mt-4 grid sm:grid-cols-2 xl:grid-cols-3 gap-5"></div>
+      <!-- LEFT: Grouped Categories & Products -->
+      <section class="lg:col-span-2 space-y-6" id="groupedRoot">
+        <!-- sections injected by JS -->
       </section>
 
-      <!-- Cart / Preorder Pane -->
+      <!-- RIGHT: Cart / Preorder -->
       <aside class="glass rounded-3xl p-6 h-max sticky top-6">
         <h3 class="text-xl font-bold">Your Order</h3>
         <div id="cartList" class="mt-3 space-y-3 text-sm"></div>
@@ -109,10 +98,8 @@
     // ===== State =====
     const cart = new Map();            // productId -> { product, qty }
     let allProducts = [];              // full list
-    let selectedCategory = "__ALL__";  // filter
 
     const fmtUSD = cents => `$${(cents/100).toFixed(2)}`;
-    const setProductCount = n => document.getElementById('productCount').textContent = `${n} item${n===1?'':'s'}`;
 
     function updateCartUI(){
       const list = document.getElementById('cartList');
@@ -144,9 +131,17 @@
       totalEl.textContent = fmtUSD(total);
     }
 
-    function renderProducts(products){
-      const grid = document.getElementById('productGrid');
-      grid.innerHTML = '';
+    function renderGroupSection(category, products){
+      const section = document.createElement('section');
+      section.className = 'glass rounded-3xl p-6';
+      section.innerHTML = `
+        <div class="section-head">
+          <div class="section-title">${category || 'Uncategorized'}</div>
+          <span class="badge">${products.length} item${products.length===1?'':'s'}</span>
+        </div>
+        <div class="mt-4 grid sm:grid-cols-2 xl:grid-cols-3 gap-5" data-grid></div>
+      `;
+      const grid = section.querySelector('[data-grid]');
 
       for (const p of products){
         const card = document.createElement('div');
@@ -174,16 +169,41 @@
         };
         grid.appendChild(card);
       }
+
+      return section;
     }
 
-    function renderFiltered(){
-      const products =
-        selectedCategory === "__ALL__"
-          ? allProducts
-          : allProducts.filter(p => (p.category || 'Uncategorized') === selectedCategory);
+    function renderGrouped(products){
+      const root = document.getElementById('groupedRoot');
+      root.innerHTML = '';
 
-      setProductCount(products.length);
-      renderProducts(products);
+      // Group by category
+      const groups = {};
+      for (const p of products){
+        const cat = p.category || 'Uncategorized';
+        (groups[cat] ||= []).push(p);
+      }
+
+      // Keep a preferred order if you like:
+      const desiredOrder = ['Canton Style','Thousand Layers','Northern Style','Special Style'];
+      const cats = Object.keys(groups).sort((a,b)=>{
+        const ia = desiredOrder.indexOf(a);
+        const ib = desiredOrder.indexOf(b);
+        if (ia !== -1 && ib !== -1) return ia-ib;
+        if (ia !== -1) return -1;
+        if (ib !== -1) return 1;
+        return a.localeCompare(b);
+      });
+
+      for (const cat of cats){
+        // sort within category
+        groups[cat].sort((a,b)=>{
+          const so = (a.sort_order ?? 1e9) - (b.sort_order ?? 1e9);
+          if (so !== 0) return so;
+          return a.name.localeCompare(b.name);
+        });
+        root.appendChild(renderGroupSection(cat, groups[cat]));
+      }
     }
 
     async function loadProducts(){
@@ -197,31 +217,14 @@
 
       if (error){
         console.error(error);
-        document.getElementById('productGrid').innerHTML =
-          `<div class="text-sm">Error loading products: ${error.message}</div>`;
+        document.getElementById('groupedRoot').innerHTML =
+          `<div class="glass rounded-3xl p-6 text-sm">Error loading products: ${error.message}</div>`;
         return;
       }
 
       allProducts = data || [];
-
-      // Build category options
-      const catSet = new Set(allProducts.map(p => (p.category || 'Uncategorized')));
-      const catSelect = document.getElementById('categoryFilter');
-      // Clear existing (keep All)
-      catSelect.querySelectorAll('option:not([value="__ALL__"])').forEach(o => o.remove());
-      [...catSet].sort().forEach(cat => {
-        const opt = document.createElement('option');
-        opt.value = cat; opt.textContent = cat;
-        catSelect.appendChild(opt);
-      });
-
-      renderFiltered();
+      renderGrouped(allProducts);
     }
-
-    document.getElementById('categoryFilter').addEventListener('change', (e)=>{
-      selectedCategory = e.target.value;
-      renderFiltered();
-    });
 
     async function savePreorder(){
       const name = document.getElementById('custName').value.trim();
