@@ -156,9 +156,7 @@ const vendorLogos = {
   "North Food Group":"https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/northfoodgroup.jpg",
   "Pacific Plus":"https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/pacific.jpg",
   "Delta Office Products":"https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/delta.jpg",
-  "Fortune":"https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/fortune.jpg",
-  "Supermarket":"https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/fortune.jpg",
-  "AutoChlor":"https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/autochlor.jpg"
+  "Supermarket":"https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/fortune.jpg"
 };
 const logoData = {};
 
@@ -169,23 +167,17 @@ const VENDOR_ALIASES = {
   'pacific plus': 'Pacific Plus',
   'formosa foods': 'Formosa Foods',
   'north food group': 'North Food Group',
-  'bakemark': 'Bakemark',
-  'supermarket': 'Supermarket',
-  'fortune': 'Fortune',
-  'autochlor': 'AutoChlor'
+  'supermarket': 'Supermarket'
 };
 const canon = v => VENDOR_ALIASES[(v||'').trim().toLowerCase()] || (v||'').trim();
 
 /* Restrict selects to these vendors globally */
 const ALLOWED_VENDORS = [
-  "Formosa Foods",
-  "Pacific Plus",
-  "North Food Group",
-  "Delta Office Products",
-  "Bakemark",
   "Supermarket",
-  "Fortune",
-  "AutoChlor"
+  "Pacific Plus",
+  "Formosa Foods",
+  "North Food Group",
+  "Delta Office Products"
 ];
 
 /* ===== UTIL ===== */
@@ -230,23 +222,11 @@ async function detectEnrichment(){
 
 /* ===== Filters’ vendor list (restricted) ===== */
 async function loadVendorsForFilters(){
-  let source = [];
-  try {
-    const { data } = await supabase.from("public_vendors").select("vendor_name").order("vendor_name");
-    source = (data || []).map(r => canon(r.vendor_name));
-  } catch {}
-  if (!source.length) {
-    try {
-      const { data } = await supabase.from("inventory_check").select("vendor").not("vendor", "is", "null");
-      source = [...new Set((data || []).map(r => canon(r.vendor)).filter(Boolean))];
-    } catch {}
-  }
-
-  const finalList = ALLOWED_VENDORS.filter(v => source.includes(v));
-  const opts = ['<option value="">— All —</option>'].concat(finalList.map(v => `<option>${v}</option>`)).join("");
+  const opts = ['<option value="">— All —</option>']
+      .concat(ALLOWED_VENDORS.map(v => `<option>${v}</option>`))
+      .join("");
   $("#vendorFilter").innerHTML = opts;
   $("#editVendor").innerHTML  = opts;
-  return finalList;
 }
 
 /* ===== PRODUCT × VENDOR → ITEM CODE (built from `vendors` column) ===== */
@@ -257,7 +237,6 @@ async function buildVendorCodeMap(){
   PRODUCT_VENDOR_CODES = new Map();
   if(!enrich.has) return;
 
-  // Always build from the `vendors` column so multi-vendor rows are split correctly
   const { data, error } = await supabase
     .from("inventory_management")
     .select("product_name,vendors,item_code");
@@ -272,32 +251,29 @@ async function buildVendorCodeMap(){
     if (vendors.length){
       vendors.forEach(v => { map[v] = (r.item_code || "").trim(); });
     }
-    if (!map.__FALLBACK__ && r.item_code) map.__FALLBACK__ = (r.item_code || "").trim();
   });
 
-  // expose for quick console checks
   window.PRODUCT_VENDOR_CODES = PRODUCT_VENDOR_CODES;
 }
 
 function vendorsForProduct(productName, currentVendor){
-  const pn = norm(productName);
-  const map = PRODUCT_VENDOR_CODES.get(pn) || {};
-  const mappedVendors = Object.keys(map).filter(k => k !== "__FALLBACK__");
-  let list = mappedVendors.filter(v => ALLOWED_VENDORS.includes(v));
+  const list = [...ALLOWED_VENDORS];
   const cur = canon(currentVendor);
   if (cur && !list.includes(cur)) list.unshift(cur);
-  if (!list.length) list = [...ALLOWED_VENDORS];
   return [...new Set(list)];
 }
 
 function codeFor(productName, vendor){
   const pn = norm(productName);
-  const v  = canon(vendor);
+  const v = canon(vendor);
   const map = PRODUCT_VENDOR_CODES.get(pn) || {};
-  if (v && map[v] != null) return map[v] || "";
-  const hit = Object.keys(map).find(k => k.toLowerCase() === v.toLowerCase());
-  if (hit) return map[hit] || "";
-  return map.__FALLBACK__ || "";
+
+  const code = map[v];
+  if (code && code !== "") {
+    return code;
+  }
+
+  return "-------";
 }
 
 /* ===== UI helpers ===== */
@@ -308,7 +284,7 @@ function vendorSelectHtml(current, options){
     .concat([...set].map(v => `<option value="${v}" ${v===displayCurrent?'selected':''}>${v}</option>`))
     .join('');
   return `<label class="block text-sm font-semibold mb-1">Vendor</label>
-          <select class="field w-full vendor-select">${opts}</select>`;
+            <select class="field w-full vendor-select">${opts}</select>`;
 }
 
 function recommendedCases(parUnits, onHand, conv){
@@ -329,8 +305,7 @@ function buildCard(row, vendorOptions, readOnly){
       <div class="flex-1">
         <h4 class="text-lg font-extrabold mb-1 shine">${row.product_name}</h4>
         <div class="text-xs text-gray-500 -mt-1">
-          Item Code: <span class="font-semibold item-code">—</span>
-          <span class="text-[10px] text-gray-400 ml-2 code-source"></span>
+          Item Code: <span class="font-semibold item-code">-------</span>
         </div>
         <div class="flex flex-wrap gap-2 mt-2">
           <span class="badge">On Hand: ${Number(row.on_hand||0)}</span>
@@ -351,28 +326,18 @@ function buildCard(row, vendorOptions, readOnly){
 
   const sel = wrap.querySelector(".vendor-select");
   const codeSpan = wrap.querySelector(".item-code");
-  const codeSrc  = wrap.querySelector(".code-source");
 
-  async function fillInitial(){
-    const chosen = sel.value;
-    let code = codeFor(row.product_name, chosen);
-    if (code) { codeSpan.textContent = code; codeSrc.textContent = "(map)"; return; }
-    // if map empty (first-view), try fallback via PRODUCT_VENDOR_CODES.__FALLBACK__
-    code = codeFor(row.product_name, '__FALLBACK__');
-    codeSpan.textContent = code || "—";
-    codeSrc.textContent = code ? "(fallback)" : "(none)";
+  function updateItemCode() {
+      const chosen = sel.value;
+      const code = codeFor(row.product_name, chosen);
+      codeSpan.textContent = code;
   }
 
   if (sel) {
-    sel.addEventListener("change", () => {
-      const chosen = sel.value;
-      const code = codeFor(row.product_name, chosen);
-      codeSpan.textContent = code || "—";
-      codeSrc.textContent  = code ? "(map)" : "(none)";
-    });
+    sel.addEventListener("change", updateItemCode);
   }
 
-  fillInitial();
+  updateItemCode();
   return wrap;
 }
 
@@ -542,7 +507,7 @@ async function generatePDFs(){
       item_code: ex.item_code,
       image_url: ex.image_url,
       qty: (r.user && r.user.toLowerCase()==='julio') ? Number(r.on_hand||0)
-          : (r.tentative!=null)? Number(r.tentative) : 0
+           : (r.tentative!=null)? Number(r.tentative) : 0
     });
   });
 
@@ -572,7 +537,7 @@ async function generatePDFs(){
       styles:{font:'helvetica', fontSize:10, cellPadding:4},
       headStyles:{fillColor:[17,24,39], textColor:[255,255,255], fontStyle:'bold'},
       columnStyles: enrich.item_code ? {0:{cellWidth:90},1:{cellWidth:'auto'},2:{cellWidth:60,halign:'right'}} :
-                                       {0:{cellWidth:'auto'},1:{cellWidth:60,halign:'right'}}
+                                     {0:{cellWidth:'auto'},1:{cellWidth:60,halign:'right'}}
     });
 
     doc.save(`JengChi_Order_${dateISO}_${vendor.replace(/\s+/g,'_')}.pdf`);
