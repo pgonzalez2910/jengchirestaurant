@@ -15,7 +15,7 @@
 
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
   <style>
-    :root{ --primary:#2563eb; --ink:#0f172a; --muted:#6b7280; }
+    :root{ --primary:#2563eb; --ink:#0f172a; --muted:#6b7280; --danger:#ef4444; }
     body{ font-family:'Inter',system-ui,Segoe UI,Roboto,Helvetica,Arial; background:#f3f4f6; }
     .tab-btn{ padding:.75rem 1.25rem; border-bottom:3px solid transparent; font-weight:700; }
     .tab-btn.active{ color:var(--primary); border-bottom-color:var(--primary); }
@@ -23,7 +23,9 @@
     .btn{ font-weight:700; border-radius:.5rem; padding:.5rem .9rem; }
     .btn-primary{ background:var(--primary); color:#fff; }
     .btn-outline{ background:#fff; border:1px solid #cbd5e1; }
+    .btn-danger{ background:var(--danger); color:#fff; }
     .muted{ color:var(--muted); }
+    .badge{ font-size:.7rem; border:1px solid #e5e7eb; padding:.1rem .4rem; border-radius:.375rem; }
   </style>
 </head>
 <body class="p-8">
@@ -123,7 +125,7 @@
         <div>
           <label class="text-sm font-medium">Filter by Status</label>
           <select id="invoiceStatusFilter" class="p-2 border rounded-md min-w-[140px]">
-            <option>All</option><option>Paid</option><option>Unpaid</option>
+            <option>All</option><option>Paid</option><option>Unpaid</option><option>Voided</option>
           </select>
         </div>
         <div>
@@ -173,7 +175,10 @@
 
       <div id="checkEditor" class="hidden">
         <div class="row-card mb-3">
-          <h4 class="font-semibold mb-2">Check Details</h4>
+          <div class="flex items-center justify-between mb-2">
+            <h4 class="font-semibold">Check Details</h4>
+            <span id="voidBadge" class="badge hidden text-red-700 bg-red-50 border-red-200">VOIDED</span>
+          </div>
           <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div>
               <label class="text-sm font-medium">Check Number</label>
@@ -193,6 +198,24 @@
             </div>
             <div class="flex items-end">
               <button id="btnSaveCheckEdits" class="btn btn-primary w-full">Save Check</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- NEW: Void / Unvoid controls -->
+        <div class="row-card mb-3 border-red-200">
+          <div class="flex items-center justify-between">
+            <h4 class="font-semibold text-red-700">Void this Check</h4>
+          </div>
+          <p class="text-sm text-red-700 mt-1">Voiding sets this check as <b>VOID</b> and marks all linked invoices as <b>Voided</b>, so they are excluded from totals and reports.</p>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+            <div class="md:col-span-2">
+              <label class="text-sm font-medium">Reason (optional)</label>
+              <input id="editVoidReason" class="w-full border rounded-md p-2" placeholder="e.g. Misprint, reissued as #12345"/>
+            </div>
+            <div class="flex gap-2 items-end">
+              <button id="btnVoidCheck" class="btn btn-danger w-full">Mark as VOID</button>
+              <button id="btnUnvoidCheck" class="btn btn-outline w-full">Unvoid</button>
             </div>
           </div>
         </div>
@@ -493,7 +516,7 @@
 
       dgvInvoices.innerHTML = `<tr><td colspan="6" class="text-center py-4 text-gray-500">Loading…</td></tr>`;
 
-      let q = supabase.from("public_invoices").select(`*, check:public_checks!public_invoices_check_fk ( id, check_number, check_date, check_amount )`);
+      let q = supabase.from("public_invoices").select(`*, check:public_checks!public_invoices_check_fk ( id, check_number, check_date, check_amount, notes )`);
       if(v) q = q.eq('VendorName',v);
       if(st && st!=='All') q = q.eq('Status',st);
       if(m && y){
@@ -509,7 +532,9 @@
       dgvInvoices.innerHTML='';
       for(const inv of data){
         const chk = inv.check||{};
+        const isVoidedCheck = /^VOID/i.test(chk?.notes||'');
         const tr = document.createElement('tr');
+        tr.className = (inv.Status==='Voided' || isVoidedCheck) ? 'bg-red-50' : '';
         tr.innerHTML = `
           <td class="py-2 px-3">${inv.InvoiceNumber}</td>
           <td class="py-2 px-3">${inv.VendorName}</td>
@@ -519,6 +544,7 @@
             <div class="flex items-center gap-2">
               <span>${chk.check_number||'N/A'}</span>
               ${chk.id?`<button class="text-blue-600 underline text-xs" data-edit="${chk.id}">Edit</button>`:''}
+              ${isVoidedCheck?'<span class="badge text-red-700 bg-red-50 border-red-200">VOID</span>':''}
             </div>
           </td>
           <td class="py-2 px-3">${inv.Status||'Paid'}</td>`;
@@ -531,6 +557,8 @@
 
     /* ========================== EDIT CHECK ========================== */
     let currentEditCheckId = null;
+    function notesIndicateVoid(notes){ return /^VOID/i.test(notes||''); }
+
     async function loadCheckByNumber(num){
       const { data, error } = await supabase.from('public_checks').select('*').eq('check_number',num).maybeSingle();
       if(error || !data) return showModal('Not found','No check with that number.');
@@ -548,28 +576,33 @@
       editCheckDate.value = row.check_date||'';
       editCheckAmount.value = typeof row.check_amount==='number'? row.check_amount : '';
       editCheckNotes.value = row.notes || '';
+      document.getElementById('voidBadge').classList.toggle('hidden', !notesIndicateVoid(row.notes));
       renderLinkedInvoices();
     }
+
     async function renderLinkedInvoices(){
       linkedInvoices.innerHTML = '<div class="muted">Loading…</div>';
       const { data, error } = await supabase.from('public_invoices')
-        .select('VendorName, InvoiceDate, InvoiceNumber, InvoiceTotal')
+        .select('VendorName, InvoiceDate, InvoiceNumber, InvoiceTotal, Status')
         .eq('check_id', currentEditCheckId).order('InvoiceDate',{ascending:true});
       if(error){ linkedInvoices.innerHTML='<div class="text-red-500">Error loading.</div>'; return; }
       if(!data?.length){ linkedInvoices.innerHTML='<div class="muted">No invoices linked.</div>'; return; }
       linkedInvoices.innerHTML='';
       data.forEach(inv=>{
         const row = document.createElement('div'); row.className='row-card';
+        const muted = inv.Status==='Voided';
         row.innerHTML = `
-          <div class="grid grid-cols-4 gap-3 text-sm">
+          <div class="grid grid-cols-5 gap-3 text-sm ${muted?'text-red-700':''}">
             <div><b>${inv.VendorName}</b></div>
             <div>${mmddyyyyFromYMD(inv.InvoiceDate)}</div>
             <div>${inv.InvoiceNumber}</div>
             <div>${fmtMoney(inv.InvoiceTotal)}</div>
+            <div>${inv.Status||'Paid'}</div>
           </div>`;
         linkedInvoices.appendChild(row);
       });
     }
+
     async function saveCheckEdits(){
       if(!currentEditCheckId) return;
       const payload = {
@@ -582,12 +615,15 @@
       const { error } = await supabase.from('public_checks').update(payload).eq('id',currentEditCheckId);
       if(error) return showModal('Error','Failed to save check.');
       showModal('Saved','Check updated.');
+      document.getElementById('voidBadge').classList.toggle('hidden', !notesIndicateVoid(payload.notes));
       renderLinkedInvoices(); loadInvoices();
     }
+
     function addInvoiceRowEdit(){
       const row = makeRow(optionHtmlFromSelect(defaultVendor),{});
       newInvoicesForThisCheck.appendChild(row);
     }
+
     async function saveInvoicesEdit(){
       if(!currentEditCheckId) return showModal('No check','Load a check first.');
       const rows = [...document.querySelectorAll('#newInvoicesForThisCheck .row-card')];
@@ -606,9 +642,57 @@
       showModal('Saved', `${batch.length} invoice(s) added.`); newInvoicesForThisCheck.innerHTML=''; renderLinkedInvoices(); loadInvoices();
     }
 
+    // ==== NEW: Void / Unvoid operations ====
+    async function setCheckVoidState(shouldVoid){
+      if(!currentEditCheckId) return showModal('No check','Load a check first.');
+
+      if(shouldVoid){
+        const reason = (document.getElementById('editVoidReason').value||'').trim();
+        const existingNotes = (editCheckNotes.value||'').trim();
+        const newNotes = existingNotes && !/^VOID/i.test(existingNotes)
+          ? `VOID${reason?` - ${reason}`:''} — ${existingNotes}`
+          : (existingNotes || `VOID${reason?` - ${reason}`:''}`);
+
+        const { error: e1 } = await supabase.from('public_checks')
+          .update({ notes: newNotes }).eq('id', currentEditCheckId);
+        if(e1) return showModal('Error','Could not mark check as VOID.');
+
+        // mark all linked invoices as Voided
+        const { error: e2 } = await supabase
+          .from('public_invoices')
+          .update({ Status:'Voided' })
+          .eq('check_id', currentEditCheckId);
+        if(e2) return showModal('Partial','Check voided, but failed to update invoices.');
+
+        editCheckNotes.value = newNotes;
+        document.getElementById('voidBadge').classList.remove('hidden');
+        showModal('Voided','Check marked as VOID and its invoices marked as Voided. They will be excluded from totals.');
+      } else {
+        // remove leading VOID marker from notes
+        const original = (editCheckNotes.value||'');
+        const cleaned = original.replace(/^\s*VOID\b\s*(?:[-–—]\s*)?/i,'').trim();
+        const { error: e1 } = await supabase.from('public_checks').update({ notes: cleaned || null }).eq('id', currentEditCheckId);
+        if(e1) return showModal('Error','Could not unvoid the check.');
+
+        // restore invoices to Paid (you can adjust to previous state if you store it)
+        const { error: e2 } = await supabase
+          .from('public_invoices')
+          .update({ Status:'Paid' })
+          .eq('check_id', currentEditCheckId)
+          .eq('Status','Voided');
+        if(e2) return showModal('Partial','Check unvoided, but failed to restore invoice statuses.');
+
+        editCheckNotes.value = cleaned;
+        document.getElementById('voidBadge').classList.add('hidden');
+        showModal('Unvoided','Check unvoided and invoices set back to Paid.');
+      }
+
+      await renderLinkedInvoices();
+      await loadInvoices();
+    }
+
     /* ========================== REPORT (LETTER, EXECUTIVE) ========================== */
     function drawBigNumberFit(doc, x, yBase, width, text) {
-      // ~30% smaller than before
       const sizes = [22, 20, 18, 16];
       for (const s of sizes) {
         doc.setFont('helvetica','bold');
@@ -634,30 +718,31 @@
       if(!checks?.length) return showModal('No Data','No checks in this range.');
 
       const { data: invoices } = await supabase.from('public_invoices')
-        .select('VendorName,InvoiceDate,InvoiceNumber,InvoiceTotal,check_id')
+        .select('VendorName,InvoiceDate,InvoiceNumber,InvoiceTotal,Status,check_id')
         .in('check_id', checks.map(c=>c.id));
 
       const checksById = new Map(checks.map(c=>[c.id,c]));
+      const voidedSet = new Set(checks.filter(c=>/^VOID/i.test(c.notes||'')).map(c=>c.id));
+
       const vendorTotals = new Map();
       const invoicedCheckIds = new Set();
       (invoices||[]).forEach(inv=>{
+        if(voidedSet.has(inv.check_id)) return; // exclude invoices on voided checks
+        if((inv.Status||'')==='Voided') return; // exclude explicitly voided invoices
         invoicedCheckIds.add(inv.check_id);
         const v = inv.VendorName || 'Unknown Vendor';
         vendorTotals.set(v,(vendorTotals.get(v)||0)+ (Number(inv.InvoiceTotal)||0));
       });
 
-      const voidChecks = checks.filter(c=>!invoicedCheckIds.has(c.id));
+      const voidChecks = checks.filter(c=>voidedSet.has(c.id));
       const grandTotal = [...vendorTotals.values()].reduce((a,b)=>a+b,0);
-      const sortedVendors = [...vendorTotals.entries()].sort((a,b)=>b[1]-a[1]);
-      const topVendor = sortedVendors[0] || ['N/A',0];
 
-      // PDF
+      // PDF (unchanged layout, now respects voids)
       const { jsPDF } = window.jspdf;
-      const doc = new jsPDF({unit:'pt', format:'letter'}); // 612 x 792 pt
+      const doc = new jsPDF({unit:'pt', format:'letter'});
       const pageW = doc.internal.pageSize.getWidth();
       const pageH = doc.internal.pageSize.getHeight();
-      const M = 42; // margin
-      let y = M;
+      const M = 42; let y = M;
 
       /* ---------- COVER ---------- */
       if(logoData.company?.data){
@@ -674,38 +759,28 @@
 
       /* ---------- SUMMARY CARDS ---------- */
       const cardW = (pageW - M*2 - 24) / 2;
-      const cardH = 110;
-      const cardY = y;
-
+      const cardH = 110; const cardY = y;
       function card(x, title, big, sub){
         doc.setDrawColor(74,110,245); doc.setLineWidth(1.2);
         doc.roundedRect(x, cardY, cardW, cardH, 8,8);
-
         doc.setTextColor(62,91,197); doc.setFont('helvetica','bold'); doc.setFontSize(12);
         doc.text(title, x+14, cardY+22);
-
         doc.setTextColor(17,24,39);
         drawBigNumberFit(doc, x, cardY + 56, cardW, String(big));
-
-        if(sub){
-          doc.setFont('helvetica','normal'); doc.setTextColor(100,116,139); doc.setFontSize(11);
-          doc.text(String(sub), x+14, cardY+80);
-        }
+        if(sub){ doc.setFont('helvetica','normal'); doc.setTextColor(100,116,139); doc.setFontSize(11); doc.text(String(sub), x+14, cardY+80); }
       }
-
       card(M, 'Grand Total Paid', fmtMoney(grandTotal), '');
       card(M + cardW + 24, 'Total Vendors', String(vendorTotals.size), `Total Checks: ${checks.length} (${voidChecks.length} void)`);
-
       y = cardY + cardH + 28;
 
-      /* ---------- TOP VENDORS (selected, ascending, black labels) ---------- */
+      /* ---------- TOP VENDORS (selected) ---------- */
       doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(15,23,42);
       doc.text('Top Vendors (selected)', M, y);
       y += 24;
 
       const WANTED = ['Formosa Foods','North Food Group','Pacific Plus','Delta Office Products','Supermarket'];
       let chartRows = WANTED.map(v => [v, vendorTotals.get(v)||0]).filter(([,t])=>t>0);
-      chartRows.sort((a,b)=>a[1]-b[1]); // low → high
+      chartRows.sort((a,b)=>a[1]-b[1]);
 
       if (!chartRows.length) {
         doc.setFont('helvetica','normal'); doc.setTextColor(100,116,139); doc.setFontSize(12);
@@ -715,29 +790,16 @@
         const maxVal = Math.max(1, ...chartRows.map(([,t])=>t));
         const barMaxW = pageW - M*2 - 160;
         const rowH = 44;
-
         for (const [name, total] of chartRows) {
           if (y + rowH + 10 > pageH - M) { doc.addPage(); y = M; }
-
           const L = vendorLogos[name] && logoData[name]?.data ? logoData[name] : null;
           if (L) { doc.addImage(L.data, L.fmt, M, y - 10, 46, 30); }
-
           const bw = Math.max(6, (total / maxVal) * barMaxW);
-          const barY = y - 12;
-          const barH = 24;
-
-          doc.setFillColor(230, 238, 255);
-          doc.roundedRect(M + 60, barY, barMaxW, barH, 6, 6, 'F');
-          doc.setFillColor(37, 99, 235);
-          doc.roundedRect(M + 60, barY, bw, barH, 6, 6, 'F');
-
-          doc.setTextColor(15,23,42);
-          doc.setFont('helvetica','bold'); doc.setFontSize(11);
-          doc.text(name, M + 66, barY + barH - 7);
-
-          doc.setFont('helvetica','bold'); doc.setFontSize(12);
-          doc.text(fmtMoney(total), M + 60 + barMaxW + 10, barY + barH - 6);
-
+          const barY = y - 12; const barH = 24;
+          doc.setFillColor(230, 238, 255); doc.roundedRect(M + 60, barY, barMaxW, barH, 6, 6, 'F');
+          doc.setFillColor(37, 99, 235);  doc.roundedRect(M + 60, barY, bw, barH, 6, 6, 'F');
+          doc.setTextColor(15,23,42); doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.text(name, M + 66, barY + barH - 7);
+          doc.setFont('helvetica','bold'); doc.setFontSize(12); doc.text(fmtMoney(total), M + 60 + barMaxW + 10, barY + barH - 6);
           y += rowH - 6;
         }
       }
@@ -746,7 +808,6 @@
       doc.setDrawColor(230, 232, 240); doc.line(M, y, pageW-M, y); y+=18;
 
       /* ---------- VOID / EMPTY CHECKS ---------- */
-      
       if(voidChecks.length){
         if(y+60>pageH-M){ doc.addPage(); y=M; }
         doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(15,23,42);
@@ -777,8 +838,7 @@
       }
 
       /* ---------- VENDOR SUMMARY TABLE ---------- */
-      doc.addPage();
-      y = M;
+      doc.addPage(); y = M;
       doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(15,23,42);
       doc.text("Vendor Summary", M, y); y += 10;
 
@@ -801,8 +861,7 @@
       y = doc.autoTable.previous.finalY + 24;
 
       /* ---------- VENDOR DETAIL TABLES ---------- */
-      doc.addPage();
-      y = M;
+      doc.addPage(); y = M;
       doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(15,23,42);
       doc.text('Vendor Details', M, y); y+=10;
 
@@ -811,12 +870,10 @@
       const vendorsAlpha = [...vendorTotals.keys()].sort((a,b)=>a.localeCompare(b));
       for(const v of vendorsAlpha){
         const byCheck = new Map();
-        (invoices||[]).filter(inv => inv.VendorName === v).forEach(inv => {
+        (invoices||[]).filter(inv => inv.VendorName === v && !voidedSet.has(inv.check_id) && (inv.Status||'')!=='Voided').forEach(inv => {
           if (!byCheck.has(inv.check_id)) { byCheck.set(inv.check_id, {invoices: []}); }
           byCheck.get(inv.check_id).invoices.push(inv);
         });
-
-        const vendorTotal = vendorTotals.get(v)||0;
 
         const rows = [];
         const items = [...byCheck.keys()]
@@ -946,6 +1003,10 @@
       document.getElementById('btnSaveCheckEdits').onclick = saveCheckEdits;
       btnAddInvoiceRowEdit.onclick = addInvoiceRowEdit;
       btnSaveInvoicesEdit.onclick = saveInvoicesEdit;
+
+      // NEW: void / unvoid buttons
+      document.getElementById('btnVoidCheck').onclick   = ()=> setCheckVoidState(true);
+      document.getElementById('btnUnvoidCheck').onclick = ()=> setCheckVoidState(false);
 
       // report controls
       populateQuickMonth();
