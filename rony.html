@@ -99,6 +99,17 @@ function closeModal(){q('#modal').classList.remove('show');}
 function readQty(input){const raw=(input?.value??'').trim();if(raw==='')return{selected:false,qty:0};const n=Number(raw);return{selected:true,qty:Number.isFinite(n)?n:0};}
 const FIXED_IMAGES = { 'Soy Bean Oil': 'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/soybean.jpg' };
 function numericPositionKey(val){const m=String(val??'').match(/\d+/);if(m){return{k:Number(m[0]),has:true}}return{k:Number.POSITIVE_INFINITY,has:false}}
+function formatCT(d) {
+  const dt = (d instanceof Date) ? d : new Date(d);
+  return new Intl.DateTimeFormat('en-US', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'America/Chicago'
+  }).format(dt);
+}
+
+
+  
 
 // ===== Inventory UI =====
 async function loadInventory(){
@@ -193,43 +204,84 @@ async function saveInventoryCheckManually(rows){
 
 // ===== Submit flow =====
 async function submitInventory(){
-  const dateInput = q('#order-date').value || todayYmd();
-  const orderDateISO = dateInputToLocalMidnightISO(dateInput); // for submitted_orders
-  const orderDateYMD = dateInput; // for inventory_check (DATE)
-
+  const dateVal = document.getElementById('order-date').value || todayYmd();
+  const orderDateISO = new Date(dateVal + 'T00:00:00').toISOString(); // stable midnight
   const cards = [...document.querySelectorAll('.card')];
-  const items = cards.map(c=>{ const id=c.dataset.id; const name=c.querySelector('.name').textContent.trim(); const {selected,qty}=readQty(c.querySelector('input')); return { id, name, selected, quantity:qty }; }).filter(x=>x.selected && x.name);
 
-  if(!items.length){ openModal('Nothing to submit','Type quantities (0 allowed).'); return; }
+  // collect selected (blank means "not selected", 0 is a valid quantity)
+  const items = cards.map(c=>{
+    const name = c.querySelector('.name').textContent.trim();
+    const v = c.querySelector('input').value.trim();
+    const selected = v !== '';
+    return { id:c.dataset.id, name, selected, quantity: selected ? Number(v||0) : 0 };
+  }).filter(x => x.selected && x.name);
 
-  // 1) submitted_orders
-  const payload = { order_date: orderDateISO, vendor_list:'General List', summary_details: items };
-  const ins = await insertSubmittedOrder(payload);
-  if(ins.error){ console.error('submitted_orders insert error', ins.error); openModal('Submit failed to submitted_orders', ins.error); return; }
-
-  // 2) inventory_check lines
-  const batch = items.map(it=>({ order_date: orderDateYMD, product_name: it.name, on_hand: it.quantity, tentative: it.quantity, user:'Rony' }));
-  const result = await saveInventoryCheckManually(batch);
-  if(result.failures.length){
-    const lines = result.failures.map(f=>`• ${f.name}: ${f.reason}`).join('<br>');
-    openModal('Saved with errors', `<div>Saved ${result.saved}/${batch.length} items to <b>inventory_check</b>.<br><br>${lines}</div>`);
+  if (!items.length) {
+    openModal('Nothing to submit','Type quantities (0 allowed).');
     return;
   }
 
-  // 3) try email (non-blocking)
-  try{ await db.functions.invoke('send-email',{ body:{ to:ORDER_CONFIRMATION_TO, vendor:'General List', orderDate:orderDateISO, items } }); }catch(e){ console.warn('email error', e?.message||e); }
+  // --- 1) submitted_orders insert with JSON/TEXT fallback ---
+  let soError = null;
+  let res = await db.from('submitted_orders').insert([{
+    order_date: orderDateISO,
+    vendor_list: 'General List',
+    summary_details: items
+  }]);
 
-  // 4) reset only for submitted items
+  if (res.error) {
+    // likely TEXT column for summary_details -> stringify
+    const res2 = await db.from('submitted_orders').insert([{
+      order_date: orderDateISO,
+      vendor_list: 'General List',
+      summary_details: JSON.stringify(items)
+    }]);
+    if (res2.error) soError = res2.error;
+  }
+  if (soError) { openModal('Submit failed (submitted_orders)', soError.message); return; }
+
+  // --- 2) inventory_check manual upsert (works w/out unique index) ---
+  const batch = items.map(it=>({
+    order_date: dateVal,                 // DATE column
+    product_name: it.name,
+    on_hand: it.quantity,
+    tentative: it.quantity,
+    user: 'Rony'
+  }));
+
+  const failures = []; let saved = 0;
+  for (const r of batch) {
+    const upd = await db.from('inventory_check')
+      .update({ on_hand:r.on_hand, tentative:r.tentative })
+      .match({ order_date:r.order_date, product_name:r.product_name, user:r.user })
+      .select();
+
+    if (upd.error) { failures.push(`${r.product_name}: ${upd.error.message}`); continue; }
+    if (Array.isArray(upd.data) && upd.data.length > 0) { saved++; continue; }
+
+    const ins = await db.from('inventory_check').insert([r]).select();
+    if (ins.error) { failures.push(`${r.product_name}: ${ins.error.message}`); continue; }
+    saved++;
+  }
+  if (failures.length) {
+    openModal('Saved with errors', failures.join('<br>'));
+    return; // don’t claim success unless all lines are written
+  }
+
+  // --- 3) reset only submitted items in inventory_management ---
   const ids = items.map(i=>i.id);
   const { error: resetErr } = await db.from('inventory_management').update({ on_hand:0 }).in('id', ids);
-  if(resetErr){ console.warn('reset error', resetErr); }
+  if (resetErr) console.warn('reset error', resetErr);
 
+  // --- 4) refresh footer, scroll, celebrate ---
   await displayLastOrder();
   document.getElementById('order-history-footer')?.scrollIntoView({ behavior: 'smooth' });
-  openModal('¡Éxito!', 'Gracias Rony por ayudarme a poner la orden', 'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/daffy.jpg');
+  openModal('¡Éxito!', 'Gracias Rony por ayudarme a poner la orden',
+    'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/daffy.jpg');
 
   await loadInventory();
 }
+
 
 // ===== Footer: last order (CST/CDT) =====
 async function displayLastOrder() {
@@ -237,25 +289,27 @@ async function displayLastOrder() {
   const footer = document.getElementById("order-history-footer");
   cont.innerHTML = "<p>Loading...</p>";
 
-  const { data, error } = await supabaseClient
+  const { data, error } = await db
     .from("submitted_orders")
     .select("order_date, summary_details, vendor_list")
     .order("order_date", { ascending: false })
     .limit(1);
 
+  footer.style.display = "block"; // ensure visible
+
   if (error) {
     console.error("submitted_orders read error", error);
     cont.innerHTML = `<p style="color:#991b1b">Error: ${error.message}</p>`;
-    footer.style.display = "block";
     return;
   }
   if (!data || !data.length) {
     cont.innerHTML = "<p>No orders.</p>";
-    footer.style.display = "block";
     return;
   }
 
   const last = data[0];
+
+  // Handle JSON/JSONB/TEXT
   let details = [];
   if (Array.isArray(last.summary_details)) details = last.summary_details;
   else if (typeof last.summary_details === "string") {
@@ -263,19 +317,20 @@ async function displayLastOrder() {
   }
 
   const items = (details || [])
-    .map((i) => `<li class="row"><span>${i.name}</span><span>${i.quantity}</span></li>`)
+    .map(i => `<li class="order-summary-item"><span>${i.name}</span><span>${i.quantity}</span></li>`)
     .join("");
 
   cont.innerHTML = `
-    <div style="font-weight:700;margin-bottom:6px">Vendor: ${last.vendor_list || 'General List'}</div>
-    <div style="margin-bottom:6px">Date: ${formatCT(last.order_date)}</div>
-    <ul class="list">${items || '<li class="row"><span>(empty)</span><span>-</span></li>'}</ul>
+    <p><strong>Vendor:</strong> ${last.vendor_list || "General List"}</p>
+    <p><strong>Date:</strong> ${formatCT(last.order_date)}</p>
+    <ul class="order-summary-list">${items || '<li class="order-summary-item"><span>(empty)</span><span>-</span></li>'}</ul>
   `;
-  footer.style.display = "block";
 }
+
 
 // ===== Init =====
 addEventListener('DOMContentLoaded', async ()=>{ q('#order-date').value = todayYmd(); await loadInventory(); await displayLastOrder(); });
 </script>
 </body>
 </html>
+
