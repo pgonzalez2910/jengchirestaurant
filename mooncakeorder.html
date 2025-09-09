@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en" class="h-full bg-slate-50">
 <head>
@@ -246,26 +247,8 @@
                     </div>
                 </div>
 
-                <!-- Simulated Credit Card Section -->
-                <div id="paymentGroup" class="input-group grid grid-cols-1 gap-4 disabled mt-6">
-                    <h4 class="text-2xl font-serif-head font-bold text-jc-primary">Payment Details</h4>
-                    <div class="relative">
-                        <input id="ccNumber" type="text" class="form-input pr-12" placeholder="Card Number" required pattern="[\d\s-]{13,19}" disabled />
-                        <div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                            <img id="card-visa" class="card-icon" src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/visa.svg" alt="Visa" />
-                            <img id="card-mastercard" class="card-icon" src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/mastercard.svg" alt="Mastercard" />
-                            <img id="card-amex" class="card-icon" src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/amex.svg" alt="American Express" />
-                            <img id="card-discover" class="card-icon" src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/discover.svg" alt="Discover" />
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-2 gap-4">
-                        <input id="ccExpiry" type="text" class="form-input" placeholder="MM/YY" required pattern="(0[1-9]|1[0-2])\/?([0-9]{2})" disabled />
-                        <input id="ccCVC" type="text" class="form-input" placeholder="CVC" required pattern="\d{3,4}" disabled />
-                    </div>
-                </div>
-
                 <p class="text-xs text-center text-gray-500 mt-2">By clicking "Place Order," you agree to our terms and conditions. No actual payment will be processed.</p>
-                <button type="submit" id="btnPlaceOrder" class="btn mt-4 text-lg">Place Order</button>
+                <button type="submit" id="btnPlaceOrder" class="btn mt-4 text-lg">Pay Now</button>
             </form>
             <div id="status" class="mt-4 text-center text-sm opacity-90"></div>
         </aside>
@@ -308,10 +291,10 @@
         const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
         const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
         
+        // Use a new URL for the dedicated Stripe function
+        const CHECKOUT_API_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co/functions/v1/checkout";
         const SHIPPING_COST_CENTS = 6000;
-        const EMAIL_API_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co/functions/v1/send-email";
-        const LOGO_URL = "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/blob/main/jengchilogo.jpg";
-
+        
         const cart = new Map();
         let allProducts = [];
         const fmtUSD = cents => `$${(cents / 100).toFixed(2)}`;
@@ -534,7 +517,6 @@
             
             status.textContent = 'Processing order...';
 
-            // Gather all the data for the invoice
             const name = document.getElementById('custName').value.trim();
             const email = document.getElementById('custEmail').value.trim();
             const phone = document.getElementById('custPhone').value.trim();
@@ -543,83 +525,41 @@
             const state = document.getElementById('custState').value.trim();
             const zip = document.getElementById('custZip').value.trim();
             
-            // Collect simulated payment details
-            const ccNumber = document.getElementById('ccNumber').value.trim();
-            const ccExpiry = document.getElementById('ccExpiry').value.trim();
-            const ccCVC = document.getElementById('ccCVC').value.trim();
-
             const lineItems = Array.from(cart.values()).map(item => ({
-                product_name: item.product.name,
-                category: item.product.category,
-                quantity: item.qty,
-                price: item.product.price_cents,
-                total: item.product.price_cents * item.qty
+                price_data: {
+                    currency: "usd",
+                    product_data: { name: item.product.name },
+                    unit_amount: item.product.price_cents
+                },
+                quantity: item.qty
             }));
 
-            const subtotal = lineItems.reduce((sum, item) => sum + item.total, 0);
-            const shipping = Math.ceil(lineItems.reduce((sum, item) => sum + item.quantity, 0) / 8) * SHIPPING_COST_CENTS;
-            const total = subtotal + shipping;
-
-            // Prepare invoice data for the email function
-            const invoiceData = {
-                logo: LOGO_URL,
-                customer: { name, email, phone, address, city, state, zip },
-                order: { items: lineItems, subtotal, shipping, total },
-                // Add simulated payment data to the invoice
-                payment: {
-                    ccNumber: ccNumber.replace(/\s/g, '').slice(-4), // Only last 4 digits
-                    ccExpiry,
-                    ccCVC
-                }
-            };
-
-            // Simulate the API call to send the email with the invoice PDF
             try {
-                const response = await fetch(EMAIL_API_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(invoiceData)
+                const res = await fetch(CHECKOUT_API_URL, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
+                    },
+                    body: JSON.stringify({
+                        lineItems,
+                        customerEmail: email,
+                        customerName: name,
+                        customerPhone: phone
+                    })
                 });
 
-                if (!response.ok) {
-                    throw new Error(`API call failed with status: ${response.status}`);
+                const data = await res.json();
+                if (res.ok && data.url) {
+                    window.location.href = data.url; // Redirect to Stripe Checkout
+                } else {
+                    console.error("Checkout error:", data);
+                    showMessage("Error: " + (data.error || "Failed to create checkout session."));
                 }
-
-                // In a real app, you would process the response here
-                // For this simulation, we assume success
-                console.log('Invoice email API call successful. Response:', await response.json());
-                status.innerHTML = `✅ Order placed successfully! A confirmation email has been sent to **${email}**.`;
-            } catch (error) {
-                console.error('Failed to send email:', error);
-                status.innerHTML = `❌ There was an error placing your order. Please try again.`;
+            } catch (err) {
+                console.error("Checkout error:", err);
+                showMessage("An unexpected error occurred during checkout.");
             }
-
-            const { data: preorder, error: e1 } = await supabaseClient
-                .from('mooncake_preorders')
-                .insert([{ customer_name: name, email, phone, notes: `Simulated checkout.` }])
-                .select()
-                .single();
-            if(e1){
-                status.textContent = 'Error: ' + e1.message;
-                return;
-            }
-            const orderItems = Array.from(cart.values()).map(i => ({
-                preorder_id: preorder.id,
-                product_id: i.product.id,
-                quantity: i.qty
-            }));
-            const { error: e2 } = await supabaseClient.from('mooncake_preorder_items').insert(orderItems);
-            if(e2){
-                status.textContent = 'Error: ' + e2.message;
-                return;
-            }
-            
-            cart.clear();
-            updateCartUI();
-            
-            // Hide checkout form and show success message
-            document.getElementById('checkoutForm').classList.add('hidden');
-            document.getElementById('btnProceedToCheckout').classList.remove('hidden');
         });
 
         document.getElementById('y').textContent = new Date().getFullYear();
@@ -631,64 +571,21 @@
         const phoneInput = document.getElementById('custPhone');
         const shippingGroup = document.getElementById('shippingGroup');
         const shippingInputs = shippingGroup.querySelectorAll('.form-input');
-        const paymentGroup = document.getElementById('paymentGroup');
-        const paymentInputs = paymentGroup.querySelectorAll('.form-input');
-
+        
         function updateFormState() {
-            // Check full name
             const isNameValid = custNameInput.value.trim().length > 0;
             emailInput.disabled = !isNameValid;
             emailInput.parentElement.classList.toggle('disabled', !isNameValid);
-
-            // Check email
             const isEmailValid = emailInput.checkValidity();
             phoneInput.disabled = !isNameValid || !isEmailValid;
             phoneInput.parentElement.classList.toggle('disabled', !isNameValid || !isEmailValid);
-            
-            // Check phone
             const isPhoneValid = phoneInput.checkValidity();
             const isShippingEnabled = isNameValid && isEmailValid && isPhoneValid;
             shippingGroup.classList.toggle('disabled', !isShippingEnabled);
             shippingInputs.forEach(input => input.disabled = !isShippingEnabled);
-
-            // Check shipping and enable payment fields
-            const allShippingInputsFilled = Array.from(shippingInputs).every(input => input.value.trim().length > 0);
-            const isPaymentEnabled = isShippingEnabled && allShippingInputsFilled;
-            paymentGroup.classList.toggle('disabled', !isPaymentEnabled);
-            paymentInputs.forEach(input => input.disabled = !isPaymentEnabled);
         }
 
         document.getElementById('checkoutForm').addEventListener('input', updateFormState);
-
-        // Credit Card Type Identification
-        const ccNumberInput = document.getElementById('ccNumber');
-        const cardIcons = {
-            visa: document.getElementById('card-visa'),
-            mastercard: document.getElementById('card-mastercard'),
-            amex: document.getElementById('card-amex'),
-            discover: document.getElementById('card-discover')
-        };
-        const cardPatterns = {
-            visa: /^4/,
-            mastercard: /^5[1-5]/,
-            amex: /^3[47]/,
-            discover: /^6(?:011|5)/
-        };
-
-        ccNumberInput.addEventListener('input', () => {
-            const number = ccNumberInput.value.replace(/\s/g, '');
-            for (const key in cardIcons) {
-                cardIcons[key].classList.remove('active');
-            }
-            if (number.length > 0) {
-                for (const key in cardPatterns) {
-                    if (cardPatterns[key].test(number)) {
-                        cardIcons[key].classList.add('active');
-                        break;
-                    }
-                }
-            }
-        });
 
         // Google Places Autocomplete
         function initAutocomplete() {
@@ -698,14 +595,11 @@
                 fields: ['address_components', 'geometry'],
                 types: ['address']
             });
-
             autocomplete.addListener('place_changed', () => {
                 const place = autocomplete.getPlace();
                 if (!place.address_components) return;
-
                 const components = place.address_components;
                 let city = '', state = '', zip = '';
-
                 for (const component of components) {
                     const type = component.types[0];
                     if (type === 'locality') {
