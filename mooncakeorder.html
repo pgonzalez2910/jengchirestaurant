@@ -216,6 +216,7 @@
                 </div>
             </div>
             <div class="mt-8 grid gap-4">
+                <p id="orderWarning" class="text-sm text-center text-red-500 font-semibold hidden"></p>
                 <button id="btnProceedToCheckout" class="btn text-lg">Proceed to Checkout</button>
             </div>
             
@@ -293,7 +294,8 @@
         
         // Use a new URL for the dedicated Stripe function
         const CHECKOUT_API_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co/functions/v1/checkout";
-        const SHIPPING_COST_CENTS = 0; // TEMPORARILY SET TO 0 FOR TESTING
+        const TIER_1_SHIPPING_CENTS = 6000; // Shipping fee for 4 or 8 mooncakes
+        const TIER_2_SHIPPING_CENTS = 12000; // Shipping fee for 12 or 16 mooncakes
         
         const cart = new Map();
         let allProducts = [];
@@ -301,7 +303,11 @@
 
         function addToCart(p, qty) {
             const parsedQty = parseInt(qty, 10);
-            if (isNaN(parsedQty) || parsedQty <= 0) {
+            if (isNaN(parsedQty) || parsedQty < 0) {
+                // If a non-numeric or negative value is entered, treat as zero
+                parsedQty = 0;
+            }
+            if (parsedQty === 0) {
               cart.delete(p.id);
             } else {
               const current = cart.get(p.id) || { product: p, qty: 0 };
@@ -318,6 +324,7 @@
             const shippingCostEl = document.getElementById('shippingCost');
             const upsellSection = document.getElementById('upsellSection');
             const checkoutBtn = document.getElementById('btnProceedToCheckout');
+            const orderWarning = document.getElementById('orderWarning');
 
             list.innerHTML = '';
             let subtotal = 0;
@@ -350,8 +357,15 @@
 
             // Calculate tiered shipping fee based on total mooncakes
             let shipping = 0;
-            if (totalMooncakes > 0 && subtotal >= 50) { // Apply shipping only if there are mooncakes in the cart AND subtotal is at least 50 cents
-                shipping = Math.ceil(totalMooncakes / 8) * SHIPPING_COST_CENTS;
+            if (totalMooncakes > 0) {
+                if (totalMooncakes === 4 || totalMooncakes === 8) {
+                    shipping = TIER_1_SHIPPING_CENTS;
+                } else if (totalMooncakes === 12 || totalMooncakes === 16) {
+                    shipping = TIER_2_SHIPPING_CENTS;
+                } else {
+                    // Default to zero if the total quantity doesn't match a valid tier
+                    shipping = 0;
+                }
             }
             
             const total = subtotal + shipping;
@@ -360,11 +374,20 @@
             shippingCostEl.textContent = fmtUSD(shipping);
             totalEl.textContent = fmtUSD(total);
             
-            checkoutBtn.disabled = cart.size === 0;
-            if (cart.size > 0) {
-              checkoutBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            // Check if the total is a multiple of 4 and not zero
+            const isValidOrder = totalMooncakes > 0 && totalMooncakes % 4 === 0 && (totalMooncakes <= 16);
+            checkoutBtn.disabled = !isValidOrder;
+            if (isValidOrder) {
+                checkoutBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                orderWarning.classList.add('hidden');
             } else {
-              checkoutBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                checkoutBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                if (totalMooncakes > 0) {
+                    orderWarning.textContent = 'Order total must be 4, 8, 12, or 16.';
+                    orderWarning.classList.remove('hidden');
+                } else {
+                    orderWarning.classList.add('hidden');
+                }
             }
             
             updateUpsellItems();
@@ -418,6 +441,7 @@
             wrap.innerHTML = `
                 <a id="${category}">${headerHTML}</a>
                 <div class="p-6 md:p-8">
+                    <p class="text-sm font-semibold mb-4 text-center">Order total must be a multiple of 4.</p>
                     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" data-rows></div>
                 </div>
             `;
@@ -440,16 +464,21 @@
                 const plusBtn = productCard.querySelector('button[aria-label="plus"]');
 
                 minusBtn.onclick = () => { 
-                    const newValue = Math.max(0, parseInt(qtyInput.value || '0', 10) - 1); 
+                    const currentQty = parseInt(qtyInput.value || '0', 10);
+                    const newValue = Math.max(0, currentQty - 1); 
                     qtyInput.value = newValue;
                     addToCart(p, newValue);
                 };
                 plusBtn.onclick = () => { 
-                    const newValue = (parseInt(qtyInput.value || '0', 10) + 1); 
+                    const currentQty = parseInt(qtyInput.value || '0', 10);
+                    const newValue = currentQty + 1; 
                     qtyInput.value = newValue;
                     addToCart(p, newValue);
                 };
-                qtyInput.addEventListener('change', () => addToCart(p, qtyInput.value));
+                qtyInput.addEventListener('change', () => {
+                    let parsedValue = parseInt(qtyInput.value, 10);
+                    addToCart(p, parsedValue);
+                });
                 rows.appendChild(productCard);
             }
             return wrap;
@@ -601,4 +630,3 @@
     </script>
 </body>
 </html>
-
