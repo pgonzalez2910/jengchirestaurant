@@ -1246,6 +1246,182 @@ function addFooter() {
   }
 }
 
+function generatePdf(type, formData) {
+  const doc = new jsPDF('p', 'pt', 'letter');
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  let y = 60;
+
+  // --- Logo + Title ---
+  const logoUrl = "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg";
+  doc.addImage(logoUrl, "JPEG", pageWidth / 2 - 40, y, 80, 60);
+  y += 80;
+  doc.setFontSize(16).setFont("helvetica", "bold");
+  doc.text(type, pageWidth / 2, y, { align: "center" });
+  y += 40;
+
+  // --- Employee / Manager / Witness Info ---
+  doc.setFontSize(11).setFont("helvetica", "normal");
+  const leftColX = 40;
+  const rightColX = pageWidth / 2 + 20;
+
+  doc.text(`Full Name: ${selectedEmployee.full_name}`, leftColX, y);
+  doc.text(`Position: ${selectedEmployee.primary_role}`, leftColX, y + 16);
+  doc.text(`Department: ${selectedEmployee.department || ''}`, leftColX, y + 32);
+  doc.text(`Hire Date: ${formatDate(selectedEmployee.hire_date)}`, leftColX, y + 48);
+  doc.text(`Email: ${selectedEmployee.email || ''}`, leftColX, y + 64);
+  doc.text(`Phone: ${selectedEmployee.phone || ''}`, leftColX, y + 80);
+
+  doc.text(`Manager: ${formData.manager_name} (${getRole(formData.manager_name)})`, rightColX, y);
+  doc.text(`Witness: ${formData.witness_name} (${getRole(formData.witness_name)})`, rightColX, y + 16);
+  y += 110;
+
+  // --- Section Writer Helper ---
+  function addSection(title, content) {
+    if (!content) return;
+    const requiredSpace = 100;
+    if (y > pageHeight - 180) { // ✅ leave 2.5 inches
+      addFooter();
+      doc.addPage();
+      y = 80;
+    }
+    doc.setFont("helvetica", "bold").setFontSize(12);
+    doc.text(title, leftColX, y);
+    const titleWidth = doc.getTextWidth(title);
+    doc.line(leftColX, y + 2, leftColX + titleWidth, y + 2);
+    y += 18;
+    doc.setFont("helvetica", "normal").setFontSize(11);
+    const lines = doc.splitTextToSize(content, pageWidth - 80);
+    doc.text(lines, leftColX, y, { align: "left", maxWidth: pageWidth - 80 });
+    y += lines.length * 16 + 24;
+  }
+
+  // --- Termination Checklist ---
+  if (type === "Termination" && formData.checklist) {
+    const checklistItems = Object.keys(formData.checklist).map(q => {
+      const item = formData.checklist[q];
+      return `${q}: ${item.answer} \nNotes: ${item.notes || 'N/A'}`;
+    }).join('\n\n');
+    addSection("Termination Checklist:", checklistItems);
+  }
+
+  // --- Warnings Section (only for Verbal/Written) ---
+  if (type === "Verbal Warning" || type === "Written Warning") {
+    doc.setFont("helvetica", "bold").setFontSize(12);
+    doc.text("Warnings Record", leftColX, y);
+    y += 20;
+
+    doc.setFont("helvetica", "normal").setFontSize(11);
+
+    let allWarnings = [];
+
+    const numVerbal = parseInt(formData.numVerbalWarnings || 0);
+    for (let i = 1; i <= numVerbal; i++) {
+      const date = formData[`verbal_warning_date_${i}`];
+      if (date) allWarnings.push({ type: "Verbal", date });
+    }
+
+    const numWritten = parseInt(formData.numWrittenWarnings || 0);
+    for (let i = 1; i <= numWritten; i++) {
+      const date = formData[`written_warning_date_${i}`];
+      if (date) allWarnings.push({ type: "Written", date });
+    }
+
+    if (allWarnings.length > 0) {
+      allWarnings.forEach((w) => {
+        if (y > pageHeight - 180) {
+          addFooter();
+          doc.addPage();
+          y = 80;
+        }
+        doc.text(`☐ ${w.type} Warning (Date: ${w.date})`, leftColX + 20, y);
+        y += 20;
+      });
+
+      if (y > pageHeight - 180) {
+        addFooter();
+        doc.addPage();
+        y = 80;
+      }
+      doc.text(`The initial warning related to this matter was issued on ${allWarnings[0].date}.`, leftColX + 20, y);
+      y += 30;
+    } else {
+      doc.text("No warnings recorded.", leftColX + 20, y);
+      y += 20;
+    }
+  }
+
+  // --- Add Remaining Sections ---
+  addSection("Subject:", formData.subject);
+  addSection("Statement of the Problem:", formData.statement_of_problem);
+  addSection("Reference to Prior Warnings:", formData.prior_warnings);
+  addSection("Company Policy:", formData.company_policy);
+  addSection("Corrective Action and Expectations:", formData.corrective_action);
+  addSection("Timeline for Improvement:", formData.timeline);
+  addSection("Consequences of Failure:", formData.consequences);
+  addSection("Employee Comments:", formData.employee_comments);
+
+  // --- Signature Section ---
+  if (y > pageHeight - 200) {
+    addFooter();
+    doc.addPage();
+    y = 80;
+  }
+  y += 40;
+  const colWidth = (pageWidth - 80) / 2;
+  const sigY = y;
+
+  function signatureBlock(label, name, role, x, yPos) {
+    doc.setFont("helvetica", "normal").setFontSize(11);
+    doc.line(x, yPos, x + colWidth - 40, yPos);
+    doc.setFont("helvetica", "bold").setFontSize(10);
+    doc.text(label, x, yPos + 15);
+    doc.setFont("helvetica", "normal").setFontSize(10);
+    doc.text(`${name} (${role})`, x, yPos + 30);
+  }
+
+  signatureBlock("Employee Signature", selectedEmployee.full_name, selectedEmployee.primary_role, leftColX, sigY);
+  signatureBlock("Manager Signature", formData.manager_name, getRole(formData.manager_name), leftColX + colWidth, sigY);
+  const witnessX = pageWidth / 2 - colWidth / 2;
+  signatureBlock("Witness Signature", formData.witness_name, getRole(formData.witness_name), witnessX, sigY + 100);
+
+  // --- Footer with Page Numbers ---
+  function addFooter() {
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+
+      doc.setDrawColor(200);
+      doc.setLineWidth(0.5);
+      doc.line(40, pageHeight - 50, pageWidth - 40, pageHeight - 50);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.text("Jeng Chi Restaurant", pageWidth / 2, pageHeight - 35, { align: "center" });
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.text(
+        "400 N. Greenville Ave Ste 11, Richardson, TX 75081 • admin@jengchirestaurant.com",
+        pageWidth / 2,
+        pageHeight - 22,
+        { align: "center" }
+      );
+
+      doc.setFont("helvetica", "italic");
+      doc.text(`Page ${i} of ${pageCount}`, pageWidth - 60, pageHeight - 22);
+    }
+  }
+
+  addFooter();
+
+  // --- Render PDF ---
+  const pdfBlob = doc.output("blob");
+  const pdfUrl = URL.createObjectURL(pdfBlob);
+  pdfViewer.src = pdfUrl;
+  pdfViewerContainer.classList.add("active");
+  generatedPdf = doc;
+}
 
 
 
@@ -1264,146 +1440,7 @@ function addFooter() {
   generatedPdf = doc;
 }
 
-    function generatePdf(type, formData) {
-      const doc = new jsPDF('p', 'pt', 'letter');
-      const pageWidth = doc.internal.pageSize.getWidth();
-      const pageHeight = doc.internal.pageSize.getHeight();
-      let y = 60;
-
-      // --- Logo + Title ---
-      const logoUrl = "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg";
-      doc.addImage(logoUrl, "JPEG", pageWidth / 2 - 40, y, 80, 60);
-      y += 80;
-      doc.setFontSize(16).setFont("helvetica", "bold");
-      doc.text(type, pageWidth / 2, y, { align: "center" });
-      y += 40;
-
-      // --- Employee / Manager / Witness Info ---
-      doc.setFontSize(11).setFont("helvetica", "normal");
-      const leftColX = 40;
-      const rightColX = pageWidth / 2 + 20;
-
-      doc.text(`Full Name: ${selectedEmployee.full_name}`, leftColX, y);
-      doc.text(`Position: ${selectedEmployee.primary_role}`, leftColX, y + 16);
-      doc.text(`Department: ${selectedEmployee.department || ''}`, leftColX, y + 32);
-      doc.text(`Hire Date: ${formatDate(selectedEmployee.hire_date)}`, leftColX, y + 48);
-      doc.text(`Email: ${selectedEmployee.email || ''}`, leftColX, y + 64);
-      doc.text(`Phone: ${selectedEmployee.phone || ''}`, leftColX, y + 80);
-
-      doc.text(`Manager: ${formData.manager_name} (${getRole(formData.manager_name)})`, rightColX, y);
-      doc.text(`Witness: ${formData.witness_name} (${getRole(formData.witness_name)})`, rightColX, y + 16);
-      y += 110;
-
-      // --- Section Writer Helper ---
-      function addSection(title, content) {
-        if (!content) return;
-        const requiredSpace = 100;
-        if (y > pageHeight - requiredSpace) {
-          addFooter();
-          doc.addPage();
-          y = 80;
-        }
-        doc.setFont("helvetica", "bold").setFontSize(12);
-        doc.text(title, leftColX, y);
-        const titleWidth = doc.getTextWidth(title);
-        doc.line(leftColX, y + 2, leftColX + titleWidth, y + 2);
-        y += 18;
-        doc.setFont("helvetica", "normal").setFontSize(11);
-        const lines = doc.splitTextToSize(content, pageWidth - 80);
-        doc.text(lines, leftColX, y, { align: "left", maxWidth: pageWidth - 80 });
-        y += lines.length * 16 + 24;
-      }
-
-      // --- Add All Sections ---
-      if (type === "Termination" && formData.checklist) {
-        const checklistItems = Object.keys(formData.checklist).map(q => {
-          const item = formData.checklist[q];
-          return `${q}: ${item.answer} \nNotes: ${item.notes || 'N/A'}`;
-        }).join('\n\n');
-        addSection("Termination Checklist:", checklistItems);
-      }
-
-      addSection("Subject:", formData.subject);
-      addSection("Statement of the Problem:", formData.statement_of_problem);
-      addSection("Reference to Prior Warnings:", formData.prior_warnings);
-      addSection("Company Policy:", formData.company_policy);
-      addSection("Corrective Action and Expectations:", formData.corrective_action);
-      addSection("Timeline for Improvement:", formData.timeline);
-      addSection("Consequences of Failure:", formData.consequences);
-      addSection("Employee Comments:", formData.employee_comments);
-
-      // --- Signature Section ---
-      if (y > pageHeight - 200) {
-        addFooter();
-        doc.addPage();
-        y = 80;
-      }
-      y += 40;
-      const colWidth = (pageWidth - 80) / 2;
-      const sigY = y;
-
-      function signatureBlock(label, name, role, x, yPos) {
-        doc.setFont("helvetica", "normal").setFontSize(11);
-        doc.line(x, yPos, x + colWidth - 40, yPos);
-        doc.setFont("helvetica", "bold").setFontSize(10);
-        doc.text(label, x, yPos + 15);
-        doc.setFont("helvetica", "normal").setFontSize(10);
-        doc.text(`${name} (${role})`, x, yPos + 30);
-      }
-
-      // Employee (left)
-      signatureBlock("Employee Signature", selectedEmployee.full_name, selectedEmployee.primary_role, leftColX, sigY);
-
-      // Manager (right)
-      signatureBlock("Manager Signature", formData.manager_name, getRole(formData.manager_name), leftColX + colWidth, sigY);
-
-      // Witness (centered, next line)
-      const witnessX = pageWidth / 2 - colWidth / 2;
-      signatureBlock("Witness Signature", formData.witness_name, getRole(formData.witness_name), witnessX, sigY + 100);
-
-      // --- Footer with Page Numbers ---
-           // --- Footer with Page Numbers ---
-      function addFooter() {
-        const pageCount = doc.internal.getNumberOfPages();
-        for (let i = 1; i <= pageCount; i++) {
-          doc.setPage(i);
-
-          // Divider line
-          doc.setDrawColor(200);
-          doc.setLineWidth(0.5);
-          doc.line(40, pageHeight - 50, pageWidth - 40, pageHeight - 50);
-
-          // Company name
-          doc.setFont("helvetica", "bold");
-          doc.setFontSize(9);
-          doc.text("Jeng Chi Restaurant", pageWidth / 2, pageHeight - 35, { align: "center" });
-
-          // Contact info
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(9);
-          doc.text(
-            "400 N. Greenville Ave Ste 11, Richardson, TX 75081 • admin@jengchirestaurant.com",
-            pageWidth / 2,
-            pageHeight - 22,
-            { align: "center" }
-          );
-
-          // Page number
-          doc.setFont("helvetica", "italic");
-          doc.text(`Page ${i} of ${pageCount}`, pageWidth - 60, pageHeight - 22);
-        }
-      }
-
-      addFooter(); // ✅ Now works
-
-
-      // --- Render PDF ---
-      const pdfBlob = doc.output("blob");
-      const pdfUrl = URL.createObjectURL(pdfBlob);
-      pdfViewer.src = pdfUrl;
-      pdfViewerContainer.classList.add("active");
-      generatedPdf = doc;
-    }
+    
     
 function formatDate(dateStr) {
   if (!dateStr) return "";
@@ -1422,71 +1459,90 @@ function getRole(name) {
     window.onload = loadEmployees;
 
     async function saveDocument(e, type) {
-      e.preventDefault();
-      const form = e.target;
-      const statusMessage = document.getElementById('formStatusMessage');
-      
-      const checklistItems = [
-        'q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9', 'q10'
-      ].reduce((acc, q) => {
-          const answer = form.querySelector(`input[name="${q}"]:checked`)?.value;
-          const notes = form.querySelector(`textarea[name="notes_${q}"]`)?.value;
-          if (answer) {
-              const questionText = form.querySelector(`p:has(input[name="${q}"])`).textContent;
-              acc[q] = {
-                  question: questionText,
-                  answer: answer,
-                  notes: notes
-              };
-          }
-          return acc;
-      }, {});
+  e.preventDefault();
+  const form = e.target;
+  const statusMessage = document.getElementById('formStatusMessage');
 
-      if (type === "Termination" && Object.keys(checklistItems).length !== 10) {
-        statusMessage.textContent = "Please complete all checklist items before saving.";
-        statusMessage.className = 'mt-4 text-sm text-red-500';
-        return;
+  // --- Handle Checklist (only for Termination) ---
+  let checklistItems = {};
+  if (type === "Termination") {
+    checklistItems = [
+      'q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9', 'q10'
+    ].reduce((acc, q) => {
+      const answer = form.querySelector(`input[name="${q}"]:checked`)?.value;
+      const notes = form.querySelector(`textarea[name="notes_${q}"]`)?.value;
+      if (answer) {
+        const questionText = form.querySelector(`p:has(input[name="${q}"])`)?.textContent || '';
+        acc[q] = {
+          question: questionText.trim(),
+          answer: answer,
+          notes: notes || ''
+        };
       }
+      return acc;
+    }, {});
 
-      statusMessage.textContent = 'Saving document...';
-      statusMessage.className = 'mt-4 text-sm text-gray-500';
-
-      const formData = {
-          manager_name: form.elements['manager_name']?.value || '',
-          witness_name: form.elements['witness_name']?.value || '',
-          document_date: form.elements['document_date']?.value || '',
-          subject: form.elements['subject']?.value || '',
-          statement_of_problem: form.elements['statement_of_problem']?.value || '',
-          prior_warnings: form.elements['prior_warnings']?.value || '',
-          company_policy: form.elements['company_policy']?.value || '',
-          corrective_action: form.elements['corrective_action']?.value || '',
-          timeline: form.elements['timeline']?.value || '',
-          consequences: form.elements['consequences']?.value || '',
-          employee_comments: form.elements['employee_comments']?.value || '',
-          checklist: checklistItems
-      };
-      
-      const summary = formData.subject?.substring(0, 100) + '...' || '';
-
-      const { data, error } = await supabase
-        .from('records')
-        .insert([{
-          employee_id: selectedEmployee.id,
-          document_type: type,
-          summary: summary,
-          content: formData,
-        }]);
-
-      if (error) {
-        console.error('Supabase Records Error:', error);
-        statusMessage.textContent = `Error saving record: ${error.message}`;
-        statusMessage.className = 'mt-4 text-sm text-red-500';
-      } else {
-        statusMessage.textContent = 'Document saved successfully!';
-        statusMessage.className = 'mt-4 text-sm text-green-600';
-        loadDocuments();
-      }
+    // ✅ Prevent saving unless all 10 answered
+    if (Object.keys(checklistItems).length !== 10) {
+      statusMessage.textContent = "Please complete all checklist items before saving.";
+      statusMessage.className = 'mt-4 text-sm text-red-500';
+      return;
     }
+  }
+
+  // --- Start Save ---
+  statusMessage.textContent = 'Saving document...';
+  statusMessage.className = 'mt-4 text-sm text-gray-500';
+
+  // --- Collect shared fields ---
+  const formData = {
+    manager_name: form.elements['manager_name']?.value || '',
+    witness_name: form.elements['witness_name']?.value || '',
+    document_date: form.elements['document_date']?.value || '',
+    subject: form.elements['subject']?.value || '',
+    statement_of_problem: form.elements['statement_of_problem']?.value || '',
+    prior_warnings: form.elements['prior_warnings']?.value || '',
+    company_policy: form.elements['company_policy']?.value || '',
+    corrective_action: form.elements['corrective_action']?.value || '',
+    timeline: form.elements['timeline']?.value || '',
+    consequences: form.elements['consequences']?.value || '',
+    employee_comments: form.elements['employee_comments']?.value || '',
+    checklist: checklistItems // will be {} if not Termination
+  };
+
+  // --- For Verbal/Written Warnings, also save warning counts ---
+  if (type === "Verbal Warning" || type === "Written Warning") {
+    formData.numVerbalWarnings = form.elements['numVerbalWarnings']?.value || '';
+    formData.numWrittenWarnings = form.elements['numWrittenWarnings']?.value || '';
+  }
+
+  // --- Summary Preview ---
+  const summary = formData.subject
+    ? formData.subject.substring(0, 100) + '...'
+    : '(no subject)';
+
+  // --- Save to Supabase ---
+  const { data, error } = await supabase
+    .from('records')
+    .insert([{
+      employee_id: selectedEmployee.id,
+      document_type: type,
+      summary: summary,
+      content: formData,
+    }]);
+
+  // --- Feedback ---
+  if (error) {
+    console.error('Supabase Records Error:', error);
+    statusMessage.textContent = `Error saving record: ${error.message}`;
+    statusMessage.className = 'mt-4 text-sm text-red-500';
+  } else {
+    statusMessage.textContent = 'Document saved successfully!';
+    statusMessage.className = 'mt-4 text-sm text-green-600';
+    loadDocuments(); // reload history
+  }
+}
+
     
     async function loadDocuments() {
       if (!selectedEmployee) {
@@ -1527,17 +1583,27 @@ function getRole(name) {
       documentsListContainer.innerHTML = html;
     }
     
-    function viewDocument(index) {
-        const doc = fetchedDocuments[index];
-        if (doc && doc.content) {
-            generatePdf(doc.document_type, doc.content);
-        } else {
-            console.error('Document data not found.');
-        }
-    }
+   function viewDocument(index) {
+  const docRecord = fetchedDocuments[index];
+  if (!docRecord) {
+    console.error("Document not found at index:", index);
+    return;
+  }
+
+  // Parse the saved content (JSONB from Supabase)
+  const formData = docRecord.content || {};
+
+  // Restore type + data into PDF generator
+  if (docRecord.document_type === "Termination") {
+    generateTerminationPdf(formData); // your custom termination builder
+  } else {
+    generatePdf(docRecord.document_type, formData); // shared for verbal/written/resignation/etc.
+  }
+}
   </script>
 </body>
 </html>
+
 
 
 
