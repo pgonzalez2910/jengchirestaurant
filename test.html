@@ -667,27 +667,21 @@ function showEmployeeProfile(employee) {
   `;
 
 
-      } else if (type === 'Resignation' || type === 'Two Weeks Notice') {
-        formHtml = `
-          <h3 class="text-xl font-bold mb-6">${formTitle} for ${selectedEmployee.full_name}</h3>
-          <div class="space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700">Date</label>
-              <input type="date" name="document_date" value="${today}" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50">
-            </div>
-            <div>
-              <label class="block text-sm font-medium text-gray-700">Employee Comments</label>
-              <textarea name="employee_comments" rows="5" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50"></textarea>
-            </div>
-          </div>
-          <div class="mt-6 flex justify-center space-x-4">
-            <button type="button" class="px-6 py-3 bg-blue-600 text-white rounded-lg shadow-lg hover:bg-blue-700 transition-colors duration-200 font-semibold" onclick="generatePdfFromForm('${type}')">Preview PDF</button>
-            <button type="submit" class="px-6 py-3 bg-green-600 text-white rounded-lg shadow-lg hover:bg-green-700 transition-colors duration-200 font-semibold" onclick="saveDocument(event, '${type}')">Save to Database</button>
-            <button type="button" class="px-6 py-3 bg-gray-600 text-white rounded-lg shadow-lg hover:bg-gray-700 transition-colors duration-200 font-semibold" onclick="requestSignature()">Request Signature</button>
-          </div>
-          <p id="formStatusMessage" class="mt-4 text-center text-sm"></p>
-        `;
-      }
+     } else if (type === 'Resignation' || type === 'Two Weeks Notice') {
+  formHtml = `
+    <h3 class="text-xl font-bold mb-6">${formTitle} for ${selectedEmployee.full_name}</h3>
+    <p class="text-gray-600 mb-4">
+      This document is a template. You can generate and download the PDF, but it will not be saved in the system.
+    </p>
+    <div class="mt-6 flex justify-center space-x-4">
+      <button type="button" class="px-6 py-3 bg-blue-600 text-white rounded-lg shadow-lg hover:bg-blue-700"
+        onclick="generatePdfFromForm('${type}')">Preview PDF</button>
+      <button type="button" class="px-6 py-3 bg-gray-600 text-white rounded-lg shadow-lg hover:bg-gray-700"
+        onclick="requestSignature()">Request Signature</button>
+    </div>
+  `;
+}
+
    formContainer.innerHTML = `<form id="documentForm" onsubmit="saveDocument(event, '${type}')">${formHtml}</form>`;
 
 // ✅ Attach listeners for warnings after form is inserted into DOM
@@ -1455,40 +1449,20 @@ function getRole(name) {
   const form = e.target;
   const statusMessage = document.getElementById('formStatusMessage');
 
-  // --- Handle Checklist (only for Termination) ---
-  let checklistItems = {};
-  if (type === "Termination") {
-    checklistItems = [
-      'q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9', 'q10'
-    ].reduce((acc, q) => {
-      const answer = form.querySelector(`input[name="${q}"]:checked`)?.value;
-      const notes = form.querySelector(`textarea[name="notes_${q}"]`)?.value;
-      if (answer) {
-        const questionText = form.querySelector(`p:has(input[name="${q}"])`)?.textContent || '';
-        acc[q] = {
-          question: questionText.trim(),
-          answer,
-          notes: notes || ''
-        };
-      }
-      return acc;
-    }, {});
-
-    // ✅ Prevent saving unless all 10 answered
-    if (Object.keys(checklistItems).length !== 10) {
-      statusMessage.textContent = "Please complete all checklist items before saving.";
-      statusMessage.className = 'mt-4 text-sm text-red-500';
-      return;
-    }
+  // ✅ Defensive check for selected employee
+  if (!selectedEmployee) {
+    console.error("No employee selected.");
+    statusMessage.textContent = "Please select an employee first.";
+    statusMessage.className = 'mt-4 text-sm text-red-500';
+    return;
   }
 
-  // --- Start Save ---
-  statusMessage.textContent = 'Saving document...';
-  statusMessage.className = 'mt-4 text-sm text-gray-500';
-
-  // --- Collect shared fields ---
+  // --- Build formData with safe fallbacks ---
   const formData = {
-    manager_name: form.elements['manager_name']?.value || '',
+    manager_name: form.elements['manager_name']?.value
+               || form.elements['manager_signature']?.value
+               || selectedEmployee['Current Reports To Employee']
+               || '',
     witness_name: form.elements['witness_name']?.value || '',
     document_date: form.elements['document_date']?.value || '',
     subject: form.elements['subject']?.value || '',
@@ -1498,61 +1472,73 @@ function getRole(name) {
     corrective_action: form.elements['corrective_action']?.value || '',
     timeline: form.elements['timeline']?.value || '',
     consequences: form.elements['consequences']?.value || '',
-    employee_comments: form.elements['employee_comments']?.value || '',
-    checklist: checklistItems // will be {} if not Termination
+    employee_comments: form.elements['employee_comments']?.value || ''
   };
 
-  // --- For Verbal/Written Warnings, also save warning counts ---
-  if (type === "Verbal Warning" || type === "Written Warning") {
-    formData.numVerbalWarnings = form.elements['numVerbalWarnings']?.value || '';
-    formData.numWrittenWarnings = form.elements['numWrittenWarnings']?.value || '';
-  }
-
-  // --- Summary Preview ---
-  const summary = formData.subject
-    ? formData.subject.substring(0, 100) + '...'
-    : '(no subject)';
-
-  // --- Choose table dynamically ---
-  let table = "records"; // default
+  // --- Add Termination-specific fields if present ---
   if (type === "Termination") {
-    table = "termination_records"; // ✅ send termination into its own table
+    formData.termination_day   = form.elements['termination_day']?.value || "";
+    formData.termination_month = form.elements['termination_month']?.value || "";
+    formData.termination_year  = form.elements['termination_year']?.value || "";
+    formData.final_pay_date    = form.elements['final_pay_date']?.value || "";
+    formData.final_pay_amount  = form.elements['final_pay_amount']?.value || "";
+    formData.insurance_end     = form.elements['insurance_end']?.value || "";
+    formData.delivery_method   = form.elements['delivery_method']?.value || "";
+    formData.mailing_address   = form.elements['mailing_address']?.value || "";
+    formData.manager_signature = form.elements['manager_signature']?.value || "";
+    formData.reason            = form.elements['reason']?.value || "";
+    formData.basis             = form.elements['basis']?.value || "";
+    formData.property          = form.elements['property']?.value || "";
+    formData.acknowledgment    = form.elements['acknowledgment']?.checked ? "Acknowledged" : "Not acknowledged";
+
+    // ✅ Checklist
+    formData.checklist = [
+      'q1','q2','q3','q4','q5','q6','q7','q8','q9','q10'
+    ].map(q => ({
+      q,
+      ans: form.querySelector(`input[name="${q}"]:checked`)?.value || '',
+      notes: form.querySelector(`textarea[name="notes_${q}"]`)?.value || ''
+    }));
   }
 
-// --- Save to Supabase ---
-const tableName = type === "Termination" ? "termination_records" : "records";
-
-const payload = {
-  employee_id: selectedEmployee.id,
-  document_type: type,
-   summary: formData.subject?.substring(0, 100) || "(no subject)",
-  content: {
-    ...formData, // store everything in JSONB
-    reason: formData.reason || null,
-    basis: formData.basis || null,
-    termination_date: formData.termination_date || null,
-    checklist: formData.checklist || null,
-    final_amount: formData.final_amount || null
+  // --- Quick validation ---
+  if (!formData.manager_name) {
+    console.warn("⚠ Manager name missing. Defaulting to empty string.");
+    formData.manager_name = "";
   }
-};
 
-const { data, error } = await supabase
-       .from(type === "Termination" ? "termination_records" : "records")
-  .insert([payload]);
+  // --- Save summary for display ---
+  const summary = formData.subject
+    ? formData.subject.substring(0, 100) + "..."
+    : "(no subject)";
 
-console.log("Insert result:", data, error);
+  // --- Choose table ---
+  const tableName = type === "Termination" ? "termination_records" : "records";
 
-// --- Feedback ---
-if (error) {
-  console.error('Supabase Save Error:', error);
-  statusMessage.textContent = `Error saving record: ${error.message}`;
-  statusMessage.className = 'mt-4 text-sm text-red-500';
-} else {
-  statusMessage.textContent = 'Document saved successfully!';
-  statusMessage.className = 'mt-4 text-sm text-green-600';
-  loadDocuments(); // reload history
+  // --- Build payload ---
+  const payload = {
+    employee_id: selectedEmployee.id,
+    document_type: type,
+    summary,
+    content: formData
+  };
+
+  console.log("Saving payload:", payload);
+
+  // --- Save to Supabase ---
+  const { data, error } = await supabase.from(tableName).insert([payload]);
+
+  if (error) {
+    console.error("Supabase Save Error:", error);
+    statusMessage.textContent = `Error saving record: ${error.message}`;
+    statusMessage.className = 'mt-4 text-sm text-red-500';
+  } else {
+    statusMessage.textContent = 'Document saved successfully!';
+    statusMessage.className = 'mt-4 text-sm text-green-600';
+    loadDocuments();
+  }
 }
-    }
+
     
     async function loadDocuments() {
   if (!selectedEmployee) {
@@ -1638,6 +1624,7 @@ if (error) {
   </script>
 </body>
 </html>
+
 
 
 
