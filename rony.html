@@ -132,11 +132,9 @@ const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Email settings:
-// 1) Deploy a Supabase Edge Function named "order-email" that sends with SendGrid/Resend/etc.
-// 2) This page will POST to it. If not available, we fall back to opening a mail draft.
+// Email settings
 const EMAIL_TO = "admin@jengchirestaurant.com";
-const EDGE_EMAIL_FUNCTION = "order-email";
+const EDGE_EMAIL_FUNCTION = "order-email"; // optional Edge Function name
 
 // ===== Helpers
 function todayYmd(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
@@ -168,7 +166,8 @@ async function loadInventory(){
     const pos = (row.position ?? 'Uncategorized');
     grouped[pos] ||= {};
     const prod = grouped[pos][row.product_name] ||= { total:0, image: row.image_url };
-    prod.total += Number(row.on_hand)||0; // decimals OK
+    // keep decimals; zero stays zero here (we won't show it by default though)
+    prod.total += Number(row.on_hand)||0;
   }
 
   const posKeys = Object.keys(grouped).sort((a,b)=>{
@@ -195,7 +194,8 @@ async function loadInventory(){
 
     for(const [name,obj] of sortedEntries){
       const initVal = Number(obj.total);
-      const valueAttr = (initVal>0 || initVal===0) ? `value="${fmt2(initVal)}"` : '';
+      // >>> NO DEFAULT ZERO: only prefill if > 0
+      const valueAttr = initVal > 0 ? `value="${fmt2(initVal)}"` : '';
       const card = document.createElement('div');
       card.className = 'product-card';
       card.innerHTML = `
@@ -255,6 +255,7 @@ function updateProgress(){
     const n = parseFloat(inp.value);
     const isNumeric = Number.isFinite(n) && n >= 0;
 
+    // selected only if the user set a value (including explicit 0.00)
     const isSelected = !COUNT_BLANK_AS_ZERO ? (hasValue && isNumeric) : true;
     if(isSelected){ rec.selected += 1; countedTotal += 1; }
     byPos.set(pos, rec);
@@ -290,7 +291,7 @@ function buildCurrentOrderSummary(){
   const items = [];
   for(const inp of inputs){
     const hasValue = inp.value !== '' && inp.value !== null; // explicit set
-    if(!hasValue) continue;
+    if(!hasValue) continue; // blanks not shown
     const n = parseFloat(inp.value);
     if(!Number.isFinite(n) || n < 0) continue;
     items.push({
@@ -314,15 +315,14 @@ function showSubmittedSummary(products){
 
 // ===== Email sender =====
 async function sendEmail(orderDate, products){
-  const explicit = products.filter(p=>p.explicit);
-  const ordered = explicit; // include zero if explicitly set
+  const ordered = products; // already filtered to explicit below
 
   const subject = `General Order — ${orderDate} — ${ordered.length} items`;
   const lines = ordered.map(p=>`- ${fmt2(p.quantity)} × ${p.name}`).join('\n');
   const text = `New order submitted\n\nDate: ${orderDate}\nItems: ${ordered.length}\n\n${lines}\n\n— Sent from Jeng Chi Management App`;
   const html = `<h3>New order submitted</h3><p><b>Date:</b> ${orderDate}</p><p><b>Items:</b> ${ordered.length}</p><ul>${ordered.map(p=>`<li><b>${fmt2(p.quantity)}</b> × ${p.name}</li>`).join('')}</ul><p>— Sent from Jeng Chi Management App</p>`;
 
-  // 1) Try Supabase Edge Function (deploy one named "order-email")
+  // Try Supabase Edge Function (optional)
   try{
     const resp = await fetch(`${SUPABASE_URL}/functions/v1/${EDGE_EMAIL_FUNCTION}`, {
       method:'POST',
@@ -336,38 +336,47 @@ async function sendEmail(orderDate, products){
     console.warn('Edge function email failed:', await resp.text());
   }catch(e){ console.warn('Edge function email error:', e); }
 
-  // 2) Fallback: open a mail draft (user can hit send)
+  // Fallback: open a mail draft
   const mailto = `mailto:${encodeURIComponent(EMAIL_TO)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}`;
   window.location.href = mailto;
   return false;
 }
 
-// ===== Submit order (keeps decimals; zeros only if explicitly set) =====
+// ===== Submit order (saves ONLY items with explicit values; blanks are ignored) =====
 async function submitInventory(){
   const ymd = document.getElementById('order-date').value || todayYmd();
   const ts = dateInputToLocalMidnightISO(ymd);
 
-  const products = [...document.querySelectorAll('.product-card')].map(card=>{
+  // Collect all items
+  const productsAll = [...document.querySelectorAll('.product-card')].map(card=>{
     const name = card.querySelector('.product-name').textContent.trim();
     const inp = card.querySelector('input');
     const raw = inp.value;
-    const explicit = raw !== '' && raw !== null;
+    const explicit = raw !== '' && raw !== null; // user set a value (including 0.00)
     const n = parseFloat(raw);
     const quantity = Number.isFinite(n) && n>=0 ? round2(n) : 0;
     return { name, quantity, explicit, out_of_stock: quantity===0 };
   });
 
+  // Only items the user set (no default zeros)
+  const products = productsAll.filter(p => p.explicit);
+
+  if(products.length === 0){
+    openModal('Sin selección','No elegiste ningún producto todavía.');
+    return;
+  }
+
   openModal('Enviando orden…','Guardando tu orden en el sistema.');
   showSubmittedSummary(products);
   document.getElementById('order-summary-footer').scrollIntoView({behavior:'smooth'});
 
-  // 1) submitted_orders (jsonb details)
+  // 1) submitted_orders (jsonb details) — store only explicit items
   const { error: orderErr } = await supabaseClient
     .from('submitted_orders')
     .insert([{ order_date: ts, vendor_list: 'General List', summary_details: products }]);
   if(orderErr){ openModal('Error','No se pudo guardar en submitted_orders.'); console.error(orderErr); return; }
 
-  // 2) inventory_check upsert (DATE expects YYYY-MM-DD)
+  // 2) inventory_check upsert — only explicit items
   const rows = products.map(p=>({ order_date: ymd, product_name: p.name, on_hand: p.quantity, tentative: p.quantity, user: 'Rony' }));
   const { error: invErr } = await supabaseClient
     .from('inventory_check')
