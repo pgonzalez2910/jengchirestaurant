@@ -123,12 +123,32 @@
             <label class="block text-sm font-semibold mb-1">Order date</label>
             <input id="reportDate" type="date" class="field w-full"/>
           </div>
-          <div class="flex items-end">
+          <div class="flex items-end gap-2">
+            <button id="btnReportPreview" class="btn btn-light w-full">Preview / Edit Vendors</button>
+          </div>
+          <div class="flex items-end gap-2">
             <button id="btnReport" class="btn btn-dark w-full">Generate PDFs (one per vendor)</button>
           </div>
         </div>
       </div>
-      <p class="text-sm text-gray-600">Each vendor’s PDF includes logo, date, and a table (Item Code*, Product, Qty). *Shown only if data exists.</p>
+      <p class="text-sm text-gray-600 mb-3">Preview shows only items actually ordered (Qty &gt; 0). Edit vendors inline and save before generating PDFs.</p>
+
+      <div class="overflow-x-auto card mb-3">
+        <table class="min-w-full text-sm">
+          <thead class="border-b bg-gray-50">
+            <tr>
+              <th class="text-left py-2 px-3">Product</th>
+              <th class="text-left py-2 px-3">Qty</th>
+              <th class="text-left py-2 px-3">Vendor</th>
+              <th class="text-left py-2 px-3">User</th>
+            </tr>
+          </thead>
+          <tbody id="reportRows"></tbody>
+        </table>
+      </div>
+      <div class="mt-2 flex gap-3">
+        <button id="btnSaveReportVendor" class="btn btn-dark">Save Vendor Changes</button>
+      </div>
     </section>
   </div>
 
@@ -164,6 +184,7 @@ const logoData = {};
 const VENDOR_ALIASES = {
   'delta office product': 'Delta Office Products',
   'delta office products': 'Delta Office Products',
+  'pacific': 'Pacific Plus',                 // NEW alias
   'pacific plus': 'Pacific Plus',
   'formosa foods': 'Formosa Foods',
   'north food group': 'North Food Group',
@@ -179,6 +200,29 @@ const ALLOWED_VENDORS = [
   "North Food Group",
   "Delta Office Products"
 ];
+
+/* ===== DEFAULT VENDOR (Julio only) ===== */
+const DEFAULT_VENDOR_BY_PRODUCT = {
+  'beef shank meat boneless': 'Pacific Plus',
+  'vegetable spring roll 50g': 'Pacific Plus',
+  'wonton skin bailey': 'Pacific Plus',
+  'korean wheat flour': 'Pacific Plus',
+  'chicken leg meat fresh 40#': 'Formosa Foods',
+  'chicken wing': 'Formosa Foods',
+  'chicken breast fresh': 'Formosa Foods',
+  'whole chicken frozen': 'Formosa Foods',
+  'chicken drum stick #40': 'Formosa Foods',
+  'chicken breast bone (frozen)': 'Formosa Foods',
+  'black tiger shrimp 16/20 (india)': 'Pacific Plus',
+  'pork belly rind-on': 'North Food Group',
+  'pork back-fat skinless porkskin smithfield': 'Pacific Plus',
+  'pork eggroll 3 oz, 72 winly': 'Pacific Plus'
+};
+const keyify = s => (s||'').trim().toLowerCase();
+const defaultVendorForProduct = (name) => {
+  const v = DEFAULT_VENDOR_BY_PRODUCT[keyify(name)];
+  return v ? canon(v) : null;
+};
 
 /* ===== UTIL ===== */
 const $ = s => document.querySelector(s);
@@ -230,7 +274,6 @@ async function loadVendorsForFilters(){
 }
 
 /* ===== PRODUCT × VENDOR → ITEM CODE (built from `vendors` column) ===== */
-// Map shape: product_name -> { [canonicalVendor]: item_code, __FALLBACK__: item_code }
 let PRODUCT_VENDOR_CODES = new Map();
 
 async function buildVendorCodeMap(){
@@ -267,13 +310,8 @@ function codeFor(productName, vendor){
   const pn = norm(productName);
   const v = canon(vendor);
   const map = PRODUCT_VENDOR_CODES.get(pn) || {};
-
   const code = map[v];
-  if (code && code !== "") {
-    return code;
-  }
-
-  return "-------";
+  return (code && code !== "") ? code : "-------";
 }
 
 /* ===== UI helpers ===== */
@@ -285,6 +323,14 @@ function vendorSelectHtml(current, options){
     .join('');
   return `<label class="block text-sm font-semibold mb-1">Vendor</label>
             <select class="field w-full vendor-select">${opts}</select>`;
+}
+function vendorSelectCellHtml(current, options){
+  const displayCurrent = current ? canon(current) : '';
+  const set = new Set([displayCurrent, ...options.map(canon)].filter(Boolean));
+  const opts = ['<option value="">— pick —</option>']
+    .concat([...set].map(v => `<option value="${v}" ${v===displayCurrent?'selected':''}>${v}</option>`))
+    .join('');
+  return `<select class="field w-full vendor-select">${opts}</select>`;
 }
 
 function recommendedCases(parUnits, onHand, conv){
@@ -299,6 +345,11 @@ function buildCard(row, vendorOptions, readOnly){
   const wrap = document.createElement('div');
   wrap.className = "card";
   wrap.dataset.product = row.product_name;
+
+  // Input value logic: show blank when 0
+  const readonlyQty = Number(row.on_hand||0);
+  const orderValue = readOnly ? (readonlyQty === 0 ? '' : readonlyQty) : '';
+
   wrap.innerHTML = `
     <div class="flex gap-4">
       <div class="img-wrap">${imgHtml}</div>
@@ -317,7 +368,7 @@ function buildCard(row, vendorOptions, readOnly){
           <div>${vendorSelectHtml(row.vendor||'', vendorOptions)}</div>
           <div>
             <label class="block text-sm font-semibold mb-1">Order</label>
-            <input type="number" min="0" value="${readOnly? Number(row.on_hand||0) : 0}" class="field w-full order-input" ${readOnly?'readonly':''}/>
+            <input type="number" min="0" value="${orderValue}" class="field w-full order-input" ${readOnly?'readonly':''}/>
           </div>
         </div>
         <div class="mt-2 text-gray-700">${(recommendedCases(row.par, row.on_hand, row.conv)!=null) ? `<div class="text-sm"><span class="font-semibold">Recommended (cases):</span> ${recommendedCases(row.par, row.on_hand, row.conv)}</div>` : ''}</div>
@@ -326,17 +377,12 @@ function buildCard(row, vendorOptions, readOnly){
 
   const sel = wrap.querySelector(".vendor-select");
   const codeSpan = wrap.querySelector(".item-code");
-
   function updateItemCode() {
       const chosen = sel.value;
       const code = codeFor(row.product_name, chosen);
       codeSpan.textContent = code;
   }
-
-  if (sel) {
-    sel.addEventListener("change", updateItemCode);
-  }
-
+  if (sel) sel.addEventListener("change", updateItemCode);
   updateItemCode();
   return wrap;
 }
@@ -396,13 +442,18 @@ async function loadCreate(dateISO){
 
   if(ronyFiltered.length) ronyFiltered.forEach(r=>{
     const opts = vendorsForProduct(r.product_name, r.vendor);
-    rGrid.appendChild(buildCard(r, opts, false));
-  }); else rGrid.innerHTML='<p class="text-gray-500">No Rony products to show.</p>';
+    // For Rony we do not apply default vendor auto-pick
+    const cardRow = {...r};
+    $("#gridRony").appendChild(buildCard(cardRow, opts, false));
+  }); else $("#gridRony").innerHTML='<p class="text-gray-500">No Rony products to show.</p>';
 
   if(julioFiltered.length) julioFiltered.forEach(r=>{
-    const opts = vendorsForProduct(r.product_name, r.vendor);
-    jGrid.appendChild(buildCard(r, opts, true));
-  }); else jGrid.innerHTML='<p class="text-gray-500">No Julio products to show.</p>';
+    // Apply default vendor for Julio if vendor empty
+    const defaultV = r.vendor ? canon(r.vendor) : defaultVendorForProduct(r.product_name);
+    const cardRow = {...r, vendor: defaultV || r.vendor || ''};
+    const opts = vendorsForProduct(cardRow.product_name, cardRow.vendor);
+    $("#gridJulio").appendChild(buildCard(cardRow, opts, true));
+  }); else $("#gridJulio").innerHTML='<p class="text-gray-500">No Julio products to show.</p>';
 }
 
 /* ===== Save/Submit ===== */
@@ -415,7 +466,10 @@ async function persistCreateEdits(){
       const qtyInp = card.querySelector(".order-input");
       const patch = {};
       if(vendorSel) patch.vendor = vendorSel.value || null;
-      if(qtyInp && !qtyInp.readOnly) patch.tentative = Number(qtyInp.value||0);
+      if(qtyInp && !qtyInp.readOnly){
+        const raw = qtyInp.value;
+        patch.tentative = (raw === '' || raw == null) ? 0 : Number(raw);
+      }
       if(Object.keys(patch).length){
         await supabase.from("inventory_check").update(patch)
           .eq("order_date", dateISO).eq("product_name", product).eq("user", user);
@@ -440,19 +494,20 @@ async function renderEdit(dateISO, vendor){
   const sel = supabase.from("inventory_check").select(cols).eq("order_date", dateISO);
   const { data, error } = vendor ? await sel.eq("vendor", vendor) : await sel;
   const tbody=$("#editRows"); tbody.innerHTML="";
-  if(error){ tbody.innerHTML=`<tr><td colspan=\"6\" class=\"py-4 text-red-600\">Error loading.</td></tr>`; return; }
-  if(!data?.length){ tbody.innerHTML=`<tr><td colspan=\"6\" class=\"py-4 text-gray-500\">No rows.</td></tr>`; return; }
+  if(error){ tbody.innerHTML=`<tr><td colspan="6" class="py-4 text-red-600">Error loading.</td></tr>`; return; }
+  if(!data?.length){ tbody.innerHTML=`<tr><td colspan="6" class="py-4 text-gray-500">No rows.</td></tr>`; return; }
 
   data.forEach(r=>{
     const tr=document.createElement('tr'); tr.className="border-b";
     const qty=(r.tentative!=null)? Number(r.tentative) : 0;
+    const qtyDisplay = qty === 0 ? '' : qty;         // show blank instead of 0
     tr.innerHTML=`
-      <td class=\"py-2 px-3\">${r.product_name}</td>
-      <td class=\"py-2 px-3\">${Number(r.on_hand||0)}</td>
-      <td class=\"py-2 px-3\"><input type=\"number\" min=\"0\" value=\"${qty}\" class=\"field w-28 edit-qty\"></td>
-      <td class=\"py-2 px-3\"><input value=\"${canon(r.vendor||'')}\" class=\"field w-44 edit-vendor\"></td>
-      <td class=\"py-2 px-3\">${r.user||''}</td>
-      <td class=\"py-2 px-3\"><button class=\"btn btn-light btn-del\">Delete</button></td>`;
+      <td class="py-2 px-3">${r.product_name}</td>
+      <td class="py-2 px-3">${Number(r.on_hand||0)}</td>
+      <td class="py-2 px-3"><input type="number" min="0" value="${qtyDisplay}" class="field w-28 edit-qty"></td>
+      <td class="py-2 px-3"><input value="${canon(r.vendor||'')}" class="field w-44 edit-vendor"></td>
+      <td class="py-2 px-3">${r.user||''}</td>
+      <td class="py-2 px-3"><button class="btn btn-light btn-del">Delete</button></td>`;
     tr.querySelector(".btn-del").onclick = async ()=>{
       await supabase.from("inventory_check").delete()
         .eq("order_date", dateISO).eq("product_name", r.product_name).eq("user", r.user);
@@ -467,7 +522,8 @@ async function saveEdits(){
   for(const tr of document.querySelectorAll("#editRows tr")){
     const product = tr.children[0].textContent;
     const onUser  = tr.children[4].textContent;
-    const qty = Number(tr.querySelector(".edit-qty").value||0);
+    const raw = tr.querySelector(".edit-qty").value;
+    const qty = (raw === '' || raw == null) ? 0 : Number(raw);
     const vendor = tr.querySelector(".edit-vendor").value || null;
     await supabase.from("inventory_check")
       .update({ tentative: qty, vendor })
@@ -476,7 +532,62 @@ async function saveEdits(){
   showModal("Saved","Changes updated.");
 }
 
-/* ===== Reports ===== */
+/* ===== Reports: preview + edit vendors ===== */
+async function loadReportRows(){
+  const dateISO = $("#reportDate").value || todayYMD();
+  let cols="product_name,on_hand,tentative,user,vendor";
+  const { data: rows, error } = await supabase.from("inventory_check").select(cols).eq("order_date", dateISO);
+  const tbody = $("#reportRows"); tbody.innerHTML="";
+  if(error){ tbody.innerHTML=`<tr><td colspan="4" class="py-3 text-red-600">Error loading.</td></tr>`; return; }
+  if(!rows?.length){ tbody.innerHTML=`<tr><td colspan="4" class="py-3 text-gray-500">No rows for that date.</td></tr>`; return; }
+
+  // Only items actually ordered
+  const filtered = rows.map(r=>{
+      const qty = (r.user && r.user.toLowerCase()==='julio') ? Number(r.on_hand||0)
+                 : (r.tentative!=null) ? Number(r.tentative) : 0;
+      // apply default vendor for Julio display if empty
+      const dispVendor = r.vendor || ((r.user||'').toLowerCase()==='julio' ? defaultVendorForProduct(r.product_name) : null);
+      return { ...r, qty, dispVendor };
+    })
+    .filter(r=> r.qty > 0);
+
+  if(!filtered.length){
+    tbody.innerHTML = `<tr><td colspan="4" class="py-3 text-gray-500">No ordered items (Qty &gt; 0).</td></tr>`;
+    return;
+  }
+
+  filtered.forEach(r=>{
+    const tr = document.createElement('tr'); tr.className="border-b";
+    const opts = vendorsForProduct(r.product_name, r.dispVendor);
+    tr.dataset.product = r.product_name;
+    tr.dataset.user = r.user || '';
+    tr.innerHTML = `
+      <td class="py-2 px-3">${r.product_name}</td>
+      <td class="py-2 px-3">${r.qty}</td>
+      <td class="py-2 px-3">${vendorSelectCellHtml(r.dispVendor||'', opts)}</td>
+      <td class="py-2 px-3">${r.user||''}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+async function saveReportVendorChanges(){
+  const dateISO = $("#reportDate").value || todayYMD();
+  const rows = document.querySelectorAll("#reportRows tr");
+  if(!rows.length){ showModal("Nothing to save","Load the preview first."); return; }
+  for(const tr of rows){
+    const product = tr.dataset.product;
+    const onUser = tr.dataset.user;
+    const vendorSel = tr.querySelector(".vendor-select");
+    const vendor = vendorSel ? vendorSel.value || null : null;
+    await supabase.from("inventory_check")
+      .update({ vendor })
+      .eq("order_date", dateISO).eq("product_name", product).eq("user", onUser);
+  }
+  showModal("Saved","Vendor changes updated for ordered items.");
+}
+
+/* ===== Reports: PDFs ===== */
 async function generatePDFs(){
   const dateISO = $("#reportDate").value || todayYMD();
   const { jsPDF } = window.jspdf;
@@ -497,19 +608,28 @@ async function generatePDFs(){
     (info||[]).forEach(r=> infoMap.set(norm(r.product_name), r));
   }
 
+  // Build vendor groups, include only ordered items
   const byVendor={};
   rows.forEach(r=>{
-    const v= r.vendor ? canon(r.vendor) : "Unknown Vendor";
+    const qty = (r.user && (r.user.toLowerCase()==='julio')) ? Number(r.on_hand||0)
+              : (r.tentative!=null)? Number(r.tentative) : 0;
+    if(qty <= 0) return;
+
+    // Use saved vendor or default for Julio if missing (for PDF grouping)
+    let vendorChoice = r.vendor || ((r.user||'').toLowerCase()==='julio' ? defaultVendorForProduct(r.product_name) : null);
+    const v= vendorChoice ? canon(vendorChoice) : "Unknown Vendor";
     if(!byVendor[v]) byVendor[v]=[];
     const ex = infoMap.get(norm(r.product_name))||{};
     byVendor[v].push({
       ...r,
       item_code: ex.item_code,
       image_url: ex.image_url,
-      qty: (r.user && r.user.toLowerCase()==='julio') ? Number(r.on_hand||0)
-           : (r.tentative!=null)? Number(r.tentative) : 0
+      qty
     });
   });
+
+  const vendors = Object.keys(byVendor);
+  if(!vendors.length){ showModal("Nothing to print","No ordered items (Qty > 0)."); return; }
 
   for(const [vendor, list] of Object.entries(byVendor)){
     const doc = new jsPDF({unit:'pt', format:'letter'});
@@ -561,6 +681,10 @@ $("#orderDate").addEventListener("change", ()=> loadCreate($("#orderDate").value
 $("#btnSubmit").addEventListener("click", submitOrder);
 $("#btnLoadEdit").addEventListener("click", ()=> renderEdit($("#editDate").value || todayYMD(), $("#editVendor").value));
 $("#btnSaveEdits").addEventListener("click", saveEdits);
+
+// Reports
+$("#btnReportPreview").addEventListener("click", loadReportRows);
+$("#btnSaveReportVendor").addEventListener("click", saveReportVendorChanges);
 $("#btnReport").addEventListener("click", generatePDFs);
 
 /* ===== INIT ===== */
