@@ -55,7 +55,7 @@
     .counter{display:flex;align-items:center;gap:10px;margin-top:12px}
     .counter button{background:var(--primary);border:none;color:#fff;padding:8px 12px;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer}
     .counter button:hover{background:var(--primary-dark)}
-    .counter input{width:64px;text-align:center;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:14px}
+    .counter input{width:90px;text-align:center;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:14px}
 
     /* Submit FAB bottom-right */
     .fab{position:fixed;right:18px;bottom:18px;z-index:50}
@@ -123,17 +123,26 @@
   </div>
 
 <script>
-// ===== Behavior: blanks are NOT counted; explicit 0 or any number IS counted
-const COUNT_BLANK_AS_ZERO = false;
+// ===== Settings
+const COUNT_BLANK_AS_ZERO = false;  // blanks are NOT counted
+const STEP_BUTTON = 0.10;           // +/- buttons change by 0.10; you can still TYPE any 2-decimal value
 
-// ===== Supabase
+// ===== Supabase + Email
 const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// Email settings:
+// 1) Deploy a Supabase Edge Function named "order-email" that sends with SendGrid/Resend/etc.
+// 2) This page will POST to it. If not available, we fall back to opening a mail draft.
+const EMAIL_TO = "admin@jengchirestaurant.com";
+const EDGE_EMAIL_FUNCTION = "order-email";
+
 // ===== Helpers
 function todayYmd(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
 function dateInputToLocalMidnightISO(ymd){if(!ymd)return new Date().toISOString();const [y,m,d]=ymd.split('-').map(Number);return new Date(y,m-1,d,0,0,0).toISOString()}
+function round2(n){return Math.round(n*100)/100}
+function fmt2(n){const x=Number(n);return Number.isFinite(x)?x.toFixed(2):""}
 
 // ===== Init
 document.addEventListener('DOMContentLoaded',async()=>{
@@ -159,7 +168,7 @@ async function loadInventory(){
     const pos = (row.position ?? 'Uncategorized');
     grouped[pos] ||= {};
     const prod = grouped[pos][row.product_name] ||= { total:0, image: row.image_url };
-    prod.total += Number(row.on_hand)||0;
+    prod.total += Number(row.on_hand)||0; // decimals OK
   }
 
   const posKeys = Object.keys(grouped).sort((a,b)=>{
@@ -185,15 +194,16 @@ async function loadInventory(){
     const sortedEntries = Object.entries(grouped[pos]).sort(([a],[b]) => a.localeCompare(b));
 
     for(const [name,obj] of sortedEntries){
+      const initVal = Number(obj.total);
+      const valueAttr = (initVal>0 || initVal===0) ? `value="${fmt2(initVal)}"` : '';
       const card = document.createElement('div');
       card.className = 'product-card';
-      const valueAttr = Number(obj.total)>0 ? `value="${obj.total}"` : '';
       card.innerHTML = `
         <div class="product-details"><img src="${obj.image||'https://via.placeholder.com/120'}" alt="${name}"></div>
         <div class="product-name">${name}</div>
         <div class="counter">
           <button onclick="updateQty('${encodeURIComponent(name)}',-1)">-</button>
-          <input type="number" data-pos="${pos}" data-name="${name.replace(/"/g,'&quot;')}" ${valueAttr} min="0" placeholder="" />
+          <input type="number" step="0.01" data-pos="${pos}" data-name="${name.replace(/"/g,'&quot;')}" ${valueAttr} min="0" placeholder="" />
           <button onclick="updateQty('${encodeURIComponent(name)}',1)">+</button>
         </div>`;
       grid.appendChild(card);
@@ -209,14 +219,25 @@ async function loadInventory(){
   }, { passive:true });
 }
 
+// change = ±1; buttons add/subtract STEP_BUTTON
 async function updateQty(encodedName, change){
   const name = decodeURIComponent(encodedName);
   const input = document.querySelector(`input[data-name="${CSS.escape(name)}"]`);
-  let current = parseInt(input?.value ?? '', 10); if(!Number.isFinite(current) || current < 0) current = 0;
-  let next = current + change; if(next < 0) next = 0;
-  // Keep explicit zero visible so it counts
-  input.value = String(next);
-  await supabaseClient.from('inventory_management').update({ on_hand: next }).eq('product_name', name).eq('user','Rony');
+  const curRaw = input?.value ?? '';
+  let current = parseFloat(curRaw);
+  if(!Number.isFinite(current) || current < 0) current = 0;
+
+  let next = current + (change * STEP_BUTTON);
+  if(next < 0) next = 0;
+  next = round2(next);
+  input.value = fmt2(next);
+
+  await supabaseClient
+    .from('inventory_management')
+    .update({ on_hand: next })
+    .eq('product_name', name)
+    .eq('user','Rony');
+
   updateProgress();
 }
 
@@ -229,8 +250,9 @@ function updateProgress(){
     const pos = inp.getAttribute('data-pos') || 'Uncategorized';
     const rec = byPos.get(pos) || { total:0, selected:0 };
     rec.total += 1;
-    const hasValue = inp.value !== '' && inp.value !== null; // user set something (including 0)
-    const n = parseInt(inp.value,10);
+
+    const hasValue = inp.value !== '' && inp.value !== null;
+    const n = parseFloat(inp.value);
     const isNumeric = Number.isFinite(n) && n >= 0;
 
     const isSelected = !COUNT_BLANK_AS_ZERO ? (hasValue && isNumeric) : true;
@@ -268,42 +290,70 @@ function buildCurrentOrderSummary(){
   const items = [];
   for(const inp of inputs){
     const hasValue = inp.value !== '' && inp.value !== null; // explicit set
-    if(!hasValue) continue; // blanks NOT shown
-    const n = parseInt(inp.value,10);
+    if(!hasValue) continue;
+    const n = parseFloat(inp.value);
     if(!Number.isFinite(n) || n < 0) continue;
-    // Include zeros and positives
     items.push({
       name: inp.getAttribute('data-name'),
-      qty: n,
+      qty: fmt2(n),
       pos: inp.getAttribute('data-pos')||'Uncategorized'
     });
   }
   container.innerHTML = items.length
-    ? `<ul class="order-summary-list">${items.map(i=>`<li class=\"order-summary-item\"><span>${i.name}</span><span>${i.qty}</span></li>`).join('')}</ul>`
+    ? `<ul class="order-summary-list">${items.map(i=>`<li class="order-summary-item"><span>${i.name}</span><span>${i.qty}</span></li>`).join('')}</ul>`
     : '<p class="order-summary-empty">No items set yet.</p>';
 }
 
-// Helper used on submit to show what was sent; includes zeros only if explicitly set in the UI
 function showSubmittedSummary(products){
   const container = document.getElementById('current-order-container');
-  const filtered = products.filter(p=>p.explicit); // include 0 if explicit
+  const filtered = products.filter(p=>p.explicit);
   container.innerHTML = filtered.length
-    ? `<ul class="order-summary-list">${filtered.map(i=>`<li class=\"order-summary-item\"><span>${i.name}</span><span>${i.quantity}</span></li>`).join('')}</ul>`
+    ? `<ul class="order-summary-list">${filtered.map(i=>`<li class="order-summary-item"><span>${i.name}</span><span>${fmt2(i.quantity)}</span></li>`).join('')}</ul>`
     : '<p class="order-summary-empty">No items set yet.</p>';
 }
 
-// ===== Submit order (uses your schemas; keeps zeros) =====
+// ===== Email sender =====
+async function sendEmail(orderDate, products){
+  const explicit = products.filter(p=>p.explicit);
+  const ordered = explicit; // include zero if explicitly set
+
+  const subject = `General Order — ${orderDate} — ${ordered.length} items`;
+  const lines = ordered.map(p=>`- ${fmt2(p.quantity)} × ${p.name}`).join('\n');
+  const text = `New order submitted\n\nDate: ${orderDate}\nItems: ${ordered.length}\n\n${lines}\n\n— Sent from Jeng Chi Management App`;
+  const html = `<h3>New order submitted</h3><p><b>Date:</b> ${orderDate}</p><p><b>Items:</b> ${ordered.length}</p><ul>${ordered.map(p=>`<li><b>${fmt2(p.quantity)}</b> × ${p.name}</li>`).join('')}</ul><p>— Sent from Jeng Chi Management App</p>`;
+
+  // 1) Try Supabase Edge Function (deploy one named "order-email")
+  try{
+    const resp = await fetch(`${SUPABASE_URL}/functions/v1/${EDGE_EMAIL_FUNCTION}`, {
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+      },
+      body: JSON.stringify({ to: EMAIL_TO, subject, text, html })
+    });
+    if(resp.ok) return true;
+    console.warn('Edge function email failed:', await resp.text());
+  }catch(e){ console.warn('Edge function email error:', e); }
+
+  // 2) Fallback: open a mail draft (user can hit send)
+  const mailto = `mailto:${encodeURIComponent(EMAIL_TO)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}`;
+  window.location.href = mailto;
+  return false;
+}
+
+// ===== Submit order (keeps decimals; zeros only if explicitly set) =====
 async function submitInventory(){
   const ymd = document.getElementById('order-date').value || todayYmd();
-  const ts = dateInputToLocalMidnightISO(ymd); // timestamptz for submitted_orders
+  const ts = dateInputToLocalMidnightISO(ymd);
 
   const products = [...document.querySelectorAll('.product-card')].map(card=>{
     const name = card.querySelector('.product-name').textContent.trim();
     const inp = card.querySelector('input');
     const raw = inp.value;
-    const explicit = raw !== '' && raw !== null; // remember if user set it
-    const n = parseInt(raw,10);
-    const quantity = Number.isFinite(n) && n>=0 ? n : 0; // blanks -> 0 in DB
+    const explicit = raw !== '' && raw !== null;
+    const n = parseFloat(raw);
+    const quantity = Number.isFinite(n) && n>=0 ? round2(n) : 0;
     return { name, quantity, explicit, out_of_stock: quantity===0 };
   });
 
@@ -317,16 +367,22 @@ async function submitInventory(){
     .insert([{ order_date: ts, vendor_list: 'General List', summary_details: products }]);
   if(orderErr){ openModal('Error','No se pudo guardar en submitted_orders.'); console.error(orderErr); return; }
 
-  // 2) inventory_check upsert on (order_date, product_name, user) — DATE column expects YYYY-MM-DD
+  // 2) inventory_check upsert (DATE expects YYYY-MM-DD)
   const rows = products.map(p=>({ order_date: ymd, product_name: p.name, on_hand: p.quantity, tentative: p.quantity, user: 'Rony' }));
   const { error: invErr } = await supabaseClient
     .from('inventory_check')
     .upsert(rows, { onConflict: 'order_date,product_name, "user"', ignoreDuplicates: false });
   if(invErr){ openModal('Error','No se pudo guardar en inventory_check.'); console.error(invErr); return; }
 
-  // Success message (Spanish), like before
-  openModal('¡Éxito!','Gracias Rony por ayudarme a poner la orden',
-    'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/daffy.jpg');
+  // 3) Email confirmation
+  const mailed = await sendEmail(ymd, products);
+  if(mailed){
+    openModal('¡Éxito!','Orden enviada y correo de confirmación enviado a admin@jengchirestaurant.com.',
+      'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/daffy.jpg');
+  }else{
+    openModal('Orden guardada','Se abrió un borrador de email con el resumen. Revisa tu correo para enviarlo.',
+      'https://raw.githubusercontent.com/pgonzalez2910/jengchirestaurant-images/main/daffy.jpg');
+  }
 }
 
 // ===== Modal helpers
