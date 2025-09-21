@@ -315,14 +315,13 @@ function codeFor(productName, vendor){
 }
 
 /* ===== UI helpers ===== */
-function vendorSelectHtml(current, options){
+function vendorSelectCellHtml(current, options){
   const displayCurrent = current ? canon(current) : '';
   const set = new Set([displayCurrent, ...options.map(canon)].filter(Boolean));
   const opts = ['<option value="">— pick —</option>']
     .concat([...set].map(v => `<option value="${v}" ${v===displayCurrent?'selected':''}>${v}</option>`))
     .join('');
-  return `<label class="block text-sm font-semibold mb-1">Vendor</label>
-            <select class="field w-full vendor-select">${opts}</select>`;
+  return `<select class="field w-full edit-vendor">${opts}</select>`;
 }
 function vendorSelectCellHtml(current, options){
   const displayCurrent = current ? canon(current) : '';
@@ -492,43 +491,73 @@ async function submitOrder(){
 async function renderEdit(dateISO, vendor){
   let cols="product_name,on_hand,tentative,user,vendor";
   const sel = supabase.from("inventory_check").select(cols).eq("order_date", dateISO);
-  const { data, error } = vendor ? await sel.eq("vendor", vendor) : await sel;
-  const tbody=$("#editRows"); tbody.innerHTML="";
-  if(error){ tbody.innerHTML=`<tr><td colspan="6" class="py-4 text-red-600">Error loading.</td></tr>`; return; }
-  if(!data?.length){ tbody.innerHTML=`<tr><td colspan="6" class="py-4 text-gray-500">No rows.</td></tr>`; return; }
+  const { data, error } = vendor ? await sel.eq("vendor", canon(vendor)) : await sel;
 
-  data.forEach(r=>{
-    const tr=document.createElement('tr'); tr.className="border-b";
-    const qty=(r.tentative!=null)? Number(r.tentative) : 0;
-    const qtyDisplay = qty === 0 ? '' : qty;         // show blank instead of 0
-    tr.innerHTML=`
+  const tbody = $("#editRows");
+  tbody.innerHTML = "";
+
+  if (error) {
+    tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-red-600">Error loading.</td></tr>`;
+    return;
+  }
+  if (!data?.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-gray-500">No rows.</td></tr>`;
+    return;
+  }
+
+  // Show only items with Qty > 0 (i.e., tentative > 0)
+  const filtered = data.filter(r => Number(r.tentative || 0) > 0);
+
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-gray-500">No items with Qty &gt; 0.</td></tr>`;
+    return;
+  }
+
+  filtered.forEach(r => {
+    const tr = document.createElement("tr");
+    tr.className = "border-b";
+    const qtyDisplay = Number(r.tentative || 0); // already > 0
+
+    const vendorSelect = vendorSelectCellHtml(r.vendor || "", vendorsForProduct(r.product_name, r.vendor));
+
+    tr.innerHTML = `
       <td class="py-2 px-3">${r.product_name}</td>
-      <td class="py-2 px-3">${Number(r.on_hand||0)}</td>
+      <td class="py-2 px-3">${Number(r.on_hand || 0)}</td>
       <td class="py-2 px-3"><input type="number" min="0" value="${qtyDisplay}" class="field w-28 edit-qty"></td>
-      <td class="py-2 px-3"><input value="${canon(r.vendor||'')}" class="field w-44 edit-vendor"></td>
-      <td class="py-2 px-3">${r.user||''}</td>
-      <td class="py-2 px-3"><button class="btn btn-light btn-del">Delete</button></td>`;
-    tr.querySelector(".btn-del").onclick = async ()=>{
+      <td class="py-2 px-3">${vendorSelect}</td>
+      <td class="py-2 px-3">${r.user || ''}</td>
+      <td class="py-2 px-3"><button class="btn btn-light btn-del">Delete</button></td>
+    `;
+
+    tr.querySelector(".btn-del").onclick = async () => {
       await supabase.from("inventory_check").delete()
         .eq("order_date", dateISO).eq("product_name", r.product_name).eq("user", r.user);
       tr.remove();
     };
+
     tbody.appendChild(tr);
   });
 }
 
+
 async function saveEdits(){
   const dateISO = $("#editDate").value || todayYMD();
-  for(const tr of document.querySelectorAll("#editRows tr")){
+
+  for (const tr of document.querySelectorAll("#editRows tr")) {
     const product = tr.children[0].textContent;
     const onUser  = tr.children[4].textContent;
-    const raw = tr.querySelector(".edit-qty").value;
-    const qty = (raw === '' || raw == null) ? 0 : Number(raw);
-    const vendor = tr.querySelector(".edit-vendor").value || null;
+
+    const rawQty  = tr.querySelector(".edit-qty").value;
+    const qty     = (rawQty === '' || rawQty == null) ? 0 : Number(rawQty);
+
+    const vendorSel = tr.querySelector(".edit-vendor");
+    const vendor    = vendorSel ? vendorSel.value || null : null;
+
     await supabase.from("inventory_check")
       .update({ tentative: qty, vendor })
       .eq("order_date", dateISO).eq("product_name", product).eq("user", onUser);
   }
+
   showModal("Saved","Changes updated.");
 }
 
@@ -704,3 +733,4 @@ $("#btnReport").addEventListener("click", generatePDFs);
 </script>
 </body>
 </html>
+
