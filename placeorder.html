@@ -29,6 +29,17 @@
     .img-wrap img{ height:100%; width:auto; object-fit:contain; }
     .shine{ background:linear-gradient(90deg,#000 0%,#333 40%,#000 100%); -webkit-background-clip:text; background-clip:text; color:transparent; text-shadow:0 0 0 #000; }
     .section-title{ display:none; }
+
+    /* Category sections in Rony grid */
+    .cat-section{ margin-bottom:1.25rem; }
+    .cat-header{ display:flex; align-items:center; justify-content:space-between; padding:0 .25rem .25rem; margin-bottom:.5rem; border-bottom:2px solid #e5e7eb; }
+    .cat-title{ font-weight:800; font-size:1rem; letter-spacing:.2px; }
+    .cat-grid{ display:grid; grid-template-columns:repeat(1, minmax(0,1fr)); gap:1rem; }
+    @media (min-width:768px){ .cat-grid{ grid-template-columns:repeat(2, minmax(0,1fr)); } }
+
+    /* RONY↔JULIO separator line */
+    .rj-sep{ height:3px; background:linear-gradient(90deg,transparent,#11182733,transparent); border-radius:999px; margin:18px 0 14px; }
+    .hidden{ display:none; }
   </style>
 </head>
 <body>
@@ -63,7 +74,11 @@
       </div>
 
       <h3 class="section-title">Rony — Order</h3>
-      <div id="gridRony" class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8"></div>
+      <!-- Rony is rendered grouped by category below -->
+      <div id="gridRony"></div>
+
+      <!-- Visible separator between RONY and JULIO -->
+      <div id="rjSep" class="rj-sep hidden" aria-hidden="true"></div>
 
       <h3 class="section-title">Julio — Order</h3>
       <div id="gridJulio" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
@@ -217,7 +232,7 @@ function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 async function toDataUrl(url){ try{ const res=await fetch(url); const blob=await res.blob(); return await new Promise(r=>{ const fr=new FileReader(); fr.onloadend=()=>r({data:fr.result, fmt: (blob.type.includes('png')?'PNG':'JPEG')}); fr.readAsDataURL(blob); }); }catch{ return {data:null, fmt:'JPEG'}; }}
 
 /* ===== Enrichment flags (optional columns) ===== */
-const enrich = { has:false, item_code:false, image_url:false, par:false, avg:false, conv:false, vendor:false, vendors:false };
+const enrich = { has:false, item_code:false, image_url:false, par:false, avg:false, conv:false, vendor:false, vendors:false, category:false };
 let convColumn = null;
 
 async function detectEnrichment(){
@@ -233,6 +248,7 @@ async function detectEnrichment(){
     enrich.avg       = await probe("avg_daily_usage");
     enrich.vendor    = await probe("vendor");
     enrich.vendors   = await probe("vendors");
+    enrich.category  = await probe("category");
 
     const convCandidates = ["conversion_factor","case_size","units_per_case","uom_per_case","pack_size"];
     for(const c of convCandidates){
@@ -329,7 +345,7 @@ function buildCard(row, vendorOptions, readOnly){
   wrap.className = "card";
   wrap.dataset.product = row.product_name;
 
-  // Input value logic: show blank when 0
+  // Input value logic: show blank when 0 (Rony’s entry stays empty by default)
   const readonlyQty = Number(row.on_hand||0);
   const orderValue = readOnly ? (readonlyQty === 0 ? '' : readonlyQty) : '';
 
@@ -346,6 +362,7 @@ function buildCard(row, vendorOptions, readOnly){
         </div>
         <div class="flex flex-wrap gap-2 mt-2">
           <span class="badge">On Hand: ${onHandDisplay}</span>
+          ${row.category ? `<span class="badge">Category: ${row.category}</span>` : ''}
           ${row.par!=null ? `<span class="badge">Par: ${Number(row.par)}</span>` : ''}
           ${(row.conv && row.conv>1) ? `<span class="badge">Units/Case: ${row.conv}</span>` : ''}
           ${row.vendor ? `<span class="badge">Vendor: ${canon(row.vendor)}</span>` : ''}
@@ -354,7 +371,7 @@ function buildCard(row, vendorOptions, readOnly){
           <div>${vendorSelectHtml(row.vendor||'', vendorOptions)}</div>
           <div>
             <label class="block text-sm font-semibold mb-1">Order</label>
-            <input type="number" min="0" value="${orderValue}" class="field w-full order-input" ${readOnly?'readonly':''}/>
+            <input type="number" step="0.01" min="0" value="${orderValue}" class="field w-full order-input" ${readOnly?'readonly':''}/>
           </div>
         </div>
         <div class="mt-2 text-gray-700">${(recommendedCases(row.par, row.on_hand, row.conv)!=null) ? `<div class="text-sm"><span class="font-semibold">Recommended (cases):</span> ${recommendedCases(row.par, row.on_hand, row.conv)}</div>` : ''}</div>
@@ -371,6 +388,41 @@ function buildCard(row, vendorOptions, readOnly){
   if (sel) sel.addEventListener("change", updateItemCode);
   updateItemCode();
   return wrap;
+}
+
+/* ===== Render helper: Rony grouped by category ===== */
+function renderRonyCategorized(container, rows){
+  container.innerHTML = '';
+  // Group by category (default "Uncategorized")
+  const groups = new Map();
+  for(const r of rows){
+    const key = (r.category && r.category.trim()) ? r.category.trim() : 'Uncategorized';
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  // Sort categories alpha; items alpha
+  const cats = Array.from(groups.keys()).sort((a,b)=> a.localeCompare(b));
+  if(!cats.length){
+    container.innerHTML = '<p class="text-gray-500">No Rony products to show.</p>';
+    return;
+  }
+  for(const cat of cats){
+    const section = document.createElement('div');
+    section.className = 'cat-section';
+    section.innerHTML = `
+      <div class="cat-header">
+        <div class="cat-title">${cat}</div>
+      </div>
+      <div class="cat-grid"></div>
+    `;
+    const grid = section.querySelector('.cat-grid');
+    const items = groups.get(cat).sort((a,b)=> a.product_name.localeCompare(b.product_name));
+    for(const r of items){
+      const opts = vendorsForProduct(r.product_name, r.vendor);
+      grid.appendChild(buildCard(r, opts, false));
+    }
+    container.appendChild(section);
+  }
 }
 
 /* ===== Load Create tab ===== */
@@ -390,7 +442,7 @@ async function loadCreate(dateISO){
   if(error){ rGrid.innerHTML='<p class="text-red-600">Error loading.</p>'; return; }
   if(!base?.length){ rGrid.innerHTML='<p class="text-gray-500">No items to show.</p>'; return; }
 
-  // optional enrichment (images/par/conv)
+  // optional enrichment (images/par/conv/category)
   let extraMap = new Map();
   if(enrich.has){
     let sel="product_name";
@@ -398,6 +450,7 @@ async function loadCreate(dateISO){
     if(enrich.image_url) sel+=",image_url";
     if(enrich.par)       sel+=",par";
     if(enrich.avg)       sel+=",avg_daily_usage";
+    if(enrich.category)  sel+=",category";
     if(enrich.conv && convColumn) sel+=","+convColumn;
     const { data: info } = await supabase.from("inventory_management").select(sel);
     (info||[]).forEach(r=> extraMap.set(norm(r.product_name), r));
@@ -410,6 +463,7 @@ async function loadCreate(dateISO){
       item_code: ex.item_code,
       image_url: ex.image_url,
       par: (ex.par!=null ? Number(ex.par) : null),
+      category: ex.category || null,
       avg_day: (ex.avg_daily_usage!=null ? Math.round(Number(ex.avg_daily_usage)||0) : null),
       conv: (convColumn && ex[convColumn]!=null ? Math.max(1, Number(ex[convColumn])||1) : 1)
     };
@@ -426,17 +480,23 @@ async function loadCreate(dateISO){
     julioFiltered = julio.filter(r => canon(r.vendor) === canon(vf));
   }
 
-  if(ronyFiltered.length) ronyFiltered.forEach(r=>{
-    const opts = vendorsForProduct(r.product_name, r.vendor);
-    const cardRow = {...r};
-    $("#gridRony").appendChild(buildCard(cardRow, opts, false));
-  }); else $("#gridRony").innerHTML='<p class="text-gray-500">No Rony products to show.</p>';
+  // RONY: grouped by category
+  if(ronyFiltered.length){
+    renderRonyCategorized(rGrid, ronyFiltered);
+  }else{
+    rGrid.innerHTML = '<p class="text-gray-500">No Rony products to show.</p>';
+  }
 
+  // JULIO: simple grid
   if(julioFiltered.length) julioFiltered.forEach(r=>{
     const cardRow = {...r};
     const opts = vendorsForProduct(cardRow.product_name, cardRow.vendor);
     $("#gridJulio").appendChild(buildCard(cardRow, opts, true));
   }); else $("#gridJulio").innerHTML='<p class="text-gray-500">No Julio products to show.</p>';
+
+  // Toggle separator line visibility: show only if both have items
+  const sep = document.getElementById('rjSep');
+  if(sep) sep.classList.toggle('hidden', !(ronyFiltered.length && julioFiltered.length));
 }
 
 /* ===== Save/Submit ===== */
@@ -501,7 +561,7 @@ async function renderEdit(dateISO, vendor){
     tr.innerHTML=`
       <td class="py-2 px-3">${r.product_name}</td>
       <td class="py-2 px-3">${onHandCell}</td>
-      <td class="py-2 px-3"><input type="number" min="0" value="${r.__qty}" class="field w-28 edit-qty"></td>
+      <td class="py-2 px-3"><input type="number" step="0.01" min="0" value="${r.__qty}" class="field w-28 edit-qty"></td>
       <td class="py-2 px-3">${vendorSelect}</td>
       <td class="py-2 px-3">${r.user||''}</td>
       <td class="py-2 px-3"><button class="btn btn-light btn-del">Delete</button></td>`;
