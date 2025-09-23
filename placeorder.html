@@ -229,7 +229,17 @@ function cooldownMs(){ const v=localStorage.getItem(SUBMIT_KEY); if(!v) return 0
 function applyCooldown(){ $("#btnSubmit").disabled = cooldownMs()>0; }
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
-async function toDataUrl(url){ try{ const res=await fetch(url); const blob=await res.blob(); return await new Promise(r=>{ const fr=new FileReader(); fr.onloadend=()=>r({data:fr.result, fmt: (blob.type.includes('png')?'PNG':'JPEG')}); fr.readAsDataURL(blob); }); }catch{ return {data:null, fmt:'JPEG'}; }}
+async function toDataUrl(url){
+  try{
+    const res=await fetch(url);
+    const blob=await res.blob();
+    return await new Promise(r=>{
+      const fr=new FileReader();
+      fr.onloadend=()=>r({data:fr.result, fmt: (blob.type.includes('png')?'PNG':'JPEG')});
+      fr.readAsDataURL(blob);
+    });
+  }catch{ return {data:null, fmt:'JPEG'}; }
+}
 
 /* ===== Enrichment flags (optional columns) ===== */
 const enrich = { has:false, item_code:false, image_url:false, par:false, avg:false, conv:false, vendor:false, vendors:false, category:false };
@@ -653,30 +663,29 @@ async function generatePDFs(){
   const { data: rows } = await supabase.from("inventory_check").select(cols).eq("order_date", dateISO);
   if(!rows?.length){ showModal("No data","No rows for that date."); return; }
 
+  // preload logos
   logoData.company = await toDataUrl(COMPANY_LOGO);
   for(const [k,u] of Object.entries(vendorLogos)) logoData[k] = await toDataUrl(u);
 
+  // optional info with item_code + image
   let infoMap = new Map();
   if(enrich.has){
-    let sel="product_name";
-    if(enrich.item_code) sel+=",item_code";
-    if(enrich.image_url) sel+=",image_url";
-    const { data: info } = await supabase.from("inventory_management").select(sel);
+    const { data: info } = await supabase.from("inventory_management").select("product_name,item_code,image_url");
     (info||[]).forEach(r=> infoMap.set(norm(r.product_name), r));
   }
 
+  // group by vendor and attach code+image
   const byVendor={};
   rows.forEach(r=>{
     const qty = computeQty(r);
     if(qty <= 0) return;
-
     const v= r.vendor ? canon(r.vendor) : "Unknown Vendor";
     if(!byVendor[v]) byVendor[v]=[];
     const ex = infoMap.get(norm(r.product_name))||{};
     byVendor[v].push({
       ...r,
-      item_code: ex.item_code,
-      image_url: ex.image_url,
+      item_code: ex.item_code || "-------",
+      image_url: ex.image_url || null,
       qty
     });
   });
@@ -696,20 +705,56 @@ async function generatePDFs(){
     doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.text(vendor, M, y);
     const vlogo = logoData[vendor]; if(vlogo?.data) doc.addImage(vlogo.data, vlogo.fmt, pageW-M-80, y-26, 60, 40);
 
-    const head = ["Product","Qty"];
-    const body = list.map(r=>[r.product_name, r.qty]);
+    // cache product images for this vendor
+    const itemImgCache = {};
+    const uniqueUrls = [...new Set(list.map(r=>r.image_url).filter(Boolean))];
+    for(const u of uniqueUrls){
+      itemImgCache[u] = await toDataUrl(u);
+    }
 
-    doc.autoTable({ startY: y+6, margin:{left:M,right:M},
-      head:[head], body,
-      styles:{font:'helvetica', fontSize:10, cellPadding:4},
-      headStyles:{fillColor:[17,24,39], textColor:[255,255,255], fontStyle:'bold'},
-      columnStyles: {0:{cellWidth:'auto'},1:{cellWidth:60,halign:'right'}}
+    // table with Item Code (with small image) + Product + Qty
+    const columns = [
+      { header: "Item Code", dataKey: "code" },
+      { header: "Product",   dataKey: "product" },
+      { header: "Qty",       dataKey: "qty" }
+    ];
+    const body = list.map(r=>({
+      code: r.item_code,
+      product: r.product_name,
+      qty: r.qty,
+      img: r.image_url   // keep raw so we can draw image in didDrawCell
+    }));
+
+    doc.autoTable({
+      startY: y+6,
+      margin:{left:M,right:M},
+      columns,
+      body,
+      styles:{ font:'helvetica', fontSize:10, cellPadding:4 },
+      headStyles:{ fillColor:[17,24,39], textColor:[255,255,255], fontStyle:'bold' },
+      columnStyles: {
+        code:    { cellWidth: 170, cellPadding: {left:28, top:4, right:4, bottom:4} },
+        product: { cellWidth: 'auto' },
+        qty:     { cellWidth: 60, halign:'right' }
+      },
+      didDrawCell: (data) => {
+        if (data.section === 'body' && data.column.dataKey === 'code') {
+          const imgUrl = data.row.raw.img;
+          const cached = imgUrl ? itemImgCache[imgUrl] : null;
+          if (cached?.data) {
+            const size = 16; // small square image
+            const x = data.cell.x + 6;
+            const y = data.cell.y + (data.cell.height - size)/2;
+            try { doc.addImage(cached.data, cached.fmt, x, y, size, size); } catch(e){}
+          }
+        }
+      }
     });
 
     doc.save(`JengChi_Order_${dateISO}_${vendor.replace(/\s+/g,'_')}.pdf`);
     await sleep(250);
   }
-  showModal("Done","PDFs generated per vendor.");
+  showModal("Done","PDFs generated per vendor with item codes and images.");
 }
 
 /* ===== NAV + EVENTS ===== */
