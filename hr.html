@@ -191,6 +191,16 @@
     const { jsPDF } = window.jspdf;
     const COMPANY_LOGO_URL = "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg";
 
+    // ✅ Fixed witness list used in ALL disciplinary actions
+    const witnessNames = [
+      "Pablo Gonzalez",
+      "Shoko Teng",
+      "Francisco Teng",
+      "Janelle Teng",
+      "Craig Reeves",
+      "Anh Mai Vu"
+    ];
+
     /* ====== DOM ====== */
     const searchInput = document.getElementById('searchInput');
     const suggestionsDiv = document.getElementById('suggestions');
@@ -434,7 +444,7 @@
             <h4 class="font-extrabold text-slate-800 mb-2">${type}</h4>
             <div class="text-xs text-slate-400">No records.</div>
           </div>`;
-        const html = list.map((d,i)=>`
+        const html = list.map((d)=>`
           <div class="p-3 border rounded-lg hover:bg-slate-50 cursor-pointer flex items-center justify-between" data-id="${d.id}" data-type="${type}">
             <div>
               <div class="font-bold">${type}</div>
@@ -456,11 +466,30 @@
           const type = el.getAttribute("data-type");
           const rec = all.find(r => String(r.id) === String(id) && r.document_type===type);
           if(!rec) return;
+
           if(rec.document_type==="Termination"){
-            generateTerminationPdf(rec.content||{}).then(doc=>previewDoc(doc));
-          }else if(rec.document_type==="Verbal Warning" || rec.document_type==="Written Warning"){
+            // Normalize content for preview (fill missing employee fields)
+            const fd = rec.content || {};
+            const normalized = buildTerminationPreviewData({
+              manager_signature: fd.manager_name || selectedEmployee["Current Reports To Employee"] || "",
+              effective_date: fd.effective_date || "",
+              final_pay_date: fd.final_pay_date || "",
+              final_pay_amount: fd.final_pay_amount || "",
+              reason: fd.reason || "",
+              basis: fd.basis || "",
+              delivery_method: fd.delivery_method || "",
+              mailing_address: fd.mailing_address || "",
+              // witness (persisted)
+              witness_name: fd.witness_name || ""
+            });
+            // Copy checklist if exists
+            if (Array.isArray(fd.checklist)) {
+              normalized.checklist = fd.checklist;
+            }
+            generateTerminationPdf(normalized).then(doc=>previewDoc(doc));
+          } else if(rec.document_type==="Verbal Warning" || rec.document_type==="Written Warning"){
             generateWarningPdf(rec.document_type, rec.content||{}).then(doc=>previewDoc(doc));
-          }else{
+          } else {
             generateLetterPdf(rec.document_type, rec.content||{}).then(doc=>previewDoc(doc));
           }
         });
@@ -470,6 +499,7 @@
     /* ====== NEW ACTION FORMS ====== */
     function renderActionForm(type){
       const today = new Date().toISOString().split("T")[0];
+
       if(type==="Verbal Warning" || type==="Written Warning"){
         formContainer.innerHTML = `
           <form id="formWarn" class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -479,11 +509,15 @@
             </div>
             <div>
               <label class="block text-sm font-semibold mb-1">Manager</label>
-              <select name="manager_name" class="field w-full">${managers.map(n=>`<option ${n===selectedEmployee['Current Reports To Employee']?'selected':''}>${n}</option>`)}</select>
+              <select name="manager_name" class="field w-full">
+                ${managers.map(n=>`<option ${n===selectedEmployee['Current Reports To Employee']?'selected':''}>${n}</option>`).join("")}
+              </select>
             </div>
             <div class="md:col-span-2">
               <label class="block text-sm font-semibold mb-1">Witness</label>
-              <select name="witness_name" class="field w-full">${managers.map(n=>`<option>${n}</option>`)}</select>
+              <select name="witness_name" class="field w-full">
+                ${witnessNames.map(n=>`<option>${n}</option>`).join("")}
+              </select>
             </div>
             <div class="md:col-span-2">
               <label class="block text-sm font-semibold mb-1">Subject</label>
@@ -530,6 +564,7 @@
           const doc = await generateWarningPdf(type, fd);
           previewDoc(doc);
         };
+
       } else if(type==="Termination"){
         formContainer.innerHTML = `
           <form id="formTermination" class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -539,7 +574,22 @@
             </div>
             <div>
               <label class="block text-sm font-semibold mb-1">Manager</label>
-              <select name="manager_signature" class="field w-full">${managers.map(n=>`<option ${n===selectedEmployee['Current Reports To Employee']?'selected':''}>${n}</option>`)}</select>
+              <select name="manager_signature" class="field w-full">
+                ${managers.map(n=>`<option ${n===selectedEmployee['Current Reports To Employee']?'selected':''}>${n}</option>`).join("")}
+              </select>
+            </div>
+
+            <!-- Witness (fixed list) -->
+            <div>
+              <label class="block text-sm font-semibold mb-1">Witness</label>
+              <select name="witness_name" class="field w-full">
+                <option value="">-- Select Witness --</option>
+                ${witnessNames.map(n=>`<option>${n}</option>`).join("")}
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-semibold mb-1">Witness role</label>
+              <input name="witness_role" class="field w-full bg-slate-50" readonly placeholder="Auto-filled">
             </div>
 
             <!-- Checklist (10) -->
@@ -554,7 +604,7 @@
                   "Was the employee confronted with the problem and given a chance to explain?",
                   "Does the employee belong to a protected minority?",
                   "Was the treatment given to the employee different from that given to non-minorities?",
-                  "Was the treatment given to the employee different from that given to other workers in general?",
+                  "Was the treatment given to the employee different from other workers in general?",
                   "Was the employee involved in a protected activity?"
                 ][i]}</p>
                 <div class="flex gap-4">
@@ -609,12 +659,21 @@
             <div id="formMsg" class="text-xs text-slate-500 md:col-span-2"></div>
           </form>`;
         const form = document.getElementById("formTermination");
+        // witness role auto-fill
+        const wSel = form.querySelector('select[name="witness_name"]');
+        const wRole = form.querySelector('input[name="witness_role"]');
+        if (wSel && wRole) {
+          wSel.addEventListener('change', (e) => {
+            wRole.value = getRole(e.target.value) || "";
+          });
+        }
         form.onsubmit = (e)=> saveDocument(e, "Termination");
         document.getElementById("pt").onclick = ()=>{
           const fd = Object.fromEntries(new FormData(form).entries());
           const formData = buildTerminationPreviewData(fd);
           generateTerminationPdf(formData).then(doc=>previewDoc(doc));
         };
+
       } else if(type==="Two Weeks Notice" || type==="Resignation"){
         formContainer.innerHTML = `
           <form id="formLetter" class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -622,9 +681,19 @@
               <label class="block text-sm font-semibold mb-1">Date</label>
               <input name="document_date" type="date" value="${today}" class="field w-full">
             </div>
+
+            <!-- Optional witness for letters -->
             <div class="md:col-span-2">
-              <label class="block text-sm font-semibold mb-1">${type==="Two Weeks Notice"?"Last working day (optional)":"Comments"}</label>
-              <textarea name="${type==="Two Weeks Notice"?"employee_comments":"employee_comments"}" rows="4" class="field w-full" placeholder="${type==="Two Weeks Notice"?"Anything to add…":"Reason / message…"}"></textarea>
+              <label class="block text-sm font-semibold mb-1">Witness (optional)</label>
+              <select name="witness_name" class="field w-full">
+                <option value="">-- Select Witness --</option>
+                ${witnessNames.map(n=>`<option>${n}</option>`).join("")}
+              </select>
+            </div>
+
+            <div class="md:col-span-2">
+              <label class="block text-sm font-semibold mb-1">${type==="Two Weeks Notice"?"Comments / Last working day (optional)":"Comments"}</label>
+              <textarea name="employee_comments" rows="4" class="field w-full" placeholder="${type==="Two Weeks Notice"?"Anything to add…":"Reason / message…"}"></textarea>
             </div>
             <div class="md:col-span-2 flex flex-wrap gap-2 mt-1">
               <button class="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-bold" type="submit">Save</button>
@@ -666,22 +735,27 @@
           employee_comments: fd.employee_comments || ""
         };
         summary = (content.subject || content.statement_of_problem || "").slice(0,100);
-      }else if(type==="Termination"){
-        // include checklist
-        const checklist = [...Array(10)].map((_,i)=>({
-          question: ["Was there a specific incident close in time to the discharge?",
-            "Can the employer show that the employee violated a known policy or law?",
-            "Are witnesses available?",
-            "Does the employer have documentation to support its reasons for termination?",
-            "Did the employee progress all the way through the disciplinary system?",
-            "Was the employee confronted with the problem and given a chance to explain?",
-            "Does the employee belong to a protected minority?",
-            "Was the treatment given to the employee different from that given to non-minorities?",
-            "Was the treatment given to the employee different from that given to other workers in general?",
-            "Was the employee involved in a protected activity?"][i],
+
+      } else if(type==="Termination"){
+        // checklist
+        const qs = [
+          "Was there a specific incident close in time to the discharge?",
+          "Can the employer show that the employee violated a known policy or law?",
+          "Are witnesses available?",
+          "Does the employer have documentation to support its reasons for termination?",
+          "Did the employee progress all the way through the disciplinary system?",
+          "Was the employee confronted with the problem and given a chance to explain?",
+          "Does the employee belong to a protected minority?",
+          "Was the treatment given to the employee different from that given to non-minorities?",
+          "Was the treatment given to the employee different from other workers in general?",
+          "Was the employee involved in a protected activity?"
+        ];
+        const checklist = qs.map((q, i)=>({
+          question: q,
           ans: fd[`q${i+1}`] || "",
           notes: fd[`notes_q${i+1}`] || ""
         }));
+
         content = {
           manager_name: fd.manager_signature || selectedEmployee['Current Reports To Employee'] || "",
           effective_date: fd.effective_date || "",
@@ -692,14 +766,19 @@
           property: fd.property || "",
           delivery_method: fd.delivery_method || "",
           mailing_address: fd.mailing_address || "",
+          // ✅ persist witness
+          witness_name: fd.witness_name || "",
+          witness_role: getRole(fd.witness_name) || "",
           checklist
         };
         summary = (content.reason || `Effective ${fmtDate(content.effective_date)}`).slice(0,100);
-      }else{
+
+      } else {
         // letters
         content = {
           document_date: fd.document_date || "",
-          employee_comments: fd.employee_comments || ""
+          employee_comments: fd.employee_comments || "",
+          witness_name: fd.witness_name || ""
         };
         summary = (type==="Two Weeks Notice" ? "Two weeks notice submitted" : "Resignation letter") + ` • ${fmtDate(content.document_date)}`;
       }
@@ -788,9 +867,14 @@
         hireDate: fmtDate(selectedEmployee.hire_date),
         email: selectedEmployee.email,
         phone: selectedEmployee.phone,
+
         managerName: fd.manager_signature || selectedEmployee["Current Reports To Employee"] || "",
         managerRole: getRole(fd.manager_signature || selectedEmployee["Current Reports To Employee"]),
-        witnessName: "", witnessRole: "",
+
+        // witness
+        witnessName: fd.witness_name || "",
+        witnessRole: getRole(fd.witness_name) || "",
+
         effectiveDate: fmtDate(fd.effective_date),
         reason: fd.reason || "",
         basis: fd.basis || "",
@@ -815,16 +899,25 @@
       doc.text("TERMINATION LETTER", W/2, y, {align:"center"});
       y += 30;
 
+      // Ensure employee fields exist (when previewing saved content)
+      const fullName = data.fullName || (selectedEmployee?.full_name || "");
+      const role = data.role || (selectedEmployee?.primary_role || "");
+      const department = data.department || (selectedEmployee?.department || "");
+      const effectiveDate = data.effectiveDate || fmtDate(data.effective_date || "");
+      const managerName = data.managerName || (selectedEmployee?.["Current Reports To Employee"] || "");
+      const witnessName = data.witnessName || data.witness_name || "";
+      const witnessRole = data.witnessRole || data.witness_role || getRole(witnessName) || "";
+
       const left = 48, right = W/2 + 16;
       doc.setFont("helvetica","normal").setFontSize(11);
-      doc.text(`Employee: ${data.fullName}`, left, y);
-      doc.text(`Effective date: ${data.effectiveDate}`, right, y);
+      doc.text(`Employee: ${fullName}`, left, y);
+      doc.text(`Effective date: ${effectiveDate || ""}`, right, y);
       y += 16;
-      doc.text(`Position: ${data.role}`, left, y);
-      doc.text(`Manager: ${data.managerName || ""}`, right, y);
+      doc.text(`Position: ${role}`, left, y);
+      doc.text(`Manager: ${managerName || ""}`, right, y);
       y += 16;
-      doc.text(`Department: ${data.department || ""}`, left, y);
-      doc.text(`Witness: ${data.witnessName || ""}`, right, y);
+      doc.text(`Department: ${department || ""}`, left, y);
+      doc.text(`Witness: ${witnessName || ""}${witnessRole ? ` (${witnessRole})` : ""}`, right, y);
       y += 28;
 
       const maxW = W - 2*left;
@@ -838,15 +931,16 @@
         y += lines.length*14 + 12;
       }
 
-      section("Reason / Basis for Termination", (data.reason?`${data.reason}\n\n`:"") + (data.basis||""));
-      section("Final Payment", `Final paycheck ${data.finalPayAmount || ""} on ${fmtDate(data.finalPayDate) || "N/A"}.`);
-      if(data.deliveryMethod) section("Delivery Method", data.deliveryMethod);
-      if(data.mailingAddress) section("Mailing Address", data.mailingAddress);
+      section("Reason / Basis for Termination", ((data.reason||"") ? `${data.reason}\n\n` : "") + (data.basis||""));
+      section("Final Payment", `Final paycheck ${data.finalPayAmount || data.final_pay_amount || ""} on ${fmtDate(data.finalPayDate || data.final_pay_date) || "N/A"}.`);
+      if(data.deliveryMethod || data.delivery_method) section("Delivery Method", data.deliveryMethod || data.delivery_method);
+      if(data.mailingAddress || data.mailing_address) section("Mailing Address", data.mailingAddress || data.mailing_address);
 
-      if(data.checklist?.length){
+      const checklist = Array.isArray(data.checklist) ? data.checklist : [];
+      if(checklist.length){
         doc.setFont("helvetica","bold").text("Checklist", left, y); y+=14;
         doc.setFont("helvetica","normal");
-        data.checklist.forEach((q,i)=>{
+        checklist.forEach((q,i)=>{
           const t = `${i+1}. ${q.question} — Answer: ${q.ans}${q.notes?`. Notes: ${q.notes}`:""}`;
           const lines = doc.splitTextToSize(t, maxW);
           doc.text(lines, left, y); y += lines.length*14+6;
@@ -855,7 +949,7 @@
 
       y += 12;
       doc.text("Sincerely,", left, y); y += 18;
-      doc.text(`${data.managerName || ""}`, left, y); y += 24;
+      doc.text(`${managerName || ""}`, left, y); y += 24;
 
       // signatures
       doc.text("______________________________", left, y);
@@ -887,8 +981,15 @@
       const left = 56;
       doc.setFont("helvetica","normal").setFontSize(11);
       const date = fmtDate(data.document_date || Date.now());
-      const lines = doc.splitTextToSize((data.employee_comments || "This letter serves as formal notice.").trim(), W - left*2);
-      doc.text(`Date: ${date}`, left, y); y+=24;
+
+      doc.text(`Date: ${date}`, left, y); y+=18;
+
+      // Optional witness line on letters
+      if (data.witness_name) { doc.text(`Witness: ${data.witness_name}`, left, y); y += 18; }
+
+      const message = (data.employee_comments || "This letter serves as formal notice.").trim();
+      const lines = doc.splitTextToSize(message, W - left*2);
+
       if(type==="Two Weeks Notice"){
         doc.text(`Dear Management,`, left, y); y+=18;
         doc.text(lines, left, y); y += lines.length*14+18;
