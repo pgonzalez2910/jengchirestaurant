@@ -42,10 +42,9 @@
     .btn-primary:hover { filter:brightness(1.05); }
     .badge { font-size:.75rem; padding:.25rem .5rem; border-radius:.5rem; border:1px solid #E5E7EB; }
     .scroll-table { overflow:auto; }
-    .skeleton { animation:pulse 1.2s ease-in-out infinite; background:linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 37%, #f3f4f6 63%); background-size:400% 100%; }
-    @keyframes pulse { 0%{background-position:100% 50%} 100%{background-position:0 50%} }
     .modal { position:fixed; inset:0; display:none; place-items:center; background:rgba(0,0,0,.4); z-index:50; }
     .modal.show { display:grid; }
+    .row-muted { color:#4B5563; }
   </style>
 </head>
 <body class="min-h-full">
@@ -179,6 +178,7 @@
           <div><span class="text-xs text-jc-secondary">Status</span><div id="dStatus" class="font-medium"></div></div>
         </div>
       </div>
+
       <div class="mt-6">
         <h4 class="font-semibold text-jc-primary mb-2">Shipments</h4>
         <div class="scroll-table border border-jc-border rounded-lg">
@@ -196,6 +196,27 @@
           </table>
         </div>
       </div>
+
+      <!-- ITEMS TABLE WITH CATEGORY SUBTOTALS + ITEMS SUBTOTAL -->
+      <div class="mt-6">
+        <h4 class="font-semibold text-jc-primary mb-2">Items</h4>
+        <div class="scroll-table border border-jc-border rounded-lg">
+          <table class="min-w-full text-sm">
+            <thead class="bg-slate-100">
+              <tr>
+                <th class="text-left px-3 py-2">Category</th>
+                <th class="text-left px-3 py-2">Product</th>
+                <th class="text-right px-3 py-2">Unit</th>
+                <th class="text-right px-3 py-2">Qty</th>
+                <th class="text-right px-3 py-2">Line</th>
+              </tr>
+            </thead>
+            <tbody id="dItems" class="divide-y divide-jc-border"></tbody>
+            <tfoot id="dItemsFoot"></tfoot>
+          </table>
+        </div>
+      </div>
+
       <div class="mt-6">
         <h4 class="font-semibold text-jc-primary mb-2">Notes</h4>
         <div id="dNotes" class="text-sm text-jc-secondary whitespace-pre-wrap">—</div>
@@ -221,6 +242,7 @@
     const fmtUSD = n => n == null ? '—' : `$${(n/100).toFixed(2)}`;
     const fmtDate = s => s ? new Date(s).toLocaleString() : '—';
     const shortId = s => s ? s.substring(0,8) : '—';
+    function escapeHTML(s=''){ return s.replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
 
     function sumBoxes(order) {
       const rows = order.mooncake_preorder_shipments || [];
@@ -241,11 +263,21 @@
       PAGE = 1;
       const { data, error } = await sb
         .from('mooncake_preorders')
-        .select('id, customer_name, phone, email, pickup_date, notes, created_at, shipping_address, shipping_cost, total_cents, payment_status, mooncake_preorder_shipments(id,recipient_name,address,city,state,zip,qty,ship_cents,created_at)')
+        .select(`
+          id, customer_name, phone, email, pickup_date, notes, created_at,
+          shipping_address, shipping_cost, total_cents, payment_status,
+          mooncake_preorder_shipments(
+            id, recipient_name, address, city, state, zip, qty, ship_cents, created_at
+          ),
+          mooncake_preorder_items(
+            unit_amount, qty, product_id,
+            mooncake_products(name, category)
+          )
+        `)
         .order('created_at', { ascending: false });
       if (error) {
         console.error(error);
-        document.getElementById('ordersBody').innerHTML = `<tr><td colspan="11" class="px-4 py-8 text-center text-red-600">Error loading orders: ${error.message}</td></tr>`;
+        document.getElementById('ordersBody').innerHTML = `<tr><td colspan="11" class="px-4 py-8 text-center text-red-600">Error loading orders: ${escapeHTML(error.message)}</td></tr>`;
         return;
       }
       RAW = data || [];
@@ -276,7 +308,7 @@
         if (df && new Date(baseDate) < new Date(df)) return false;
         if (dt && new Date(baseDate) > new Date(dt + 'T23:59:59')) return false;
 
-        // search text in several fields
+        // search text
         if (q) {
           const hay = [
             o.customer_name, o.email, o.phone, o.shipping_address,
@@ -346,7 +378,6 @@
       document.getElementById('prevPage').disabled = PAGE <= 1;
       document.getElementById('nextPage').disabled = PAGE >= totalPages;
 
-      // attach click handlers for detail buttons
       body.querySelectorAll('button[data-open]').forEach(btn => btn.addEventListener('click', () => openDetail(btn.getAttribute('data-open'))));
     }
 
@@ -379,8 +410,9 @@
       document.getElementById('dStatus').innerHTML = renderStatus(o.payment_status);
       document.getElementById('dNotes').textContent = o.notes || '—';
 
-      const tbody = document.getElementById('dShipments');
-      tbody.innerHTML = '';
+      // Shipments table
+      const shipBody = document.getElementById('dShipments');
+      shipBody.innerHTML = '';
       for (const r of (o.mooncake_preorder_shipments||[])) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
@@ -390,8 +422,76 @@
           <td class="px-3 py-2 text-right">${fmtUSD(r.ship_cents)}</td>
           <td class="px-3 py-2">${fmtDate(r.created_at)}</td>
         `;
-        tbody.appendChild(tr);
+        shipBody.appendChild(tr);
       }
+
+      // Items table with category subtotals + items subtotal
+      const items = (o.mooncake_preorder_items || []).slice().sort((a,b) => {
+        const ac = (a?.mooncake_products?.category || '').localeCompare(b?.mooncake_products?.category || '');
+        if (ac !== 0) return ac;
+        return (a?.mooncake_products?.name || '').localeCompare(b?.mooncake_products?.name || '');
+      });
+
+      const itBody = document.getElementById('dItems');
+      const itFoot = document.getElementById('dItemsFoot');
+      itBody.innerHTML = '';
+      itFoot.innerHTML = '';
+
+      if (items.length === 0) {
+        itBody.innerHTML = `<tr><td colspan="5" class="px-3 py-3 text-jc-secondary">No items recorded for this order.</td></tr>`;
+        return;
+      }
+
+      let currentCat = null;
+      let catSum = 0;
+      let itemsSum = 0;
+
+      function pushCatSubtotalRow(cat, cents) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td colspan="4" class="px-3 py-2 text-right font-medium bg-slate-50">Subtotal — ${escapeHTML(cat)}</td>
+          <td class="px-3 py-2 text-right font-semibold bg-slate-50">${fmtUSD(cents)}</td>
+        `;
+        itBody.appendChild(tr);
+      }
+
+      for (const it of items) {
+        const name = it?.mooncake_products?.name || '';
+        const category = it?.mooncake_products?.category || 'Uncategorized';
+        const unit = it?.unit_amount || 0;
+        const qty = it?.qty || 0;
+        const line = unit * qty;
+
+        // Category change -> finish previous subtotal
+        if (currentCat !== null && category !== currentCat) {
+          pushCatSubtotalRow(currentCat, catSum);
+          catSum = 0;
+        }
+        currentCat = category;
+
+        itemsSum += line;
+        catSum += line;
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="px-3 py-2">${escapeHTML(category)}</td>
+          <td class="px-3 py-2">${escapeHTML(name)}</td>
+          <td class="px-3 py-2 text-right">${fmtUSD(unit)}</td>
+          <td class="px-3 py-2 text-right">${qty}</td>
+          <td class="px-3 py-2 text-right">${fmtUSD(line)}</td>
+        `;
+        itBody.appendChild(tr);
+      }
+      // last category subtotal
+      if (currentCat !== null) pushCatSubtotalRow(currentCat, catSum);
+
+      // Items subtotal footer
+      const ft = document.createElement('tr');
+      ft.innerHTML = `
+        <td colspan="4" class="px-3 py-2 text-right font-semibold">Items Subtotal</td>
+        <td class="px-3 py-2 text-right font-extrabold">${fmtUSD(itemsSum)}</td>
+      `;
+      itFoot.appendChild(ft);
     }
 
     document.getElementById('closeModal').addEventListener('click', ()=> document.getElementById('detailModal').classList.remove('show'));
@@ -410,9 +510,7 @@
 
     function debounce(fn, wait){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }}
 
-    function escapeHTML(s=''){ return s.replace(/[&<>"]+/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
-
-    // ====== Export ======
+    // ====== Export (orders-level CSV) ======
     function exportCSV(){
       const rows = [['Order ID','Customer','Email','Phone','Created','Pickup Date','Boxes','Shipments','Shipping Cents','Total Cents','Payment Status','Shipping Address','Notes']];
       for (const o of VIEW){
