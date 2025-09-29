@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Jeng Chi — Mooncake Orders Dashboard</title>
-  <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script>
@@ -53,7 +52,6 @@
   </style>
 </head>
 <body class="min-h-full">
-  <!-- Header -->
   <header class="bg-jc-bg border-b border-jc-border">
     <div class="max-w-7xl mx-auto px-4 md:px-8 py-6 flex items-center gap-4">
       <img src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg" alt="Jeng Chi" class="h-12 w-auto"/>
@@ -68,9 +66,7 @@
     </div>
   </header>
 
-  <!-- Filters & Stats -->
   <main class="max-w-7xl mx-auto px-4 md:px-8 py-8 space-y-6">
-    <!-- Filters -->
     <section class="card p-4 md:p-6">
       <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
         <label class="block">
@@ -97,7 +93,6 @@
       </div>
     </section>
 
-    <!-- KPIs -->
     <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
       <div class="card p-4">
         <div class="text-sm text-jc-secondary">Total Orders</div>
@@ -117,7 +112,6 @@
       </div>
     </section>
 
-    <!-- Table -->
     <section class="card p-0 overflow-hidden">
       <div class="scroll-table">
         <table class="min-w-full text-sm">
@@ -130,6 +124,7 @@
               <th class="text-right px-4 py-3 font-semibold">Total</th>
               <th class="text-left px-4 py-3 font-semibold">Drop-off</th>
               <th class="text-left px-4 py-3 font-semibold">Delivery Status</th>
+              <th class="text-left px-4 py-3 font-semibold">Last USPS Update</th><!-- NEW -->
               <th class="text-right px-4 py-3 font-semibold">USPS Spend $</th>
               <th class="text-left px-4 py-3 font-semibold">Tracking #</th>
               <th class="text-left px-4 py-3 font-semibold">Actions</th>
@@ -138,7 +133,7 @@
           </thead>
           <tbody id="ordersBody" class="divide-y divide-jc-border">
             <tr>
-              <td colspan="11" class="px-4 py-8 text-center text-jc-secondary" id="loadingRow">Loading orders…</td>
+              <td colspan="12" class="px-4 py-8 text-center text-jc-secondary" id="loadingRow">Loading orders…</td>
             </tr>
           </tbody>
         </table>
@@ -154,7 +149,7 @@
     </section>
   </main>
 
-  <!-- Detail Modal (read-only) -->
+  <!-- Detail Modal -->
   <div id="detailModal" class="modal">
     <div class="card max-w-3xl w-[95vw] p-6 bg-white">
       <div class="flex items-start gap-3">
@@ -199,15 +194,12 @@
     </div>
   </div>
 
-  <!-- Supabase -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
-    // ====== Supabase config (use your project ref & anon key) ======
     const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
     const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // Helper to call your Edge Function (secured USPS operations)
     async function callUsps(path, payload) {
       const res = await fetch(`${SUPABASE_URL}/functions/v1/usps/${path}`, {
         method: "POST",
@@ -224,18 +216,16 @@
       return data || {};
     }
 
-    // ====== State ======
-    let RAW = [];            // full dataset from DB
-    let VIEW = [];           // filtered/sorted view
+    let RAW = [];
+    let VIEW = [];
     let PAGE = 1;
     const PAGE_SIZE = 20;
 
-    // ====== Utils ======
     const fmtUSD = n => n == null ? '—' : `$${(n/100).toFixed(2)}`;
     const fmtDate = s => s ? new Date(s).toLocaleString() : '—';
     function centsFromInput(v){ const x = parseFloat(String(v||'').trim()); return isNaN(x)?0:Math.round(x*100); }
     function dollars(v){ return (v||0)/100; }
-    function escapeHTML(s=''){ return s.replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;","&gt;":">","\"":"&quot;"}[c])); }
+    function escapeHTML(s=''){ return s.replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
 
     function shipCents(order) {
       const rows = order.mooncake_preorder_shipments || [];
@@ -247,7 +237,19 @@
       return Math.max((order.total_cents||0) - ship, 0);
     }
 
-    // ====== Fetch ======
+    function renderLast(o){
+      if (!o.tracking_number) return '<span class="text-jc-secondary">—</span>';
+      const when = o.usps_last_event_at ? fmtDate(o.usps_last_event_at) : null;
+      const text = o.usps_last_status_text || o.usps_last_summary || '';
+      if (!when && !text) return `<span class="text-jc-secondary">No updates yet</span>`;
+      return `
+        <div class="leading-tight">
+          <div class="font-medium">${escapeHTML(text)}</div>
+          <div class="text-xs text-jc-secondary">${when ? when : ''}</div>
+        </div>
+      `;
+    }
+
     async function fetchOrders() {
       setLoading(true);
       PAGE = 1;
@@ -257,6 +259,7 @@
           id, customer_name, phone, email, created_at,
           shipping_address, shipping_cost, total_cents,
           delivery_status, usps_spend_cents, tracking_number,
+          usps_last_status_text, usps_last_summary, usps_last_event_at,
           mooncake_preorder_shipments(id, qty, ship_cents, created_at),
           mooncake_preorder_items(unit_amount, qty, product:mooncake_products ( name, category ))
         `)
@@ -265,7 +268,7 @@
       if (error) {
         console.error(error);
         document.getElementById('ordersBody').innerHTML =
-          `<tr><td colspan="11" class="px-4 py-8 text-center text-red-600">Error loading orders: ${escapeHTML(error.message)}</td></tr>`;
+          `<tr><td colspan="12" class="px-4 py-8 text-center text-red-600">Error loading orders: ${escapeHTML(error.message)}</td></tr>`;
         return;
       }
       RAW = data || [];
@@ -279,7 +282,6 @@
       row.style.display = isLoading ? '' : 'none';
     }
 
-    // ====== Filters ======
     function applyFilters() {
       const q = document.getElementById('q').value.trim().toLowerCase();
       const status = document.getElementById('status').value;
@@ -317,7 +319,6 @@
       document.getElementById('kpiUSPS').textContent = fmtUSD(totalUSPS);
     }
 
-    // ====== Table Rendering & Paging ======
     function renderPage() {
       const body = document.getElementById('ordersBody');
       body.innerHTML = '';
@@ -326,7 +327,7 @@
       const pageRows = VIEW.slice(start, start + PAGE_SIZE);
 
       if (pageRows.length === 0) {
-        body.innerHTML = `<tr><td colspan="11" class="px-4 py-8 text-center text-jc-secondary">No orders match your filters.</td></tr>`;
+        body.innerHTML = `<tr><td colspan="12" class="px-4 py-8 text-center text-jc-secondary">No orders match your filters.</td></tr>`;
       }
 
       for (const o of pageRows) {
@@ -353,6 +354,8 @@
               ${['pending','dropped_off','delivered'].map(v => `<option value="${v}" ${ (o.delivery_status||'pending')===v?'selected':'' }>${v.replace('_',' ')}</option>`).join('')}
             </select>
           </td>
+
+          <td class="cell"><div data-last="${o.id}">${renderLast(o)}</div></td> <!-- NEW -->
 
           <td class="cell text-right">
             <input data-usps="${o.id}" class="input w-28 text-right" inputmode="decimal" placeholder="0.00"
@@ -382,7 +385,6 @@
       document.getElementById('prevPage').disabled = PAGE <= 1;
       document.getElementById('nextPage').disabled = PAGE >= totalPages;
 
-      // Row events
       body.querySelectorAll('input[data-dropoff]').forEach(chk => {
         chk.addEventListener('change', () => {
           const id = chk.getAttribute('data-dropoff');
@@ -411,9 +413,9 @@
       const trackInput = body.querySelector(`input[data-track="${id}"]`);
       const resultEl  = body.querySelector(`span[data-saveresult="${id}"]`);
 
-      const delivery_status = statusSel.value;                      // 'pending' | 'dropped_off' | 'delivered'
-      const usps_spend_cents = centsFromInput(uspsInput.value);    // in cents from UI
-      const usps_spend = usps_spend_cents / 100;                   // dollars for function
+      const delivery_status = statusSel.value;
+      const usps_spend_cents = centsFromInput(uspsInput.value);
+      const usps_spend = usps_spend_cents / 100;
       const tracking_number = (trackInput.value||'').trim();
       const drop_off = delivery_status === 'dropped_off';
 
@@ -421,21 +423,16 @@
       resultEl.className = 'text-xs text-jc-secondary ml-2';
 
       try {
-        // Save to DB via Edge Function
         await callUsps('save-shipping', {
           preorder_id: id,
           drop_off,
           delivery_status,
-          usps_spend,        // dollars
+          usps_spend,
           tracking_number,
         });
 
-        // Try to refresh USPS tracking if we have a tracking number
-        if (tracking_number) {
-          try { await callUsps('refresh-tracking', { preorder_id: id }); } catch {}
-        }
+        if (tracking_number) { try { await handleRefresh(id, true); } catch {} }
 
-        // Update local cache & KPIs
         const row = RAW.find(r=>r.id===id);
         if (row){
           row.delivery_status = delivery_status;
@@ -454,23 +451,33 @@
       }
     }
 
-    async function handleRefresh(id){
+    async function handleRefresh(id, silent=false){
       const resultEl  = document.querySelector(`span[data-saveresult="${id}"]`);
-      if (resultEl) { resultEl.textContent = 'Refreshing…'; resultEl.className = 'text-xs text-jc-secondary ml-2'; }
+      if (!silent && resultEl) { resultEl.textContent = 'Refreshing…'; resultEl.className = 'text-xs text-jc-secondary ml-2'; }
 
       try {
         const out = await callUsps('refresh-tracking', { preorder_id: id });
-        if (out && out.status) {
-          const row = RAW.find(r=>r.id===id);
-          if (row) row.delivery_status = out.status;
-          const sel = document.querySelector(`select[data-status="${id}"]`);
-          if (sel) sel.value = out.status;
-          updateKPIs();
+        // Expected response from your Edge Function:
+        // { ok:true, status, lastText, lastSummary, eventTime }
+        const row = RAW.find(r=>r.id===id);
+        if (row) {
+          row.delivery_status = out.status || row.delivery_status;
+          row.usps_last_status_text = out.lastText ?? row.usps_last_status_text;
+          row.usps_last_summary = out.lastSummary ?? row.usps_last_summary;
+          row.usps_last_event_at = out.eventTime || row.usps_last_event_at;
         }
-        if (resultEl) { resultEl.textContent = 'Updated'; resultEl.className = 'text-xs text-jc-success ml-2'; setTimeout(()=>{ resultEl.textContent=''; }, 1500); }
+        const sel = document.querySelector(`select[data-status="${id}"]`);
+        if (sel && out.status) sel.value = out.status;
+
+        const lastCell = document.querySelector(`[data-last="${id}"]`);
+        if (lastCell && row) lastCell.innerHTML = renderLast(row);
+
+        updateKPIs();
+
+        if (!silent && resultEl) { resultEl.textContent = 'Updated'; resultEl.className = 'text-xs text-jc-success ml-2'; setTimeout(()=>{ resultEl.textContent=''; }, 1500); }
       } catch (err){
         console.error(err);
-        if (resultEl) { resultEl.textContent = 'Error'; resultEl.className = 'text-xs text-red-600 ml-2'; }
+        if (!silent && resultEl) { resultEl.textContent = 'Error'; resultEl.className = 'text-xs text-red-600 ml-2'; }
       }
     }
 
@@ -483,7 +490,6 @@
       return `<span class="${cls}">${(val||'pending').replace('_',' ')}</span>`;
     }
 
-    // ====== Detail Modal (read-only) ======
     function openDetail(id) {
       const o = RAW.find(x => x.id === id);
       if (!o) return;
@@ -497,7 +503,6 @@
       document.getElementById('dTotal').textContent = fmtUSD(o.total_cents);
       document.getElementById('dStatus').innerHTML = renderStatusBadge(o.delivery_status);
 
-      // Items grouped with subtotals
       const items = (o.mooncake_preorder_items || []).slice().sort((a,b) => {
         const ac = (a?.product?.category || '').localeCompare(b?.product?.category || '');
         if (ac !== 0) return ac;
@@ -566,7 +571,6 @@
     document.getElementById('closeModal').addEventListener('click', ()=> document.getElementById('detailModal').classList.remove('show'));
     document.getElementById('detailModal').addEventListener('click', (e)=>{ if (e.target.id==='detailModal') e.currentTarget.classList.remove('show'); });
 
-    // ====== Events ======
     document.getElementById('btnRefresh').addEventListener('click', fetchOrders);
     document.getElementById('btnExport').addEventListener('click', exportCSV);
     document.getElementById('prevPage').addEventListener('click', ()=>{ if (PAGE>1){ PAGE--; renderPage(); }});
@@ -579,9 +583,8 @@
 
     function debounce(fn, wait){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); }}
 
-    // ====== Export (orders-level CSV) ======
     function exportCSV(){
-      const rows = [['Order ID','Customer','Email','Phone','Created','Shipping Cents','Total Cents','Delivery Status','USPS Spend Cents','Tracking #','Shipping Address']];
+      const rows = [['Order ID','Customer','Email','Phone','Created','Shipping Cents','Total Cents','Delivery Status','USPS Spend Cents','Tracking #','Last Status','Last Event At','Shipping Address']];
       for (const o of VIEW){
         rows.push([
           o.id,
@@ -594,6 +597,8 @@
           o.delivery_status||'pending',
           String(o.usps_spend_cents||0),
           (o.tracking_number||''),
+          (o.usps_last_status_text || o.usps_last_summary || ''),
+          o.usps_last_event_at ? new Date(o.usps_last_event_at).toISOString() : '',
           (o.shipping_address||'').replace(/\n/g,' ')
         ]);
       }
@@ -606,7 +611,6 @@
       URL.revokeObjectURL(a.href);
     }
 
-    // ====== Init ======
     fetchOrders();
   </script>
 
