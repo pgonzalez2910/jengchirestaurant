@@ -75,7 +75,7 @@
       <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
         <label class="block">
           <span class="text-sm font-medium text-jc-secondary">Search</span>
-          <input id="q" class="mt-1 w-full rounded-lg border border-jc-border px-3 py-2" placeholder="Name, email, phone, city, state, zip"/>
+          <input id="q" class="mt-1 w-full rounded-lg border border-jc-border px-3 py-2" placeholder="Name, email, phone, city, state, zip, tracking"/>
         </label>
         <label class="block">
           <span class="text-sm font-medium text-jc-secondary">Status</span>
@@ -207,6 +207,23 @@
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
     const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+    // Helper to call your Edge Function (secured USPS operations)
+    async function callUsps(path, payload) {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/usps/${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify(payload),
+      });
+      let data = null;
+      try { data = await res.json(); } catch {}
+      if (!res.ok) throw new Error((data && (data.error || data.message)) || res.statusText);
+      return data || {};
+    }
+
     // ====== State ======
     let RAW = [];            // full dataset from DB
     let VIEW = [];           // filtered/sorted view
@@ -218,7 +235,7 @@
     const fmtDate = s => s ? new Date(s).toLocaleString() : '—';
     function centsFromInput(v){ const x = parseFloat(String(v||'').trim()); return isNaN(x)?0:Math.round(x*100); }
     function dollars(v){ return (v||0)/100; }
-    function escapeHTML(s=''){ return s.replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+    function escapeHTML(s=''){ return s.replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;","&gt;":">","\"":"&quot;"}[c])); }
 
     function shipCents(order) {
       const rows = order.mooncake_preorder_shipments || [];
@@ -247,7 +264,6 @@
 
       if (error) {
         console.error(error);
-        // FIX: Removed extraneous backslash (\) which was escaping the interpolation marker ($)
         document.getElementById('ordersBody').innerHTML =
           `<tr><td colspan="11" class="px-4 py-8 text-center text-red-600">Error loading orders: ${escapeHTML(error.message)}</td></tr>`;
         return;
@@ -271,15 +287,12 @@
       const dt = document.getElementById('dateTo').value;
 
       VIEW = RAW.filter(o => {
-        // delivery status filter
         if (status && (o.delivery_status || '').toLowerCase() !== status.toLowerCase()) return false;
 
-        // date range (created_at)
         const baseDate = o.created_at;
         if (df && new Date(baseDate) < new Date(df)) return false;
         if (dt && new Date(baseDate) > new Date(dt + 'T23:59:59')) return false;
 
-        // search text
         if (q) {
           const hay = [
             o.customer_name, o.email, o.phone, o.shipping_address, o.tracking_number
@@ -352,6 +365,7 @@
 
           <td class="cell">
             <button class="btn btn-primary" data-save="${o.id}">Save</button>
+            <button class="btn ml-2" data-refresh="${o.id}">Refresh</button>
             <span class="text-xs text-jc-secondary ml-2" data-saveresult="${o.id}"></span>
           </td>
 
@@ -381,6 +395,10 @@
         btn.addEventListener('click', () => handleSave(btn.getAttribute('data-save')));
       });
 
+      body.querySelectorAll('button[data-refresh]').forEach(btn => {
+        btn.addEventListener('click', () => handleRefresh(btn.getAttribute('data-refresh')));
+      });
+
       body.querySelectorAll('button[data-open]').forEach(btn =>
         btn.addEventListener('click', () => openDetail(btn.getAttribute('data-open')))
       );
@@ -393,36 +411,67 @@
       const trackInput = body.querySelector(`input[data-track="${id}"]`);
       const resultEl  = body.querySelector(`span[data-saveresult="${id}"]`);
 
-      const delivery_status = statusSel.value;
-      const usps_spend_cents = centsFromInput(uspsInput.value);
+      const delivery_status = statusSel.value;                      // 'pending' | 'dropped_off' | 'delivered'
+      const usps_spend_cents = centsFromInput(uspsInput.value);    // in cents from UI
+      const usps_spend = usps_spend_cents / 100;                   // dollars for function
       const tracking_number = (trackInput.value||'').trim();
+      const drop_off = delivery_status === 'dropped_off';
 
       resultEl.textContent = 'Saving…';
+      resultEl.className = 'text-xs text-jc-secondary ml-2';
 
-      const { error } = await sb
-        .from('mooncake_preorders')
-        .update({ delivery_status, usps_spend_cents, tracking_number })
-        .eq('id', id);
+      try {
+        // Save to DB via Edge Function
+        await callUsps('save-shipping', {
+          preorder_id: id,
+          drop_off,
+          delivery_status,
+          usps_spend,        // dollars
+          tracking_number,
+        });
 
-      if (error){
-        console.error(error);
+        // Try to refresh USPS tracking if we have a tracking number
+        if (tracking_number) {
+          try { await callUsps('refresh-tracking', { preorder_id: id }); } catch {}
+        }
+
+        // Update local cache & KPIs
+        const row = RAW.find(r=>r.id===id);
+        if (row){
+          row.delivery_status = delivery_status;
+          row.usps_spend_cents = usps_spend_cents;
+          row.tracking_number = tracking_number;
+        }
+        updateKPIs();
+
+        resultEl.textContent = 'Saved';
+        resultEl.className = 'text-xs text-jc-success ml-2';
+        setTimeout(()=>{ resultEl.textContent=''; }, 1500);
+      } catch (err){
+        console.error(err);
         resultEl.textContent = 'Error';
         resultEl.className = 'text-xs text-red-600 ml-2';
-        return;
       }
+    }
 
-      // Update local cache so KPIs refresh without refetch
-      const row = RAW.find(r=>r.id===id);
-      if (row){
-        row.delivery_status = delivery_status;
-        row.usps_spend_cents = usps_spend_cents;
-        row.tracking_number = tracking_number;
+    async function handleRefresh(id){
+      const resultEl  = document.querySelector(`span[data-saveresult="${id}"]`);
+      if (resultEl) { resultEl.textContent = 'Refreshing…'; resultEl.className = 'text-xs text-jc-secondary ml-2'; }
+
+      try {
+        const out = await callUsps('refresh-tracking', { preorder_id: id });
+        if (out && out.status) {
+          const row = RAW.find(r=>r.id===id);
+          if (row) row.delivery_status = out.status;
+          const sel = document.querySelector(`select[data-status="${id}"]`);
+          if (sel) sel.value = out.status;
+          updateKPIs();
+        }
+        if (resultEl) { resultEl.textContent = 'Updated'; resultEl.className = 'text-xs text-jc-success ml-2'; setTimeout(()=>{ resultEl.textContent=''; }, 1500); }
+      } catch (err){
+        console.error(err);
+        if (resultEl) { resultEl.textContent = 'Error'; resultEl.className = 'text-xs text-red-600 ml-2'; }
       }
-      updateKPIs();
-
-      resultEl.textContent = 'Saved';
-      resultEl.className = 'text-xs text-jc-success ml-2';
-      setTimeout(()=>{ resultEl.textContent=''; }, 1500);
     }
 
     function renderStatusBadge(val) {
