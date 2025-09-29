@@ -36,8 +36,9 @@
     .btn-primary { background:linear-gradient(90deg,#FBD38D,#C0A06D); color:#2D3748; border:none; }
     .badge { font-size:.75rem; padding:.25rem .5rem; border-radius:.5rem; border:1px solid #E5E7EB; }
     .input { border:1px solid #E2E8F0; border-radius:.5rem; padding:.45rem .6rem; width:100%; }
-    /* Full width, no horizontal scroll */
-    .container { max-width: 1440px; }
+
+    /* Full width, no left-right scroll on typical screens */
+    .container { max-width: 1400px; }
     table { table-layout: fixed; width: 100%; }
     th, td { vertical-align: top; }
     .nowrap { white-space: nowrap; }
@@ -125,11 +126,11 @@
             <th class="px-3 py-3 text-left w-[220px]">Contact</th>
             <th class="px-3 py-3 text-right w-[110px]">Shipping</th>
             <th class="px-3 py-3 text-right w-[110px]">Total</th>
-            <th class="px-3 py-3 text-left w-[110px]">Drop-off</th>
+            <th class="px-3 py-3 text-left w-[120px]">Drop-off</th>
             <th class="px-3 py-3 text-left w-[150px]">Delivery Status</th>
             <th class="px-3 py-3 text-right w-[120px]">USPS Spend $</th>
             <th class="px-3 py-3 text-left w-[220px]">Tracking #</th>
-            <th class="px-3 py-3 text-left w-[150px]">Actions</th>
+            <th class="px-3 py-3 text-left w-[160px]">Actions</th>
             <th class="px-3 py-3 text-left">Last USPS Update</th>
           </tr>
         </thead>
@@ -161,9 +162,10 @@
 
     const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // function endpoints (try both patterns)
-    const USPS_FN_BASE = `${SUPABASE_URL}/functions/v1/usps`;
-    const USPS_TRACK_FN = `${SUPABASE_URL}/functions/v1/usps-track`;
+    // function endpoints (we will try these in order)
+    const USPS_REFRESH_FN = `${SUPABASE_URL}/functions/v1/usps/refresh-tracking`;
+    const USPS_TRACK_FN   = `${SUPABASE_URL}/functions/v1/usps-track`;
+    const USPS_FALLBACK   = `${SUPABASE_URL}/functions/v1/usps`;
 
     // state
     let RAW = [];
@@ -176,10 +178,16 @@
     const fmtDate = s => s ? new Date(s).toLocaleString() : '—';
     function centsFromInput(v){ const x = parseFloat(String(v||'').trim()); return isNaN(x)?0:Math.round(x*100); }
     function dollars(v){ return (v||0)/100; }
-    function escapeHTML(s=''){ return s.replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;","&gt;":"&gt;","\"":"&quot;"}[c])); }
+    function escapeHTML(s=''){
+      return s.replace(/[&<>"]/g, c => ({
+        "&":"&amp;",
+        "<":"&lt;",
+        ">":"&gt;",
+        "\"":"&quot;"
+      }[c]));
+    }
 
     function shipCents(order) {
-      // shipping_cost may be stored on order or per-shipment
       const rows = order.mooncake_preorder_shipments || [];
       const viaShipments = rows.reduce((t, r) => t + (r.ship_cents || 0), 0);
       return order.shipping_cost ?? viaShipments;
@@ -363,7 +371,7 @@
 
       resultEl.textContent = 'Saving…';
       try {
-        // First, persist directly to the table
+        // persist to the table
         const { error } = await sb
           .from('mooncake_preorders')
           .update({
@@ -375,7 +383,7 @@
           .eq('id', id);
         if (error) throw error;
 
-        // Keep local cache updated
+        // update local cache
         const row = RAW.find(r=>r.id===id);
         if (row){
           row.drop_off = payload.drop_off;
@@ -385,8 +393,8 @@
         }
         updateKPIs();
 
-        // Optionally, call your Edge Function `/usps/save-shipping` if you want server-side logic too
-        await callUsps(`${USPS_FN_BASE}/save-shipping`, payload).catch(()=>{ /* ignore if route not present */ });
+        // optional server-side hook (ignore if not present)
+        await callUsps(`${SUPABASE_URL}/functions/v1/usps/save-shipping`, payload).catch(()=>{});
 
         resultEl.textContent = 'Saved';
         resultEl.className = 'text-jc-success';
@@ -398,64 +406,114 @@
       }
     }
 
-    // Refresh USPS (per row)
+    // Refresh USPS (per row) — tries 3 endpoints and renders immediately if response contains details
     async function handleRefresh(id){
       const row = RAW.find(r=>r.id===id);
       const resultEl = document.querySelector(`span[data-refreshresult="${id}"]`);
       const lastCell = document.querySelector(`td[data-last="${id}"]`);
+
+      if (!row?.tracking_number) {
+        resultEl.textContent = 'No tracking #';
+        resultEl.className = 'text-red-600';
+        setTimeout(()=>{ resultEl.textContent=''; }, 2500);
+        return;
+      }
+
       resultEl.textContent = 'Refreshing…';
+      resultEl.className = 'text-jc-secondary';
+
+      const urls = [USPS_REFRESH_FN, USPS_TRACK_FN, USPS_FALLBACK];
+      let out = null, lastErr = null;
+
+      for (const url of urls) {
+        try {
+          out = await callUsps(url, { preorder_id: id });
+          if (out && out.ok !== false && !out.error) break;
+          lastErr = out;
+        } catch (e) {
+          lastErr = { error:true, message: String(e) };
+        }
+      }
 
       try {
-        // Prefer /usps/refresh-tracking; fall back to /usps-track if not found
-        const body = { preorder_id: id };
-        let out = await callUsps(`${USPS_FN_BASE}/refresh-tracking`, body);
-        if (!out || out.error || out.status === 404) {
-          out = await callUsps(USPS_TRACK_FN, body);
+        // render details from the function response immediately if available
+        if (out && (out.lastText || out.statusText || out.eventTime)) {
+          const immediateText = out.lastText || out.statusText || '';
+          const immediateTime = out.eventTime ? new Date(out.eventTime).toLocaleString() : '';
+          if (immediateText || immediateTime) {
+            lastCell.innerHTML =
+              `<div class="text-xs text-jc-secondary">${immediateTime || '—'}</div>
+               <div class="truncate">${escapeHTML(immediateText)}</div>`;
+          }
         }
 
-        // Re-load the one order to show latest text/time
+        // requery to pick up persisted values
         const { data, error } = await sb
           .from('mooncake_preorders')
           .select('usps_last_status_text, usps_last_event_at')
           .eq('id', id)
           .single();
-        if (error) throw error;
 
-        const lastText = data?.usps_last_status_text || '';
-        const lastTime = data?.usps_last_event_at ? new Date(data.usps_last_event_at).toLocaleString() : '';
+        if (!error) {
+          const dbText = data?.usps_last_status_text || '';
+          const dbTime = data?.usps_last_event_at ? new Date(data.usps_last_event_at).toLocaleString() : '';
+          if (dbText || dbTime) {
+            lastCell.innerHTML =
+              `<div class="text-xs text-jc-secondary">${dbTime || '—'}</div>
+               <div class="truncate">${escapeHTML(dbText)}</div>`;
+          }
+        }
 
-        lastCell.innerHTML = (lastText || lastTime)
-          ? `<div class="text-xs text-jc-secondary">${lastTime || '—'}</div><div class="truncate">${escapeHTML(lastText)}</div>`
-          : `<span class="text-xs text-jc-secondary">No updates yet</span>`;
-
-        resultEl.textContent = 'Updated';
-        resultEl.className = 'text-jc-success';
+        if (out && out.ok === false) {
+          resultEl.textContent = out.message || 'Not updated';
+          resultEl.className = 'text-red-600';
+        } else if (error && !(data?.usps_last_status_text || data?.usps_last_event_at)) {
+          resultEl.textContent = 'No updates yet';
+          resultEl.className = 'text-jc-secondary';
+        } else {
+          resultEl.textContent = 'Updated';
+          resultEl.className = 'text-jc-success';
+        }
         setTimeout(()=>{ resultEl.textContent=''; }, 1500);
       } catch (err){
         console.error(err);
-        resultEl.textContent = 'Error';
+        const msg = (lastErr?.text || lastErr?.message || '').slice(0,120) || 'Error';
+        resultEl.textContent = msg;
         resultEl.className = 'text-red-600';
         setTimeout(()=>{ resultEl.textContent=''; }, 2500);
       }
     }
 
-    // helper: call Edge Function with proper headers & CORS handling
+    // call Edge Function with proper headers + timeout
     async function callUsps(url, body){
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
-        },
-        body: JSON.stringify(body)
-      });
-      // If CORS blocks, this will throw "Failed to fetch" before here.
-      if (!res.ok) {
-        // return lightweight object so UI can gracefully fall back
-        return { error: true, status: res.status, text: await res.text().catch(()=> '') };
+      const ctrl = new AbortController();
+      const t = setTimeout(()=>ctrl.abort(), 10000);
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          mode: 'cors',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+          },
+          body: JSON.stringify(body),
+          signal: ctrl.signal
+        });
+        clearTimeout(t);
+
+        const text = await res.text();
+        let json = {};
+        try { json = text ? JSON.parse(text) : {}; } catch { /* keep text */ }
+
+        if (!res.ok) {
+          return { error: true, ok: false, status: res.status, text, message: json?.message || text || 'Request failed' };
+        }
+        return json;
+      } catch (e) {
+        clearTimeout(t);
+        return { error: true, ok: false, message: String(e) };
       }
-      return res.json().catch(()=> ({}));
     }
 
     // export CSV
