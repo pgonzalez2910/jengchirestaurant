@@ -37,11 +37,15 @@
     .badge { font-size:.75rem; padding:.25rem .5rem; border-radius:.5rem; border:1px solid #E5E7EB; }
     .input { border:1px solid #E2E8F0; border-radius:.5rem; padding:.45rem .6rem; width:100%; }
 
-    /* Full width, no left-right scroll on typical screens */
     .container { max-width: 1400px; }
     table { table-layout: fixed; width: 100%; }
     th, td { vertical-align: top; }
     .nowrap { white-space: nowrap; }
+
+    /* Modal */
+    .modal-backdrop{position:fixed;inset:0;background:rgba(2,6,23,.55);backdrop-filter:blur(2px);}
+    .modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+    .modal-card{max-width:900px;width:95%;border-radius:1rem;border:1px solid #E2E8F0;background:#fff;box-shadow:0 20px 40px rgba(2,6,23,.25);}
   </style>
 </head>
 <body class="min-h-full overflow-x-hidden">
@@ -122,7 +126,7 @@
         <thead class="bg-slate-100 border-b border-jc-border">
           <tr>
             <th class="px-3 py-3 text-left w-[140px]">Created</th>
-            <th class="px-3 py-3 text-left w-[160px]">Customer</th>
+            <th class="px-3 py-3 text-left w-[180px]">Customer</th>
             <th class="px-3 py-3 text-left w-[220px]">Contact</th>
             <th class="px-3 py-3 text-right w-[110px]">Shipping</th>
             <th class="px-3 py-3 text-right w-[110px]">Total</th>
@@ -130,7 +134,7 @@
             <th class="px-3 py-3 text-left w-[150px]">Delivery Status</th>
             <th class="px-3 py-3 text-right w-[120px]">USPS Spend $</th>
             <th class="px-3 py-3 text-left w-[220px]">Tracking #</th>
-            <th class="px-3 py-3 text-left w-[190px]">Actions</th>
+            <th class="px-3 py-3 text-left w-[160px]">Actions</th>
             <th class="px-3 py-3 text-left">Last USPS Update</th>
           </tr>
         </thead>
@@ -153,19 +157,15 @@
   </main>
 
   <!-- VIEW MODAL -->
-  <div id="viewModal" class="fixed inset-0 z-50 hidden">
-    <div class="absolute inset-0 bg-black/40"></div>
-    <div class="absolute inset-0 flex items-center justify-center p-4">
-      <div class="w-full max-w-3xl bg-white rounded-xl shadow-2xl border border-jc-border overflow-hidden">
-        <div class="flex items-center justify-between px-5 py-3 border-b">
-          <h3 id="vmTitle" class="text-lg font-semibold text-jc-primary">Order</h3>
-          <div class="flex items-center gap-2">
-            <button id="vmPrint" class="btn">Print</button>
-            <button id="vmClose" class="btn">Close</button>
-          </div>
-        </div>
-
-        <div id="vmBody" class="p-5 space-y-5 text-sm"></div>
+  <div id="viewModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-card max-h-[90vh] overflow-y-auto">
+      <div class="p-5 border-b border-jc-border flex items-center justify-between">
+        <h3 id="vmTitle" class="text-xl font-bold text-jc-primary">Order</h3>
+        <button class="btn" data-close>&times; Close</button>
+      </div>
+      <div id="vmBody" class="p-5 space-y-5">
+        <!-- filled by JS -->
       </div>
     </div>
   </div>
@@ -180,11 +180,6 @@
 
     const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    // function endpoints (we will try these in order)
-    const USPS_REFRESH_FN = `${SUPABASE_URL}/functions/v1/usps/refresh-tracking`;
-    const USPS_TRACK_FN   = `${SUPABASE_URL}/functions/v1/usps-track`;
-    const USPS_FALLBACK   = `${SUPABASE_URL}/functions/v1/usps`;
-
     // state
     let RAW = [];
     let VIEW = [];
@@ -197,12 +192,7 @@
     function centsFromInput(v){ const x = parseFloat(String(v||'').trim()); return isNaN(x)?0:Math.round(x*100); }
     function dollars(v){ return (v||0)/100; }
     function escapeHTML(s=''){
-      return s.replace(/[&<>"]/g, c => ({
-        "&":"&amp;",
-        "<":"&lt;",
-        ">":"&gt;",
-        "\"":"&quot;"
-      }[c]));
+      return s.replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
     }
 
     function shipCents(order) {
@@ -308,7 +298,11 @@
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td class="px-3 py-3">${fmtDate(o.created_at)}</td>
-          <td class="px-3 py-3"><div class="font-medium">${escapeHTML(o.customer_name||'')}</div></td>
+          <td class="px-3 py-3">
+            <a href="#" class="font-medium underline decoration-1 hover:decoration-2 text-jc-primary" data-view="${o.id}">
+              ${escapeHTML(o.customer_name||'')}
+            </a>
+          </td>
           <td class="px-3 py-3">
             <div class="truncate">${escapeHTML(o.email||'—')}</div>
             <div class="text-xs text-jc-secondary">${escapeHTML(o.phone||'')}</div>
@@ -337,15 +331,13 @@
           <td class="px-3 py-3">
             <div class="flex items-center gap-2">
               <button class="btn btn-primary" data-save="${o.id}">Save</button>
-              <button class="btn" data-refresh="${o.id}">Refresh</button>
               <button class="btn" data-view="${o.id}">View</button>
             </div>
             <div class="text-xs mt-1">
               <span class="text-jc-secondary" data-saveresult="${o.id}"></span>
-              <span class="text-jc-secondary" data-refreshresult="${o.id}"></span>
             </div>
           </td>
-          <td class="px-3 py-3" data-last="${o.id}">
+          <td class="px-3 py-3">
             ${
               (lastText || lastTime)
                 ? `<div class="text-xs text-jc-secondary">${lastTime || '—'}</div><div class="truncate">${escapeHTML(lastText)}</div>`
@@ -366,57 +358,43 @@
       body.querySelectorAll('button[data-save]').forEach(btn =>
         btn.addEventListener('click', () => handleSave(btn.getAttribute('data-save')))
       );
-      body.querySelectorAll('button[data-refresh]').forEach(btn =>
-        btn.addEventListener('click', () => handleRefresh(btn.getAttribute('data-refresh')))
-      );
-      body.querySelectorAll('button[data-view]').forEach(btn =>
-        btn.addEventListener('click', () => openView(btn.getAttribute('data-view')))
+      // both the "View" button AND clicking the customer name open the modal
+      body.querySelectorAll('[data-view]').forEach(el =>
+        el.addEventListener('click', (e) => { e.preventDefault(); openView(el.getAttribute('data-view')); })
       );
     }
 
-    // Save row
+    // Save row (USPS API calls removed)
     async function handleSave(id){
-      const bodyEl = document.getElementById('ordersBody');
-      const statusSel = bodyEl.querySelector(`select[data-status="${id}"]`);
-      const dropChk    = bodyEl.querySelector(`input[data-dropoff="${id}"]`);
-      const uspsInput  = bodyEl.querySelector(`input[data-usps="${id}"]`);
-      const trackInput = bodyEl.querySelector(`input[data-track="${id}"]`);
-      const resultEl   = bodyEl.querySelector(`span[data-saveresult="${id}"]`);
-
-      const payload = {
-        preorder_id: id,
-        drop_off: !!dropChk?.checked,
-        delivery_status: statusSel?.value || 'pending',
-        usps_spend: parseFloat(uspsInput?.value || '0') || 0, // dollars
-        tracking_number: (trackInput?.value||'').trim()
-      };
+      const bodyEl   = document.getElementById('ordersBody');
+      const statusSel= bodyEl.querySelector(`select[data-status="${id}"]`);
+      const dropChk  = bodyEl.querySelector(`input[data-dropoff="${id}"]`);
+      const uspsInput= bodyEl.querySelector(`input[data-usps="${id}"]`);
+      const trackInp = bodyEl.querySelector(`input[data-track="${id}"]`);
+      const resultEl = bodyEl.querySelector(`span[data-saveresult="${id}"]`);
 
       resultEl.textContent = 'Saving…';
       try {
-        // persist to the table
         const { error } = await sb
           .from('mooncake_preorders')
           .update({
-            drop_off: payload.drop_off,
-            delivery_status: payload.delivery_status,
-            usps_spend_cents: Math.round(payload.usps_spend * 100),
-            tracking_number: payload.tracking_number
+            drop_off: !!dropChk?.checked,
+            delivery_status: statusSel?.value || 'pending',
+            usps_spend_cents: Math.round((parseFloat(uspsInput?.value || '0') || 0) * 100),
+            tracking_number: (trackInp?.value||'').trim()
           })
           .eq('id', id);
         if (error) throw error;
 
-        // update local cache
+        // update cache
         const row = RAW.find(r=>r.id===id);
         if (row){
-          row.drop_off = payload.drop_off;
-          row.delivery_status = payload.delivery_status;
-          row.usps_spend_cents = Math.round(payload.usps_spend * 100);
-          row.tracking_number  = payload.tracking_number;
+          row.drop_off = !!dropChk?.checked;
+          row.delivery_status = statusSel?.value || 'pending';
+          row.usps_spend_cents = Math.round((parseFloat(uspsInput?.value || '0') || 0) * 100);
+          row.tracking_number  = (trackInp?.value||'').trim();
         }
         updateKPIs();
-
-        // optional server-side hook (ignore if not present)
-        await callUsps(`${SUPABASE_URL}/functions/v1/usps/save-shipping`, payload).catch(()=>{});
 
         resultEl.textContent = 'Saved';
         resultEl.className = 'text-jc-success';
@@ -428,229 +406,101 @@
       }
     }
 
-    // Refresh USPS (per row)
-    async function handleRefresh(id){
-      const row = RAW.find(r=>r.id===id);
-      const resultEl = document.querySelector(`span[data-refreshresult="${id}"]`);
-      const lastCell = document.querySelector(`td[data-last="${id}"]`);
+    // ---------- VIEW MODAL ----------
+    const vm = document.getElementById('viewModal');
+    const vmTitle = document.getElementById('vmTitle');
+    const vmBody  = document.getElementById('vmBody');
+    vm.querySelectorAll('[data-close]').forEach(b=> b.addEventListener('click', closeView));
+    document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') closeView(); });
 
-      if (!row?.tracking_number) {
-        resultEl.textContent = 'No tracking #';
-        resultEl.className = 'text-red-600';
-        setTimeout(()=>{ resultEl.textContent=''; }, 2500);
-        return;
-      }
-
-      resultEl.textContent = 'Refreshing…';
-      resultEl.className = 'text-jc-secondary';
-
-      const urls = [USPS_REFRESH_FN, USPS_TRACK_FN, USPS_FALLBACK];
-      let out = null, lastErr = null;
-
-      for (const url of urls) {
-        try {
-          out = await callUsps(url, { preorder_id: id });
-          if (out && out.ok !== false && !out.error) break;
-          lastErr = out;
-        } catch (e) {
-          lastErr = { error:true, message: String(e) };
-        }
-      }
-
-      try {
-        // render details from the function response immediately if available
-        if (out && (out.lastText || out.statusText || out.eventTime)) {
-          const immediateText = out.lastText || out.statusText || '';
-          const immediateTime = out.eventTime ? new Date(out.eventTime).toLocaleString() : '';
-          if (immediateText || immediateTime) {
-            lastCell.innerHTML =
-              `<div class="text-xs text-jc-secondary">${immediateTime || '—'}</div>
-               <div class="truncate">${escapeHTML(immediateText)}</div>`;
-          }
-        }
-
-        // requery to pick up persisted values
-        const { data, error } = await sb
-          .from('mooncake_preorders')
-          .select('usps_last_status_text, usps_last_event_at')
-          .eq('id', id)
-          .single();
-
-        if (!error) {
-          const dbText = data?.usps_last_status_text || '';
-          const dbTime = data?.usps_last_event_at ? new Date(data.usps_last_event_at).toLocaleString() : '';
-          if (dbText || dbTime) {
-            lastCell.innerHTML =
-              `<div class="text-xs text-jc-secondary">${dbTime || '—'}</div>
-               <div class="truncate">${escapeHTML(dbText)}</div>`;
-          }
-        }
-
-        if (out && out.ok === false) {
-          resultEl.textContent = out.message || 'Not updated';
-          resultEl.className = 'text-red-600';
-        } else if (error && !(data?.usps_last_status_text || data?.usps_last_event_at)) {
-          resultEl.textContent = 'No updates yet';
-          resultEl.className = 'text-jc-secondary';
-        } else {
-          resultEl.textContent = 'Updated';
-          resultEl.className = 'text-jc-success';
-        }
-        setTimeout(()=>{ resultEl.textContent=''; }, 1500);
-      } catch (err){
-        console.error(err);
-        const msg = (lastErr?.text || lastErr?.message || '').slice(0,120) || 'Error';
-        resultEl.textContent = msg;
-        resultEl.className = 'text-red-600';
-        setTimeout(()=>{ resultEl.textContent=''; }, 2500);
-      }
-    }
-
-    // VIEW: open modal with all details
     function openView(id){
       const o = RAW.find(r=>r.id===id);
       if (!o) return;
 
-      const vm = document.getElementById('viewModal');
-      const title = document.getElementById('vmTitle');
-      const body  = document.getElementById('vmBody');
+      vmTitle.textContent = `Order #${o.id}`;
+      const ship = shipCents(o);
+      const moon = mooncakeCents(o);
 
-      const addrLines = String(o.shipping_address||'')
-        .split(/\n+/)
-        .map(escapeHTML)
-        .join('<br>');
-
-      const items = (o.mooncake_preorder_items || []);
-      const rows = items.map((it, idx)=>{
-        const name = escapeHTML(it?.product?.name || '');
-        const cat  = escapeHTML(it?.product?.category || '—');
-        const qty  = it?.qty || 0;
-        const unit = it?.unit_amount || 0;
-        const line = (unit * qty) || 0;
+      // items
+      const items = (o.mooncake_preorder_items||[]).map(it=>{
+        const name = it.product?.name || '';
+        const cat  = it.product?.category || '';
+        const qty  = it.qty || 0;
+        const unit = it.unit_amount || 0;
+        const line = unit * qty;
         return `
-          <tr class="${idx%2? 'bg-slate-50':''}">
-            <td class="px-3 py-2">${cat}</td>
-            <td class="px-3 py-2">${name}</td>
+          <tr>
+            <td class="px-3 py-2">${escapeHTML(cat)}</td>
+            <td class="px-3 py-2">${escapeHTML(name)}</td>
             <td class="px-3 py-2 text-right">${qty}</td>
             <td class="px-3 py-2 text-right">${fmtUSD(unit)}</td>
-            <td class="px-3 py-2 text-right">${fmtUSD(line)}</td>
-          </tr>`;
-      }).join('') || `
-          <tr>
-            <td colspan="5" class="px-3 py-4 text-center text-jc-secondary">No line items</td>
-          </tr>`;
+            <td class="px-3 py-2 text-right font-medium">${fmtUSD(line)}</td>
+          </tr>
+        `;
+      }).join('') || `<tr><td colspan="5" class="px-3 py-3 text-center text-jc-secondary">No items</td></tr>`;
 
-      title.textContent = `Order ${o.id}`;
-      body.innerHTML = `
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div class="space-y-1">
-            <div class="text-xs text-jc-secondary">Customer</div>
-            <div class="text-base font-semibold">${escapeHTML(o.customer_name||'')}</div>
-            <div class="text-xs"><a class="text-blue-600 underline" href="mailto:${escapeHTML(o.email||'')}">${escapeHTML(o.email||'—')}</a></div>
-            <div class="text-xs">${escapeHTML(o.phone||'')}</div>
+      vmBody.innerHTML = `
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div class="card p-4">
+            <h4 class="font-semibold text-jc-primary mb-2">Customer</h4>
+            <div><span class="text-jc-secondary text-sm">Name:</span> <strong>${escapeHTML(o.customer_name||'')}</strong></div>
+            <div><span class="text-jc-secondary text-sm">Email:</span> <a href="mailto:${escapeHTML(o.email||'')}" class="underline">${escapeHTML(o.email||'')}</a></div>
+            <div><span class="text-jc-secondary text-sm">Phone:</span> <a href="tel:${escapeHTML(o.phone||'')}" class="underline">${escapeHTML(o.phone||'')}</a></div>
+            <div class="mt-2"><span class="text-jc-secondary text-sm">Created:</span> ${fmtDate(o.created_at)}</div>
           </div>
-          <div class="space-y-1">
-            <div class="text-xs text-jc-secondary">Order</div>
-            <div>Created: <span class="font-medium">${fmtDate(o.created_at)}</span></div>
-            <div>Status: <span class="badge">${escapeHTML(o.delivery_status||'pending')}</span></div>
-            <div>Drop-off: <span class="badge">${o.drop_off ? 'Yes' : 'No'}</span></div>
-          </div>
-          <div class="space-y-1">
-            <div class="text-xs text-jc-secondary">Shipping Address</div>
-            <div class="border rounded-md p-2">${addrLines || '—'}</div>
-          </div>
-          <div class="space-y-1">
-            <div class="text-xs text-jc-secondary">Totals</div>
-            <div>Shipping: <span class="font-medium">${fmtUSD(shipCents(o))}</span></div>
-            <div>Order Total: <span class="font-medium">${fmtUSD(o.total_cents)}</span></div>
-            <div>USPS Spend: <span class="font-medium">${fmtUSD(o.usps_spend_cents)}</span></div>
-          </div>
-          <div class="space-y-1">
-            <div class="text-xs text-jc-secondary">Tracking</div>
-            <div class="font-mono text-xs">${escapeHTML(o.tracking_number||'—')}</div>
-          </div>
-          <div class="space-y-1">
-            <div class="text-xs text-jc-secondary">Last USPS Update</div>
-            <div class="text-xs text-jc-secondary">${o.usps_last_event_at ? fmtDate(o.usps_last_event_at) : '—'}</div>
-            <div>${escapeHTML(o.usps_last_status_text||'')}</div>
-          </div>
-        </div>
 
-        <div class="pt-3 border-t">
-          <div class="font-semibold mb-2">Items</div>
-          <div class="overflow-auto border rounded-md">
-            <table class="w-full text-sm">
-              <thead class="bg-slate-100">
-                <tr>
-                  <th class="px-3 py-2 text-left">Category</th>
-                  <th class="px-3 py-2 text-left">Product</th>
-                  <th class="px-3 py-2 text-right">Qty</th>
-                  <th class="px-3 py-2 text-right">Unit</th>
-                  <th class="px-3 py-2 text-right">Total</th>
-                </tr>
-              </thead>
-              <tbody>${rows}</tbody>
-            </table>
+          <div class="card p-4">
+            <h4 class="font-semibold text-jc-primary mb-2">Totals</h4>
+            <div class="flex justify-between"><span class="text-jc-secondary">Mooncakes</span><span class="font-semibold">${fmtUSD(moon)}</span></div>
+            <div class="flex justify-between"><span class="text-jc-secondary">Shipping</span><span class="font-semibold">${fmtUSD(ship)}</span></div>
+            <div class="flex justify-between text-lg mt-2"><span class="font-semibold">Grand Total</span><span class="font-bold">${fmtUSD(o.total_cents||0)}</span></div>
+          </div>
+
+          <div class="card p-4 md:col-span-2">
+            <h4 class="font-semibold text-jc-primary mb-2">Shipping Address</h4>
+            <pre class="whitespace-pre-wrap leading-6 text-sm">${escapeHTML(o.shipping_address||'')}</pre>
+          </div>
+
+          <div class="card p-0 md:col-span-2 overflow-hidden">
+            <div class="px-4 py-3 border-b border-jc-border font-semibold text-jc-primary">Items</div>
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-50 border-b border-jc-border">
+                  <tr>
+                    <th class="px-3 py-2 text-left">Category</th>
+                    <th class="px-3 py-2 text-left">Product</th>
+                    <th class="px-3 py-2 text-right">Qty</th>
+                    <th class="px-3 py-2 text-right">Unit</th>
+                    <th class="px-3 py-2 text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody>${items}</tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card p-4 md:col-span-2">
+            <h4 class="font-semibold text-jc-primary mb-2">Fulfillment</h4>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div><span class="text-jc-secondary text-sm">Drop-off:</span> <strong>${o.drop_off ? 'Yes' : 'No'}</strong></div>
+              <div><span class="text-jc-secondary text-sm">Delivery Status:</span> <strong>${escapeHTML(o.delivery_status||'pending')}</strong></div>
+              <div><span class="text-jc-secondary text-sm">USPS Spend:</span> <strong>${fmtUSD(o.usps_spend_cents||0)}</strong></div>
+              <div class="md:col-span-3"><span class="text-jc-secondary text-sm">Tracking #:</span> <strong>${escapeHTML(o.tracking_number||'')}</strong></div>
+              <div class="md:col-span-3 text-xs text-jc-secondary mt-2">
+                ${o.usps_last_event_at ? new Date(o.usps_last_event_at).toLocaleString() : ''} — ${escapeHTML(o.usps_last_status_text||'')}
+              </div>
+            </div>
           </div>
         </div>
       `;
 
       vm.classList.remove('hidden');
-
-      // close & print handlers
-      document.getElementById('vmClose').onclick = () => vm.classList.add('hidden');
-      document.getElementById('vmPrint').onclick = () => {
-        const printWin = window.open('', '_blank', 'width=900,height=700');
-        if (!printWin) return;
-        printWin.document.write(`
-          <html>
-            <head>
-              <title>Order ${o.id}</title>
-              <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@3.4.10/dist/tailwind.min.css">
-              <style>body{font-family:Inter,system-ui,sans-serif;padding:16px}</style>
-            </head>
-            <body>${document.getElementById('vmBody').innerHTML}</body>
-          </html>
-        `);
-        printWin.document.close();
-        printWin.focus();
-        printWin.print();
-      };
-
-      // click outside to close
-      vm.querySelector('.absolute.inset-0.bg-black\\/40').onclick = () => vm.classList.add('hidden');
+      vm.setAttribute('aria-hidden','false');
     }
 
-    // call Edge Function with proper headers + timeout
-    async function callUsps(url, body){
-      const ctrl = new AbortController();
-      const t = setTimeout(()=>ctrl.abort(), 10000);
-      try {
-        const res = await fetch(url, {
-          method: 'POST',
-          mode: 'cors',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': SUPABASE_ANON_KEY,
-            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
-          },
-          body: JSON.stringify(body),
-          signal: ctrl.signal
-        });
-        clearTimeout(t);
-
-        const text = await res.text();
-        let json = {};
-        try { json = text ? JSON.parse(text) : {}; } catch { /* keep text */ }
-
-        if (!res.ok) {
-          return { error: true, ok: false, status: res.status, text, message: json?.message || text || 'Request failed' };
-        }
-        return json;
-      } catch (e) {
-        clearTimeout(t);
-        return { error: true, ok: false, message: String(e) };
-      }
+    function closeView(){
+      vm.classList.add('hidden');
+      vm.setAttribute('aria-hidden','true');
     }
 
     // export CSV
@@ -684,7 +534,7 @@
 
     // pagination + events
     document.getElementById('btnExport').addEventListener('click', exportCSV);
-    document.getElementById('btnRefreshAll').addEventListener('click', fetchOrders);
+    document.getElementById('btnRefreshAll').addEventListener('click', fetchOrders); // safe: just reloads table
     document.getElementById('prevPage').addEventListener('click', ()=>{ if (PAGE>1){ PAGE--; renderPage(); }});
     document.getElementById('nextPage').addEventListener('click', ()=>{ const max = Math.ceil(VIEW.length/PAGE_SIZE)||1; if (PAGE<max){ PAGE++; renderPage(); }});
     ['q','status','dateFrom','dateTo'].forEach(id=>{
