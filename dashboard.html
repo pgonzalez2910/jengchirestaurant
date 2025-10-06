@@ -130,7 +130,7 @@
             <th class="px-3 py-3 text-left w-[150px]">Delivery Status</th>
             <th class="px-3 py-3 text-right w-[120px]">USPS Spend $</th>
             <th class="px-3 py-3 text-left w-[220px]">Tracking #</th>
-            <th class="px-3 py-3 text-left w-[160px]">Actions</th>
+            <th class="px-3 py-3 text-left w-[190px]">Actions</th>
             <th class="px-3 py-3 text-left">Last USPS Update</th>
           </tr>
         </thead>
@@ -151,6 +151,24 @@
       </div>
     </section>
   </main>
+
+  <!-- VIEW MODAL -->
+  <div id="viewModal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-black/40"></div>
+    <div class="absolute inset-0 flex items-center justify-center p-4">
+      <div class="w-full max-w-3xl bg-white rounded-xl shadow-2xl border border-jc-border overflow-hidden">
+        <div class="flex items-center justify-between px-5 py-3 border-b">
+          <h3 id="vmTitle" class="text-lg font-semibold text-jc-primary">Order</h3>
+          <div class="flex items-center gap-2">
+            <button id="vmPrint" class="btn">Print</button>
+            <button id="vmClose" class="btn">Close</button>
+          </div>
+        </div>
+
+        <div id="vmBody" class="p-5 space-y-5 text-sm"></div>
+      </div>
+    </div>
+  </div>
 
   <!-- Supabase -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -320,6 +338,7 @@
             <div class="flex items-center gap-2">
               <button class="btn btn-primary" data-save="${o.id}">Save</button>
               <button class="btn" data-refresh="${o.id}">Refresh</button>
+              <button class="btn" data-view="${o.id}">View</button>
             </div>
             <div class="text-xs mt-1">
               <span class="text-jc-secondary" data-saveresult="${o.id}"></span>
@@ -349,6 +368,9 @@
       );
       body.querySelectorAll('button[data-refresh]').forEach(btn =>
         btn.addEventListener('click', () => handleRefresh(btn.getAttribute('data-refresh')))
+      );
+      body.querySelectorAll('button[data-view]').forEach(btn =>
+        btn.addEventListener('click', () => openView(btn.getAttribute('data-view')))
       );
     }
 
@@ -406,7 +428,7 @@
       }
     }
 
-    // Refresh USPS (per row) — tries 3 endpoints and renders immediately if response contains details
+    // Refresh USPS (per row)
     async function handleRefresh(id){
       const row = RAW.find(r=>r.id===id);
       const resultEl = document.querySelector(`span[data-refreshresult="${id}"]`);
@@ -482,6 +504,121 @@
         resultEl.className = 'text-red-600';
         setTimeout(()=>{ resultEl.textContent=''; }, 2500);
       }
+    }
+
+    // VIEW: open modal with all details
+    function openView(id){
+      const o = RAW.find(r=>r.id===id);
+      if (!o) return;
+
+      const vm = document.getElementById('viewModal');
+      const title = document.getElementById('vmTitle');
+      const body  = document.getElementById('vmBody');
+
+      const addrLines = String(o.shipping_address||'')
+        .split(/\n+/)
+        .map(escapeHTML)
+        .join('<br>');
+
+      const items = (o.mooncake_preorder_items || []);
+      const rows = items.map((it, idx)=>{
+        const name = escapeHTML(it?.product?.name || '');
+        const cat  = escapeHTML(it?.product?.category || '—');
+        const qty  = it?.qty || 0;
+        const unit = it?.unit_amount || 0;
+        const line = (unit * qty) || 0;
+        return `
+          <tr class="${idx%2? 'bg-slate-50':''}">
+            <td class="px-3 py-2">${cat}</td>
+            <td class="px-3 py-2">${name}</td>
+            <td class="px-3 py-2 text-right">${qty}</td>
+            <td class="px-3 py-2 text-right">${fmtUSD(unit)}</td>
+            <td class="px-3 py-2 text-right">${fmtUSD(line)}</td>
+          </tr>`;
+      }).join('') || `
+          <tr>
+            <td colspan="5" class="px-3 py-4 text-center text-jc-secondary">No line items</td>
+          </tr>`;
+
+      title.textContent = `Order ${o.id}`;
+      body.innerHTML = `
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="space-y-1">
+            <div class="text-xs text-jc-secondary">Customer</div>
+            <div class="text-base font-semibold">${escapeHTML(o.customer_name||'')}</div>
+            <div class="text-xs"><a class="text-blue-600 underline" href="mailto:${escapeHTML(o.email||'')}">${escapeHTML(o.email||'—')}</a></div>
+            <div class="text-xs">${escapeHTML(o.phone||'')}</div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-xs text-jc-secondary">Order</div>
+            <div>Created: <span class="font-medium">${fmtDate(o.created_at)}</span></div>
+            <div>Status: <span class="badge">${escapeHTML(o.delivery_status||'pending')}</span></div>
+            <div>Drop-off: <span class="badge">${o.drop_off ? 'Yes' : 'No'}</span></div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-xs text-jc-secondary">Shipping Address</div>
+            <div class="border rounded-md p-2">${addrLines || '—'}</div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-xs text-jc-secondary">Totals</div>
+            <div>Shipping: <span class="font-medium">${fmtUSD(shipCents(o))}</span></div>
+            <div>Order Total: <span class="font-medium">${fmtUSD(o.total_cents)}</span></div>
+            <div>USPS Spend: <span class="font-medium">${fmtUSD(o.usps_spend_cents)}</span></div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-xs text-jc-secondary">Tracking</div>
+            <div class="font-mono text-xs">${escapeHTML(o.tracking_number||'—')}</div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-xs text-jc-secondary">Last USPS Update</div>
+            <div class="text-xs text-jc-secondary">${o.usps_last_event_at ? fmtDate(o.usps_last_event_at) : '—'}</div>
+            <div>${escapeHTML(o.usps_last_status_text||'')}</div>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t">
+          <div class="font-semibold mb-2">Items</div>
+          <div class="overflow-auto border rounded-md">
+            <table class="w-full text-sm">
+              <thead class="bg-slate-100">
+                <tr>
+                  <th class="px-3 py-2 text-left">Category</th>
+                  <th class="px-3 py-2 text-left">Product</th>
+                  <th class="px-3 py-2 text-right">Qty</th>
+                  <th class="px-3 py-2 text-right">Unit</th>
+                  <th class="px-3 py-2 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+
+      vm.classList.remove('hidden');
+
+      // close & print handlers
+      document.getElementById('vmClose').onclick = () => vm.classList.add('hidden');
+      document.getElementById('vmPrint').onclick = () => {
+        const printWin = window.open('', '_blank', 'width=900,height=700');
+        if (!printWin) return;
+        printWin.document.write(`
+          <html>
+            <head>
+              <title>Order ${o.id}</title>
+              <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@3.4.10/dist/tailwind.min.css">
+              <style>body{font-family:Inter,system-ui,sans-serif;padding:16px}</style>
+            </head>
+            <body>${document.getElementById('vmBody').innerHTML}</body>
+          </html>
+        `);
+        printWin.document.close();
+        printWin.focus();
+        printWin.print();
+      };
+
+      // click outside to close
+      vm.querySelector('.absolute.inset-0.bg-black\\/40').onclick = () => vm.classList.add('hidden');
     }
 
     // call Edge Function with proper headers + timeout
