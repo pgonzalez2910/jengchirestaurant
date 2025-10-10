@@ -89,8 +89,8 @@
       <iframe id="pdfFrame" class="pdf-frame w-full h-[calc(100vh-200px)]" title="Handbook PDF"></iframe>
     </div>
 
-    <!-- Connection footer -->
-    <div id="sessionBar" class="mt-3 text-xs text-slate-600 text-center">
+    <!-- Connection footer (shown ONLY to PG) -->
+    <div id="sessionBar" class="mt-3 text-xs text-slate-600 text-center hidden">
       © <span id="year"></span> Jeng Chi Restaurant — All rights reserved. Internal reference only.
       Unauthorized copying or distribution is prohibited.
       <div id="sessionInfo" class="mt-1"></div>
@@ -131,9 +131,7 @@
       </div>
       <button id="notesClose" class="rounded-lg border px-2 py-1 text-sm hover:bg-slate-50">Close</button>
     </div>
-
     <div class="max-h-[360px] overflow-y-auto divide-y" id="notesList"></div>
-
     <div class="p-4 space-y-2 border-t">
       <label class="text-xs font-medium">Add a note (confirm your PIN to save):</label>
       <textarea id="noteBody" class="w-full h-24 rounded-xl border border-jc-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-jc-gold/30"></textarea>
@@ -143,6 +141,40 @@
         <button id="noteSave" class="rounded-xl px-4 py-2 text-sm bg-jc-gold text-white hover:opacity-90">Save note</button>
       </div>
       <div id="noteMsg" class="text-sm"></div>
+    </div>
+  </div>
+
+  <!-- ===== Admin History (PG only) ===== -->
+  <button id="historyFab" class="hidden fixed right-6 bottom-24 z-40 rounded-full bg-slate-700 text-white px-4 py-2 shadow-soft">History</button>
+
+  <div id="historyPanel" class="hidden fixed right-6 bottom-36 z-40 w-[520px] bg-white border border-jc-border rounded-2xl shadow-soft">
+    <div class="p-4 border-b flex items-center justify-between">
+      <div>
+        <div class="font-semibold">Connection History</div>
+        <div class="text-xs text-slate-500">Only visible to PG</div>
+      </div>
+      <div class="flex items-center gap-2">
+        <select id="histWho" class="rounded border px-2 py-1 text-sm">
+          <option value="">All</option>
+          <option value="JT">JT</option>
+          <option value="PG">PG</option>
+        </select>
+        <button id="histRefresh" class="rounded border px-2 py-1 text-sm hover:bg-slate-50">Refresh</button>
+        <button id="histClose" class="rounded border px-2 py-1 text-sm hover:bg-slate-50">Close</button>
+      </div>
+    </div>
+    <div class="max-h-[420px] overflow-y-auto">
+      <table class="w-full text-sm">
+        <thead class="sticky top-0 bg-slate-50">
+          <tr class="text-left text-slate-600">
+            <th class="px-3 py-2">User</th>
+            <th class="px-3 py-2">Started</th>
+            <th class="px-3 py-2">Ended</th>
+            <th class="px-3 py-2">Duration</th>
+          </tr>
+        </thead>
+        <tbody id="histBody"></tbody>
+      </table>
     </div>
   </div>
 
@@ -293,6 +325,7 @@
     const loginBtn = document.getElementById('loginBtn');
     const loginMsg = document.getElementById('loginMsg');
 
+    const sessionBar = document.getElementById('sessionBar');
     const sessionInfo = document.getElementById('sessionInfo');
 
     // Notes
@@ -306,6 +339,14 @@
     const notePin    = document.getElementById('notePin');
     const noteSave   = document.getElementById('noteSave');
     const noteMsg    = document.getElementById('noteMsg');
+
+    // History (PG only)
+    const historyFab   = document.getElementById('historyFab');
+    const historyPanel = document.getElementById('historyPanel');
+    const histClose    = document.getElementById('histClose');
+    const histRefresh  = document.getElementById('histRefresh');
+    const histWho      = document.getElementById('histWho');
+    const histBody     = document.getElementById('histBody');
 
     /* ========= State ========= */
     yearEl && (yearEl.textContent = new Date().getFullYear());
@@ -361,13 +402,25 @@
         show(sectionSelect);
         btnPdf.href = PDF_URL; btnDocx.href = DOCX_URL;
 
+        // Show/hide viewer & lock
         hide(lockedCard); show(viewerWrap);
         goToPage(currentPage, currentSectionTitle);
+
+        // IMPORTANT: Only PG sees sessionBar + History
+        if (s.initials === 'PG') {
+          show(sessionBar);
+          show(historyFab);
+        } else {
+          hide(sessionBar);
+          hide(historyFab);
+          hide(historyPanel);
+        }
       }else{
         localStorage.removeItem('hb_session');
         hide(whoLabel); hide(logoutBtn);
         hide(sectionSelect);
         show(lockedCard); hide(viewerWrap);
+        hide(sessionBar); hide(historyFab); hide(historyPanel);
         stopSessionTimer();
         sessionInfo.textContent = '';
       }
@@ -387,7 +440,7 @@
       }catch{ setSession(null); }
     }
 
-    /* ========= Session logging (footer) ========= */
+    /* ========= Session logging (footer; ONLY rendered for PG) ========= */
     function startSessionTimer(){
       if(!sessionStartedAt){ sessionStartedAt = new Date().toISOString(); }
       renderSessionInfo(); // immediate
@@ -398,7 +451,7 @@
       if(sessionTimer){ clearInterval(sessionTimer); sessionTimer = null; }
     }
     function renderSessionInfo(){
-      if(!session || !sessionStartedAt){ sessionInfo.textContent = ''; return; }
+      if(!session || session.initials !== 'PG' || !sessionStartedAt){ sessionInfo.textContent = ''; return; }
       const started = new Date(sessionStartedAt);
       const elapsedMs = Date.now() - started.getTime();
       const hrs = Math.floor(elapsedMs/3600000);
@@ -426,7 +479,6 @@
       sessionId = null; sessionStartedAt = null;
       stopSessionTimer();
     }
-
     window.addEventListener('beforeunload', ()=>{ endRemoteSession(); });
 
     /* ========= Auth ========= */
@@ -545,12 +597,55 @@
       loadNotesForPage(currentPage);
     });
 
+    /* ========= Admin History (PG only) ========= */
+    function fmtDur(startISO, endISO){
+      const start = new Date(startISO).getTime();
+      const end = endISO ? new Date(endISO).getTime() : Date.now();
+      const d = Math.max(0, end - start);
+      const h = Math.floor(d/3600000);
+      const m = Math.floor((d%3600000)/60000);
+      const s = Math.floor((d%60000)/1000);
+      const pad = n => String(n).padStart(2,'0');
+      return `${pad(h)}:${pad(m)}:${pad(s)}${endISO?'':' (live)'}`;
+    }
+    function renderHistory(rows){
+      histBody.innerHTML = '';
+      if(!rows || rows.length === 0){
+        histBody.innerHTML = `<tr><td colspan="4" class="px-3 py-3 text-center text-slate-500">No sessions found.</td></tr>`;
+        return;
+      }
+      rows.forEach(r=>{
+        const tr = document.createElement('tr');
+        tr.className = 'border-b last:border-b-0';
+        tr.innerHTML = `
+          <td class="px-3 py-2">${r.initials}</td>
+          <td class="px-3 py-2">${new Date(r.started_at).toLocaleString()}</td>
+          <td class="px-3 py-2">${r.ended_at ? new Date(r.ended_at).toLocaleString() : ''}</td>
+          <td class="px-3 py-2">${fmtDur(r.started_at, r.ended_at)}</td>
+        `;
+        histBody.appendChild(tr);
+      });
+    }
+    async function loadHistory(){
+      const who = (histWho.value || '').toUpperCase();
+      let q = client.from('hb_sessions').select('*').order('started_at',{ascending:false}).limit(200);
+      if(who){ q = q.eq('initials', who); }
+      const { data, error } = await q;
+      if(error){ console.error(error); return; }
+      renderHistory(data || []);
+    }
+
+    historyFab.addEventListener('click', ()=>{ historyPanel.classList.toggle('hidden'); if(!historyPanel.classList.contains('hidden')) loadHistory(); });
+    histClose.addEventListener('click', ()=> historyPanel.classList.add('hidden'));
+    histRefresh.addEventListener('click', loadHistory);
+    histWho.addEventListener('change', loadHistory);
+
     /* ========= Init ========= */
     (function init(){
       buildSectionSelect();
       btnPdf.href = PDF_URL;
       btnDocx.href = DOCX_URL;
-      pdfFrame.src = `${PDF_VIEWER}?file=${encodeURIComponent(PDF_URL)}#pagemode=none&zoom=page-width`;
+      pdfFrame.src = `${"https://mozilla.github.io/pdf.js/web/viewer.html"}?file=${encodeURIComponent(PDF_URL)}#pagemode=none&zoom=page-width`;
       restoreSession();
     })();
   </script>
