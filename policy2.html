@@ -24,11 +24,7 @@
   </style>
   <script>
     tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily:{'serif-head':['Playfair Display','serif'],'sans':['Inter','system-ui','sans-serif']},
-        }
-      }
+      theme: { extend: { fontFamily:{'serif-head':['Playfair Display','serif'],'sans':['Inter','system-ui','sans-serif']} } }
     }
   </script>
 </head>
@@ -46,7 +42,7 @@
         <div class="space-y-4">
           <label class="block">
             <span class="block text-sm text-slate-500 mb-1">Username</span>
-            <input id="u" class="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-sky-400" placeholder="" />
+            <input id="u" class="w-full bg-white border border-slate-300 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-sky-400" placeholder="JT" />
           </label>
           <label class="block">
             <span class="block text-sm text-slate-500 mb-1">PIN</span>
@@ -55,16 +51,12 @@
           <button id="btnLogin" class="w-full bg-slate-900 hover:bg-slate-800 text-white rounded-lg px-4 py-2 font-semibold">Unlock</button>
           <p id="loginErr" class="text-sm text-rose-600 hidden">Error</p>
           <p id="pdfWarn" class="text-xs text-rose-600 hidden"></p>
-          <p class="text-xs text-slate-500">
-            After successful sign-in, the 2026 Handbook and policy acknowledgments will unlock.
-          </p>
+          <p class="text-xs text-slate-500">After successful sign-in, the 2026 Handbook and policy acknowledgments will unlock.</p>
         </div>
       </div>
       <div class="p-8 md:p-10 border-t md:border-t-0 md:border-l border-slate-200 bg-[var(--jc-soft)]">
         <h2 class="font-serif-head text-xl mb-3">Policy Acknowledgment & New Handbook 2026 (v2)</h2>
-        <p class="text-sm text-slate-600">
-          Review the handbook and acknowledge each policy. Your session, initials, and progress are saved automatically.
-        </p>
+        <p class="text-sm text-slate-600">Review the handbook and acknowledge each policy. Your session, initials, and progress are saved automatically.</p>
       </div>
     </div>
   </div>
@@ -98,17 +90,11 @@
             </div>
           </div>
 
-          <!-- Canvas container (when PDF.js works) -->
+          <!-- Canvas viewer (PDF.js) -->
           <div id="pdfContainer" class="max-h-[80vh] overflow-auto p-3 space-y-3 bg-white"></div>
 
           <!-- Fallback iframe (when workers are blocked) -->
-          <iframe
-            id="pdfFrame"
-            class="hidden w-full h-[80vh] bg-white border-t border-slate-200"
-            title="Employee Handbook PDF"
-            allow="fullscreen"
-            referrerpolicy="no-referrer"
-          ></iframe>
+          <iframe id="pdfFrame" class="hidden w-full h-[80vh] bg-white border-t border-slate-200" title="Employee Handbook PDF" allow="fullscreen" referrerpolicy="no-referrer"></iframe>
         </div>
       </div>
 
@@ -128,6 +114,9 @@
                 <div><div class="text-slate-500">Position</div><div id="empPos">—</div></div>
                 <div><div class="text-slate-500">Department</div><div id="empDept">—</div></div>
                 <div class="col-span-2"><div class="text-slate-500">Reports to</div><div id="empReports">—</div></div>
+                <div><div class="text-slate-500">Email</div><div id="empEmail">—</div></div>
+                <div><div class="text-slate-500">Phone</div><div id="empPhone">—</div></div>
+                <div class="col-span-2"><div class="text-slate-500">Hire date</div><div id="empHire">—</div></div>
                 <div class="col-span-2"><div class="text-slate-500">Session started</div><div id="sessionTime">—</div></div>
               </div>
               <div class="mt-4">
@@ -146,7 +135,7 @@
             </div>
           </div>
 
-          <!-- Policies -->
+          <!-- Policies list -->
           <div class="card">
             <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
               <div class="font-medium">Policies to Acknowledge</div>
@@ -213,7 +202,8 @@ const $ = (id)=>document.getElementById(id);
 const state = {
   get token(){ return localStorage.getItem('hb_token') || ''; },
   set token(v){ v ? localStorage.setItem('hb_token', v) : localStorage.removeItem('hb_token'); },
-  initials:null, policies:[], acks:{}, currentPage:1, scale:1.0, pdfDoc:null, header:null
+  initials:null, policies:[], acks:{}, currentPage:1, scale:1.0, pdfDoc:null, header:null,
+  usingIframe:false
 };
 
 /* ===== Robust PDF.js loader with CDNs & iframe fallback ===== */
@@ -223,20 +213,13 @@ const PDF_JS_CANDIDATES = [
   {lib: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.min.js',
    worker: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.2.67/pdf.worker.min.js'},
 ];
-function loadScript(src){
-  return new Promise((resolve,reject)=>{
-    const s = document.createElement('script');
-    s.src = src; s.async = true; s.onload = resolve; s.onerror = ()=>reject(new Error(`Failed ${src}`));
-    document.head.appendChild(s);
-  });
-}
+function loadScript(src){ return new Promise((resolve,reject)=>{ const s=document.createElement('script'); s.src=src; s.async=true; s.onload=resolve; s.onerror=()=>reject(new Error(`Failed ${src}`)); document.head.appendChild(s); }); }
 async function loadPdfJsLib() {
   for (const opt of PDF_JS_CANDIDATES){
     try {
       await loadScript(opt.lib);
       if (!window.pdfjsLib) throw new Error('No pdfjsLib on window');
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = opt.worker;
-      // preload worker non-blocking
       loadScript(opt.worker).catch(()=>{});
       return window.pdfjsLib;
     } catch {}
@@ -248,18 +231,20 @@ async function waitForPdfjs() {
     if (window.pdfjsLib) return window.pdfjsLib;
     return await loadPdfJsLib();
   } catch (e) {
-    // show “Open PDF” + iframe fallback
-    const link = $('openPdfLink');
-    link.href = HANDBOOK_PDF;
-    link.classList.remove('hidden');
-
+    // fallback to iframe
+    $('openPdfLink').href = HANDBOOK_PDF;
+    $('openPdfLink').classList.remove('hidden');
     const frame = $('pdfFrame');
     frame.src = HANDBOOK_PDF + '#view=FitH';
     frame.classList.remove('hidden');
-
+    // iframe mode → show all policies, disable filter
+    state.usingIframe = true;
+    const chk = $('filterCurrent');
+    chk.checked = false;
+    chk.disabled = true;
     $('pdfWarn').textContent = 'Inline viewer blocked by the host; using PDF fallback.';
     $('pdfWarn').classList.remove('hidden');
-    throw e; // stop PDF.js path
+    throw e;
   }
 }
 
@@ -295,17 +280,21 @@ $('logoutBtn').addEventListener('click', ()=>{ state.token=''; location.reload()
 
 /* =============== APP INIT =============== */
 async function initApp(){
+  // Header maps to your employees schema
   const header = await api('/header');
   state.header = header;
-  $('empName').textContent = header?.full_name ?? '—';
-  $('empUser').textContent = header?.username ?? '—';
-  $('empPos').textContent  = header?.position ?? '—';
-  $('empDept').textContent = header?.department ?? '—';
+  $('empName').textContent  = header?.full_name ?? '—';
+  $('empUser').textContent  = header?.username ?? '—';
+  $('empPos').textContent   = header?.position ?? '—';
+  $('empDept').textContent  = header?.department ?? '—';
   $('empReports').textContent = header?.reports_to_name ?? '—';
+  $('empEmail').textContent = header?.email ?? '—';
+  $('empPhone').textContent = header?.phone ?? '—';
+  $('empHire').textContent  = header?.hire_date ? new Date(header.hire_date).toLocaleDateString() : '—';
   $('sessionTime').textContent = new Date().toLocaleString();
   state.initials = header?.username || state.initials;
 
-  // Admin button (only PG)
+  // Admin button only for PG
   if ((header?.username || '').toUpperCase() === 'PG') $('adminBtn').classList.remove('hidden');
 
   const [pol, acks, prog] = await Promise.all([ api('/policies'), api('/acks'), api('/progress') ]);
@@ -322,8 +311,11 @@ async function refreshProgress(){ try{ updateProgress(await api('/progress')); }
 /* =============== POLICIES UI =============== */
 $('filterCurrent').addEventListener('change', renderPolicies);
 function visiblePolicies(){
+  // In iframe mode we can't track page → always show all
+  if (state.usingIframe) return state.policies;
   if (!$('filterCurrent').checked) return state.policies;
-  const page = String(state.currentPage); return state.policies.filter(p => String(p.page||'')===page);
+  const page = String(state.currentPage);
+  return state.policies.filter(p => String(p.page||'') === page);
 }
 function renderPolicies(){
   $('pageLabel').textContent = state.currentPage;
@@ -401,7 +393,7 @@ async function loadPdf(){
       container.appendChild(wrap); observer.observe(wrap);
     }
   } catch {
-    // already handled by fallback in waitForPdfjs()
+    // handled by fallback in waitForPdfjs()
   }
 }
 async function renderPageToCanvas(pageNo, canvas){
@@ -426,10 +418,7 @@ $('zoomOut').addEventListener('click', ()=>{ state.scale = Math.max(0.5, state.s
 
 /* =============== ADMIN (PG only) =============== */
 const adminModal = $('adminModal');
-$('adminBtn').addEventListener('click', async ()=>{
-  adminModal.classList.add('open');
-  await loadHistory();
-});
+$('adminBtn').addEventListener('click', async ()=>{ adminModal.classList.add('open'); await loadHistory(); });
 $('adminClose').addEventListener('click', ()=> adminModal.classList.remove('open'));
 $('histRefresh').addEventListener('click', loadHistory);
 $('histSearch').addEventListener('input', filterHistory);
@@ -442,7 +431,7 @@ async function loadHistory(){
   $('detailBox').classList.add('hidden');
 
   try{
-    // expected rows: [{employee_id, full_name, username, position, department, started_at, expires_at, percent_done}]
+    // expected: [{employee_id, full_name, username, position, department, started_at, expires_at, percent_done}]
     histRows = await api('/admin/access-log?limit=200');
     if (!Array.isArray(histRows) || !histRows.length){ $('histEmpty').classList.remove('hidden'); $('histStatus').textContent=''; return; }
     renderHistory(histRows);
@@ -519,4 +508,3 @@ window.addEventListener('DOMContentLoaded', async ()=>{
 </script>
 </body>
 </html>
-
