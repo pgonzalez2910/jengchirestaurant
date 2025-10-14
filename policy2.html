@@ -97,7 +97,18 @@
               <button id="zoomIn" class="text-sm px-3 py-1 btn">+</button>
             </div>
           </div>
+
+          <!-- Canvas container (when PDF.js works) -->
           <div id="pdfContainer" class="max-h-[80vh] overflow-auto p-3 space-y-3 bg-white"></div>
+
+          <!-- Fallback iframe (when workers are blocked) -->
+          <iframe
+            id="pdfFrame"
+            class="hidden w-full h-[80vh] bg-white border-t border-slate-200"
+            title="Employee Handbook PDF"
+            allow="fullscreen"
+            referrerpolicy="no-referrer"
+          ></iframe>
         </div>
       </div>
 
@@ -192,12 +203,12 @@
 </div>
 
 <script type="module">
-/* ================= CONFIG ================= */
+/* =============== CONFIG =============== */
 const API_BASE = 'https://kpldzwlftkvjjntgsqxx.functions.supabase.co/handbook';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs';
 const HANDBOOK_PDF = 'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/HANDBOOK/Handbook%202026.pdf';
 
-/* ================= STATE ================= */
+/* =============== STATE =============== */
 const $ = (id)=>document.getElementById(id);
 const state = {
   get token(){ return localStorage.getItem('hb_token') || ''; },
@@ -205,7 +216,7 @@ const state = {
   initials:null, policies:[], acks:{}, currentPage:1, scale:1.0, pdfDoc:null, header:null
 };
 
-/* ===== Robust PDF.js loader with fallbacks ===== */
+/* ===== Robust PDF.js loader with CDNs & iframe fallback ===== */
 const PDF_JS_CANDIDATES = [
   {lib: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.min.js',
    worker: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.2.67/build/pdf.worker.min.js'},
@@ -225,24 +236,30 @@ async function loadPdfJsLib() {
       await loadScript(opt.lib);
       if (!window.pdfjsLib) throw new Error('No pdfjsLib on window');
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = opt.worker;
-      // non-blocking worker preload
+      // preload worker non-blocking
       loadScript(opt.worker).catch(()=>{});
       return window.pdfjsLib;
     } catch {}
   }
   throw new Error('All PDF.js sources failed to load');
 }
-async function waitForPdfjs(){
+async function waitForPdfjs() {
   try {
     if (window.pdfjsLib) return window.pdfjsLib;
     return await loadPdfJsLib();
   } catch (e) {
-    $('pdfWarn').textContent = 'PDF viewer disabled (CDNs blocked). Use “Open PDF”.';
-    $('pdfWarn').classList.remove('hidden');
+    // show “Open PDF” + iframe fallback
     const link = $('openPdfLink');
     link.href = HANDBOOK_PDF;
     link.classList.remove('hidden');
-    throw e;
+
+    const frame = $('pdfFrame');
+    frame.src = HANDBOOK_PDF + '#view=FitH';
+    frame.classList.remove('hidden');
+
+    $('pdfWarn').textContent = 'Inline viewer blocked by the host; using PDF fallback.';
+    $('pdfWarn').classList.remove('hidden');
+    throw e; // stop PDF.js path
   }
 }
 
@@ -288,6 +305,7 @@ async function initApp(){
   $('sessionTime').textContent = new Date().toLocaleString();
   state.initials = header?.username || state.initials;
 
+  // Admin button (only PG)
   if ((header?.username || '').toUpperCase() === 'PG') $('adminBtn').classList.remove('hidden');
 
   const [pol, acks, prog] = await Promise.all([ api('/policies'), api('/acks'), api('/progress') ]);
@@ -311,53 +329,79 @@ function renderPolicies(){
   $('pageLabel').textContent = state.currentPage;
   const list = $('policies'); list.innerHTML='';
   const items = visiblePolicies();
-  if (!items.length){ const d=document.createElement('div'); d.className='text-sm text-slate-600'; d.textContent=$('filterCurrent').checked?'No policies on this page.':'No policies available.'; list.appendChild(d); return; }
+  if (!items.length){
+    const d=document.createElement('div');
+    d.className='text-sm text-slate-600';
+    d.textContent=$('filterCurrent').checked?'No policies on this page.':'No policies available.';
+    list.appendChild(d); return;
+  }
   for (const p of items){
     const ack = state.acks[p.id];
     const card = document.createElement('div');
     card.className='border border-slate-200 rounded-lg p-3';
     card.innerHTML = `
       <div class="flex items-start justify-between gap-3">
-        <div><div class="font-medium">${p.title}</div><div class="text-xs text-slate-500 mt-0.5">Page ${p.page ?? '—'} ${p.required ? '• Required':''}</div></div>
-        <div class="text-xs ${ack?'text-emerald-600':'text-slate-500'}">${ack?`✓ ${ack.initials} · ${new Date(ack.saved_at).toLocaleString()}`:'pending'}</div>
+        <div>
+          <div class="font-medium">${p.title}</div>
+          <div class="text-xs text-slate-500 mt-0.5">Page ${p.page ?? '—'} ${p.required ? '• Required':''}</div>
+        </div>
+        <div class="text-xs ${ack?'text-emerald-600':'text-slate-500'}">
+          ${ack?`✓ ${ack.initials} · ${new Date(ack.saved_at).toLocaleString()}`:'pending'}
+        </div>
       </div>
       <div class="mt-2 flex gap-2">
         <input type="text" value="${state.initials??''}" placeholder="Initials" class="flex-1 bg-white border border-slate-300 rounded px-2 py-1 text-sm" data-initials>
         <button class="shrink-0 text-sm px-3 py-1 btn" data-save>Sign</button>
       </div>`;
-    const input = card.querySelector('[data-initials]'); const btn = card.querySelector('[data-save]');
+    const input = card.querySelector('[data-initials]');
+    const btn = card.querySelector('[data-save]');
     btn.addEventListener('click', async ()=>{
       const initials = (input.value||'').trim(); if (!initials){ toastErr('Enter your initials.'); return; }
-      try{ const res = await api('/save-ack',{method:'POST',body:{policy_id:p.id,initials}}); state.acks[p.id]=res; toastOK('Saved.'); renderPolicies(); refreshProgress(); }
-      catch(e){ toastErr(e.message); }
+      try{
+        const res = await api('/save-ack',{method:'POST',body:{policy_id:p.id,initials}});
+        state.acks[p.id]=res; toastOK('Saved.'); renderPolicies(); refreshProgress();
+      }catch(e){ toastErr(e.message); }
     });
     list.appendChild(card);
   }
 }
-$('finalizeBtn').addEventListener('click', async ()=>{ try{ const res=await api('/finalize',{method:'POST',body:{}}); toastOK(`Finalized ${new Date(res.finalized_at).toLocaleString()}`); refreshProgress(); }catch(e){ toastErr(e.message);} });
+$('finalizeBtn').addEventListener('click', async ()=>{
+  try{
+    const res=await api('/finalize',{method:'POST',body:{}});
+    toastOK(`Finalized ${new Date(res.finalized_at).toLocaleString()}`);
+    refreshProgress();
+  }catch(e){ toastErr(e.message); }
+});
 
-/* =============== PDF VIEWER =============== */
+/* =============== PDF VIEWER (with fallback) =============== */
 async function loadPdf(){
-  const pdfjs = await waitForPdfjs();
-  const pdf = await pdfjs.getDocument(HANDBOOK_PDF).promise;
-  state.pdfDoc = pdf;
+  try {
+    const pdfjs = await waitForPdfjs();            // throws → iframe already shown
+    const pdf = await pdfjs.getDocument(HANDBOOK_PDF).promise;
+    state.pdfDoc = pdf;
 
-  const container = $('pdfContainer'); container.innerHTML='';
-  const observer = new IntersectionObserver((entries)=>{
-    entries.forEach(entry=>{
-      if (!entry.isIntersecting) return;
-      const wrap = entry.target;
-      const pageNo = Number(wrap.dataset.pageNo);
-      state.currentPage = pageNo; $('pageLabel').textContent = pageNo;
-      if ($('filterCurrent').checked) renderPolicies();
-      if (!wrap.dataset.rendered) renderPageToCanvas(pageNo, wrap.querySelector('canvas'));
-    });
-  },{root:container, threshold:0.5});
+    // ensure iframe is hidden when PDF.js works
+    $('pdfFrame').classList.add('hidden');
+    const container = $('pdfContainer'); container.innerHTML='';
 
-  for (let i=1;i<=pdf.numPages;i++){
-    const wrap=document.createElement('div'); wrap.className='relative'; wrap.dataset.pageNo=String(i); wrap.dataset.rendered='';
-    const cv=document.createElement('canvas'); cv.className='pdf-page'; cv.height=50; wrap.appendChild(cv);
-    container.appendChild(wrap); observer.observe(wrap);
+    const observer = new IntersectionObserver((entries)=>{
+      entries.forEach(entry=>{
+        if (!entry.isIntersecting) return;
+        const wrap = entry.target;
+        const pageNo = Number(wrap.dataset.pageNo);
+        state.currentPage = pageNo; $('pageLabel').textContent = pageNo;
+        if ($('filterCurrent').checked) renderPolicies();
+        if (!wrap.dataset.rendered) renderPageToCanvas(pageNo, wrap.querySelector('canvas'));
+      });
+    },{root:container, threshold:0.5});
+
+    for (let i=1;i<=pdf.numPages;i++){
+      const wrap=document.createElement('div'); wrap.className='relative'; wrap.dataset.pageNo=String(i); wrap.dataset.rendered='';
+      const cv=document.createElement('canvas'); cv.className='pdf-page'; cv.height=50; wrap.appendChild(cv);
+      container.appendChild(wrap); observer.observe(wrap);
+    }
+  } catch {
+    // already handled by fallback in waitForPdfjs()
   }
 }
 async function renderPageToCanvas(pageNo, canvas){
