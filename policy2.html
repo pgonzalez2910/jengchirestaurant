@@ -183,6 +183,9 @@ const state = {
   currentPage:1, scale:1.0, pdfDoc:null
 };
 
+// Map to hold active render tasks to prevent concurrent rendering on the same canvas
+const renderTaskMap = new Map();
+
 /* ===== Robust PDF.js loader (your copies first) ===== */
 const PDF_JS_CANDIDATES = [
   { // YOUR self-hosted ESM copies
@@ -345,9 +348,15 @@ async function loadPdf(){
       if (!entry.isIntersecting) return;
       const wrap = entry.target;
       const pageNo = Number(wrap.dataset.pageNo);
+      
+      // Update state for currently visible page
       state.currentPage = pageNo; $('pageLabel').textContent = pageNo;
       if ($('filterCurrent').checked) renderPolicies();
-      if (!wrap.dataset.rendered) renderPageToCanvas(pageNo, wrap.querySelector('canvas'));
+      
+      // Only render if not already rendered
+      if (!wrap.dataset.rendered) {
+        renderPageToCanvas(pageNo, wrap.querySelector('canvas'), wrap);
+      }
     });
   },{root:container, threshold:0.55});
 
@@ -359,40 +368,77 @@ async function loadPdf(){
 }
 
 /* === CRISP (hi-DPI) PAGE RENDER === */
-async function renderPageToCanvas(pageNo, canvas) {
+async function renderPageToCanvas(pageNo, canvas, wrapEl) {
+  // 1. Cancel any previous, still-running render task for this page
+  const previousTask = renderTaskMap.get(pageNo);
+  if (previousTask) {
+    try {
+      previousTask.cancel();
+    } catch (e) {
+      // Ignore cancellation errors
+    }
+    renderTaskMap.delete(pageNo);
+  }
+
   const page = await state.pdfDoc.getPage(pageNo);
 
   const uiScale = state.scale || 1;
   const dpr = Math.max(1, window.devicePixelRatio || 1);
 
+  // 1. Calculate the viewport at the current UI scale
   const viewport = page.getViewport({ scale: uiScale });
 
+  // 2. Set the CSS (visible) size based on the UI scale
   const cssW = Math.floor(viewport.width);
   const cssH = Math.floor(viewport.height);
   canvas.style.width  = cssW + "px";
   canvas.style.height = cssH + "px";
+  
+  // 3. Set the CANVAS (internal) size scaled by the Device Pixel Ratio (DPR)
   canvas.width  = Math.floor(cssW * dpr);
   canvas.height = Math.floor(cssH * dpr);
 
   const ctx = canvas.getContext("2d", { alpha: false });
+  // The transform matrix scales the entire rendering operation by the DPR
   const transform = [dpr, 0, 0, dpr, 0, 0];
 
-  await page.render({
+  const task = page.render({
     canvasContext: ctx,
-    viewport,      // CSS-pixel viewport
-    transform      // upscale to device pixels for crisp text
-  }).promise;
+    viewport,
+    transform
+  });
 
-  canvas.parentElement.dataset.rendered = "1";
+  // Store the new task
+  renderTaskMap.set(pageNo, task);
+
+  try {
+    await task.promise;
+    // Only mark as rendered if the promise completed successfully (not cancelled)
+    if (wrapEl) wrapEl.dataset.rendered = "1";
+  } catch (e) {
+    // If the error is due to cancellation, don't re-throw or mark as error
+    if (e.name === 'RenderingCancelledException') {
+      return;
+    }
+    throw e;
+  } finally {
+    // Remove task from map only after it is fully complete or cancelled
+    if (renderTaskMap.get(pageNo) === task) {
+        renderTaskMap.delete(pageNo);
+    }
+  }
 }
 
 function rerenderVisible(){
   const container = $('pdfContainer');
+  // Use a temporary observer to immediately trigger rendering for visible pages
   const io = new IntersectionObserver((ents)=>{ ents.forEach(e=>{
     if (e.isIntersecting){
       const pageNo = Number(e.target.dataset.pageNo);
-      e.target.dataset.rendered='';
-      renderPageToCanvas(pageNo, e.target.querySelector('canvas'));
+      // Force re-render by clearing the rendered flag
+      e.target.dataset.rendered=''; 
+      renderPageToCanvas(pageNo, e.target.querySelector('canvas'), e.target);
+      io.unobserve(e.target); // Stop observing after triggering render
     }
   });},{root:container, threshold:0.55});
   container.querySelectorAll('[data-page-no]').forEach(el=> io.observe(el));
