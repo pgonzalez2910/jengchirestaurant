@@ -13,11 +13,50 @@
     :root { --jc-border:#E5E7EB; }
     body { color:#0f172a; }
     .card { background:#fff; border:1px solid var(--jc-border); border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.06); }
+    /* Single page view styles */
+    .pdf-page-wrapper {
+        display: none; /* Hide all wrappers by default */
+        width: 100%;
+        margin: 0 auto 1rem;
+        /* Ensure the wrapper respects the card boundaries */
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        border-radius: 12px;
+        overflow: hidden;
+    }
+    .pdf-page-wrapper.active {
+        display: block; /* Only show the active page wrapper */
+    }
     .pdf-page { width:100%; display:block; background:#fff; border:1px solid var(--jc-border); border-radius:12px; }
     
-    /* Ensure mobile stacks elements in the correct order */
-    /* On mobile (default), items will stack in the order they appear in the HTML. */
-    /* On large screens (lg+), use the grid */
+    /* === MOBILE/TABLET: 50/50 Vertical Split === */
+    /* Ensure the main container (app-grid) fills the viewport height less the header height */
+    @media (max-width: 1023px) {
+        .app-grid-mobile-split {
+            /* Full viewport height minus the header height (approx 72px) */
+            min-height: calc(100vh - 72px); 
+            display: flex; /* Use flexbox for vertical stacking */
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        /* The PDF viewer and the Policies card should share the remaining vertical space */
+        .pdf-viewer-col, .info-policies-col-split {
+            flex: 1 1 50%; /* Each takes roughly 50% of the available vertical space */
+            min-height: 0;
+            overflow: hidden; /* Prevent these containers from stretching vertically */
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Force scrollbars *inside* the PDF container and Policy list */
+        #pdfContainer { max-height: 100% !important; flex: 1; overflow-y: hidden; } /* Scroll controlled by single page now */
+        #policies { max-height: 100% !important; flex: 1; overflow-y: scroll; }
+
+        /* Hide the employee info card from the main vertical split to place it at the bottom */
+        .card.order-employee { display: none; }
+    }
+
+    /* === DESKTOP: 7/5 Horizontal Split === */
     @media (min-width: 1024px) {
         .app-grid {
             display: grid;
@@ -37,17 +76,18 @@
     }
   </script>
 </head>
-<body class="font-sans">
+<body class="font-sans h-full">
 
 <!-- ============= HEADER ============= -->
-<header class="border-b border-gray-200 bg-white sticky top-0 z-40">
+<!-- Hidden by default, shown on successful login -->
+<header id="appHeader" class="border-b border-gray-200 bg-white sticky top-0 z-40 hidden">
   <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-4">
     <img class="h-9 w-auto rounded bg-white" alt="Jeng Chi"
          src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg">
     <div class="flex-1 min-w-0">
       <h1 class="text-xl sm:text-2xl font-serif-head truncate">Policy Acknowledgment</h1>
       <!-- Progress Bar is here for mobile prominence -->
-      <div class="mt-1">
+      <div id="progressBox" class="mt-1">
         <div class="text-xs text-slate-500 mb-1 flex items-center justify-between">
           <span>Progress</span><span id="progressPct">0%</span>
         </div>
@@ -56,8 +96,9 @@
         </div>
       </div>
     </div>
-    <!-- Desktop Logout Button -->
+    <!-- Logout Button -->
     <button id="logoutBtn" class="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-slate-50 hidden md:block">Logout</button>
+    <button id="logoutBtnMobile" class="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-slate-50 md:hidden">Logout</button>
   </div>
 </header>
 
@@ -79,14 +120,14 @@
         <label class="block mb-3">
           <span class="block text-sm text-slate-500 mb-1">Username (initials)</span>
           <input id="u" class="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                 placeholder="JT or PG">
+                 placeholder="Username">
         </label>
 
         <label class="block mb-4">
           <span class="block text-sm text-slate-500 mb-1">PIN</span>
           <input id="p" type="password" inputmode="numeric"
                  class="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                 placeholder="••••">
+                 placeholder="Pin">
         </label>
 
         <button id="btnLogin"
@@ -114,49 +155,56 @@
 </div>
 
 <!-- ============= APP VIEW ============= -->
-<div id="appView" class="hidden">
-  <div class="max-w-7xl mx-auto px-4 sm:px-6 py-4">
+<div id="appView" class="hidden h-full">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 py-4 h-full">
     <!-- Main App Layout (Stacks on mobile, 7/5 grid on desktop) -->
-    <div class="app-grid space-y-4 lg:space-y-0">
+    <div class="app-grid app-grid-mobile-split space-y-4 lg:space-y-0 h-full">
       
-      <!-- 1. PDF VIEWER (Always on top for mobile, left for desktop) -->
+      <!-- 1. PDF VIEWER (Always on top, 50% height on mobile, left column on desktop) -->
       <div class="pdf-viewer-col">
-        <div class="card overflow-hidden">
-          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200">
-            <div class="text-sm">Handbook</div>
+        <div class="card overflow-hidden h-full flex flex-col">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200 shrink-0">
+            <div class="text-sm">Handbook (Page <span id="currentPageLabel">—</span>)</div>
             <div class="flex items-center gap-2">
+              <button id="prevPage" class="text-sm px-3 py-1 border border-gray-200 rounded hover:bg-slate-50">◀</button>
               <button id="zoomOut" class="text-sm px-3 py-1 border border-gray-200 rounded hover:bg-slate-50">–</button>
               <span id="zoomPct" class="text-sm w-12 text-center">100%</span>
               <button id="zoomIn" class="text-sm px-3 py-1 border border-gray-200 rounded hover:bg-slate-50">+</button>
+              <button id="nextPage" class="text-sm px-3 py-1 border border-gray-200 rounded hover:bg-slate-50">▶</button>
             </div>
           </div>
-          <div id="pdfContainer" class="max-h-[80vh] overflow-auto p-3 space-y-4 bg-white"></div>
+          <!-- New: Single page view setup, with scroll hidden on mobile -->
+          <div id="pdfContainer" class="flex-1 p-3 bg-white overflow-hidden">
+             <!-- Page wrappers will be injected here. No continuous scroll. -->
+          </div>
         </div>
       </div>
 
       <!-- 2. POLICIES & EMPLOYEE INFO (Stacks below PDF on mobile, right column on desktop) -->
-      <div class="info-policies-col space-y-4">
+      <div class="info-policies-col info-policies-col-split space-y-4">
         
-        <!-- Policies to Acknowledge (Mobile: Order 2 - right under PDF) -->
-        <div class="card order-policies">
-          <div class="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+        <!-- Policies to Acknowledge (Mobile: Shares 50% vertical space with PDF) -->
+        <div class="card order-policies flex flex-col h-full">
+          <div class="px-4 py-3 border-b border-gray-200 flex items-center justify-between shrink-0">
             <div class="font-medium">Policies to Acknowledge</div>
             <button id="finalizeBtn" class="text-xs px-3 py-1 border border-gray-200 rounded hover:bg-slate-50">Finalize</button>
           </div>
-          <div class="px-4 py-3">
+          <div class="px-4 py-3 shrink-0">
              <label class="flex items-center gap-2 text-sm select-none mb-2">
                 <input id="filterCurrent" type="checkbox" class="accent-sky-600" checked>
-                <span>Show policies for current page only (Page <span id="pageLabel-policy">—</span>)</span>
+                <span>Policies attached to Page <span id="pageLabel-policy">—</span></span>
              </label>
           </div>
-          <div id="policies" class="p-3 space-y-3 max-h-[46vh] overflow-auto border-t border-gray-200"></div>
+          <!-- max-h-[46vh] removed in favor of flex:1 for mobile split -->
+          <div id="policies" class="flex-1 p-3 space-y-3 overflow-y-auto border-t border-gray-200"></div>
         </div>
 
-        <!-- Employee Info (Mobile: Order 3 - at the very end) -->
-        <div class="card order-employee">
+        <!-- Employee Info (Desktop Version - Hidden on mobile by CSS .card.order-employee) -->
+        <div class="card order-employee lg:block hidden">
           <div class="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
             <div class="font-medium">Employee Information</div>
-            <button id="logoutBtnMobile" class="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-slate-50 md:hidden">Logout</button>
+            <!-- Logout button is hidden on desktop if the top one is used -->
+            <button id="logoutBtnMobile" class="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-slate-50 hidden">Logout</button>
           </div>
           <div class="px-4 py-3 text-sm">
             <div class="grid grid-cols-2 gap-x-4 gap-y-2">
@@ -177,6 +225,28 @@
         <div id="toastErr" class="hidden bg-rose-50 text-rose-700 border border-rose-200 rounded px-3 py-2 text-sm">Error.</div>
       </div>
     </div>
+
+    <!-- Employee Info Card (Mobile Version - Visible only on mobile, at the bottom) -->
+    <div class="card order-employee mt-4 lg:hidden">
+        <div class="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+            <div class="font-medium">Employee Information</div>
+            <button id="logoutBtnMobileBottom" class="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-slate-50">Logout</button>
+        </div>
+        <div class="px-4 py-3 text-sm">
+            <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                <!-- Using different IDs for mobile/bottom card -->
+                <div><div class="text-slate-500">Employee</div><div id="empNameBottom">—</div></div>
+                <div><div class="text-slate-500">User</div><div id="empUserBottom">—</div></div>
+                <div><div class="text-slate-500">Position</div><div id="empPosBottom">—</div></div>
+                <div><div class="text-slate-500">Department</div><div id="empDeptBottom">—</div></div>
+                <div><div class="text-slate-500">Reports to</div><div id="empReportsBottom">—</div></div>
+                <div><div class="text-slate-500">Email</div><div id="empEmailBottom">—</div></div>
+                <div><div class="text-slate-500">Phone</div><div id="empPhoneBottom">—</div></div>
+                <div><div class="text-slate-500">Hire date</div><div id="empHireBottom">—</div></div>
+                <div class="col-span-2"><div class="text-slate-500">Session started</div><div id="sessionTimeBottom">—</div></div>
+            </div>
+        </div>
+    </div>
   </div>
 </div>
 
@@ -192,7 +262,7 @@ const state = {
   get token(){ return localStorage.getItem('hb_token') || ''; },
   set token(v){ v ? localStorage.setItem('hb_token', v) : localStorage.removeItem('hb_token'); },
   initials:null, policies:[], acks:{},
-  currentPage:1, scale:1.0, pdfDoc:null
+  currentPage:6, scale:1.0, pdfDoc:null // Start at page 6
 };
 
 // Map to hold active render tasks to prevent concurrent rendering on the same canvas
@@ -255,30 +325,40 @@ $('btnLogin').addEventListener('click', async ()=>{
     await initApp();
     show($('loginView'), false);
     show($('appView'), true);
+    show($('appHeader'), true); // Show header on successful login
   }catch(e){ $('loginErr').textContent=e.message; show($('loginErr'),true); }
 });
 
-$('logoutBtn').addEventListener('click', ()=>{ state.token=''; location.reload(); });
-$('logoutBtnMobile').addEventListener('click', ()=>{ state.token=''; location.reload(); });
+const doLogout = () => { state.token=''; location.reload(); };
+$('logoutBtn').addEventListener('click', doLogout);
+$('logoutBtnMobile').addEventListener('click', doLogout);
+$('logoutBtnMobileBottom').addEventListener('click', doLogout); 
 
 /* =============== APP INIT =============== */
 async function initApp(){
   const header = await api('/header');
-  $('empName').textContent  = header?.full_name ?? '—';
-  $('empUser').textContent  = header?.username ?? '—';
-  $('empPos').textContent   = header?.position ?? '—';
-  $('empDept').textContent  = header?.department ?? '—';
-  $('empReports').textContent = header?.reports_to_name ?? '—';
-  $('empEmail').textContent = header?.email ?? '—';
-  $('empPhone').textContent = header?.phone ?? '—';
-  $('empHire').textContent  = header?.hire_date ?? '—';
-  $('sessionTime').textContent = new Date().toLocaleString();
+  
+  // Helper to update both desktop and mobile employee cards
+  const updateEmpCard = (suffix='') => {
+    $(`empName${suffix}`).textContent  = header?.full_name ?? '—';
+    $(`empUser${suffix}`).textContent  = header?.username ?? '—';
+    $(`empPos${suffix}`).textContent   = header?.position ?? '—';
+    $(`empDept${suffix}`).textContent  = header?.department ?? '—';
+    $(`empReports${suffix}`).textContent = header?.reports_to_name ?? '—';
+    $(`empEmail${suffix}`).textContent = header?.email ?? '—';
+    $(`empPhone${suffix}`).textContent = header?.phone ?? '—';
+    $(`empHire${suffix}`).textContent  = header?.hire_date ?? '—';
+    $(`sessionTime${suffix}`).textContent = new Date().toLocaleString();
+  };
+
+  updateEmpCard(''); // Desktop
+  updateEmpCard('Bottom'); // Mobile
 
   const [pol, acks, prog] = await Promise.all([ api('/policies'), api('/acks'), api('/progress') ]);
   state.policies = pol || []; state.acks = acks || {}; updateProgress(prog);
 
   await loadPdf();     // load handbook
-  renderPolicies();    // draw policy list for the first page
+  renderPolicies();    // draw policy list for the initial page (page 6)
 }
 
 /* =============== PROGRESS =============== */
@@ -288,14 +368,15 @@ async function refreshProgress(){ try{ updateProgress(await api('/progress')); }
 /* =============== POLICIES UI =============== */
 $('filterCurrent').addEventListener('change', renderPolicies);
 function visiblePolicies(){
+  // Ensure filtering is active if filterCurrent is checked, otherwise show all
   if (!$('filterCurrent').checked) return state.policies;
   const page = String(state.currentPage); return state.policies.filter(p => String(p.page||'')===page);
 }
 function renderPolicies(){
-  $('pageLabel-policy').textContent = state.currentPage; // Updated ID
+  $('pageLabel-policy').textContent = state.currentPage; 
   const list = $('policies'); list.innerHTML='';
   const items = visiblePolicies();
-  if (!items.length){ const d=document.createElement('div'); d.className='text-sm text-slate-500'; d.textContent=$('filterCurrent').checked?'No policies on this page.':'No policies available.'; list.appendChild(d); return; }
+  if (!items.length){ const d=document.createElement('div'); d.className='text-sm text-slate-500'; d.textContent=$('filterCurrent').checked?`No policies found for page ${state.currentPage}.`:'No policies available.'; list.appendChild(d); return; }
   for (const p of items){
     const ack = state.acks[p.id];
     const card = document.createElement('div');
@@ -342,32 +423,50 @@ async function loadPdf(){
   state.pdfDoc = pdf;
 
   const container = $('pdfContainer'); container.innerHTML='';
-  const observer = new IntersectionObserver((entries)=>{
-    entries.forEach(entry=>{
-      if (!entry.isIntersecting) return;
-      const wrap = entry.target;
-      const pageNo = Number(wrap.dataset.pageNo);
-      
-      // Update state for currently visible page
-      state.currentPage = pageNo;
-      // Update page numbers in the UI
-      $('pageLabel-policy').textContent = pageNo; 
-      
-      if ($('filterCurrent').checked) renderPolicies();
-      
-      // Only render if not already rendered
-      if (!wrap.dataset.rendered) {
-        renderPageToCanvas(pageNo, wrap.querySelector('canvas'), wrap);
-      }
-    });
-  },{root:container, threshold:0.55});
-
+  
+  // 1. Create page wrappers, but DO NOT observe them (single page view)
   for (let i=1;i<=pdf.numPages;i++){
-    const wrap=document.createElement('div'); wrap.className='relative'; wrap.dataset.pageNo=String(i); wrap.dataset.rendered='';
+    // Added wrapper with class for single page view
+    const wrap=document.createElement('div'); wrap.className='pdf-page-wrapper'; wrap.dataset.pageNo=String(i); wrap.dataset.rendered='';
     const cv=document.createElement('canvas'); cv.className='pdf-page'; cv.height=50; wrap.appendChild(cv);
-    container.appendChild(wrap); observer.observe(wrap);
+    container.appendChild(wrap);
   }
+  
+  // 2. Initial render and event listeners for page navigation
+  renderSinglePage(state.currentPage);
+
+  $('prevPage').addEventListener('click', ()=> navigatePage(-1));
+  $('nextPage').addEventListener('click', ()=> navigatePage(1));
 }
+
+function navigatePage(delta) {
+    const newPage = state.currentPage + delta;
+    if (state.pdfDoc && newPage >= 1 && newPage <= state.pdfDoc.numPages) {
+        state.currentPage = newPage;
+        renderSinglePage(newPage);
+        renderPolicies(); // Update policies whenever the page changes
+    }
+}
+
+function renderSinglePage(pageNo) {
+    const wrappers = $('pdfContainer').querySelectorAll('.pdf-page-wrapper');
+    const targetWrap = $('pdfContainer').querySelector(`[data-page-no="${pageNo}"]`);
+
+    if (!targetWrap) return;
+
+    // 1. Hide all pages and show only the target page
+    wrappers.forEach(w => w.classList.remove('active'));
+    targetWrap.classList.add('active');
+
+    // 2. Update header page label
+    $('currentPageLabel').textContent = pageNo;
+
+    // 3. Render if not already rendered
+    if (!targetWrap.dataset.rendered) {
+        renderPageToCanvas(pageNo, targetWrap.querySelector('canvas'), targetWrap);
+    }
+}
+
 
 /* === CRISP (hi-DPI) PAGE RENDER === */
 async function renderPageToCanvas(pageNo, canvas, wrapEl) {
@@ -387,10 +486,20 @@ async function renderPageToCanvas(pageNo, canvas, wrapEl) {
   const uiScale = state.scale || 1;
   const dpr = Math.max(1, window.devicePixelRatio || 1);
 
-  // 1. Calculate the viewport at the current UI scale
-  const viewport = page.getViewport({ scale: uiScale });
+  // Use the container's width to set viewport width
+  const containerWidth = canvas.parentElement.offsetWidth - 32; // -32 for padding in container
+  
+  // Calculate scale based on container width
+  const viewportBase = page.getViewport({ scale: 1.0 });
+  const calculatedScale = containerWidth / viewportBase.width;
+  
+  // Combine calculated scale with UI zoom scale
+  const finalScale = calculatedScale * uiScale;
 
-  // 2. Set the CSS (visible) size based on the UI scale
+  // 1. Calculate the final viewport
+  const viewport = page.getViewport({ scale: finalScale });
+
+  // 2. Set the CSS (visible) size based on the final viewport
   const cssW = Math.floor(viewport.width);
   const cssH = Math.floor(viewport.height);
   canvas.style.width  = cssW + "px";
@@ -417,6 +526,10 @@ async function renderPageToCanvas(pageNo, canvas, wrapEl) {
     await task.promise;
     // Only mark as rendered if the promise completed successfully (not cancelled)
     if (wrapEl) wrapEl.dataset.rendered = "1";
+    // Center the page within its wrapper
+    canvas.style.marginLeft = 'auto';
+    canvas.style.marginRight = 'auto';
+
   } catch (e) {
     // If the error is due to cancellation, don't re-throw or mark as error
     if (e.name === 'RenderingCancelledException') {
@@ -432,18 +545,12 @@ async function renderPageToCanvas(pageNo, canvas, wrapEl) {
 }
 
 function rerenderVisible(){
-  const container = $('pdfContainer');
-  // Use a temporary observer to immediately trigger rendering for visible pages
-  const io = new IntersectionObserver((ents)=>{ ents.forEach(e=>{
-    if (e.isIntersecting){
-      const pageNo = Number(e.target.dataset.pageNo);
-      // Force re-render by clearing the rendered flag
-      e.target.dataset.rendered=''; 
-      renderPageToCanvas(pageNo, e.target.querySelector('canvas'), e.target);
-      io.unobserve(e.target); // Stop observing after triggering render
-    }
-  });},{root:container, threshold:0.55});
-  container.querySelectorAll('[data-page-no]').forEach(el=> io.observe(el));
+  // In single page view, only the current page needs re-rendering
+  const targetWrap = $('pdfContainer').querySelector(`[data-page-no="${state.currentPage}"]`);
+  if (targetWrap) {
+    targetWrap.dataset.rendered=''; 
+    renderPageToCanvas(state.currentPage, targetWrap.querySelector('canvas'), targetWrap);
+  }
 }
 
 $('zoomIn').addEventListener('click', ()=>{
@@ -457,10 +564,25 @@ $('zoomOut').addEventListener('click', ()=>{
   rerenderVisible();
 });
 
+// Rerender on resize to maintain correct fit in the 50/50 split on desktop
+window.addEventListener('resize', () => {
+    // Only rerender PDF when window width crosses the mobile/desktop threshold (1024px)
+    if (state.pdfDoc) {
+        clearTimeout(window._resizeTimer);
+        window._resizeTimer = setTimeout(rerenderVisible, 150);
+    }
+});
+
+
 /* =============== AUTO-RESUME =============== */
 window.addEventListener('DOMContentLoaded', async ()=>{
   if (state.token){
-    try{ await initApp(); show($('loginView'), false); show($('appView'), true); }
+    try{ 
+        await initApp(); 
+        show($('loginView'), false); 
+        show($('appView'), true); 
+        show($('appHeader'), true); // Show header if token is present
+    }
     catch{ state.token=''; }
   }
 });
