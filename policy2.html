@@ -9,51 +9,86 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily:{ 'serif-head':['Playfair Display','serif'], 'sans':['Inter','system-ui','sans-serif'] },
-          colors:{ border:'#E5E7EB' }
-        }
-      }
-    }
-  </script>
-
   <style>
     :root { --jc-border:#E5E7EB; }
     body { color:#0f172a; }
     .card { background:#fff; border:1px solid var(--jc-border); border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.06); }
 
-    /* PDF page wrappers (crisp canvas render) */
-    .pdf-page-wrapper {
-      width: 100%;
-      margin: 0 auto 1rem;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-      border-radius: 12px;
-      overflow: hidden;
-      position: relative;
-      min-height: 100px;
+    /* PDF page wrapper (each canvas lives in here) */
+    .pdf-page-wrapper{
+      width:100%;
+      margin:0 auto 1rem;
+      border-radius:12px;
+      overflow:hidden;
+      position:relative;
+      min-height:100px;
+      box-shadow:0 4px 6px rgba(0,0,0,0.05);
     }
-    .pdf-page { width:100%; display:block; background:#fff; border:1px solid var(--jc-border); border-radius:12px; }
+    .pdf-page{ width:100%; display:block; background:#fff; border:1px solid var(--jc-border); border-radius:12px;}
 
-    /* Keep layout simple: handbook first, then policies, then employee info */
-    .maxw { max-width: 1100px; }
+    /* Layout: top (PDF) is fixed height; bottom scrolls */
+    .app-shell{
+      display:flex;
+      flex-direction:column;
+      gap:1rem;
+      max-width:1100px;
+      margin:0 auto;
+      padding:0 1rem 2rem;
+    }
+    #pdfContainer{
+      height: min(80vh, 900px);
+      overflow-y:auto;
+      overflow-x:hidden;
+      background:#fff;
+      border:1px solid var(--jc-border);
+      border-radius:16px;
+    }
 
-    /* Bigger login UI */
-    .login-input { font-size: 20px; padding: 14px 14px; }
-    .login-btn { font-size: 20px; padding: 14px 16px; }
+    /* Large login UI */
+    .login-input{
+      font-size:28px;
+      line-height:1.2;
+      padding:18px 16px;
+      border-radius:14px;
+      border:1px solid #cbd5e1;
+      width:100%;
+    }
+    .login-btn{
+      font-size:22px;
+      line-height:1.2;
+      padding:16px 18px;
+      border-radius:14px;
+      background:#111827;
+      color:#fff;
+      width:100%;
+    }
+
+    /* Sticky header */
+    header.sticky{ position:sticky; top:0; z-index:30; background:#fff; border-bottom:1px solid var(--jc-border); }
+
+    /* Active page outline (subtle) */
+    .pdf-page-wrapper.active{ outline:2px solid #93c5fd33; }
   </style>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily:{ 'serif-head':['Playfair Display','serif'], 'sans':['Inter','system-ui','sans-serif'] }
+        }
+      }
+    }
+  </script>
 </head>
 <body class="font-sans h-full">
 
-<!-- ======== Sticky header ======== -->
-<header id="appHeader" class="border-b border-gray-200 bg-white sticky top-0 z-40 hidden">
-  <div class="maxw mx-auto px-4 sm:px-6 py-3 flex items-center gap-4">
+<!-- ================= HEADER ================= -->
+<header id="appHeader" class="sticky hidden">
+  <div class="max-w-[1100px] mx-auto px-4 py-3 flex items-center gap-4">
     <img class="h-10 w-auto rounded bg-white" alt="Jeng Chi"
          src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg">
     <div class="flex-1 min-w-0">
-      <h1 class="text-xl sm:text-2xl font-serif-head truncate">Employee Handbook & Acknowledgment</h1>
+      <div class="text-lg sm:text-xl font-serif-head truncate">Employee Handbook & Acknowledgment</div>
       <div id="progressBox" class="mt-1">
         <div class="text-xs text-slate-500 mb-1 flex items-center justify-between">
           <span>Progress</span><span id="progressPct">0%</span>
@@ -63,87 +98,94 @@
         </div>
       </div>
     </div>
-    <div class="text-sm text-slate-600">Logged in: <span id="loggedUser">—</span></div>
-    <button id="logoutBtn" class="text-sm px-3 py-1 border border-gray-200 rounded hover:bg-slate-50">Sign out</button>
+
+    <!-- Current page labels + zoom + offset nudge -->
+    <div class="hidden sm:flex items-center gap-2">
+      <span class="text-xs text-slate-500">PDF <span id="lblPDF">—</span> · HB <span id="lblHB">—</span></span>
+      <button id="prevPage" class="text-xs px-2 py-1 border rounded">◀</button>
+      <button id="zoomOut" class="text-xs px-2 py-1 border rounded">–</button>
+      <span id="zoomPct" class="text-xs w-12 text-center">100%</span>
+      <button id="zoomIn" class="text-xs px-2 py-1 border rounded">+</button>
+      <button id="nextPage" class="text-xs px-2 py-1 border rounded">▶</button>
+      <span class="text-[11px] text-slate-500 ml-2">Offset</span>
+      <button id="offsetMinus" class="text-[11px] px-2 py-1 border rounded">-1</button>
+      <span id="offsetVal" class="text-[11px] w-8 text-center tabular-nums">0</span>
+      <button id="offsetPlus" class="text-[11px] px-2 py-1 border rounded">+1</button>
+    </div>
+
+    <button id="logoutBtn" class="text-xs px-2 py-1 border rounded hidden md:block">Sign out</button>
   </div>
 </header>
 
-<!-- ======== Login view ======== -->
+<!-- ================= LOGIN ================= -->
 <div id="loginView" class="min-h-[60vh] grid place-items-center py-10">
-  <div class="card w-full maxw mx-4 sm:mx-auto overflow-hidden">
+  <div class="card max-w-xl w-full mx-4 sm:mx-0 overflow-hidden">
     <div class="p-8">
       <div class="flex items-center gap-3 mb-6">
         <img class="h-12 w-auto rounded" alt="Jeng Chi"
              src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg">
-        <div class="text-2xl font-serif-head">Sign In</div>
+        <div class="text-2xl font-serif-head">Sign in</div>
       </div>
 
-      <!-- Big, simple credentials (no placeholders, no hints) -->
-      <div class="grid sm:grid-cols-2 gap-4">
-        <label class="block">
-          <span class="block text-base text-slate-700 mb-2">Initials</span>
-          <input id="u" class="w-full rounded-xl border border-gray-300 login-input focus:outline-none focus:ring-2 focus:ring-sky-400">
-        </label>
-        <label class="block">
-          <span class="block text-base text-slate-700 mb-2">PIN</span>
-          <input id="p" type="password" inputmode="numeric"
-                 class="w-full rounded-xl border border-gray-300 login-input focus:outline-none focus:ring-2 focus:ring-sky-400">
-        </label>
-      </div>
+      <!-- No placeholders/hints; big inputs -->
+      <label class="block mb-5">
+        <span class="block text-base text-slate-700 mb-2">Initials</span>
+        <input id="u" class="login-input" />
+      </label>
 
-      <button id="btnLogin" class="w-full mt-6 rounded-xl bg-slate-900 text-white login-btn font-semibold hover:opacity-95">
-        Unlock
-      </button>
+      <label class="block mb-6">
+        <span class="block text-base text-slate-700 mb-2">PIN</span>
+        <input id="p" type="password" inputmode="numeric" class="login-input" />
+      </label>
 
-      <p id="loginErr" class="mt-3 text-base text-rose-600 hidden">Error</p>
-      <p id="pdfWarn" class="mt-2 text-sm text-rose-600 hidden">PDF.js failed to load.</p>
+      <button id="btnLogin" class="login-btn">Unlock</button>
+      <p id="loginErr" class="mt-4 text-sm text-rose-600 hidden">Error</p>
+      <p id="pdfWarn" class="mt-2 text-xs text-rose-600 hidden">PDF.js failed to load.</p>
     </div>
   </div>
 </div>
 
-<!-- ======== App ======== -->
+<!-- ================= APP ================= -->
 <div id="appView" class="hidden">
-  <div class="maxw mx-auto px-4 sm:px-6 py-5">
+  <div class="app-shell">
 
-    <!-- 1) HANDBOOK VIEWER (top) -->
+    <!-- 1) HANDBOOK (fixed on top; user scrolls inside it) -->
     <div class="card overflow-hidden">
       <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200">
-        <div class="text-sm">Handbook — <span id="pageLabelHeader">PDF — · HB —</span></div>
+        <div class="text-sm">Handbook — <span id="hdrPair">PDF — · HB —</span></div>
         <div class="flex items-center gap-2">
-          <button id="prevPage" class="text-sm px-3 py-1 border border-gray-200 rounded hover:bg-slate-50">◀</button>
-          <button id="zoomOut" class="text-sm px-3 py-1 border border-gray-200 rounded hover:bg-slate-50">–</button>
-          <span id="zoomPct" class="text-sm w-12 text-center">100%</span>
-          <button id="zoomIn" class="text-sm px-3 py-1 border border-gray-200 rounded hover:bg-slate-50">+</button>
-          <button id="nextPage" class="text-sm px-3 py-1 border border-gray-200 rounded hover:bg-slate-50">▶</button>
+          <button id="prevPage2" class="text-xs px-2 py-1 border rounded">◀</button>
+          <button id="zoomOut2" class="text-xs px-2 py-1 border rounded">–</button>
+          <span id="zoomPct2" class="text-xs w-12 text-center">100%</span>
+          <button id="zoomIn2" class="text-xs px-2 py-1 border rounded">+</button>
+          <button id="nextPage2" class="text-xs px-2 py-1 border rounded">▶</button>
         </div>
       </div>
-      <div id="pdfContainer" class="p-3 bg-white overflow-y-auto" style="max-height: calc(100vh - 240px)">
-        <!-- canvases injected here -->
-      </div>
+      <div id="pdfContainer" class="p-3"></div>
     </div>
 
-    <!-- 2) POLICIES UNDER THE HANDBOOK -->
-    <div class="card mt-4">
+    <!-- 2) POLICIES (bottom, updates to current HB page) -->
+    <div class="card">
       <div class="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <div class="font-medium">Policies attached to handbook page <span id="polHBLabel">—</span></div>
+        <div class="font-medium">Policies attached to handbook page <span id="pageLabelPolicy">—</span></div>
         <div class="flex items-center gap-3">
-          <label class="text-sm flex items-center gap-2 select-none">
+          <label class="text-xs flex items-center gap-2 select-none">
             <input id="filterCurrent" type="checkbox" class="accent-sky-600" checked>
             <span>Show only current page</span>
           </label>
-          <button id="finalizeBtn" class="text-sm px-3 py-1 border border-gray-200 rounded hover:bg-slate-50">Finalize</button>
+          <button id="finalizeBtn" class="text-xs px-3 py-1 border rounded">Finalize</button>
         </div>
       </div>
-      <div id="policies" class="p-4 space-y-3"></div>
+      <div id="policies" class="p-3 space-y-3"></div>
     </div>
 
-    <!-- 3) EMPLOYEE INFORMATION AT THE VERY BOTTOM -->
-    <div class="card mt-4">
+    <!-- 3) EMPLOYEE INFO (always last) -->
+    <div class="card">
       <div class="px-4 py-3 border-b border-gray-200">
         <div class="font-medium">Employee Information</div>
       </div>
-      <div class="px-4 py-4 text-sm">
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-3">
+      <div class="px-4 py-3 text-sm">
+        <div class="grid grid-cols-2 gap-x-6 gap-y-3">
           <div><div class="text-slate-500">Employee</div><div id="empName">—</div></div>
           <div><div class="text-slate-500">User</div><div id="empUser">—</div></div>
           <div><div class="text-slate-500">Position</div><div id="empPos">—</div></div>
@@ -158,9 +200,8 @@
     </div>
 
     <!-- toasts -->
-    <div id="toastOK"  class="hidden bg-emerald-50 text-emerald-700 border border-emerald-200 rounded px-3 py-2 text-sm mt-3">Saved.</div>
-    <div id="toastErr" class="hidden bg-rose-50 text-rose-700 border border-rose-200 rounded px-3 py-2 text-sm mt-3">Error.</div>
-
+    <div id="toastOK"  class="hidden bg-emerald-50 text-emerald-700 border border-emerald-200 rounded px-3 py-2 text-sm">Saved.</div>
+    <div id="toastErr" class="hidden bg-rose-50 text-rose-700 border border-rose-200 rounded px-3 py-2 text-sm">Error.</div>
   </div>
 </div>
 
@@ -170,25 +211,25 @@ const API_BASE = 'https://kpldzwlftkvjjntgsqxx.functions.supabase.co/handbook';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs';
 const HANDBOOK_PDF = 'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/HANDBOOK/Handbook%202026.pdf';
 
-/* ================= STATE ================= */
-const $ = (id)=>document.getElementById(id);
+// Start the handbook at HB page 6
 const START_HB_PAGE = 6;
 
+// Force the mapping HB = PDF + OFFSET (set to null to auto-detect)
+// Policy page 10 showing up on HB Page 6 content implies OFFSET = -4 (HB = 10 - 4).
+const FORCE_OFFSET = 0;
+
+/* ================= STATE ================= */
+const $ = id => document.getElementById(id);
 const state = {
   get token(){ return localStorage.getItem('hb_token') || ''; },
   set token(v){ v ? localStorage.setItem('hb_token', v) : localStorage.removeItem('hb_token'); },
-  initials: null,
-  policies: [],
-  acks: {},
-  pdfDoc: null,
-  scale: 1.0,
-  pageOffset: -4,        // fallback: HB6 → PDF2 (adjusted by auto-detect)
-  currentPDF: 1
+  initials:null, policies:[], acks:{},
+  currentPDF:1, scale:1.0, pdfDoc:null,
+  pageOffset: 0, // PDF_page = HB_page + pageOffset
 };
-
 const renderTaskMap = new Map();
 
-/* ===== Robust PDF.js loader (ESM + UMD fallback) ===== */
+/* ===== PDF.js loader (robust) ===== */
 const PDF_JS_CANDIDATES = [
   { lib:'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/pdfjs/pdf.min.mjs',
     worker:'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/pdfjs/pdf.worker.min.mjs' },
@@ -200,45 +241,64 @@ async function loadPdfJsLib() {
     try {
       const pdfjs = await import(opt.lib);
       pdfjs.GlobalWorkerOptions.workerSrc = opt.worker;
-      window.pdfjsLib = pdfjs;
-      return pdfjs;
+      window.pdfjsLib = pdfjs; return pdfjs;
     } catch {}
   }
-  await new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.js';
-    s.onload = () => {
-      if (!window.pdfjsLib) return reject(new Error('pdfjsLib missing'));
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-        'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.js';
-      resolve();
-    };
-    s.onerror = reject;
-    document.head.appendChild(s);
+  await new Promise((resolve, reject)=>{
+    const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.js';
+    s.onload=()=>{ if(!window.pdfjsLib) return reject(new Error('pdfjs missing'));
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.js'; resolve(); };
+    s.onerror=reject; document.head.appendChild(s);
   });
   return window.pdfjsLib;
 }
 
-/* =============== UTILS =============== */
+/* ================= UTILS ================= */
 const show = (el, yes=true)=>el.classList.toggle('hidden', !yes);
-function toastOK(msg='Saved.'){$('toastErr').classList.add('hidden'); $('toastOK').textContent=msg; show($('toastOK'), true); setTimeout(()=>show($('toastOK'),false),1400); }
-function toastErr(msg='Something went wrong.'){$('toastOK').classList.add('hidden'); $('toastErr').textContent=msg; show($('toastErr'), true); setTimeout(()=>show($('toastErr'),false),2200); }
 const fmtPct = n => `${Math.max(0,Math.min(100,Math.round(n)))}%`;
-const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
-const getHBFromPDF = (pdfPage)=> pdfPage - state.pageOffset;
-const getPDFFromHB = (hbPage)=> hbPage + state.pageOffset;
+const clamp = (n, lo, hi)=>Math.max(lo, Math.min(hi, n));
+const getHBFromPDF = pdf => pdf - state.pageOffset;
+const getPDFFromHB = hb  => hb + state.pageOffset;
+function toastOK(msg='Saved.'){$('toastErr').classList.add('hidden'); $('toastOK').textContent=msg; show($('toastOK'),true); setTimeout(()=>show($('toastOK'),false),1400); }
+function toastErr(msg='Something went wrong.'){$('toastOK').classList.add('hidden'); $('toastErr').textContent=msg; show($('toastErr'),true); setTimeout(()=>show($('toastErr'),false),2200); }
 
-/* =============== API =============== */
-async function api(path, {method='GET', body=null}={}) {
-  const headers = {'Content-Type':'application/json','Authorization':`Bearer ${SUPABASE_ANON_KEY}`};
-  if (state.token) headers['x-hb-token'] = state.token;
-  const res = await fetch(`${API_BASE}${path}`, {method, headers, body: body?JSON.stringify(body):null});
-  const text = await res.text(); let data; try{ data=JSON.parse(text);}catch{ data={raw:text}; }
-  if (!res.ok) throw new Error(data?.message || `${res.status} ${res.statusText}`);
-  return data;
+/* ================= API ================= */
+async function api(path, {method='GET', body=null}={}, maxRetries=3, initialDelay=1000) {
+    const headers = {'Content-Type':'application/json','Authorization':`Bearer ${SUPABASE_ANON_KEY}`};
+    if (state.token) headers['x-hb-token'] = state.token;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            const res = await fetch(`${API_BASE}${path}`, {method, headers, body: body?JSON.stringify(body):null});
+            const text = await res.text();
+            let data;
+            try { data = JSON.parse(text); } catch { data = {raw: text}; }
+
+            if (res.ok) {
+                return data;
+            } else if (res.status === 429 && attempt < maxRetries - 1) { // 429 Too Many Requests, retry
+                const delay = initialDelay * Math.pow(2, attempt);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            } else {
+                throw new Error(data?.message || `${res.status} ${res.statusText}`);
+            }
+        } catch (e) {
+            if (attempt === maxRetries - 1) {
+                console.error(`API call failed after ${maxRetries} attempts:`, e);
+            }
+            if (attempt < maxRetries - 1) { // Network errors, retry
+                const delay = initialDelay * Math.pow(2, attempt);
+                await new Promise(resolve => setTimeout(resolve, delay));
+            } else {
+                throw e; // Re-throw error on final failure
+            }
+        }
+    }
 }
 
-/* =============== LOGIN =============== */
+
+/* ================= LOGIN ================= */
 $('btnLogin').addEventListener('click', async ()=>{
   const username = $('u').value.trim();
   const pin = $('p').value.trim();
@@ -246,7 +306,6 @@ $('btnLogin').addEventListener('click', async ()=>{
   try{
     const { token } = await api('/login', { method:'POST', body:{ username, pin } });
     state.token = token; state.initials = username.toUpperCase();
-    $('loggedUser').textContent = state.initials;
     await initApp();
     show($('loginView'), false);
     show($('appView'), true);
@@ -255,100 +314,99 @@ $('btnLogin').addEventListener('click', async ()=>{
 });
 $('logoutBtn').addEventListener('click', ()=>{ state.token=''; location.reload(); });
 
-/* =============== INIT =============== */
+/* ================= APP INIT ================= */
 async function initApp(){
+  // Employee header card data
   const header = await api('/header');
-  // Fill employee card (bottom)
-const updateEmp = (suffix = '') => {
-  const set = (id, val) => {
-    const el = document.getElementById(id);
-    if (el) el.textContent = val;
-  };
-
-  set(`empName${suffix}`,   header?.full_name ?? '—');
-  set(`empUser${suffix}`,   header?.username ?? '—');
-  set(`empPos${suffix}`,    header?.position ?? '—');
-  set(`empDept${suffix}`,   header?.department ?? '—');
-  set(`empReports${suffix}`,header?.reports_to_name ?? '—');
-  set(`empEmail${suffix}`,  header?.email ?? '—');
-  set(`empPhone${suffix}`,  header?.phone ?? '—');
-  set(`empHire${suffix}`,   header?.hire_date ?? '—');
-  set(`sessionTime${suffix}`, new Date().toLocaleString());
-};
-
-  updateEmp('');
+  const set = (id,val)=>($(id).textContent = val ?? '—');
+  set('empName',   header?.full_name);
+  set('empUser',   header?.username);
+  set('empPos',    header?.position);
+  set('empDept',   header?.department);
+  set('empReports',header?.reports_to_name);
+  set('empEmail',  header?.email);
+  set('empPhone',  header?.phone);
+  set('empHire',   header?.hire_date);
+  set('sessionTime', new Date().toLocaleString());
 
   const [pol, acks, prog] = await Promise.all([ api('/policies'), api('/acks'), api('/progress') ]);
-  const isSignable = (title) => !/^(SECTION|Table of Contents|VII FAMILY AND MEDICAL LEAVE|SECTION IX|SECTION VIII)/i.test(title);
-  state.policies = (pol || []).filter(p => isSignable(p.title));
+  const isSignable = (t)=>!/^SECTION|Table of Contents$/i.test(t||'');
+  state.policies = (pol||[]).filter(p=>isSignable(p.title));
   state.acks = acks || {};
   updateProgress(prog);
 
   await loadPdf();
-  renderPolicies(); // first render for HB 6
+  renderPolicies(); // first draw
 }
 
-/* =============== PROGRESS =============== */
+/* ================= PROGRESS ================= */
 function updateProgress(prog){ const pct = prog?.percent_done || 0; $('progressPct').textContent = fmtPct(pct); $('progressBar').style.width=`${pct}%`; }
 async function refreshProgress(){ try{ updateProgress(await api('/progress')); }catch{} }
 
-/* =============== POLICIES =============== */
+/* ================= POLICIES ================= */
 $('filterCurrent').addEventListener('change', renderPolicies);
-
 function policyRange(p){
   const start = Number(p.page_start ?? p.start_page ?? p.page ?? p.page_label ?? 0) || 0;
   const end   = Number(p.page_end   ?? p.end_page   ?? p.page ?? p.page_label ?? start) || start;
   return [start, end];
 }
 function visiblePolicies(){
-  const hb = getHBFromPDF(state.currentPDF);
   if (!$('filterCurrent').checked) return state.policies;
-  return state.policies.filter(p => {
-    const [s,e] = policyRange(p);
-    return hb >= s && hb <= e;
+  const hb = getHBFromPDF(state.currentPDF);
+  return state.policies.filter(p=>{
+    const [s,e]=policyRange(p);
+    return hb>=s && hb<=e;
   });
 }
 function renderPolicies(){
   const hb = getHBFromPDF(state.currentPDF);
-  $('polHBLabel').textContent = hb > 0 ? hb : '—';
+  $('pageLabelPolicy').textContent = hb>0?hb:'—';
   const list = $('policies'); list.innerHTML='';
 
   const items = visiblePolicies();
   if (!items.length){
     const d=document.createElement('div');
     d.className='text-sm text-slate-500';
-    d.textContent=`No policies found for HB page ${hb}.`;
+    d.textContent=$('filterCurrent').checked?`No policies found for HB page ${hb}.`:'No policies available.';
     list.appendChild(d); return;
   }
 
   for (const p of items){
+    const [s,e]=policyRange(p);
     const ack = state.acks[p.id];
-    const [s,e] = policyRange(p);
-    const card = document.createElement('div');
-    card.className='border border-gray-200 rounded-xl p-3';
+    const card=document.createElement('div');
+    card.className='border border-gray-200 rounded-lg p-3';
     card.innerHTML = `
       <div class="flex items-start justify-between gap-3">
         <div>
           <div class="font-medium">${p.title}</div>
-          <div class="text-xs text-slate-500 mt-0.5">HB page ${s}${e!==s?`–${e}`:''} ${p.required ? '• Required':''}</div>
+          <div class="text-xs text-slate-500 mt-0.5">HB page ${s}${e!==s?`–${e}`:''} ${p.required?'• Required':''}</div>
         </div>
-        <div class="text-xs ${ack?'text-emerald-600':'text-slate-500'}">${ack?`✓ ${ack.initials} · ${new Date(ack.saved_at).toLocaleString()}`:'pending'}</div>
+        <div class="text-xs ${ack?'text-emerald-600':'text-slate-500'}">
+          ${ack?`✓ ${ack.initials} · ${new Date(ack.saved_at).toLocaleString()}`:'pending'}
+        </div>
       </div>
-      <div class="mt-2 flex flex-wrap gap-2">
-        <input type="text" class="flex-1 min-w-[140px] bg-white border border-gray-200 rounded px-2 py-1 text-sm uppercase" data-initials>
-        <button class="shrink-0 text-sm px-3 py-1 border border-gray-200 rounded hover:bg-slate-50" data-save>Sign</button>
+      <div class="mt-2 flex gap-2">
+        <input type="text" aria-label="Your initials" class="flex-1 bg-white border border-gray-200 rounded px-2 py-1 text-sm" data-initials>
+        <button class="shrink-0 text-sm px-3 py-1 border rounded hover:bg-slate-50" data-save>Sign</button>
+        <button class="shrink-0 text-xs px-2 py-1 border rounded hover:bg-slate-50" data-jump>Open</button>
       </div>`;
-    const input = card.querySelector('[data-initials]');
-    const btnSave = card.querySelector('[data-save]');
-    input.value = (state.initials||'').toUpperCase();
+    const input=card.querySelector('[data-initials]');
+    const save =card.querySelector('[data-save]');
+    const jump =card.querySelector('[data-jump]');
 
-    btnSave.addEventListener('click', async ()=>{
-      const initials = (input.value||'').trim(); if (!initials){ toastErr('Enter your initials.'); return; }
+    save.addEventListener('click', async ()=>{
+      const initials=(input.value||'').trim(); if(!initials){ toastErr('Enter your initials.'); return; }
       try{
-        const res = await api('/save-ack',{method:'POST',body:{policy_id:p.id,initials}});
+        const res=await api('/save-ack',{method:'POST',body:{policy_id:p.id,initials}});
         state.acks[p.id]=res; toastOK('Saved.'); renderPolicies(); refreshProgress();
       }catch(e){ toastErr(e.message); }
     });
+    jump.addEventListener('click', ()=>{
+      const targetPDF = getPDFFromHB(s);
+      if (state.pdfDoc && targetPDF>=1 && targetPDF<=state.pdfDoc.numPages) changeActivePage(targetPDF);
+    });
+
     list.appendChild(card);
   }
 }
@@ -357,38 +415,10 @@ $('finalizeBtn').addEventListener('click', async ()=>{
   catch(e){ toastErr(e.message); }
 });
 
-/* =============== PDF VIEWER =============== */
+/* ================= PDF VIEWER ================= */
 async function waitForPdfJs(){
   try { return window.pdfjsLib || await loadPdfJsLib(); }
   catch (e) { $('pdfWarn').classList.remove('hidden'); throw e; }
-}
-
-function _norm(s){ return (s||'').toLowerCase().replace(/\s+/g,' ').replace(/[–—-]+/g,'-'); }
-
-async function autoDetectOffset(){
-  // try to find HB 6 by scanning first 30 pages for common anchors
-  let detected = null;
-  try {
-    const scanMax = Math.min(state.pdfDoc.numPages, 30);
-    const anchors = [
-      { hb:6, must:['section i','introduction'] },
-      { hb:6, must:['table of contents'] },
-      { hb:6, must:['welcome to jeng chi'] }
-    ];
-    for (let i=1; i<=scanMax; i++){
-      const t = _norm((await (await state.pdfDoc.getPage(i)).getTextContent())
-                        .items.map(it=>it.str).join(' '));
-      for (const a of anchors){
-        if (a.must.every(m => t.includes(m))){ detected = i - a.hb; break; }
-      }
-      if (detected !== null) break;
-    }
-  } catch {}
-  // fallback to saved or default -4
-  const saved = Number(localStorage.getItem('hb_offset'));
-  state.pageOffset = (detected !== null) ? detected :
-                     (Number.isFinite(saved) ? saved : state.pageOffset);
-  localStorage.setItem('hb_offset', String(state.pageOffset));
 }
 
 async function loadPdf(){
@@ -396,147 +426,238 @@ async function loadPdf(){
   const pdf = await pdfjs.getDocument(HANDBOOK_PDF).promise;
   state.pdfDoc = pdf;
 
-  await autoDetectOffset();
+  await autoDetectOffset(); // sets state.pageOffset (and saves)
 
-  const container = $('pdfContainer'); container.innerHTML='';
+  const container = $('pdfContainer');
+  container.innerHTML='';
   for (let i=1;i<=pdf.numPages;i++){
-    const wrap=document.createElement('div'); wrap.className='pdf-page-wrapper'; wrap.dataset.pageNo=String(i); wrap.dataset.rendered='';
-    const cv=document.createElement('canvas'); cv.className='pdf-page'; cv.height=50; wrap.appendChild(cv);
+    const wrap=document.createElement('div');
+    wrap.className='pdf-page-wrapper';
+    wrap.dataset.pageNo=String(i);
+    wrap.dataset.rendered='';
+    const cv=document.createElement('canvas');
+    cv.className='pdf-page'; cv.height=50;
+    wrap.appendChild(cv);
     container.appendChild(wrap);
   }
 
-  // Start on HB page 6
-  const initialPDF = clamp(getPDFFromHB(START_HB_PAGE), 1, pdf.numPages);
-  state.currentPDF = initialPDF;
-  changeActivePage(initialPDF);
+  // Start at HB page 6
+  const startPDF = clamp(getPDFFromHB(START_HB_PAGE),1,pdf.numPages);
+  state.currentPDF = startPDF;
+  changeActivePage(startPDF);
 
-  container.addEventListener('scroll', handlePageScroll);
-  $('prevPage').addEventListener('click', ()=> navigatePage(-1));
-  $('nextPage').addEventListener('click', ()=> navigatePage(1));
+  // Scroll listeners + controls
+  setupPageObserver();
+  container.addEventListener('scroll', onScrollDebounced);
+  $('prevPage').addEventListener('click', ()=>navigate(-1));
+  $('nextPage').addEventListener('click', ()=>navigate(+1));
+  $('prevPage2').addEventListener('click', ()=>navigate(-1));
+  $('nextPage2').addEventListener('click', ()=>navigate(+1));
+  $('zoomIn').addEventListener('click', ()=>zoom(+0.1));
+  $('zoomOut').addEventListener('click', ()=>zoom(-0.1));
+  $('zoomIn2').addEventListener('click', ()=>zoom(+0.1));
+  $('zoomOut2').addEventListener('click', ()=>zoom(-0.1));
+
+  updateLabels();
 }
 
-let isNavigating = false, scrollTimer = null;
-
-function handlePageScroll() {
-  if (isNavigating || !state.pdfDoc) return;
-  if (scrollTimer) clearTimeout(scrollTimer);
-  scrollTimer = setTimeout(() => {
-    const c = $('pdfContainer');
-    const visibleTop = c.scrollTop, visibleBottom = visibleTop + c.clientHeight;
-    const wraps = c.querySelectorAll('.pdf-page-wrapper');
-    let newActive = state.currentPDF;
-    for (const w of wraps) {
-      const pageNo = Number(w.dataset.pageNo);
-      const top = w.offsetTop, bottom = top + w.offsetHeight;
-      if (top >= visibleTop && top < visibleBottom) { newActive = pageNo; break; }
-      if (visibleTop >= top && visibleTop < bottom) { newActive = pageNo; break; }
-    }
-    if (newActive !== state.currentPDF) changeActivePage(newActive);
-  }, 120);
+function navigate(delta){
+  const np = clamp(state.currentPDF+delta,1,state.pdfDoc.numPages);
+  changeActivePage(np);
 }
 
-function navigatePage(delta){
-  const newPDF = clamp(state.currentPDF + delta, 1, state.pdfDoc.numPages);
-  changeActivePage(newPDF);
+function zoom(delta){
+  state.scale = clamp(state.scale+delta, 0.5, 2.0);
+  $('zoomPct').textContent = `${Math.round(state.scale*100)}%`;
+  $('zoomPct2').textContent = `${Math.round(state.scale*100)}%`;
+  rerenderVisible();
 }
 
-function updatePageHeaderLabel(){
+function updateLabels(){
   const pdf = state.currentPDF;
   const hb  = getHBFromPDF(pdf);
-  $('pageLabelHeader').textContent = `PDF ${pdf} · HB ${hb>0?hb:'—'}`;
-  $('polHBLabel').textContent = hb>0?hb:'—';
+  $('lblPDF').textContent = pdf;
+  $('lblHB').textContent  = hb>0?hb:'—';
+  $('hdrPair').textContent = `PDF ${pdf} · HB ${hb>0?hb:'—'}`;
+  $('pageLabelPolicy').textContent = hb>0?hb:'—';
+  $('offsetVal').textContent = state.pageOffset>=0?`+${state.pageOffset}`:`${state.pageOffset}`; // Updated offset value display
 }
 
+let isNavigating=false;
 function changeActivePage(pdfPage){
-  if (isNavigating || pdfPage === state.currentPDF) return;
-  isNavigating = true;
+  if (isNavigating) return;
+  isNavigating=true;
   state.currentPDF = pdfPage;
-
   renderSinglePage(pdfPage);
   renderPolicies();
-  updatePageHeaderLabel();
+  updateLabels();
 
-  const c = $('pdfContainer');
-  const target = c.querySelector(`[data-page-no="${pdfPage}"]`);
-  if (target) {
-    c.scrollTo({ top: target.offsetTop, behavior: 'smooth' });
-    setTimeout(()=>{ isNavigating = false; }, 450);
-  } else {
-    isNavigating = false;
-  }
+  const container=$('pdfContainer');
+  const target=container.querySelector(`[data-page-no="${pdfPage}"]`);
+  if (target){
+    container.scrollTo({ top: target.offsetTop, behavior:'smooth' });
+    setTimeout(()=>{ isNavigating=false; }, 350);
+  } else { isNavigating=false; }
 }
 
-async function renderSinglePage(pageNo) {
-  const c = $('pdfContainer');
-  const target = c.querySelector(`[data-page-no="${pageNo}"]`);
+async function renderSinglePage(pdfPage){
+  const wrappers = $('pdfContainer').querySelectorAll('.pdf-page-wrapper');
+  const target = $('pdfContainer').querySelector(`[data-page-no="${pdfPage}"]`);
   if (!target) return;
 
-  const neighbors = new Set([pageNo-1, pageNo, pageNo+1].filter(n=>n>=1 && n<=state.pdfDoc.numPages));
-  c.querySelectorAll('.pdf-page-wrapper').forEach(w=>{
+  const pages = new Set([pdfPage, pdfPage-1, pdfPage+1].filter(n=>n>=1 && n<=state.pdfDoc.numPages));
+  wrappers.forEach(w=>{
     const n = Number(w.dataset.pageNo);
-    if (neighbors.has(n) && !w.dataset.rendered) {
+    w.classList.toggle('active', n===pdfPage);
+    if (pages.has(n) && !w.dataset.rendered){
       renderPageToCanvas(n, w.querySelector('canvas'), w);
     }
   });
 }
 
-async function renderPageToCanvas(pageNo, canvas, wrapEl) {
-  const prev = renderTaskMap.get(pageNo);
-  if (prev) { try { prev.cancel(); } catch {} renderTaskMap.delete(pageNo); }
+async function renderPageToCanvas(pageNo, canvas, wrapEl){
+  const prev=renderTaskMap.get(pageNo);
+  if (prev){ try{ prev.cancel(); }catch{} renderTaskMap.delete(pageNo); }
 
   const page = await state.pdfDoc.getPage(pageNo);
   const wrapWidth = Math.max(320, (wrapEl?.clientWidth || $('pdfContainer').clientWidth || 600));
-  const baseViewport = page.getViewport({ scale: 1.0 });
+  const baseViewport = page.getViewport({ scale:1.0 });
   const fitScale = wrapWidth / baseViewport.width;
-
-  const uiScale   = state.scale || 1;
-  const mobileB   = (window.innerWidth <= 1023) ? 1.10 : 1.0;
-  const finalScale = fitScale * uiScale * mobileB;
-  const viewport   = page.getViewport({ scale: finalScale });
+  const finalScale = fitScale * state.scale * (window.innerWidth<=1023?1.1:1.0);
+  const viewport = page.getViewport({ scale:finalScale });
 
   const dpr = Math.max(1, window.devicePixelRatio || 1);
-  const cssW = Math.floor(viewport.width);
-  const cssH = Math.floor(viewport.height);
-  canvas.style.width  = cssW + 'px';
-  canvas.style.height = cssH + 'px';
-  canvas.width  = Math.floor(cssW * dpr);
-  canvas.height = Math.floor(cssH * dpr);
+  const cssW = Math.floor(viewport.width), cssH=Math.floor(viewport.height);
+  canvas.style.width  = cssW+'px';
+  canvas.style.height = cssH+'px';
+  canvas.width  = Math.floor(cssW*dpr);
+  canvas.height = Math.floor(cssH*dpr);
 
-  const ctx = canvas.getContext('2d', { alpha:false });
-  const task = page.render({ canvasContext: ctx, viewport, transform:[dpr,0,0,dpr,0,0] });
+  const ctx = canvas.getContext('2d', {alpha:false});
+  const task = page.render({ canvasContext:ctx, viewport, transform:[dpr,0,0,dpr,0,0] });
   renderTaskMap.set(pageNo, task);
 
-  try {
+  try{
     await task.promise;
-    if (wrapEl) wrapEl.dataset.rendered = '1';
-    canvas.style.marginLeft = 'auto';
-    canvas.style.marginRight = 'auto';
-  } catch (e) {
-    if (e.name !== 'RenderingCancelledException') throw e;
-  } finally {
-    if (renderTaskMap.get(pageNo) === task) renderTaskMap.delete(pageNo);
+    if (wrapEl) wrapEl.dataset.rendered='1';
+    canvas.style.marginLeft='auto'; canvas.style.marginRight='auto';
+  }catch(e){
+    if (e.name!=='RenderingCancelledException') console.warn(e);
+  }finally{
+    if (renderTaskMap.get(pageNo)===task) renderTaskMap.delete(pageNo);
   }
 }
 
 function rerenderVisible(){
-  for (let n of [state.currentPDF-1, state.currentPDF, state.currentPDF+1]) {
-    if (n >= 1 && state.pdfDoc && n <= state.pdfDoc.numPages) {
-      const wrap = $('pdfContainer').querySelector(`[data-page-no="${n}"]`);
-      if (wrap) { wrap.dataset.rendered = ''; renderPageToCanvas(n, wrap.querySelector('canvas'), wrap); }
+  for (let n of [state.currentPDF, state.currentPDF-1, state.currentPDF+1]){
+    if (n>=1 && state.pdfDoc && n<=state.pdfDoc.numPages){
+      const wrap=$('pdfContainer').querySelector(`[data-page-no="${n}"]`);
+      if (wrap){ wrap.dataset.rendered=''; renderPageToCanvas(n, wrap.querySelector('canvas'), wrap); }
     }
   }
-  updatePageHeaderLabel();
+  updateLabels();
 }
-$('zoomIn').addEventListener('click', ()=>{ state.scale = Math.min(2.0, state.scale+0.1); $('zoomPct').textContent=`${Math.round(state.scale*100)}%`; rerenderVisible(); });
-$('zoomOut').addEventListener('click', ()=>{ state.scale = Math.max(0.5, state.scale-0.1); $('zoomPct').textContent=`${Math.round(state.scale*100)}%`; rerenderVisible(); });
-window.addEventListener('resize', ()=>{ if (state.pdfDoc) { clearTimeout(window._rt); window._rt=setTimeout(rerenderVisible,150); }});
+window.addEventListener('resize', ()=>{ if(state.pdfDoc){ clearTimeout(window._rz); window._rz=setTimeout(rerenderVisible,120); }});
 
-/* =============== AUTO-RESUME =============== */
+let _scrollTimer=null;
+function onScrollDebounced(){
+  if (_scrollTimer) clearTimeout(_scrollTimer);
+  _scrollTimer = setTimeout(()=>syncActiveByScroll(), 120);
+}
+
+/* IntersectionObserver: picks the most visible page as "current" */
+let pageObserver=null;
+function setupPageObserver(){
+  if (pageObserver) pageObserver.disconnect();
+  pageObserver = new IntersectionObserver((entries)=>{
+    let best = null;
+    for (const e of entries){
+      if (!e.isIntersecting) continue;
+      if (!best || e.intersectionRatio > best.intersectionRatio) best = e;
+    }
+    if (best){
+      const pdf = Number(best.target.dataset.pageNo||'1');
+      if (pdf!==state.currentPDF && !isNavigating){
+        state.currentPDF = pdf;
+        renderSinglePage(pdf);
+        renderPolicies();
+        updateLabels();
+      }
+    }
+  }, { root:$('pdfContainer'), threshold:[0.6, 0.75, 0.9] });
+
+  $('pdfContainer').querySelectorAll('.pdf-page-wrapper').forEach(wrap=>pageObserver.observe(wrap));
+}
+function syncActiveByScroll(){
+  const cont=$('pdfContainer');
+  const wrappers=[...cont.querySelectorAll('.pdf-page-wrapper')];
+  let center = cont.scrollTop + cont.clientHeight/2;
+  let chosen = state.currentPDF;
+  for (const w of wrappers){
+    const top=w.offsetTop, bottom=top + w.offsetHeight;
+    if (center>=top && center<bottom){ chosen = Number(w.dataset.pageNo); break; }
+  }
+  if (chosen!==state.currentPDF){
+    state.currentPDF = chosen;
+    renderSinglePage(chosen);
+    renderPolicies();
+    updateLabels();
+  }
+}
+
+/* ===== Offset detect (honors FORCE_OFFSET first) ===== */
+function _norm(s){ return (s||'').toLowerCase().replace(/\s+/g,' ').replace(/[–—-]+/g,'-'); }
+async function autoDetectOffset(){
+  // Forced mapping first (prevents “policies not matching page”).
+  if (FORCE_OFFSET !== null && Number.isFinite(FORCE_OFFSET)) {
+    state.pageOffset = FORCE_OFFSET;
+    localStorage.setItem('hb_offset', String(state.pageOffset));
+    updateOffsetUI();
+    return;
+  }
+
+  // --- Auto-detection logic (used if FORCE_OFFSET is null) ---
+  let detected = null;
+  try{
+    const scanMax = Math.min(state.pdfDoc.numPages, 30);
+    const anchors = [
+      { hb:6, must:['section i','introduction'] },
+      { hb:6, must:['welcome to jeng chi restaurant'] },
+      { hb:6, must:['employee handbook'] }
+    ];
+    for (let i=1;i<=scanMax;i++){
+      const txt = _norm((await (await state.pdfDoc.getPage(i)).getTextContent()).items.map(it=>it.str).join(' '));
+      for (const a of anchors){
+        if (a.must.every(m=>txt.includes(m))){ detected = i - a.hb; break; }
+      }
+      if (detected!==null) break;
+    }
+  }catch(e){ /* ignore */ }
+
+  const saved = Number(localStorage.getItem('hb_offset'));
+  state.pageOffset = (detected!==null) ? detected : (Number.isFinite(saved)?saved:0);
+  localStorage.setItem('hb_offset', String(state.pageOffset));
+  updateOffsetUI();
+}
+function updateOffsetUI(){
+  // This is the common function to update UI elements dependent on pageOffset
+  $('offsetVal').textContent = state.pageOffset>=0?`+${state.pageOffset}`:`${state.pageOffset}`;
+  updateLabels();
+  renderPolicies();
+}
+function adjustOffset(delta){
+  state.pageOffset = (Number(localStorage.getItem('hb_offset'))||state.pageOffset) + delta;
+  localStorage.setItem('hb_offset', String(state.pageOffset));
+  updateOffsetUI();
+  // keep current HB page the same after nudging
+  const hb = getHBFromPDF(state.currentPDF);
+  changeActivePage(clamp(getPDFFromHB(hb),1,state.pdfDoc.numPages));
+}
+
+/* ================= AUTO-RESUME ================= */
 window.addEventListener('DOMContentLoaded', async ()=>{
   if (state.token){
     try{
-      const header = await api('/header'); // quick health check
-      $('loggedUser').textContent = header?.username ?? '—';
       await initApp();
       show($('loginView'), false);
       show($('appView'), true);
