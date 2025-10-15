@@ -69,7 +69,7 @@
       </div>
     </div>
     <div class="flex items-center gap-2">
-      <!-- Admin-only: Download Employees CSV (remove if not needed) -->
+      <!-- Admin-only: Download Employees CSV (optional; leave hidden if you don't need it) -->
       <button id="btnEmployeesCsv"
               class="hidden text-xs px-3 py-2 border border-gray-200 rounded hover:bg-slate-50">
         Download Employees (CSV)
@@ -157,6 +157,7 @@
         <div class="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
           <div class="font-medium">Employee Information</div>
         </div>
+        <div id="empErr" class="hidden px-4 pt-3 pb-0 text-sm text-rose-600"></div>
         <div class="px-4 py-4 text-sm">
           <div class="grid sm:grid-cols-2 gap-x-6 gap-y-2">
             <div><div class="text-slate-500">Employee</div><div id="empName">—</div></div>
@@ -184,15 +185,27 @@ const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
 const client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+/* Use your working Edge Functions */
+const API_BASE = "https://kpldzwlftkvjjntgsqxx.functions.supabase.co/handbook";
 const HANDBOOK_PDF = "https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/HANDBOOK/Handbook%202026.pdf";
+
+/* Helper that includes anon key + token for Edge calls */
+async function api(path, {method='GET', body=null} = {}) {
+  const headers = {'Content-Type':'application/json','Authorization':`Bearer ${SUPABASE_ANON_KEY}`};
+  if (state.token) headers['x-hb-token'] = state.token;
+  const r = await fetch(`${API_BASE}${path}`, {method, headers, body: body?JSON.stringify(body):null});
+  const t = await r.text(); let data; try{ data=JSON.parse(t);}catch{ data={raw:t}; }
+  if(!r.ok) throw new Error(data?.message || `${r.status} ${r.statusText}`);
+  return data;
+}
 
 /* ===== STATE ===== */
 const $ = (id)=>document.getElementById(id);
 const state = {
-  session:null, initials:null, isOwner:false,
+  session:null, initials:null, isOwner:false, token:null,
   pdfDoc:null, currentPDF:1, scale:1.0,
-  pageOffset:0,          // if your PDF includes front matter, tweak here; HB = PDF - offset
-  START_HB_PAGE: 6,      // << starts at handbook page 6
+  pageOffset:0,          // If your PDF has front-matter, set this; HB = PDF - offset
+  START_HB_PAGE: 6,      // Start at handbook page 6
   policies:[], acks:{}
 };
 let renderTaskMap = new Map();
@@ -211,24 +224,30 @@ async function doLogin(){
   const initials = ($('loginInitials').value||'').trim().toUpperCase();
   const pin = ($('loginPin').value||'').trim();
   if(!initials || !pin){ $('loginMsg').textContent='Enter initials & PIN.'; return; }
+
   try{
+    // (1) Validate via RPC
     const { data: rows, error } = await client.rpc('hb_login', { p_initials: initials, p_pin: pin });
     if(error || !rows || rows.length===0){ $('loginMsg').textContent='Invalid credentials.'; return; }
-    const row = rows[0] || {};
-    state.session = { initials, is_owner: !!row.is_owner || initials==='PG' || initials==='JT' };
-    state.initials = initials; state.isOwner = state.session.is_owner;
+
+    // (2) Get Edge token for /handbook/header
+    const { token } = await api('/login', { method:'POST', body:{ username: initials, pin } });
+
+    state.session = { initials, is_owner: !!rows[0]?.is_owner || initials==='PG' || initials==='JT', token };
+    state.initials = initials; state.isOwner = state.session.is_owner; state.token = token;
 
     localStorage.setItem('hb_session', JSON.stringify(state.session));
     $('who').textContent = `Logged in: ${initials}`;
     show($('logoutBtn'), true);
     if(state.isOwner) show($('btnEmployeesCsv'), true);
 
-    await Promise.all([loadEmployeeHeader(initials), loadPolicies(), loadAcks()]);
+    await Promise.all([loadEmployeeHeader(), loadPolicies(), loadAcks()]);
     await loadPdf();
 
     show($('loginPanel'), false);
     show($('appWrap'), true);
   }catch(e){
+    console.warn(e);
     $('loginMsg').textContent='Login error.';
   }
 }
@@ -236,18 +255,49 @@ $('loginBtn').addEventListener('click', doLogin);
 $('loginPin').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
 $('logoutBtn').addEventListener('click', ()=>{ localStorage.removeItem('hb_session'); location.reload(); });
 
-/* ===== EMPLOYEE CARD (loads all fields) ===== */
-async function loadEmployeeHeader(initials){
-  const { data: e } = await client.from('hb_employees').select('*').eq('initials', initials).single();
-  $('empName').textContent = e?.full_name || '—';
-  $('empUser').textContent = e?.username || initials;  // falls back to initials
-  $('empPos').textContent  = e?.position || '—';
-  $('empDept').textContent = e?.department || '—';
-  $('empReports').textContent = e?.reports_to_name || '—';
-  $('empEmail').textContent = e?.email || '—';
-  $('empPhone').textContent = e?.phone || '—';
-  $('empHire').textContent  = e?.hire_date || '—';
-  $('sessionTime').textContent = new Date().toLocaleString();
+/* ===== EMPLOYEE CARD (Edge Function with token; table fallback) ===== */
+async function loadEmployeeHeader(){
+  const empErr = $('empErr');
+  const set = (id,val)=> ( $(id).textContent = (val ?? '—') );
+
+  try{
+    // Preferred: Edge Function (bypasses RLS)
+    const header = await api('/header');
+    set('empName',   header?.full_name);
+    set('empUser',   header?.username || state.initials);
+    set('empPos',    header?.position);
+    set('empDept',   header?.department);
+    set('empReports',header?.reports_to_name);
+    set('empEmail',  header?.email);
+    set('empPhone',  header?.phone);
+    set('empHire',   header?.hire_date);
+    set('sessionTime', new Date().toLocaleString());
+    empErr.classList.add('hidden');
+    return;
+  }catch(err){
+    empErr.textContent = 'Employee header unavailable: ' + (err?.message || 'unknown error');
+    empErr.classList.remove('hidden');
+    console.warn('Header fetch failed, falling back to table:', err);
+  }
+
+  // Fallback (works only if RLS allows anon read)
+  try{
+    const { data: e, error } = await client.from('hb_employees').select('*').eq('initials', state.initials).single();
+    if(error) throw error;
+    set('empName',   e?.full_name);
+    set('empUser',   e?.username || state.initials);
+    set('empPos',    e?.position);
+    set('empDept',   e?.department);
+    set('empReports',e?.reports_to_name);
+    set('empEmail',  e?.email);
+    set('empPhone',  e?.phone);
+    set('empHire',   e?.hire_date);
+    set('sessionTime', new Date().toLocaleString());
+    empErr.classList.add('hidden');
+  }catch(e){
+    empErr.textContent = 'Employee table is blocked by RLS.';
+    empErr.classList.remove('hidden');
+  }
 }
 
 /* ===== POLICIES & ACKS ===== */
@@ -551,22 +601,21 @@ $('btnEmployeesCsv').addEventListener('click', async ()=>{
 
 /* ===== RESTORE SESSION ===== */
 (function init(){
-  // adjust sticky offset to header height
+  // Adjust sticky offset to header height
   const hdr = document.querySelector('header'); 
-  const h = (hdr?.offsetHeight || 72);
-  document.documentElement.style.setProperty('--hdr', `${h}px`);
+  document.documentElement.style.setProperty('--hdr', `${(hdr?.offsetHeight || 72)}px`);
 
   const raw = localStorage.getItem('hb_session');
   if (raw){
     try{
       const s = JSON.parse(raw);
-      state.session = s; state.initials = s.initials; state.isOwner = !!s.is_owner;
+      state.session = s; state.initials = s.initials; state.isOwner = !!s.is_owner; state.token = s.token;
       $('who').textContent = `Logged in: ${s.initials}`;
       show($('logoutBtn'), true);
       if(state.isOwner) show($('btnEmployeesCsv'), true);
 
       (async ()=>{
-        await Promise.all([loadEmployeeHeader(s.initials), loadPolicies(), loadAcks()]);
+        await Promise.all([loadEmployeeHeader(), loadPolicies(), loadAcks()]);
         await loadPdf();
         show($('loginPanel'), false);
         show($('appWrap'), true);
