@@ -250,24 +250,30 @@
       loginMsg.textContent='';
 
       try{
-        const { data, error } = await client.rpc('hb_login_v3', { p_username: u, p_pin: p });
-        if(error){ toast(loginMsg, error.message || 'Login failed'); return; }
-        const s = {
-          username: u,
-          initials: (data?.initials || toInitials(u)),
-          employee_id: data?.employee_id || null,
-          full_name: data?.full_name || null,
-          position: data?.position || null,
-          department: data?.department || null,
-          is_owner: !!data?.is_owner,
-          email: data?.email || null,
-          phone: data?.phone || null,
-          reports_to: data?.reports_to || null
-        };
-        setSession(s);
-        await startRemoteSession(s.initials);
-        showApp();
-        await bootApp();
+       const { data, error } = await client.rpc('hb_login_v3', { p_username: u, p_pin: p });
+if (error) { toast(loginMsg, error.message || 'Login failed'); return; }
+
+if (!data) { toast(loginMsg, 'Invalid username or PIN'); return; }           // no such user
+if (data.ok === false) { toast(loginMsg, 'Invalid username or PIN'); return; } // wrong pin
+
+// success
+const s = {
+  username: u,
+  initials: data.initials || toInitials(u),
+  employee_id: data.employee_id || null,
+  full_name: data.full_name || null,
+  position: data.position || null,
+  department: data.department || null,
+  is_owner: !!data.is_owner,
+  email: data.email || null,
+  phone: data.phone || null,
+  reports_to: data.reports_to || null
+};
+setSession(s);
+await startRemoteSession(s.initials);
+showApp();
+await bootApp();
+
       }catch(e){
         console.error(e);
         toast(loginMsg, 'Login error');
@@ -315,7 +321,8 @@ async function fillEmployeeCard(){
     const { data: ha } = await client
       .from('hb_handbook_access')
       .select('employee_name, position, department')
-      .eq('user', username)
+      .eq('username', username)
+
       .maybeSingle();
 
     if (ha){
@@ -1960,66 +1967,91 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
     }
 
     /* ========= SAVE / PREFILL ========= */
-    async function prefillFromDB(){
-      const initials = getInitials();
-      if(!initials) return;
-      const { data, error } = await client
-        .from('hb_acks')
-        .select('policy_id, signed_initials, agreed, created_at')
-        .eq('employee_initials', initials);
+ async function prefillFromDB(){
+  const initials    = getInitials();
+  const session_id  = getSessionId();
+  const s           = getSession();
 
-      const byId = new Map((data||[]).map(r=>[r.policy_id, r]));
-      Object.values(SECTIONS).forEach(def=>{
-        def.items.forEach(item=>{
-          const pid = POLICY_META?.[item.code]?.id;
-          if(!pid) return;
-          const row = byId.get(pid);
-          if(row && row.agreed){
-            localStorage.setItem(nsKey(def.store)+item.code, JSON.stringify({
-              initials: (row.signed_initials || initials).toUpperCase(),
-              ts: row.created_at
-            }));
-          }
-        });
-      });
-    }
+  // nothing to do if we don't even know who this is
+  if (!initials && !s?.employee_id && !session_id) return;
 
-    async function saveAckToDB({ initials, policyCode }){
-      const policyId = POLICY_META?.[policyCode]?.id || null;
-      const session_id = getSessionId();
-      const s = getSession();
+  let q = client.from('hb_acks')
+                .select('policy_id, signed_initials, agreed, created_at');
 
-      if(!policyId) return { ok:false, message:'Policy not registered' };
+  // strongest filter first (employee_id), else session_id, else initials
+  if (s?.employee_id) {
+    q = q.eq('employee_id', s.employee_id);
+  } else if (session_id) {
+    q = q.eq('session_id', session_id);
+  } else if (initials) {
+    q = q.eq('employee_initials', initials);
+  }
 
-      // 1) try RPC
-      try{
-        const { error } = await client.rpc('hb_ack_policy', {
-          p_initials: initials,
-          p_policy_id: policyId,
-          p_signed_initials: initials,
-          p_session_id: session_id,
-          p_agreed: true,
-          p_employee_id: s?.employee_id || null
-        });
-        if(!error) return { ok:true };
-      }catch(e){}
+  const { data, error } = await q;
+  if (error) return; // fail quiet — we'll still have localStorage
 
-      // 2) fallback insert (requires anon insert policy on hb_acks)
-      try{
-        const payload = {
-          policy_id: policyId,
-          employee_initials: initials,
-          signed_initials: initials,
-          agreed: true,
-          session_id: session_id,
-          employee_id: s?.employee_id || null
-        };
-        const { error } = await client.from('hb_acks').insert(payload);
-        if(!error) return { ok:true };
-      }catch(e){}
+  const byId = new Map((data||[]).map(r => [r.policy_id, r]));
+  Object.values(SECTIONS).forEach(def => {
+    def.items.forEach(item => {
+      const pid = POLICY_META?.[item.code]?.id;
+      if (!pid) return;
+      const row = byId.get(pid);
+      if (row && row.agreed) {
+        localStorage.setItem(nsKey(def.store)+item.code, JSON.stringify({
+          initials: (row.signed_initials || initials || '').toUpperCase(),
+          ts: row.created_at
+        }));
+      }
+    });
+  });
+}
 
-      return { ok:false, message:'DB not ready' };
-    }
+async function saveAckToDB({ initials: typedInitials, policyCode }){
+  const policyId   = POLICY_META?.[policyCode]?.id || null;
+  const session_id = getSessionId();
+  const s          = getSession();
+
+  if (!policyId) return { ok:false, message:'Policy not registered' };
+
+  // The *owner* of the ack is the logged-in user:
+  const ownerInitials = getInitials();            // from session/login
+  const employee_id   = s?.employee_id || null;   // stable if you return it from hb_login_v3
+
+  // 1) try RPC (preferred: it upserts)
+  try {
+    const { error } = await client.rpc('hb_ack_policy', {
+      // who the row belongs to
+      p_initials: ownerInitials,
+      p_employee_id: employee_id,
+
+      // what they signed (signature we show on screen)
+      p_signed_initials: (typedInitials || ownerInitials),
+
+      // context
+      p_policy_id: policyId,
+      p_session_id: session_id,
+      p_agreed: true
+    });
+    if (!error) return { ok:true };
+  } catch (e) {}
+
+  // 2) fallback direct insert (requires insert RLS)
+  try {
+    const payload = {
+      policy_id: policyId,
+      employee_initials: ownerInitials,
+      signed_initials: (typedInitials || ownerInitials),
+      agreed: true,
+      session_id,
+      employee_id
+    };
+    const { error } = await client.from('hb_acks').insert(payload);
+    if (!error) return { ok:true };
+  } catch (e) {}
+
+  return { ok:false, message:'DB not ready' };
+}
+
 
     function updateProgress(){
       const def = SECTIONS[currentTab];
