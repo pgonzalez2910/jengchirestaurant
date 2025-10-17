@@ -1607,7 +1607,7 @@ const SECTION_VII = [
     title: "Fitness-for-Duty (FFD) to Return",
     html: `
       <ul class="list-disc pl-6">
-        <li>Required after 3+ day medical absences with potential safety impact, after certain food-safety illnesses, or as stated in your FMLA Rights & Responsibilities.</li>
+        <li>Required after 3+ day medical absences with potential safety impact, after certain food-safety illnesses, or as stated in your FMLA Rights &amp; Responsibilities.</li>
         <li>FFD must confirm you’re able to work (with or without restrictions). If restrictions exist, HR will review whether a temporary accommodation is available (ADA/PWFA interactive process).</li>
       </ul>
     `
@@ -2006,38 +2006,40 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
   });
 }
 
-async function saveAckToDB({ initials: typedInitials, policyCode }){
-  const policyId   = POLICY_META?.[policyCode]?.id || null;
-  const session_id = getSessionId();
-  const s          = getSession();
+async function saveAckToDB({ initials: typedInitials, policyCode }) {
+  const meta = POLICY_META?.[policyCode];
+  const policyId = meta?.id != null ? Number(meta.id) : null;
+  const session_id = Number(getSessionId() ?? 0) || null;
+  const s = getSession();
+  const ownerInitials = getInitials() || '';
+  const employee_id = s?.employee_id || null;
 
-  if (!policyId) return { ok:false, message:'Policy not registered' };
+  if (!policyId) {
+    console.warn('HB DEBUG — policy not registered for', { policyCode, meta });
+    return { ok:false, message:`Policy ${policyCode} not registered in DB` };
+  }
 
-  // The *owner* of the ack is the logged-in user:
-  const ownerInitials = getInitials();            // from session/login
-  const employee_id   = s?.employee_id || null;   // stable if you return it from hb_login_v3
-
-  // 1) try RPC (preferred: it upserts)
   try {
-    const { error } = await client.rpc('hb_ack_policy', {
-      // who the row belongs to
+    // 1) Preferred path: RPC
+    const payload = {
       p_initials: ownerInitials,
       p_employee_id: employee_id,
-
-      // what they signed (signature we show on screen)
       p_signed_initials: (typedInitials || ownerInitials),
-
-      // context
       p_policy_id: policyId,
       p_session_id: session_id,
       p_agreed: true
-    });
+    };
+    console.log('HB DEBUG — calling hb_ack_policy with', payload);
+    const { error } = await client.rpc('hb_ack_policy', payload);
     if (!error) return { ok:true };
-  } catch (e) {}
+    console.error('HB DEBUG — hb_ack_policy error:', error);
+  } catch (e) {
+    console.error('HB DEBUG — hb_ack_policy threw:', e);
+  }
 
-  // 2) fallback direct insert (requires insert RLS)
+  // 2) Fallback: direct insert (only works if RLS/insert is allowed)
   try {
-    const payload = {
+    const insertPayload = {
       policy_id: policyId,
       employee_initials: ownerInitials,
       signed_initials: (typedInitials || ownerInitials),
@@ -2045,9 +2047,12 @@ async function saveAckToDB({ initials: typedInitials, policyCode }){
       session_id,
       employee_id
     };
-    const { error } = await client.from('hb_acks').insert(payload);
+    const { error } = await client.from('hb_acks').insert(insertPayload);
     if (!error) return { ok:true };
-  } catch (e) {}
+    console.error('hb_acks insert error:', error);
+  } catch (e) {
+    console.error('hb_acks insert threw:', e);
+  }
 
   return { ok:false, message:'DB not ready' };
 }
@@ -2089,7 +2094,9 @@ async function saveAckToDB({ initials: typedInitials, policyCode }){
 
           // attempt DB
           const res = await saveAckToDB({ initials: typed, policyCode: code });
-          toast(msgEl, res.ok ? 'Saved to record.' : 'Saved locally (DB not ready).', res.ok);
+const msg = res.ok ? 'Saved to record.' : (res.message || 'Saved locally (DB not ready).');
+toast(msgEl, msg, res.ok);
+
           updateProgress();
         });
       });
@@ -2113,6 +2120,17 @@ async function saveAckToDB({ initials: typedInitials, policyCode }){
       await fillEmployeeCard();
       renderSection('I');            // draw immediately
       await loadPoliciesMeta();      // map codes -> policy ids
+    
+
+console.group('HB DEBUG — POLICY META');
+console.log('Wanted codes:', wantedCodes());
+console.log('Meta map:', POLICY_META);
+const missing = wantedCodes().filter(c => !POLICY_META?.[c]?.id);
+if (missing.length) {
+  console.warn('These codes have NO policy_id in DB (UI will only save local):', missing);
+}
+console.groupEnd();
+
       await prefillFromDB();         // hydrate from DB if available
       renderSection(currentTab);     // redraw with hydrated values
     }
