@@ -1989,30 +1989,31 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
     }
 
     /* ========= SAVE / PREFILL ========= */
- async function prefillFromDB(){
-  const initials    = getInitials();
-  const session_id  = getSessionId();
-  const s           = getSession();
+ async function prefillFromDB() {
+  const initials   = getInitials();                 // e.g. "PG"
+  const session_id = getSessionId();                // integer or null
+  const s          = getSession();
+  const employee_id = s?.employee_id || null;
 
-  // nothing to do if we don't even know who this is
-  if (!initials && !s?.employee_id && !session_id) return;
+  // Build a flexible OR filter: include whichever identifiers we actually have.
+  const ors = [];
+  if (employee_id) ors.push(`employee_id.eq.${employee_id}`);
+  if (session_id)  ors.push(`session_id.eq.${session_id}`);
+  if (initials)    ors.push(`employee_initials.ilike.${initials}`);
 
-  let q = client.from('hb_acks')
-                .select('policy_id, signed_initials, agreed, created_at');
+  if (ors.length === 0) return; // nothing to match on
 
-  // strongest filter first (employee_id), else session_id, else initials
-  if (s?.employee_id) {
-    q = q.eq('employee_id', s.employee_id);
-  } else if (session_id) {
-    q = q.eq('session_id', session_id);
-  } else if (initials) {
-    q = q.eq('employee_initials', initials);
+  const { data, error } = await client
+    .from('hb_acks')
+    .select('policy_id, signed_initials, agreed, created_at')
+    .or(ors.join(','));   // ← match ANY of them
+
+  if (error) {
+    console.warn('prefillFromDB error:', error);
+    return;
   }
 
-  const { data, error } = await q;
-  if (error) return; // fail quiet — we'll still have localStorage
-
-  const byId = new Map((data||[]).map(r => [r.policy_id, r]));
+  const byId = new Map((data || []).map(r => [r.policy_id, r]));
   Object.values(SECTIONS).forEach(def => {
     def.items.forEach(item => {
       const pid = POLICY_META?.[item.code]?.id;
@@ -2027,6 +2028,7 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
     });
   });
 }
+
 
 async function saveAckToDB({ initials: typedInitials, policyCode }) {
   // CRITICAL: Ensure metadata is loaded if it failed on boot
@@ -2070,23 +2072,33 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
     console.error('HB DEBUG — hb_ack_policy threw:', e);
   }
 
-  // 2) Fallback: direct insert (only works if RLS/insert is allowed)
-  try {
-    const insertPayload = {
-      policy_id: policyId,
-      employee_initials: ownerInitials,
-      signed_initials: (typedInitials || ownerInitials),
-      agreed: true,
-      session_id: session_id, // Pass as is (BIGINT/null)
-      employee_id: employee_id // Pass as is (UUID/null or null)
-    };
-    console.log('HB DEBUG — Fallback insert payload:', insertPayload);
-    const { error } = await client.from('hb_acks').insert(insertPayload);
-    if (!error) return { ok:true };
-    console.error('hb_acks insert error:', error);
-  } catch (e) {
-    console.error('hb_acks insert threw:', e);
-  }
+ // 2) Fallback: UPSERT (no duplicates)
+try {
+  const insertPayload = {
+    policy_id: policyId,
+    employee_initials: (typedInitials || ownerInitials),
+    signed_initials: (typedInitials || ownerInitials),
+    agreed: true,
+    session_id,
+    employee_id
+  };
+
+  // Pick the conflict target based on which identity we actually have
+  let conflictCols = null;
+  if (employee_id) conflictCols = 'policy_id,employee_id';
+  else if (session_id) conflictCols = 'policy_id,session_id';
+  else conflictCols = 'policy_id,employee_initials';
+
+  const { error } = await client
+    .from('hb_acks')
+    .upsert(insertPayload, { onConflict: conflictCols });
+
+  if (!error) return { ok: true };
+  console.error('hb_acks upsert error:', error);
+} catch (e) {
+  console.error('hb_acks upsert threw:', e);
+}
+
 
   return { ok:false, message:'DB not ready' };
 }
@@ -2199,3 +2211,4 @@ console.groupEnd();
   </script>
 </body>
 </html>
+
