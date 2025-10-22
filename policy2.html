@@ -2031,9 +2031,7 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
 
 
 async function saveAckToDB({ initials: typedInitials, policyCode }) {
-  // CRITICAL: Ensure metadata is loaded if it failed on boot
   if (Object.keys(POLICY_META).length === 0) {
-    console.warn('HB DEBUG — Policy metadata missing on save attempt. Retrying load...');
     if (!await loadPoliciesMeta()) {
       return { ok: false, message: `DB connection failed. Local save only.` };
     }
@@ -2044,61 +2042,46 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
   const session_id = getSessionId() || null;
   const s = getSession();
   const ownerInitials = getInitials() || '';
-  
-  // Guard against non-UUID employee_id being passed to the DB (Fix for 22P02)
   const employee_id = UUID_RE.test(String(s?.employee_id || '')) ? s.employee_id : null;
 
-
-  if (!policyId) {
-    console.warn('HB DEBUG — policy not registered for', { policyCode, meta });
-    return { ok:false, message:`Policy ${policyCode} not registered in DB` };
-  }
+  if (!policyId) return { ok:false, message:`Policy ${policyCode} not registered in DB` };
 
   try {
     // 1) Preferred path: RPC
     const payload = {
       p_initials: ownerInitials,
-      p_employee_id: employee_id, 
+      p_employee_id: employee_id,
       p_signed_initials: (typedInitials || ownerInitials),
       p_policy_id: policyId,
       p_session_id: session_id,
       p_agreed: true
     };
-    console.log('HB DEBUG — calling hb_ack_policy_api with', payload);
     const { error } = await client.rpc('hb_ack_policy_api', payload);
     if (!error) return { ok:true };
-    console.error('HB DEBUG — hb_ack_policy error:', error);
-  } catch (e) {
-    console.error('HB DEBUG — hb_ack_policy threw:', e);
-  }
+  } catch (_) { /* fall through to upsert */ }
 
- // 2) Fallback: UPSERT (no duplicates)
-try {
-  const insertPayload = {
-    policy_id: policyId,
-    employee_initials: (typedInitials || ownerInitials),
-    signed_initials: (typedInitials || ownerInitials),
-    agreed: true,
-    session_id,
-    employee_id
-  };
+  // 2) Fallback: UPSERT (no duplicates)
+  try {
+    const insertPayload = {
+      policy_id: policyId,
+      employee_initials: (typedInitials || ownerInitials),
+      signed_initials: (typedInitials || ownerInitials),
+      agreed: true,
+      session_id,
+      employee_id
+    };
 
-  // Pick the conflict target based on which identity we actually have
-  let conflictCols = null;
-  if (employee_id) conflictCols = 'policy_id,employee_id';
-  else if (session_id) conflictCols = 'policy_id,session_id';
-  else conflictCols = 'policy_id,employee_initials';
+    let conflictCols = null;
+    if (employee_id) conflictCols = 'policy_id,employee_id';
+    else if (session_id) conflictCols = 'policy_id,session_id';
+    else conflictCols = 'policy_id,employee_initials';
 
-  const { error } = await client
-    .from('hb_acks')
-    .upsert(insertPayload, { onConflict: conflictCols });
+    const { error } = await client
+      .from('hb_acks')
+      .upsert(insertPayload, { onConflict: conflictCols });
 
-  if (!error) return { ok: true };
-  console.error('hb_acks upsert error:', error);
-} catch (e) {
-  console.error('hb_acks upsert threw:', e);
-}
-
+    if (!error) return { ok:true };
+  } catch (_) { /* swallow and report below */ }
 
   return { ok:false, message:'DB not ready' };
 }
@@ -2211,4 +2194,5 @@ console.groupEnd();
   </script>
 </body>
 </html>
+
 
