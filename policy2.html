@@ -176,8 +176,7 @@
           <button id="btnBack" class="rounded-xl border px-4 py-2 text-sm w-full md:w-auto">Back</button>
 
           <button id="btnFinalize"
-                  class="hidden rounded-xl bg-slate-600 text-white px-4 py-2 text-sm font-medium w-full md:w-auto hover:bg-slate-700"
-                  disabled>
+                  class="hidden rounded-xl bg-slate-600 text-white px-4 py-2 text-sm font-medium w-full md:w-auto hover:bg-slate-700">
             Finalize & Submit Acknowledgment
           </button>
 
@@ -226,7 +225,8 @@
     const ADMIN_EMAIL_CC = "admin@jengchirestaurant.com";
     const WITNESS_NAME = "Janelle Teng";
     // NOTE: Edge Function URL must be deployed to this path on Supabase.
-    const EMAIL_FUNCTION_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co/functions/v1/new-generate-ack-pdf-and-email";
+    // We keep the full URL here for logging/clarity, but use the function name in client.functions.invoke()
+    const EMAIL_FUNCTION_URL = "https://kpldzwlftkvjjntgsqxx.functions.supabase.co/new-generate-ack-pdf-and-email";
 
 
     /* ========= DOM ========= */
@@ -575,6 +575,7 @@ const SECTION_II = [
         <li><strong>How to request:</strong> Notify your supervisor or HR/Owner at any time (earlier is better). You may be asked for limited documentation to understand needs.</li>
         <li><strong>Interactive process:</strong> We will review job essential functions, potential accommodations, and undue hardship.</li>
         <li><strong>Decision:</strong> HR/Owner will provide the accommodation granted or explain alternative options/denials in writing.</li>
+        
       </ul>
     `
   },
@@ -1026,7 +1027,7 @@ const SECTION_IV = [
     html: `
       <p><strong>Covered products.</strong> Cigarettes, e-cigarettes/vapes, cigars, pipes, smokeless tobacco, and similar products.</p>
       <p><strong>Where prohibited.</strong> No use inside or within the posted distance of entrances/exits and guest areas. No gum while on duty.</p>
-      <p><strong>Designated area.</strong> Use only the designated outdoor spot, out of guest sight, during authorized breaks. Wash hands before returning to duty.</p>
+      <p><strong>Designated area.</strong> Use only the designated outdoor spot, out of guest sight, during authorized breaks. Wash hands before returning to duty.
       <p><strong>Smoke break limit.</strong> One brief smoke break per shift may be permitted at manager discretion and must not interfere with operations.</p>
       <p><strong>Local rules control.</strong> Where local ordinances or landlord rules are stricter, those rules control.
       <p><strong>Enforcement.</strong> Progressive discipline up to termination.</p>
@@ -1322,7 +1323,7 @@ const SECTION_V = [
     html: `
       <p>Each Verbal/Written/Final Written includes a CAP with:</p>
       <ul class="list-disc pl-6">
-        <li>What to fix (policy, behavior, or metric),</li>
+        <li>What to fix (policy, behavior, or metric),
         <li>How to fix it (training, checklists, coaching),
         <li>Who & when (responsible manager; dates),
         <li>The window for improvement (1–2 weeks unless otherwise stated),
@@ -1712,7 +1713,7 @@ const SECTION_VII = [
         <li>If you also lack a doctor’s note/FFD to return: follow Section A timelines above. Continued inability to provide clearance after the final deadline may result in termination for inability to return/job-abandonment.</li>
       </ul>
       <p><strong>C. No-Call/No-Show During This Process</strong><br/>Failing to report and failing to contact the Company for two (2) consecutive scheduled shifts may be deemed job abandonment under the Attendance Policy and may result in termination, separate from FMLA/FFD requirements.</p>
-      <p><strong>D. Anti-Retaliation / Accommodation</strong><br/>We will not retaliate against anyone for requesting leave, accommodation, or submitting medical documentation. If your provider indicates temporary restrictions, HR will engage in the interactive process (ADA/PWFA). If no reasonable accommodation is available without undue hardship, separation may occur based on inability to perform essential functions.</p>
+      <p><strong>D. Anti-Retaliation / Accommodation</strong><br/>We will not retaliate against anyone for requesting leave/accommodation, submitting medical documentation, or participating in a related process. If your provider indicates temporary restrictions, HR will engage in the interactive process (ADA/PWFA). If no reasonable accommodation is available without undue hardship, separation may occur based on inability to perform essential functions.</p>
     `
   },
   {
@@ -2352,19 +2353,30 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
       
       // existing totals
       const allDone = saved === total;
+      
       // Finalize button only becomes clickable if you're on the last section AND all sections are complete
-      if (isLastSection(currentTab) && allDone) {
-        btnFinalize.disabled = false;
-        btnFinalize.classList.remove('bg-slate-600','hover:bg-slate-700');
-        btnFinalize.classList.add('bg-emerald-600','hover:bg-emerald-700');
+      if (isLastSection(currentTab)) {
+        btnFinalize.classList.remove('hidden');
+        btnNext.classList.add('hidden');
+        
+        // Don't disable—allow click handler to show what's missing
+        btnFinalize.disabled = false; // ⬅️ key change
+        
+        if (allDone) {
+          btnFinalize.classList.remove('bg-slate-600','hover:bg-slate-700');
+          btnFinalize.classList.add('bg-emerald-600','hover:bg-emerald-700');
+        } else {
+          btnFinalize.classList.add('bg-slate-600','hover:bg-slate-700');
+          btnFinalize.classList.remove('bg-emerald-600','hover:bg-emerald-700');
+        }
+        
         // Optional: re-enable all tabs for free movement after completion
         document.querySelectorAll('.tabbtn').forEach((tab, i)=>{
-          tab.disabled = false;
+          tab.disabled = !allDone && (i !== SECTION_ORDER.indexOf(currentTab));
         });
       } else {
-        btnFinalize.disabled = true;
-        btnFinalize.classList.add('bg-slate-600','hover:bg-slate-700');
-        btnFinalize.classList.remove('bg-emerald-600','hover:bg-emerald-700');
+        btnFinalize.classList.add('hidden');
+        btnNext.classList.remove('hidden');
         // Keep sequential restriction active
         document.querySelectorAll('.tabbtn').forEach((tab, i)=>{
           tab.disabled = (i !== SECTION_ORDER.indexOf(currentTab));
@@ -2442,12 +2454,22 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
 
       // Finalize button logic (The logic that was broken)
       btnFinalize.addEventListener('click', async ()=>{
-        // guard: everything acknowledged?
+        // Count total vs saved
         const totalPolicies = Object.values(SECTIONS).reduce((s, d) => s + d.items.length, 0);
-        const acknowledgedCount = getAllAcksFromLocalStorage().length;
-        if (acknowledgedCount < totalPolicies) {
-          toast(document.getElementById('finalizeMsg'), 'Please acknowledge ALL policies before finalizing.');
-          updateProgress();
+        const missing = [];
+        for (const [key, def] of Object.entries(SECTIONS)) {
+          for (const item of def.items) {
+            const k = nsKey(def.store) + item.code;
+            if (!localStorage.getItem(k)) missing.push({ key, code: item.code, title: item.title });
+          }
+        }
+
+        if (missing.length) {
+          const first = missing[0]; // show where to go
+          toast(document.getElementById('finalizeMsg'),
+              `Please acknowledge ALL policies before finalizing. Missing: ${missing.length}. First: ${first.code} ${first.title}`);
+          // Jump the user to the first incomplete section so they can fix it
+          gotoSection(findResumeSectionKey());
           return;
         }
 
@@ -2501,48 +2523,47 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
         } catch {}
 
         // === Call the Edge Function to build the PDF & send the email ===
-       // === Call the Edge Function to build the PDF & send the email ===
-if (EMAIL_FUNCTION_URL) {
-  try {
-    btnFinalize.textContent = 'Sending...';
-    btnFinalize.disabled = true;
+        if (EMAIL_FUNCTION_URL) {
+          try {
+            btnFinalize.textContent = 'Sending...';
+            btnFinalize.disabled = true;
 
-    const res = await fetch(EMAIL_FUNCTION_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // REQUIRED so the Edge Function auth passes:
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-        'apikey': SUPABASE_ANON_KEY
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!res.ok) throw new Error(await res.text());
-
-    // ✅ Visible success
-    toast(document.getElementById('finalizeMsg'), 'EMAIL SENT — PDF delivered.', true);
-    btnFinalize.textContent = 'SUBMITTED';
-    btnFinalize.classList.remove('bg-slate-600','hover:bg-slate-700');
-    btnFinalize.classList.add('bg-jc-green','hover:bg-emerald-700');
-
-    try {
-      await client.from('hb_ack_forms')
-        .update({ status: 'Finalized - Email Sent' })
-        .eq('session_id', getSessionId() || null)
-        .eq('initials', getInitials() || '');
-    } catch {}
-  } catch (e) {
-    console.error(e);
-    toast(document.getElementById('finalizeMsg'), 'Finalized (saved), but email failed. Notify Admin.', false);
-    btnFinalize.textContent = 'SUBMITTED (Email Failed)';
-    btnFinalize.classList.add('bg-red-600');
+   const { data, error } = await client.functions.invoke(
+  'new-generate-ack-pdf-and-email',
+  {
+    body: payload
   }
-} else {
-  toast(document.getElementById('finalizeMsg'), 'Finalized! (No email function URL configured)', true);
-  btnFinalize.textContent = 'SUBMITTED (Mock)';
-  btnFinalize.classList.add('bg-jc-green');
-}
+);
+
+
+            if (error) throw error;
+            if (data?.error) throw new Error(data.error);
+
+            // ✅ Visible success
+            toast(document.getElementById('finalizeMsg'), 'EMAIL SENT — PDF delivered.', true);
+            btnFinalize.textContent = 'SUBMITTED';
+            btnFinalize.classList.remove('bg-slate-600','hover:bg-slate-700','bg-red-600');
+            btnFinalize.classList.add('bg-jc-green','hover:bg-emerald-700');
+            btnFinalize.disabled = true; // Lock after successful submit
+
+            try {
+              await client.from('hb_ack_forms')
+                .update({ status: 'Finalized - Email Sent' })
+                .eq('session_id', getSessionId() || null)
+                .eq('initials', getInitials() || '');
+            } catch {}
+          } catch (e) {
+            console.error(e);
+            toast(document.getElementById('finalizeMsg'), `Email service failed: ${e.message}`, false);
+            btnFinalize.textContent = 'SUBMITTED (Email Failed)';
+            btnFinalize.classList.remove('bg-slate-600','hover:bg-slate-700','bg-jc-green','hover:bg-emerald-700');
+            btnFinalize.classList.add('bg-red-600');
+          }
+        } else {
+          toast(document.getElementById('finalizeMsg'), 'Finalized! (No email function URL configured)', true);
+          btnFinalize.textContent = 'SUBMITTED (Mock)';
+          btnFinalize.classList.add('bg-jc-green');
+        }
 
       });
     }
