@@ -1080,7 +1080,7 @@ const SECTION_IV = [
       <h3 class="text-lg font-semibold mt-2 mb-1">Prohibited Conduct (Examples)</h3>
       <ul class="list-disc pl-6">
         <li>Failing to ring items; serving without a POS entry; unapproved comps/voids/discounts; holding open checks to avoid payment.</li>
-        <li>Cash-handling violations; manipulating tips or tip lines; altering receipts.</li>
+        <li>Cash-handling violations; manipulating tips or tip lines; altering receipts.
         <li>Bypassing allergen prompts or packing checks; ignoring second-verification on large orders.</li>
         <li>Transferring tables without approval; re-assigning to steer guests or for personal advantage.</li>
         <li>Dishonesty in any audit/investigation.</li>
@@ -1091,7 +1091,7 @@ const SECTION_IV = [
         <li>Ring before serve/pack; manager-approved promos only.</li>
         <li>Follow the close-out process and confirm payment before moving on.</li>
         <li>Use packing checklists and request second-person verification for large/high-risk orders.</li>
-        <li>Secure cash/cards, match receipts, follow ID/age checks and allergen prompts.</li>
+        <li>Secure cash/cards, match receipts, follow ID/age checks and allergen prompts.
         <li>No unapproved comps/voids/discounts.</li>
       </ul>
 
@@ -1270,12 +1270,12 @@ const SECTION_V = [
       <ul class="list-disc pl-6">
         <li>Off-the-clock work, buddy punching → Verbal → Verbal → Written → Written → Termination (or skip steps if willful/recurring).</li>
         <li>All worked time will be paid; working without authorization may result in discipline.</li>
-      </ul>
+        </ul>
     `
   },
   {
     code: "5.8",
-    title: "Unprofessional / Disrespectful Conduct (Employees ↔ Managers/Owners)",
+    title: "Unprofessional / Disrespectful Conduct (Employees and  Managers/Owners)",
     html: `
       <ul class="list-disc pl-6">
         <li>Yelling, abusive language, harassment, or insubordination:
@@ -1869,7 +1869,7 @@ const SECTION_VIII = [
     html: `
       <p>While regular attendance is crucial to maintain business operations, the Company recognizes employees may need time off. For planned leaves, submit requests at least 21 days in advance; in emergencies, submit as soon as you become aware. All leaves require management approval.</p>
       <p>If during a leave an employee accepts another job, engages in outside work/consulting, or applies for unemployment insurance, the employee may be considered to have voluntarily resigned.</p>
-      <p>All requests will be considered in light of business needs; management reserves approval/denial discretion unless otherwise required by law. For disability-related leave, we will engage in the interactive process. Medical certification may be required; failure to timely provide may delay/deny leave. Extensions must be approved before the current leave expires.</p>
+      <p>All requests will be considered in light of business needs; management reserves approval/denial discretion unless otherwise required by law. For disability-related leave, we will engage in the interactive process. Medical certification may be required; failure to timely provide may delay/deny leave. Extensions must be approved before the current leave expires.
       <p>The Company will make a reasonable effort to return the employee to their former or comparable position following an approved leave, but reinstatement is not guaranteed except as required by law.</p>
     `
   },
@@ -2522,42 +2522,77 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
           });
         } catch {}
 
-        // === Call the Edge Function to build the PDF & send the email ===
+        // === Call the Edge Function to build the PDF & send the email (Manual Fetch for debug/visibility) ===
         if (EMAIL_FUNCTION_URL) {
           try {
             btnFinalize.textContent = 'Sending...';
             btnFinalize.disabled = true;
 
-   const { data, error } = await client.functions.invoke(
-  'new-generate-ack-pdf-and-email',
-  {
-    body: payload
-  }
-);
+            const resp = await fetch(
+              EMAIL_FUNCTION_URL,
+              {
+                method: "POST",
+                headers: { 
+                  "Content-Type": "application/json",
+                  // CRITICAL: Must send API key for direct function URL access 
+                  "apikey": SUPABASE_ANON_KEY 
+                },
+                body: JSON.stringify(payload)
+              }
+            );
 
-
-            if (error) throw error;
-            if (data?.error) throw new Error(data.error);
-
-            // ✅ Visible success
-            toast(document.getElementById('finalizeMsg'), 'EMAIL SENT — PDF delivered.', true);
-            btnFinalize.textContent = 'SUBMITTED';
-            btnFinalize.classList.remove('bg-slate-600','hover:bg-slate-700','bg-red-600');
-            btnFinalize.classList.add('bg-jc-green','hover:bg-emerald-700');
-            btnFinalize.disabled = true; // Lock after successful submit
-
+            let data;
             try {
-              await client.from('hb_ack_forms')
-                .update({ status: 'Finalized - Email Sent' })
-                .eq('session_id', getSessionId() || null)
-                .eq('initials', getInitials() || '');
-            } catch {}
+              data = await resp.json();
+            } catch {
+              data = {};
+            }
+
+            console.log("📬 Edge Function:", resp.status, data);
+
+            const status = document.getElementById('finalizeMsg');
+
+            if (resp.ok && data.ok) {
+              // ✅ Visible success
+              btnFinalize.classList.remove("bg-red-600", "bg-slate-600", "hover:bg-slate-700");
+              btnFinalize.classList.add("bg-jc-green", "hover:bg-emerald-700");
+              btnFinalize.textContent = "✅ Submitted (Email Sent)";
+              btnFinalize.disabled = true;
+              
+              if (status) {
+                status.textContent = `✅ Your acknowledgment and email were successfully sent.`;
+                status.className = "text-jc-green font-medium mt-2 text-sm h-5 text-center";
+              }
+              
+              try {
+                await client.from('hb_ack_forms')
+                  .update({ status: 'Finalized - Email Sent' })
+                  .eq('session_id', getSessionId() || null)
+                  .eq('initials', getInitials() || '');
+              } catch {}
+
+            } else {
+              // ❌ Failure
+              console.error("❌ Email failed:", data.error || resp.statusText);
+              btnFinalize.classList.remove("bg-jc-green", "bg-slate-600", "hover:bg-emerald-700");
+              btnFinalize.classList.add("bg-red-600");
+              btnFinalize.textContent = "❌ Submitted (Email Failed)";
+              btnFinalize.disabled = false; // Allow retry
+
+              if (status) {
+                status.textContent = `❌ Email failed: ${data.error || resp.status} - Please notify admin@jengchirestaurant.com`;
+                status.className = "text-red-600 font-medium mt-2 text-sm h-5 text-center";
+              }
+            }
+
           } catch (e) {
-            console.error(e);
-            toast(document.getElementById('finalizeMsg'), `Email service failed: ${e.message}`, false);
-            btnFinalize.textContent = 'SUBMITTED (Email Failed)';
-            btnFinalize.classList.remove('bg-slate-600','hover:bg-slate-700','bg-jc-green','hover:bg-emerald-700');
+            console.error("⚠️ Request error:", e);
+            const status = document.getElementById('finalizeMsg');
+            status.textContent = `⚠️ Network error: Could not connect to server.`;
+            status.className = "text-red-600 font-medium mt-2 text-sm h-5 text-center";
+            btnFinalize.textContent = "❌ Submitted (Network Error)";
             btnFinalize.classList.add('bg-red-600');
+            btnFinalize.disabled = false; // Allow retry
           }
         } else {
           toast(document.getElementById('finalizeMsg'), 'Finalized! (No email function URL configured)', true);
