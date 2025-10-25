@@ -7,7 +7,6 @@
 
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
 
@@ -47,10 +46,22 @@
     </header>
 
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-      <div class="card p-5"><div class="text-xs uppercase text-jc-muted">Total Submissions</div><div id="totalSub" class="text-3xl font-bold mt-2">—</div></div>
-      <div class="card p-5"><div class="text-xs uppercase text-jc-muted">Perfect (Q2 – Q9)</div><div id="perfectNames" class="text-sm mt-2">—</div></div>
-      <div class="card p-5"><div class="text-xs uppercase text-jc-muted">Most Missed Question</div><div id="mostMissed" class="text-sm mt-2">—</div></div>
-      <div class="card p-5"><div class="text-xs uppercase text-jc-muted">Most Wrong (Employee)</div><div id="mostWrongEmp" class="text-sm mt-2">—</div></div>
+      <div class="card p-5">
+        <div class="text-xs uppercase text-jc-muted">Total Submissions</div>
+        <div id="totalSub" class="text-3xl font-bold mt-2">—</div>
+      </div>
+      <div class="card p-5">
+        <div class="text-xs uppercase text-jc-muted">Perfect (Q2 – Q9)</div>
+        <div id="perfectNames" class="text-sm mt-2">—</div>
+      </div>
+      <div class="card p-5">
+        <div class="text-xs uppercase text-jc-muted">Most Missed Question</div>
+        <div id="mostMissed" class="text-sm mt-2">—</div>
+      </div>
+      <div class="card p-5">
+        <div class="text-xs uppercase text-jc-muted">Most Wrong (Employee)</div>
+        <div id="mostWrongEmp" class="text-sm mt-2">—</div>
+      </div>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -64,12 +75,37 @@
       </div>
     </div>
 
+    <!-- Server Submission Status -->
+    <section class="card p-6 shadow-elevated">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-serif-head text-xl">Server Submission Status</h2>
+        <div class="text-sm text-jc-muted" id="serverCount">—</div>
+      </div>
+      <div class="overflow-auto">
+        <table class="min-w-full border border-jc-border rounded-lg overflow-hidden">
+          <thead class="bg-[#F6F2E8]">
+            <tr class="text-left text-sm">
+              <th class="py-2 px-3 border-b border-jc-border w-1/4">Name</th>
+              <th class="py-2 px-3 border-b border-jc-border w-24">Username</th>
+              <th class="py-2 px-3 border-b border-jc-border w-24">Dept</th>
+              <th class="py-2 px-3 border-b border-jc-border w-32">Phone</th>
+              <th class="py-2 px-3 border-b border-jc-border w-24">Submitted</th>
+              <th class="py-2 px-3 border-b border-jc-border w-24">Score</th>
+              <th class="py-2 px-3 border-b border-jc-border w-32">Date</th>
+            </tr>
+          </thead>
+          <tbody id="serverRows" class="text-sm"></tbody>
+        </table>
+      </div>
+    </section>
+
     <section id="employeeReports" class="space-y-8"></section>
   </main>
 
+  <!-- Data + charts + server status -->
   <script type="module">
     import { createClient } from "https://esm.sh/@supabase/supabase-js@2?bundle";
-    window.sb = createClient(
+    const sb = createClient(
       "https://kpldzwlftkvjjntgsqxx.supabase.co",
       "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs"
     );
@@ -98,26 +134,37 @@
       q9:"When do we fill the condiments on the table?"
     };
 
+    // Pull submissions (admin RPC)
     const { data, error } = await sb.rpc('hb_ts_export_admin', { p_username:'Janelle', p_password:'DFW#1Dumplings' });
     if (error) { alert("Admin auth failed"); console.error(error); throw error; }
 
-    // A–Z sort by full_name for everything (dashboard + charts + cards)
-    const sorted = data.slice().sort((a,b)=> (a.full_name||"").localeCompare(b.full_name||"", undefined, {sensitivity:'base'}));
+    // Latest submission by username (lowercased)
+    const latestByUser = {};
+    for (const r of data ?? []) {
+      const u = (r.username || '').toLowerCase();
+      if (!u) continue;
+      if (!latestByUser[u]) {
+        latestByUser[u] = { submitted_at: r.submitted_at, score: r.score ?? 0, total: r.total ?? 0 };
+      }
+    }
 
+    // A–Z sorting for charts/cards
+    const sorted = (data ?? []).slice().sort((a,b)=> (a.full_name||"").localeCompare(b.full_name||"", undefined, {sensitivity:'base'}));
+
+    // KPIs
     document.getElementById('totalSub').textContent = sorted.length;
     const perfect = sorted.filter(e => e.score === e.total);
-    document.getElementById('perfectNames').textContent =
-      perfect.length ? perfect.map(e=>e.full_name).join(', ') : 'None';
+    document.getElementById('perfectNames').textContent = perfect.length ? perfect.map(e=>e.full_name).join(', ') : 'None';
 
-    // Most missed question
+    // Most missed
     const missCounts = {};
     sorted.forEach(emp=>{
       const ans = emp.answers || {};
       for (const [k,v] of Object.entries(correct)) {
-        const empVal = ans[k];
+        const val = ans[k];
         const right = Array.isArray(v)
-          ? JSON.stringify([...(empVal||[])].sort()) === JSON.stringify([...v].sort())
-          : empVal === v;
+          ? JSON.stringify([...(val||[])].sort()) === JSON.stringify([...v].sort())
+          : val === v;
         if (!right) missCounts[k] = (missCounts[k]||0)+1;
       }
     });
@@ -127,69 +174,93 @@
     const worst = sorted.slice().sort((a,b)=>a.score-b.score)[0];
     document.getElementById('mostWrongEmp').textContent = worst ? `${worst.full_name} (${worst.total - worst.score} wrong)` : '—';
 
-    // Donut chart — Blue Sky + Glossy Green palette
+    // Donut (Blue Sky + Glossy Green)
     const flavors = {};
-    sorted.forEach(e=>{
-      const flavor = e.answers?.q0 || '—';
-      flavors[flavor] = (flavors[flavor]||0)+1;
-    });
+    sorted.forEach(e=>{ const f = e.answers?.q0 || '—'; flavors[f] = (flavors[f]||0)+1; });
     const totalCount = Object.values(flavors).reduce((a,b)=>a+b,0);
     const labels = Object.keys(flavors);
     const values = Object.values(flavors);
-
     const dctx = document.getElementById('kolacheChart').getContext('2d');
-    const skyBlue = '#38BDF8';   // blue sky
-    const glossyGreen = '#22C55E'; // glossy green
     const gradBlue = dctx.createLinearGradient(0,0,0,300);
-    gradBlue.addColorStop(0, '#7DD3FC');
-    gradBlue.addColorStop(1, skyBlue);
+    gradBlue.addColorStop(0, '#7DD3FC'); gradBlue.addColorStop(1, '#38BDF8');
     const gradGreen = dctx.createLinearGradient(0,0,0,300);
-    gradGreen.addColorStop(0, '#86EFAC');
-    gradGreen.addColorStop(1, glossyGreen);
-
-    const palette = [
-      gradBlue,         // 1
-      gradGreen,        // 2
-      '#C0A06D',        // gold
-      '#8B5CF6',        // violet
-      '#F59E0B',        // amber
-      '#F472B6',        // pink
-      '#0EA5E9',        // sky variant
-      '#16A34A'         // green variant
-    ];
-
+    gradGreen.addColorStop(0, '#86EFAC'); gradGreen.addColorStop(1, '#22C55E');
+    const palette = [gradBlue, gradGreen, '#C0A06D', '#8B5CF6', '#F59E0B', '#F472B6', '#0EA5E9', '#16A34A'];
     const percentages = values.map(v => ((v/totalCount)*100).toFixed(1));
 
     new Chart(dctx, {
       type: 'doughnut',
-      data: {
-        labels: labels.map((l,i)=>`${l} (${percentages[i]}%)`),
-        datasets: [{ data: values, backgroundColor: labels.map((_,i)=>palette[i % palette.length]), borderWidth: 2, borderColor: '#fff', hoverOffset: 8 }]
-      },
-      options: {
-        cutout: '65%',
-        plugins: {
-          legend: { position: 'bottom', labels: { color: '#333', font: { size: 12, family: 'Inter' } } },
-          datalabels: {
-            color: '#000', font: { weight: 'bold', size: 11 },
-            formatter: (value) => ((value / totalCount) * 100).toFixed(1) + '%'
-          }
-        }
-      },
-      plugins: [ChartDataLabels]
+      data: { labels: labels.map((l,i)=>`${l} (${percentages[i]}%)`),
+        datasets: [{ data: values, backgroundColor: labels.map((_,i)=>palette[i%palette.length]), borderWidth:2, borderColor:'#fff', hoverOffset:8 }] },
+      options: { cutout:'65%', plugins:{ legend:{ position:'bottom', labels:{ color:'#333', font:{ size:12, family:'Inter'}}},
+        datalabels:{ color:'#000', font:{ weight:'bold', size:11 }, formatter: v => ((v/totalCount)*100).toFixed(1)+'%' } } },
+      plugins:[ChartDataLabels]
     });
 
-    // Bar chart (A–Z)
+    // Bar chart
     new Chart(document.getElementById('scoreChart'), {
       type:'bar',
-      data:{
-        labels:sorted.map(e=>e.full_name),
-        datasets:[{ label:'Correct Answers', data:sorted.map(e=>e.score), backgroundColor:'#C0A06D' }]
-      },
-      options:{ scales:{y:{beginAtZero:true,max:8}}, plugins:{legend:{display:false}} }
+      data:{ labels:sorted.map(e=>e.full_name), datasets:[{ label:'Correct Answers', data:sorted.map(e=>e.score), backgroundColor:'#C0A06D' }] },
+      options:{ scales:{ y:{ beginAtZero:true, max:8 } }, plugins:{ legend:{ display:false } } }
     });
 
-    // Employee cards (A–Z)
+    // Server Submission Status
+    const { data: staff, error: staffErr } = await sb
+      .from('hb_handbook_access')
+      .select('full_name, employee_name, username, department, phone, position, is_active')
+      .eq('is_active', true);
+
+    if (staffErr) console.error(staffErr);
+
+    const servers = (staff ?? [])
+      .filter(r => String(r.position || '').toLowerCase() === 'server')
+      .map(r => {
+        const displayName =
+          (r.full_name && r.full_name.trim()) ||
+          (r.employee_name && r.employee_name.trim()) ||
+          (r.username && r.username.trim()) ||
+          '—';
+        const phone =
+          r.phone && String(r.phone).toLowerCase() !== 'nan' ? r.phone : '—';
+        return {
+          full_name: displayName,
+          username: r.username ?? '—',
+          department: r.department ?? '—',
+          phone
+        };
+      })
+      .sort((a,b)=> (a.full_name||'').localeCompare(b.full_name||'', undefined, {sensitivity:'base'}));
+
+    document.getElementById('serverCount').textContent =
+      servers.length ? `${servers.length} servers` : 'No servers found';
+
+    const serverRows = document.getElementById('serverRows');
+    const fmtDate = d => { try { return new Date(d).toLocaleDateString(); } catch { return '—'; } };
+
+    servers.forEach(s => {
+      const key = (s.username || '').toLowerCase();
+      const snap = latestByUser[key];
+      const submitted = !!snap;
+      const scoreTxt = submitted ? `${snap.score ?? 0}/${snap.total ?? 0}` : '—';
+      const dateTxt  = submitted ? fmtDate(snap.submitted_at) : '—';
+
+      const tr = document.createElement('tr');
+      tr.className = 'odd:bg-white even:bg-[#FAFAFB]';
+      tr.innerHTML = `
+        <td class="py-2 px-3 border-b border-jc-border">${s.full_name}</td>
+        <td class="py-2 px-3 border-b border-jc-border">${s.username}</td>
+        <td class="py-2 px-3 border-b border-jc-border">${s.department}</td>
+        <td class="py-2 px-3 border-b border-jc-border">${s.phone}</td>
+        <td class="py-2 px-3 border-b border-jc-border font-semibold ${submitted ? 'text-green-600' : 'text-red-600'}">
+          ${submitted ? 'YES' : 'NO'}
+        </td>
+        <td class="py-2 px-3 border-b border-jc-border">${scoreTxt}</td>
+        <td class="py-2 px-3 border-b border-jc-border">${dateTxt}</td>
+      `;
+      serverRows.appendChild(tr);
+    });
+
+    // Per-employee cards
     const container = document.getElementById('employeeReports');
     const qEntries = Object.entries(qNames);
     sorted.forEach((emp, idx) => {
@@ -198,10 +269,8 @@
         const right = Array.isArray(correct[k])
           ? JSON.stringify([...(userAns || [])].sort()) === JSON.stringify([...correct[k]].sort())
           : correct[k] === userAns;
-
         const userAnsText = Array.isArray(userAns) ? userAns.join(', ') : (userAns ?? '—');
         const corrText = Array.isArray(correct[k]) ? correct[k].join(', ') : correct[k];
-
         return `
           <div class="mb-3">
             <div class="font-medium">${label}</div>
@@ -223,11 +292,10 @@
       container.appendChild(card);
     });
 
-    // expose
     window.currentEmp = window.currentEmp || { is_owner: true };
   </script>
 
-  <!-- Call the Edge Function (make sure to include Authorization/apikey headers) -->
+  <!-- PDF Edge Function call -->
   <script type="module">
     const EDGE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co/functions/v1/generate-survey-report";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
