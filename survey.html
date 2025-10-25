@@ -54,16 +54,25 @@
           <p class="text-jc-muted -mt-2">Enterprise Sign-In</p>
         </div>
 
-        <form class="mt-6 space-y-4">
+        <form id="loginForm" class="mt-6 space-y-4">
           <div>
-            <label class="block text-sm font-medium text-jc-muted mb-1">Username</label>
-            <input id="inUsername" class="w-full rounded-xl border border-jc-border px-3.5 py-2.75 focus:outline-none focus:ring-2 focus:ring-jc-gold" placeholder="" autocomplete="username">
+            <label class="block text-sm font-medium text-jc-muted mb-1" for="inUsername">Username</label>
+            <input id="inUsername" class="w-full rounded-xl border border-jc-border px-3.5 py-2.75 focus:outline-none focus:ring-2 focus:ring-jc-gold" placeholder="" autocomplete="username" autofocus>
           </div>
           <div>
-            <label class="block text-sm font-medium text-jc-muted mb-1">PIN</label>
-            <input id="inPIN" inputmode="numeric" maxlength="6" class="w-full rounded-xl border border-jc-border px-3.5 py-2.75 focus:outline-none focus:ring-2 focus:ring-jc-gold" placeholder="••••">
+            <label class="block text-sm font-medium text-jc-muted mb-1" for="inPIN">PIN</label>
+            <input id="inPIN"
+                   type="password"
+                   inputmode="numeric"
+                   pattern="[0-9]{4}"
+                   maxlength="4"
+                   class="w-full rounded-xl border border-jc-border px-3.5 py-2.75 focus:outline-none focus:ring-2 focus:ring-jc-gold"
+                   placeholder="••••"
+                   autocomplete="one-time-code"
+                   aria-describedby="pinHelp">
+            <p id="pinHelp" class="text-xs text-jc-muted mt-1">Enter <strong>exactly 4</strong> digits.</p>
           </div>
-          <button id="btnLogin" type="button" class="w-full gold-btn rounded-xl py-3 font-semibold">Sign in</button>
+          <button id="btnLogin" type="submit" class="w-full gold-btn rounded-xl py-3 font-semibold">Sign in</button>
           <p id="loginError" class="text-sm text-red-600 hidden"></p>
         </form>
 
@@ -74,7 +83,7 @@
       </div>
     </section>
 
-    <!-- ===== Already Submitted Message (separate section) ===== -->
+    <!-- ===== Already Submitted Message ===== -->
     <section id="alreadySection" class="hidden">
       <div class="max-w-3xl mx-auto mt-10 card p-8 text-center">
         <h2 class="font-serif-head text-2xl mb-2">Survey Submitted</h2>
@@ -139,6 +148,7 @@
           <div id="surveyMessage" class="mt-4 hidden p-4 rounded-xl text-sm font-medium border border-red-200 bg-red-50 text-red-700"></div>
 
           <form id="surveyForm" class="mt-6 space-y-6 text-[15px]">
+            <!-- (Questions unchanged) -->
             <!-- Q1 -->
             <fieldset class="border border-jc-border rounded-xl p-4">
               <legend class="px-2 text-sm font-semibold">Q1. Shipley Donuts provided the kolaches. What was your favorite flavor? <span class="text-jc-muted">(Choose one)</span></legend>
@@ -299,13 +309,13 @@
     const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
     // Elements
+    const loginForm = document.getElementById('loginForm');
     const loginSection = document.getElementById('loginSection');
     const contentSection = document.getElementById('contentSection');
     const alreadySection = document.getElementById('alreadySection');
 
     const inUsername = document.getElementById('inUsername');
     const inPIN = document.getElementById('inPIN');
-    const btnLogin = document.getElementById('btnLogin');
     const loginError = document.getElementById('loginError');
 
     const empName = document.getElementById('empName');
@@ -339,7 +349,12 @@
     // Utils
     const $$ = (s) => Array.from(document.querySelectorAll(s));
     const getChecked = (name) => $$( 'input[name="'+name+'"]:checked' ).map(i => i.value);
-    const arraysEqualSet = (a,b) => a.length===b.length && a.every(v => new Set(b).has(v));
+    const arraysEqualSet = (a,b) => {
+      const A = new Set(a), B = new Set(b);
+      if (A.size !== B.size) return false;
+      for (const v of A) if (!B.has(v)) return false;
+      return true;
+    };
 
     // Progress tracking (Q0..Q9 must be complete => 100%)
     const progressBar = document.getElementById('progressBar');
@@ -379,72 +394,77 @@
     }
 
     // ===== Login flow =====
-    btnLogin.addEventListener('click', async ()=>{
+    loginForm.addEventListener('submit', async (ev)=>{
+      ev.preventDefault();
       loginError.classList.add('hidden');
+
       const u = inUsername.value.trim();
       const p = inPIN.value.trim();
-      if(!u && !p){ loginError.textContent="Enter username and/or PIN."; loginError.classList.remove('hidden'); return; }
 
-      const { data, error } = await sb.rpc('hb_auth_employee', { in_username: u || null, in_pin: p || null });
-      if(error || !data || !data.length){ loginError.textContent="Invalid credentials."; loginError.classList.remove('hidden'); return; }
+      if(!u || !p){
+        loginError.textContent="Enter username and PIN.";
+        loginError.classList.remove('hidden');
+        return;
+      }
+      // EXACTLY 4 DIGITS
+      if(!/^\d{4}$/.test(p)){
+        loginError.textContent="PIN must be exactly 4 digits.";
+        loginError.classList.remove('hidden');
+        return;
+      }
 
-      const e = data[0];
-      currentEmp = {
-        employee_id: e.id, username: e.username, full_name: e.full_name || '',
-        email: e.email || '', phone: e.phone || '',
-        position: e.position || e["position"] || '', department: e.department || '',
-        is_owner: !!e.is_owner
-      };
+      try{
+        const { data, error } = await sb.rpc('hb_auth_employee', { in_username: u, in_pin: p });
+        if(error) throw error;
+        if(!data || !data.length){
+          loginError.textContent="Invalid credentials.";
+          loginError.classList.remove('hidden');
+          return;
+        }
 
-      // Fill summary
-      empName.textContent = currentEmp.full_name || '(no name)';
-      empUser.textContent = currentEmp.username || '';
-      empPos.textContent = currentEmp.position || '';
-      empDept.textContent = currentEmp.department || '';
-      empPhone.textContent = currentEmp.phone || '';
-      empSession.textContent = new Date().toLocaleString();
-      if(currentEmp.is_owner) btnExportCsv.classList.remove('hidden');
+        const e = data[0];
+        currentEmp = {
+          employee_id: e.id,
+          username: e.username,
+          full_name: e.full_name || '',
+          email: e.email || '',
+          phone: e.phone || '',
+          position: e.position || e["position"] || '',
+          department: e.department || '',
+          is_owner: !!e.is_owner
+        };
 
-      
-loginSection.classList.add('hidden');
+        // Fill summary
+        empName.textContent = currentEmp.full_name || '(no name)';
+        empUser.textContent = currentEmp.username || '';
+        empPos.textContent = currentEmp.position || '';
+        empDept.textContent = currentEmp.department || '';
+        empPhone.textContent = currentEmp.phone || '';
+        empSession.textContent = new Date().toLocaleString();
 
-// server-side check (works even with RLS)
-const { data: already, error: alreadyErr } = await sb.rpc(
-  'hb_ts_already_submitted',
-  { p_employee_id: currentEmp.employee_id }
-);
+        if(currentEmp.is_owner) btnExportCsv.classList.remove('hidden');
 
-if (alreadyErr) {
-  console.error('already-submitted RPC error:', alreadyErr);
-}
+        // Check already submitted
+        const { data: already, error: alreadyErr } = await sb.rpc('hb_ts_already_submitted', { p_employee_id: currentEmp.employee_id });
+        if(alreadyErr){
+          console.error('already-submitted RPC error:', alreadyErr);
+        }
 
-if (already === true) {
-  contentSection.classList.add('hidden');
-  alreadySection.classList.remove('hidden');
-  return;
-}
-
-// not submitted yet -> show the survey
-alreadySection.classList.add('hidden');
-contentSection.classList.remove('hidden');
-window.scrollTo({ top: 0, behavior: 'smooth' });
-computeProgress();
-
-
-
-
-
-
-
-
-
-
-
-      // show survey
-      alreadySection.classList.add('hidden');
-      contentSection.classList.remove('hidden');
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      computeProgress();
+        loginSection.classList.add('hidden');
+        if (already === true) {
+          contentSection.classList.add('hidden');
+          alreadySection.classList.remove('hidden');
+        } else {
+          alreadySection.classList.add('hidden');
+          contentSection.classList.remove('hidden');
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+          computeProgress();
+        }
+      }catch(err){
+        console.error('Login error:', err);
+        loginError.textContent = "Sign-in failed. Try again.";
+        loginError.classList.remove('hidden');
+      }
     });
 
     // ===== Submit survey =====
@@ -452,79 +472,73 @@ computeProgress();
       e.preventDefault();
       if(!currentEmp){ submitMsg.textContent="Sign in first."; submitMsg.classList.add('text-red-600'); return; }
 
-      // Quick re-check right before submit (prevents second submission in another tab)
-    
+      btnSubmit.disabled = true;
+      submitMsg.textContent = "";
 
-const { data: already2, error: alreadyErr2 } = await sb.rpc(
-  'hb_ts_already_submitted',
-  { p_employee_id: currentEmp.employee_id }
-);
-if (already2 === true) {
-  disableSurvey("You already submitted this survey. Thank you!", true);
-  return;
-}
+      try{
+        // Re-check before submit
+        const { data: already2, error: alreadyErr2 } = await sb.rpc('hb_ts_already_submitted', { p_employee_id: currentEmp.employee_id });
+        if(alreadyErr2) throw alreadyErr2;
+        if (already2 === true) {
+          disableSurvey("You already submitted this survey. Thank you!", true);
+          return;
+        }
 
+        const fd = new FormData(surveyForm);
+        const a = {
+          q0: (fd.get('q0')||"").toString(),
+          q1: (fd.get('q1')||"").toString(),
+          q2: (fd.get('q2')||"").toString(),
+          q3: (fd.get('q3')||"").toString(),
+          q4: (fd.get('q4')||"").toString(),
+          q5: (fd.get('q5')||"").toString(),
+          q6: (fd.get('q6')||"").toString(),
+          q7: (fd.get('q7')||"").toString(),
+          q8: getChecked('q8'),
+          q9: getChecked('q9')
+        };
 
+        if(a.q8.length!==3 || a.q9.length!==2){
+          submitMsg.textContent = "Pick exactly 3 (wipe menus) and 2 (condiments).";
+          submitMsg.classList.add('text-red-600');
+          return;
+        }
 
+        let score = 0;
+        for(const k of KNOWLEDGE_KEYS){
+          score += Array.isArray(correct[k]) ? (arraysEqualSet(a[k], correct[k])?1:0) : (a[k]===correct[k]?1:0);
+        }
+        const total = KNOWLEDGE_KEYS.length;
 
+        submitMsg.textContent = "Submitting…";
+        submitMsg.classList.remove('text-red-600','text-green-600');
 
+        const { error } = await sb.rpc('hb_ts_submit', {
+          p_employee_id: currentEmp.employee_id,
+          p_username:    currentEmp.username,
+          p_full_name:   currentEmp.full_name,
+          p_phone:       currentEmp.phone,
+          p_position:    currentEmp.position,
+          p_department:  currentEmp.department,
+          p_is_owner:    currentEmp.is_owner,
+          p_score:       score,
+          p_total:       total,
+          p_answers:     a
+        });
 
+        if (error) throw error;
 
-
-
-
-
-
-
-
-      const a = {
-        q0: (new FormData(surveyForm).get('q0')||"").toString(),
-        q1: (new FormData(surveyForm).get('q1')||"").toString(),
-        q2: (new FormData(surveyForm).get('q2')||"").toString(),
-        q3: (new FormData(surveyForm).get('q3')||"").toString(),
-        q4: (new FormData(surveyForm).get('q4')||"").toString(),
-        q5: (new FormData(surveyForm).get('q5')||"").toString(),
-        q6: (new FormData(surveyForm).get('q6')||"").toString(),
-        q7: (new FormData(surveyForm).get('q7')||"").toString(),
-        q8: getChecked('q8'),
-        q9: getChecked('q9')
-      };
-
-      if(a.q8.length!==3 || a.q9.length!==2){
-        submitMsg.textContent = "Pick exactly 3 (wipe menus) and 2 (condiments).";
-        submitMsg.classList.add('text-red-600'); return;
-      }
-
-      let score = 0;
-      for(const k of KNOWLEDGE_KEYS){
-        score += Array.isArray(correct[k]) ? (arraysEqualSet(a[k], correct[k])?1:0) : (a[k]===correct[k]?1:0);
-      }
-      const total = KNOWLEDGE_KEYS.length;
-
-      submitMsg.textContent = "Submitting…"; submitMsg.classList.remove('text-red-600','text-green-600');
-
-      const { data, error } = await sb.rpc('hb_ts_submit', {
-        p_employee_id: currentEmp.employee_id,
-        p_username:    currentEmp.username,
-        p_full_name:   currentEmp.full_name,
-        p_phone:       currentEmp.phone,
-        p_position:    currentEmp.position,
-        p_department:  currentEmp.department,
-        p_is_owner:    currentEmp.is_owner,
-        p_score:       score,
-        p_total:       total,
-        p_answers:     a
-      });
-
-      if (error) {
-        console.error('Submission RPC error:', error);
-        submitMsg.textContent = `Save failed: ${error.message}`;
+        submitMsg.textContent = "Submitted successfully! Redirecting...";
+        submitMsg.classList.remove('text-red-600');
+        submitMsg.classList.add('text-green-600');
+        setTimeout(()=>{ window.location.href = 'https://www.jengchirestaurant.com/'; }, 1000);
+      }catch(err){
+        console.error('Submission RPC error:', err);
+        submitMsg.textContent = `Save failed: ${err?.message || 'Unexpected error'}`;
         submitMsg.classList.add('text-red-600');
-        return;
+      }finally{
+        btnSubmit.disabled = false;
       }
-
-      submitMsg.textContent = "Submitted successfully! Redirecting...";
-      setTimeout(()=>{ window.location.href = 'https://www.jengchirestaurant.com/'; }, 1000);
     });
 
     // Owner CSV export
@@ -534,26 +548,33 @@ if (already2 === true) {
       const ownerPin  = prompt("Owner PIN:");
       if(!ownerUser || !ownerPin) return;
 
-      const { data, error } = await sb.rpc('hb_ts_export_owner', { owner_username: ownerUser, owner_pin: ownerPin });
-      if(error) return;
+      try{
+        const { data, error } = await sb.rpc('hb_ts_export_owner', { owner_username: ownerUser, owner_pin: ownerPin });
+        if(error) throw error;
 
-      const rows = [["submitted_at","employee_id","username","full_name","phone","position","department","score","total","q0","q1","q2","q3","q4","q5","q6","q7","q8","q9"]];
-      for(const r of data){
-        const ans = r.answers || {};
-        rows.push([
-          r.submitted_at, r.employee_id, r.username||"", r.full_name||"", r.phone||"", r.position||"", r.department||"",
-          r.score, r.total, ans.q0||"", ans.q1||"", ans.q2||"", ans.q3||"", ans.q4||"", ans.q5||"", ans.q6||"", ans.q7||"",
-          Array.isArray(ans.q8)?ans.q8.join('|'):"", Array.isArray(ans.q9)?ans.q9.join('|'):""
-        ]);
+        const rows = [["submitted_at","employee_id","username","full_name","phone","position","department","score","total","q0","q1","q2","q3","q4","q5","q6","q7","q8","q9"]];
+        for(const r of data){
+          const ans = r.answers || {};
+          rows.push([
+            r.submitted_at, r.employee_id, r.username||"", r.full_name||"", r.phone||"", r.position||"", r.department||"",
+            r.score, r.total, ans.q0||"", ans.q1||"", ans.q2||"", ans.q3||"", ans.q4||"", ans.q5||"", ans.q6||"", ans.q7||"",
+            Array.isArray(ans.q8)?ans.q8.join('|'):"", Array.isArray(ans.q9)?ans.q9.join('|'):""
+          ]);
+        }
+        const csv = rows.map(r=>r.map(x=>{
+          const s = (x??"").toString(); return /[,"\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;
+        }).join(",")).join("\n");
+
+        // Add UTF-8 BOM for Excel
+        const blob = new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `steps_of_service_responses_${new Date().toISOString().slice(0,10)}.csv`;
+        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      }catch(err){
+        alert("Export failed.");
+        console.error(err);
       }
-      const csv = rows.map(r=>r.map(x=>{
-        const s = (x??"").toString(); return /[,"\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;
-      }).join(",")).join("\n");
-      const blob = new Blob([csv],{type:"text/csv;charset=utf-8"});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = `steps_of_service_responses_${new Date().toISOString().slice(0,10)}.csv`;
-      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     });
 
     // Initialize progress UI
@@ -561,4 +582,3 @@ if (already2 === true) {
   </script>
 </body>
 </html>
-
