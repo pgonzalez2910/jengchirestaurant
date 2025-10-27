@@ -28,7 +28,7 @@
 
   <style>
     .input{ @apply w-full rounded-xl border border-jc-border bg-white px-3 py-2 text-jc-ink shadow-sm focus:outline-none focus:ring-2 focus:ring-jc-gold/35; }
-    .btn{ @apply inline-flex items-center justify-center rounded-xl px-4 py-2 font-medium shadow-soft transition; }
+    .btn{ @apply inline-flex items-center justify-center rounded-xl px-3.5 py-2 font-medium shadow-soft transition; }
     .btn-gold{ @apply bg-jc-gold text-white hover:brightness-95; }
     .btn-ghost{ @apply bg-white border border-jc-border text-jc-ink hover:bg-jc-bg; }
     .btn-danger{ @apply bg-red-600 text-white hover:bg-red-700; }
@@ -38,6 +38,9 @@
     .label{ @apply text-sm font-semibold text-jc-ink; }
     .banner{ @apply rounded-xl border px-3 py-2 text-sm; }
     dialog::backdrop{ background: rgba(15,23,42,.35); }
+    .hint{ @apply text-xs text-jc-muted; }
+    .row-actions{ @apply flex gap-2; }
+    .link-danger{ @apply text-red-700 hover:text-red-800 underline underline-offset-2; }
   </style>
 </head>
 
@@ -81,7 +84,7 @@
                 <input id="pin" class="input pr-12 tracking-widest" type="password" placeholder="••••" inputmode="numeric" minlength="4" maxlength="8" required />
                 <button type="button" id="togglePin" class="absolute right-2 top-1/2 -translate-y-1/2 text-jc-muted text-xs">Show</button>
               </div>
-              <p class="text-xs text-jc-muted mt-1">PIN is hidden while typing.</p>
+              <p class="hint mt-1">PIN is hidden while typing.</p>
             </div>
 
             <button id="signInBtn" class="btn btn-gold w-full" type="submit">
@@ -165,7 +168,7 @@
                     <th class="py-2 pr-4">Position</th>
                     <th class="py-2 pr-4">Report To</th>
                     <th class="py-2 pr-4">Status</th>
-                    <th class="py-2 pr-4"></th>
+                    <th class="py-2 pr-0 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody id="empTbody"></tbody>
@@ -225,10 +228,13 @@
           <label class="label">Last Name</label>
           <input id="lName" class="input" />
         </div>
+
         <div class="md:col-span-2">
           <label class="label">Email</label>
           <input id="eMail" type="email" class="input" placeholder="unique@jengchirestaurant.com" />
+          <p id="emailWarn" class="hidden hint mt-1"></p>
         </div>
+
         <div>
           <label class="label">Department</label>
           <select id="dept" class="input" required>
@@ -236,21 +242,29 @@
             <option value="BOH">BOH</option>
           </select>
         </div>
+
+        <!-- Position select + custom -->
         <div>
           <label class="label">Position</label>
-          <input id="position" class="input" placeholder="e.g., Server, Line Cook" />
+          <select id="positionSel" class="input"></select>
+          <input id="positionCustom" class="input mt-2 hidden" placeholder="Type custom position…" />
         </div>
-        <div>
-          <label class="label">Report To</label>
-          <input id="reportTo" class="input" placeholder="Manager name" />
-        </div>
-        <div>
-          <label class="label">Status</label>
-          <select id="status" class="input" required>
-            <option value="Active">Active</option>
-            <option value="Leave">Leave</option>
-            <option value="Terminated">Terminated</option>
-          </select>
+
+        <!-- Report To select + custom -->
+        <div class="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="label">Report To</label>
+            <select id="reportToSel" class="input"></select>
+            <input id="reportToCustom" class="input mt-2 hidden" placeholder="Type manager name…" />
+          </div>
+          <div>
+            <label class="label">Status</label>
+            <select id="status" class="input" required>
+              <option value="Active">Active</option>
+              <option value="Leave">Leave</option>
+              <option value="Terminated">Terminated</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -272,12 +286,18 @@
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+    // ================== STATIC LISTS ==================
+    const FOH_POSITIONS = ["Server","Bartender","Host/Hostess","Cashier","Busser","Food Runner","Expeditor","Supervisor","Manager","Custom…"];
+    const BOH_POSITIONS = ["Line Cook","Wok Chef","Dumpling Maker","Pastry","Prep Cook","Dishwasher","Expo","Sous Chef","Chef","Custom…"];
+    const CORE_MANAGERS = ["Janelle Teng","Pablo Gonzalez","Craig Reeves","Shoko Teng","Mai Vu","Custom…"];
+
     // ================== STATE ==================
     let session = null;
     let page = 1;
     const pageSize = 12;
     let rows = [];
-    let READ_SOURCE = 'employees_admin'; // preferred
+    let READ_SOURCE = 'employees_admin';
+    let ALL_EMP_NAMES = [];
 
     // Write schema map for public.employees
     let COLS = {
@@ -287,8 +307,8 @@
       last:  'last_name',
       email: 'email',
       dept:  'department',
-      position: 'position',                // will map to primary_role if needed
-      reportTo: 'report_to',               // will map to "Current Reports To Employee" if present
+      position: 'position',                // may map to primary_role
+      reportTo: 'report_to',               // may map to "Current Reports To Employee"
       status: 'status',
       id: 'id'
     };
@@ -307,18 +327,20 @@
       const a=r[COLS.first]||'', b=r[COLS.last]||''; return [a,b].filter(Boolean).join(' ').trim();
     }
 
-    // ===== Uniqueness check (friendly error instead of DB 23505) =====
-    async function ensureUniqueEmail(email, excludeId=null){
+    // ===== Email uniqueness with soft-resolve =====
+    async function findByEmail(email){
       const e = (email||'').trim().toLowerCase();
-      if(!e) return { ok:true }; // NULL is allowed by your partial unique index
-
-      let q = supabase.from('employees').select('id', { count: 'exact', head: false }).ilike('email', e).limit(1);
-      if(excludeId) q = q.neq(COLS.id, excludeId);
-
-      const { data, error } = await q;
-      if(error){ console.error(error); return { ok:false, message:'Email check failed.' }; }
-      const exists = Array.isArray(data) && data.length > 0;
-      return exists ? { ok:false, message:'That email is already used by another employee.' } : { ok:true };
+      if(!e) return null;
+      const { data } = await supabase.from('employees').select('*').ilike('email', e).limit(1);
+      return (data && data[0]) || null;
+    }
+    async function ensureUniqueEmailOrOpen(email){
+      const existing = await findByEmail(email);
+      if(!existing) return { ok:true };
+      if(confirm('That email is already used by another employee. Open that record to edit?')){
+        openModal(existing);
+      }
+      return { ok:false, message:'Duplicate email' };
     }
     function showFieldError(el, msg){ el.setCustomValidity(msg||''); el.reportValidity(); }
 
@@ -349,13 +371,11 @@
       let res = await supabase.from('employees_admin').select('*').limit(1);
       READ_SOURCE = res.error ? 'employees' : 'employees_admin';
     }
-
     async function detectEmployeesSchema(){
       const { data, error } = await supabase.from('employees').select('*').limit(1);
       if(error) return;
       const row  = (data && data[0]) || {};
-      const keys = Object.keys(row); // keep exact names (case/space)
-
+      const keys = Object.keys(row); // exact
       const has  = k => keys.includes(k);
 
       COLS.id = has('id') ? 'id' : COLS.id;
@@ -370,14 +390,11 @@
 
       COLS.email    = has('email') ? 'email' : has('work_email') ? 'work_email' : 'email';
       COLS.dept     = has('department') ? 'department' : has('dept') ? 'dept' : 'department';
-
       COLS.position = has('position') ? 'position' : has('role') ? 'role' : has('primary_role') ? 'primary_role' : 'position';
-
       COLS.reportTo = has('report_to') ? 'report_to'
                     : has('manager') ? 'manager'
                     : has('Current Reports To Employee') ? 'Current Reports To Employee'
                     : 'report_to';
-
       COLS.status   = has('status') ? 'status' : has('employment_status') ? 'employment_status' : 'status';
     }
 
@@ -388,12 +405,21 @@
       return data||[];
     }
 
+    function collectPositionValue(){
+      const sel = qs('#positionSel').value;
+      return sel === '__custom__' ? qs('#positionCustom').value.trim() : sel;
+    }
+    function collectReportToValue(){
+      const sel = qs('#reportToSel').value;
+      return sel === '__custom__' ? qs('#reportToCustom').value.trim() : sel;
+    }
+
     async function insertEmployeeFromForm(){
       const emailEl = qs('#eMail');
       const email = (emailEl.value||'').trim().toLowerCase();
 
-      const chk = await ensureUniqueEmail(email, null);
-      if(!chk.ok){ showFieldError(emailEl, chk.message); throw new Error(chk.message); }
+      const ok = await ensureUniqueEmailOrOpen(email);
+      if(!ok.ok){ showFieldError(emailEl, ok.message); throw new Error(ok.message); }
       showFieldError(emailEl, '');
 
       const row = {};
@@ -403,10 +429,10 @@
         row[COLS.first]  = qs('#fName').value.trim();
         row[COLS.last]   = qs('#lName').value.trim();
       }
-      row[COLS.email]    = email || null;  // nulls allowed by your partial unique index
+      row[COLS.email]    = email || null;
       row[COLS.dept]     = qs('#dept').value;
-      row[COLS.position] = qs('#position').value.trim();
-      row[COLS.reportTo] = qs('#reportTo').value.trim();
+      row[COLS.position] = collectPositionValue();
+      row[COLS.reportTo] = collectReportToValue();
       row[COLS.status]   = qs('#status').value;
 
       const { data, error } = await supabase.from('employees').insert(row).select().single();
@@ -418,8 +444,13 @@
       const emailEl = qs('#eMail');
       const email = (emailEl.value||'').trim().toLowerCase();
 
-      const chk = await ensureUniqueEmail(email, id);
-      if(!chk.ok){ showFieldError(emailEl, chk.message); throw new Error(chk.message); }
+      const existing = await findByEmail(email);
+      if(existing && String(existing[COLS.id]) !== String(id)){
+        if(confirm('That email is used by another employee. Open that record to edit instead?')){
+          openModal(existing);
+        }
+        throw new Error('Duplicate email');
+      }
       showFieldError(emailEl, '');
 
       const patch = {};
@@ -431,8 +462,8 @@
       }
       patch[COLS.email]    = email || null;
       patch[COLS.dept]     = qs('#dept').value;
-      patch[COLS.position] = qs('#position').value.trim();
-      patch[COLS.reportTo] = qs('#reportTo').value.trim();
+      patch[COLS.position] = collectPositionValue();
+      patch[COLS.reportTo] = collectReportToValue();
       patch[COLS.status]   = qs('#status').value;
 
       const { data, error } = await supabase.from('employees').update(patch).eq(COLS.id, id).select().single();
@@ -440,9 +471,9 @@
       return data;
     }
 
-    async function deleteEmployee(id){
-      const { error } = await supabase.from('employees').delete().eq(COLS.id, id);
-      if(error){ console.error(error); throw error; }
+    async function deleteEmployeeById(id){
+      const { error } = await supabase.from('employees').delete({ returning:'minimal' }).eq(COLS.id, id);
+      if(error) throw error;
     }
 
     // ================== RENDER ==================
@@ -472,6 +503,7 @@
       const filtered = applyFilters(rows);
       const paged = paginate(filtered, page, pageSize);
       const tb = qs('#empTbody');
+
       tb.innerHTML = paged.map(r=>`
         <tr class="border-b border-jc-border">
           <td class="py-2 pr-4">${nameFromRow(r)}</td>
@@ -480,11 +512,15 @@
           <td class="py-2 pr-4">${r.position||''}</td>
           <td class="py-2 pr-4">${r.report_to||''}</td>
           <td class="py-2 pr-4">${r.status||''}</td>
-          <td class="py-2 pr-0">
-            <button class="btn btn-ghost text-sm" data-edit="${r.id}">Edit</button>
+          <td class="py-2 pr-0 text-right">
+            <div class="row-actions">
+              <button class="btn btn-ghost text-sm" data-edit="${r.id}">Edit</button>
+              <button class="btn btn-danger text-sm" data-del="${r.id}">Delete</button>
+            </div>
           </td>
         </tr>`).join('');
 
+      // wire edit/delete actions
       qsa('[data-edit]').forEach(b=>{
         b.addEventListener('click', ()=>{
           const id = b.getAttribute('data-edit');
@@ -492,17 +528,64 @@
           openModal(row);
         });
       });
+      qsa('[data-del]').forEach(b=>{
+        b.addEventListener('click', async ()=>{
+          const id = b.getAttribute('data-del');
+          const row = rows.find(x=>String(x.id)===String(id));
+          if(!row) return;
+          const who = nameFromRow(row) || 'this employee';
+          if(!confirm(`Delete ${who}? This cannot be undone.`)) return;
+
+          const original = b.textContent;
+          b.disabled = true; b.textContent = 'Deleting…';
+          try {
+            await deleteEmployeeById(id);
+            await reloadData();
+          } catch (err){
+            console.error('[ROW_DELETE]', err);
+            if (err && err.code === '42501') {
+              alert('Delete blocked by Row Level Security policy on employees.');
+            } else {
+              alert(`Delete failed: ${err.message || err}`);
+            }
+          } finally {
+            b.disabled = false; b.textContent = original;
+          }
+        });
+      });
 
       const start = (page-1)*pageSize+1, end = Math.min(page*pageSize, filtered.length);
       qs('#rowsInfo').textContent = filtered.length ? `Showing ${start}-${end} of ${filtered.length}` : 'No rows';
     }
 
-    // ================== MODAL ==================
+    // ================== MODAL & DROPDOWNS ==================
     const empModal = qs('#empModal');
     const empForm  = qs('#empForm');
     const deleteBtn= qs('#deleteEmp');
 
+    function fillPositionOptions(){
+      const dept = qs('#dept').value;
+      const sel = qs('#positionSel');
+      const list = dept === 'BOH' ? BOH_POSITIONS : FOH_POSITIONS;
+      sel.innerHTML = list.map(p=>`<option value="${p==='Custom…'?'__custom__':p}">${p}</option>`).join('');
+      toggleCustom(sel, 'positionCustom');
+    }
+    function fillReportToOptions(){
+      const sel = qs('#reportToSel');
+      const merged = [...new Set([...CORE_MANAGERS, ...ALL_EMP_NAMES.filter(n=>n && !CORE_MANAGERS.includes(n))])];
+      sel.innerHTML = merged.map(n=>`<option value="${n==='Custom…'?'__custom__':n}">${n}</option>`).join('');
+      toggleCustom(sel, 'reportToCustom');
+    }
+    function toggleCustom(selectEl, customInputId){
+      const show = selectEl.value === '__custom__';
+      qs('#'+customInputId).classList.toggle('hidden', !show);
+      if(show) qs('#'+customInputId).focus();
+    }
+
     function openModal(row){
+      fillPositionOptions();
+      fillReportToOptions();
+
       if(row){
         qs('#empModalTitle').textContent = 'Edit Employee';
         qs('#empId').value = row.id;
@@ -514,8 +597,16 @@
 
         qs('#eMail').value   = row.email||'';
         qs('#dept').value    = row.department||'FOH';
-        qs('#position').value= row.position||'';
-        qs('#reportTo').value= row.report_to||'';
+        fillPositionOptions();
+        const pos = row.position||'';
+        if(qs('#positionSel').querySelector(`option[value="${pos}"]`)) qs('#positionSel').value = pos;
+        else { qs('#positionSel').value='__custom__'; qs('#positionCustom').classList.remove('hidden'); qs('#positionCustom').value = pos; }
+
+        fillReportToOptions();
+        const rpt = row.report_to||'';
+        if(qs('#reportToSel').querySelector(`option[value="${rpt}"]`)) qs('#reportToSel').value = rpt;
+        else { qs('#reportToSel').value='__custom__'; qs('#reportToCustom').classList.remove('hidden'); qs('#reportToCustom').value = rpt; }
+
         qs('#status').value  = (row.status||'Active').toString().replace(/^active$/i,'Active');
 
         deleteBtn.classList.remove('hidden');
@@ -524,6 +615,8 @@
         empForm.reset();
         qs('#empId').value = '';
         deleteBtn.classList.add('hidden');
+        fillPositionOptions();
+        fillReportToOptions();
       }
       empModal.showModal();
     }
@@ -580,7 +673,12 @@
       qs('#addEmployeeBtn').addEventListener('click', ()=>openModal(null));
       qs('#closeModal').addEventListener('click', ()=>empModal.close());
 
-      // save
+      // modal selects
+      qs('#dept').addEventListener('change', fillPositionOptions);
+      qs('#positionSel').addEventListener('change', e=>toggleCustom(e.target, 'positionCustom'));
+      qs('#reportToSel').addEventListener('change', e=>toggleCustom(e.target, 'reportToCustom'));
+
+      // modal save
       empForm.addEventListener('submit', async (e)=>{
         e.preventDefault();
         const id = qs('#empId').value || null;
@@ -591,20 +689,46 @@
         } catch(err){ console.error(err); alert(err.message || 'Save failed.'); }
       });
 
-      // delete
-      qs('#deleteEmp').addEventListener('click', async ()=>{
-        const id = qs('#empId').value;
-        if(!id) return;
-        if(!confirm('Delete this employee?')) return;
-        try{ await deleteEmployee(id); empModal.close(); await reloadData(); }
-        catch(err){ console.error(err); alert('Delete failed.'); }
-      });
+      // modal delete — robust binding
+      (function bindDeleteInModal(){
+        const btn = document.getElementById('deleteEmp');
+        if(!btn) return;
+        const clone = btn.cloneNode(true);
+        btn.parentNode.replaceChild(clone, btn);
+        clone.addEventListener('click', async ()=>{
+          const id = document.getElementById('empId').value;
+          if(!id){ alert('No employee selected.'); return; }
+          const who = (rows.find(r=>String(r.id)===String(id))?.full_name) || 'this employee';
+          if(!confirm(`Delete ${who}? This cannot be undone.`)) return;
+
+          const original = clone.textContent;
+          clone.disabled = true; clone.textContent = 'Deleting…';
+          try{
+            await deleteEmployeeById(id);
+            empModal.close();
+            await reloadData();
+          } catch (err){
+            console.error('[MODAL_DELETE]', err);
+            if (err && err.code === '42501') {
+              alert('Delete blocked by Row Level Security policy on employees.');
+            } else {
+              alert(`Delete failed: ${err.message || err}`);
+            }
+          } finally {
+            clone.disabled = false; clone.textContent = original;
+          }
+        });
+      })();
     });
 
     async function reloadData(){
       qs('#serverStatus').textContent='pending'; qs('#serverStatus').className='ml-1 font-semibold text-yellow-700';
       const list = await fetchEmployees();
       rows = list;
+
+      // cache names for Report To dropdown
+      ALL_EMP_NAMES = list.map(r=>r.full_name).filter(Boolean).sort((a,b)=>a.localeCompare(b));
+
       renderKPIs(list);
       renderTable();
       qs('#serverStatus').textContent='ok'; qs('#serverStatus').className='ml-1 font-semibold text-green-700';
