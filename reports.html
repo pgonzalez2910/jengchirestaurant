@@ -237,45 +237,51 @@
 
 
     // --- DATA FETCH & PROCESSING ---
+    // Note: Data is fetched and processed immediately when the module loads
 
-    // Pull submissions (admin RPC)
-    const { data, error } = await sb.rpc('hb_ts_export_admin', { p_username:'Janelle', p_password:'DFW#1Dumplings' });
-    if (error) { 
-        console.error(error); 
-        // Safely update the KPI if an error occurs
-        const totalSub = document.getElementById('totalSub');
-        if(totalSub) totalSub.textContent = 'Error';
-        throw error; 
+    let sorted = []; // Will hold the sorted and processed data
+
+    async function fetchDataAndProcess() {
+        const { data, error } = await sb.rpc('hb_ts_export_admin', { p_username:'Janelle', p_password:'DFW#1Dumplings' });
+        if (error) { 
+            console.error(error); 
+            const totalSub = document.getElementById('totalSub');
+            if(totalSub) totalSub.textContent = 'Error';
+            return; 
+        }
+
+        const recalculatedData = (data ?? []).map(emp => {
+            let score = 0;
+            const ans = emp.answers || {};
+            const knowledgeKeys = Object.keys(correct); 
+
+            for (const k of knowledgeKeys) {
+                const userAns = ans[k];
+                const correctAns = correct[k];
+                let isCorrect = false;
+
+                if (Array.isArray(correctAns)) {
+                    const userArray = Array.isArray(userAns) ? userAns : (userAns ? [userAns] : []);
+                    isCorrect = arraysEqualSet(userArray, correctAns);
+                } else {
+                    const userStr = (userAns || '').toString().trim();
+                    const correctStr = (correctAns || '').toString().trim();
+                    isCorrect = userStr === correctStr;
+                }
+                if (isCorrect) score++;
+            }
+            return { ...emp, score: score, total: 9, answers: ans };
+        });
+
+        // Update the global sorted array
+        sorted = recalculatedData.slice().sort((a,b)=> (a.full_name||"").localeCompare(b.full_name||"", undefined, {sensitivity:'base'}));
+
+        // Now that 'sorted' is populated, render everything
+        renderKPIs();
+        renderCharts();
+        await renderSubmissionTableAndReports();
     }
 
-    // Recalculate score locally based on the corrected answers and hardcoded total (9)
-    const recalculatedData = (data ?? []).map(emp => {
-      let score = 0;
-      const ans = emp.answers || {};
-      const knowledgeKeys = Object.keys(correct); 
-
-      for (const k of knowledgeKeys) {
-        const userAns = ans[k];
-        const correctAns = correct[k];
-        
-        let isCorrect = false;
-
-        if (Array.isArray(correctAns)) {
-          const userArray = Array.isArray(userAns) ? userAns : (userAns ? [userAns] : []);
-          isCorrect = arraysEqualSet(userArray, correctAns);
-        } else {
-          const userStr = (userAns || '').toString().trim();
-          const correctStr = (correctAns || '').toString().trim();
-          isCorrect = userStr === correctStr;
-        }
-        if (isCorrect) score++;
-      }
-
-      return { ...emp, score: score, total: 9, answers: ans };
-    });
-
-    // A–Z sorting for charts/cards using the recalculated data
-    const sorted = recalculatedData.slice().sort((a,b)=> (a.full_name||"").localeCompare(b.full_name||"", undefined, {sensitivity:'base'}));
 
     // --- RENDER FUNCTIONS ---
 
@@ -293,8 +299,7 @@
         }
         document.getElementById('avgScore').textContent = avgScore;
 
-        // Completion Rate (Assuming 'staff' data is needed for total staff count for a true completion rate)
-        // For now, we'll calculate submission rate based on total staff found later.
+        // Completion Rate
         document.getElementById('completionRate').textContent = `${totalSubmissions} Submitted`;
 
 
@@ -330,54 +335,48 @@
         // Perfect Scorers
         const perfect = sorted.filter(e => e.score === 9); // Total is 9
         const perfectList = document.getElementById('perfectList');
-        // I noticed this element was defined outside of the Top Missed/Lowest Score grid, so I moved it for the fix
         if(perfectList) perfectList.textContent = perfect.length ? perfect.map(e=>e.full_name).join(', ') : 'None yet.';
         
         // Worst Performer
-     const worst = sorted.slice().sort((a,b)=>a.score-b.score)[0];
-let worstEmpHtml = '<div class="text-sm text-jc-muted">None.</div>';
+        const worst = sorted.slice().sort((a,b)=>a.score-b.score)[0];
+        let worstEmpHtml = '<div class="text-sm text-jc-muted">None.</div>';
 
-if (worst) {
-  const isPerfect = worst.score === worst.total;
-  const nameColor = isPerfect ? 'text-green-600' : 'text-red-600';
-  const wrongCount = worst.total - worst.score;
+        if (worst) {
+            const isPerfect = worst.score === worst.total;
+            const nameColor = isPerfect ? 'text-green-600' : 'text-red-600';
+            const wrongCount = worst.total - worst.score;
 
-  worstEmpHtml = `
-    <div class="text-sm">
-      <div class="font-semibold ${nameColor}">${worst.full_name}</div>
-      <div class="text-jc-muted text-xs">
-        ${worst.score}/${worst.total} Correct (${wrongCount} wrong)
-      </div>
-    </div>
-  `;
-
-  // Optional: hide entire section if everyone has perfect scores
-  if (sorted.every(e => e.score === e.total)) {
-    worstEmpHtml = `
-      <div class="text-sm text-green-700 font-medium">
-        🎉 All employees achieved a perfect score!
-      </div>
-    `;
-  }
-}
-
-const mostWrongEmp = document.getElementById('mostWrongEmp');
-if (mostWrongEmp) mostWrongEmp.innerHTML = worstEmpHtml;
-
-        
-        // Update the lowest score KPI container (The one that was causing the error)
+            worstEmpHtml = `
+                <div class="text-sm">
+                    <div class="font-semibold ${nameColor}">${worst.full_name}</div>
+                    <div class="text-jc-muted text-xs">
+                        ${worst.score}/${worst.total} Correct (${wrongCount} wrong)
+                    </div>
+                </div>
+            `;
+            if (sorted.every(e => e.score === e.total)) {
+                worstEmpHtml = `
+                    <div class="text-sm text-green-700 font-medium">
+                        🎉 All employees achieved a perfect score!
+                    </div>
+                `;
+            }
+        }
         const mostWrongEmp = document.getElementById('mostWrongEmp');
-        if(mostWrongEmp) mostWrongEmp.innerHTML = worstEmpHtml;
+        if (mostWrongEmp) mostWrongEmp.innerHTML = worstEmpHtml;
     }
 
     function renderCharts() {
         // Kolache Chart (Doughnut)
+        const kolacheChartEl = document.getElementById('kolacheChart');
+        if (!kolacheChartEl) return;
+        
         const flavors = {};
         sorted.forEach(e=>{ const f = e.answers?.q0 || '—'; flavors[f] = (flavors[f]||0)+1; });
         const totalCount = Object.values(flavors).reduce((a,b)=>a+b,0);
         const labels = Object.keys(flavors);
         const values = Object.values(flavors);
-        const dctx = document.getElementById('kolacheChart').getContext('2d');
+        const dctx = kolacheChartEl.getContext('2d');
         const palette = ['#C0A06D', '#7DD3FC', '#86EFAC', '#8B5CF6', '#F59E0B', '#F472B6', '#0EA5E9', '#16A34A'];
         
         new Chart(dctx, {
@@ -399,9 +398,9 @@ if (mostWrongEmp) mostWrongEmp.innerHTML = worstEmpHtml;
                         position:'bottom', 
                         labels:{ color:'#333', font:{ size:12, family:'Inter'}}},
                     datalabels:{ 
-                        color:'#fff', // White text for corporate feel
+                        color:'#fff', 
                         font:{ weight:'bold', size:11 }, 
-                        formatter: v => ((v/totalCount)*100).toFixed(0)+'%' // Show percentage on slice
+                        formatter: v => ((v/totalCount)*100).toFixed(0)+'%' 
                     } 
                 } 
             },
@@ -409,7 +408,10 @@ if (mostWrongEmp) mostWrongEmp.innerHTML = worstEmpHtml;
         });
 
         // Score Chart (Horizontal Bar)
-        const sctx = document.getElementById('scoreChart').getContext('2d');
+        const scoreChartEl = document.getElementById('scoreChart');
+        if (!scoreChartEl) return;
+
+        const sctx = scoreChartEl.getContext('2d');
         const scores = sorted.map(e=>e.score);
         const names = sorted.map(e=>e.full_name);
         
@@ -470,7 +472,7 @@ if (mostWrongEmp) mostWrongEmp.innerHTML = worstEmpHtml;
             .filter(r => targetPositions.includes(String(r.position || '').toLowerCase()))
             .map(r => {
                 const username = r.username ?? '—';
-                const submission = recalculatedData.find(sub => (sub.username || '').toLowerCase() === (username.toLowerCase()));
+                const submission = sorted.find(sub => (sub.username || '').toLowerCase() === (username.toLowerCase()));
                 
                 const displayName =
                     (r.full_name && r.full_name.trim()) ||
@@ -494,7 +496,7 @@ if (mostWrongEmp) mostWrongEmp.innerHTML = worstEmpHtml;
 
         const serverCount = document.getElementById('serverCount');
         if(serverCount) serverCount.textContent =
-            `${recalculatedData.length} of ${servers.length} Front-of-House staff total`;
+            `${sorted.length} of ${servers.length} Front-of-House staff total submitted`;
 
         const serverRows = document.getElementById('serverRows');
         const fmtDate = d => { try { return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); } catch { return '—'; } };
@@ -569,12 +571,8 @@ if (mostWrongEmp) mostWrongEmp.innerHTML = worstEmpHtml;
         });
     }
 
-    // --- INITIALIZE ---
-    // Note: renderKPIs must run after sorted data is defined.
-    // However, some elements it references were outside the Summary tab's error grid.
-    renderKPIs();
-    renderCharts();
-    renderSubmissionTableAndReports();
+    // --- INITIALIZATION ---
+    fetchDataAndProcess();
     window.currentEmp = window.currentEmp || { is_owner: true };
   </script>
 
@@ -607,4 +605,3 @@ if (mostWrongEmp) mostWrongEmp.innerHTML = worstEmpHtml;
   </script>
 </body>
 </html>
-
