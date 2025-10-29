@@ -448,8 +448,8 @@
     let rows = [];
     let READ_SOURCE = 'employees_admin';
     let ALL_EMP_NAMES = [];
-    const PIN_CACHE = new Map(); // employee_id -> plaintext
-    let LAST_AUDIT_ROWS = [];    // cache for CSV export
+    const PIN_CACHE = new Map();
+    let LAST_AUDIT_ROWS = [];
 
     // Column map (auto-detected)
     let COLS = {
@@ -465,7 +465,8 @@
       status: 'status',
       phone: 'phone',
       has_pin: 'has_pin',
-      id: 'id'
+      id: 'id',
+      pin_hint: 'pin_hint_last2'
     };
 
     // ================== HELPERS ==================
@@ -489,11 +490,11 @@
     function sortByName(a,b){ return nameFromRow(a).localeCompare(nameFromRow(b)); }
 
     // Confirm modal helpers
-    const confirmModal = qs('#confirmModal');
-    const confirmTitle = qs('#confirmTitle');
-    const confirmMessage = qs('#confirmMessage');
-    const confirmCancel = qs('#confirmCancel');
-    const confirmOK = qs('#confirmOK');
+    var confirmModal = qs('#confirmModal');
+    var confirmTitle = qs('#confirmTitle');
+    var confirmMessage = qs('#confirmMessage');
+    var confirmCancel = qs('#confirmCancel');
+    var confirmOK = qs('#confirmOK');
 
     function showCustomAlert(message, title = 'Error', okText = 'OK') {
       return new Promise(resolve => {
@@ -564,19 +565,28 @@
         return { uOk, pOk };
       }
     }
+async function revealPin(empId){
+  if (!empId || !session?.admin_id) return null;
+  if (PIN_CACHE.has(String(empId))) return PIN_CACHE.get(String(empId));
 
-    async function revealPin(empId){
-      if (!empId || !session?.admin_id) return null;
-      // cache first
-      if (PIN_CACHE.has(String(empId))) return PIN_CACHE.get(String(empId));
-      const { data, error } = await supabase.rpc('admin_reveal_employee_pin', {
-        p_admin_id: session.admin_id, p_employee_id: empId
-      });
-      if (error) throw error;
-      const pin = data?.[0]?.pin || null;
-      if (pin) PIN_CACHE.set(String(empId), pin);
-      return pin;
-    }
+  try {
+    const { data, error } = await supabase.rpc('admin_reveal_employee_pin', {
+      p_admin_id: session.admin_id,
+      p_employee_id: empId
+    });
+
+    if (error) throw error;
+    const pin = data || null;  // RPC devuelve texto directamente
+    if (pin) PIN_CACHE.set(String(empId), pin);
+    return pin;
+  } catch (err) {
+    console.error('[REVEAL_PIN]', err);
+    throw err;
+  }
+}
+
+
+
 
     // Audit feed (RPC preferred, table fallback)
     async function fetchAudit({ employee_id=null, action=null, since=null, until=null, limit=50, offset=0 }={}){
@@ -660,7 +670,7 @@
       READ_SOURCE = res.error ? 'employees' : 'employees_admin';
     }
     async function detectEmployeesSchema(){
-      const { data, error } = await supabase.from('employees').select('*').limit(1);
+      const { data, error } = await supabase.from(READ_SOURCE).select('*').limit(1);
       if(error) return;
       const row  = (data && data[0]) || {};
       const keys = Object.keys(row);
@@ -676,7 +686,12 @@
         COLS.last  = has('last_name')  ? 'last_name'  : has('lname') ? 'lname' : has('last')  ? 'last'  : 'last_name';
       }
 
-      COLS.username = has('username') ? 'username' : 'username';
+      // Explicitly check for access columns in the schema
+      // We keep the default names as fallbacks since merging depends on these keys existing.
+      COLS.username = has('username') ? 'username' : COLS.username;
+      COLS.has_pin  = has('has_pin')  ? 'has_pin'  : COLS.has_pin;
+      COLS.pin_hint = has('pin_hint_last2') ? 'pin_hint_last2' : COLS.pin_hint;
+
       COLS.email    = has('email') ? 'email' : has('work_email') ? 'work_email' : 'email';
       COLS.dept     = has('department') ? 'department' : has('dept') ? 'dept' : 'department';
       COLS.position = has('position') ? 'position' : has('role') ? 'role' : has('primary_role') ? 'primary_role' : 'position';
@@ -687,7 +702,6 @@
       COLS.status   = has('status') ? 'status' : has('employment_status') ? 'employment_status' : 'status';
       COLS.phone    = has('phone') ? 'phone' : has('contact_phone') ? 'contact_phone' : 'phone';
     }
-
     // ================== CRUD ==================
     async function fetchEmployees(){
       const { data, error } = await supabase.from(READ_SOURCE).select('*');
@@ -924,32 +938,59 @@
       sel.innerHTML = list.map(p=>`<option value="${p==='Custom…'?'__custom__':p}">${p}</option>`).join('');
       toggleCustom(sel, 'positionCustom');
     }
+async function autoRevealPin(rowId, pinStatusEl, pinCurrentEl) {
+  if (!rowId || !session?.admin_id) {
+    pinCurrentEl.value = '—';
+    pinStatusEl.textContent = 'Unconfigured';
+    pinStatusEl.className = 'text-sm font-medium p-2 rounded-xl border border-jc-warn text-yellow-100 bg-yellow-900/50';
+    return;
+  }
 
-    async function autoRevealPin(rowId, pinStatusEl, pinCurrentEl) {
-      if (!rowId || !session?.admin_id) return;
-      const row = rows.find(r => String(r.id) === String(rowId));
-      if (!row || !row.has_pin) {
-        pinCurrentEl.value = '—';
-        pinStatusEl.textContent = 'Unconfigured';
-        pinStatusEl.className = 'text-sm font-medium p-2 rounded-xl border border-jc-warn text-yellow-100 bg-yellow-900/50';
-        return;
-      }
-      pinCurrentEl.value = 'FETCHING…';
-      try {
-        const pin = await revealPin(rowId);
-        if (!pin){ pinCurrentEl.value = 'ACCESS DENIED'; pinStatusEl.textContent = 'Denied'; pinStatusEl.className='text-sm font-medium p-2 rounded-xl border border-jc-danger text-white bg-red-700'; return; }
-        pinCurrentEl.value = pin;
-        pinStatusEl.textContent = 'Active (Plaintext Visible)';
-        pinStatusEl.className = 'text-sm font-medium p-2 rounded-xl border border-jc-success text-white bg-green-700';
-      } catch (err) {
-        pinCurrentEl.value = 'SYSTEM ERROR';
-        pinStatusEl.textContent = 'System Error';
-        pinStatusEl.className = 'text-sm font-medium p-2 rounded-xl border border-jc-danger text-white bg-red-700';
-        console.error('[AUTO_REVEAL_ERROR]', err);
-      }
-    }
+  const row = rows.find(r => String(r.id) === String(rowId));
+  if (!row || !row.has_pin) {
+    pinCurrentEl.value = '—';
+    pinStatusEl.textContent = 'Unconfigured';
+    pinStatusEl.className = 'text-sm font-medium p-2 rounded-xl border border-jc-warn text-yellow-100 bg-yellow-900/50';
+    return;
+  }
 
-    async function loadEmployeeAudit(empId){
+  pinCurrentEl.value = 'FETCHING…';
+  try {
+    const pin = await revealPin(rowId);
+   if (!pin) {
+  pinCurrentEl.value = 'NOT FOUND';
+  pinStatusEl.textContent = 'No PIN';
+  pinStatusEl.className = 'text-sm font-medium p-2 rounded-xl border border-jc-warn text-yellow-100 bg-yellow-900/50';
+  return;
+}
+    pinCurrentEl.value = pin;
+    pinStatusEl.textContent = 'Active (Visible)';
+    pinStatusEl.className = 'text-sm font-medium p-2 rounded-xl border border-jc-success text-white bg-green-700';
+  } catch (err) {
+    pinCurrentEl.value = 'ERROR';
+    pinStatusEl.textContent = 'System Error';
+    pinStatusEl.className = 'text-sm font-medium p-2 rounded-xl border border-jc-danger text-white bg-red-700';
+    console.error('[AUTO_REVEAL_ERROR]', err);
+  }
+}
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+      async function loadEmployeeAudit(empId){
       const listEl = qs('#empAuditList');
       listEl.innerHTML = `<li class="text-gray-400">Loading…</li>`;
       const rows = await fetchAudit({ employee_id: empId, limit: 10 });
@@ -1245,7 +1286,7 @@
           department: r.department||'',
           position: r.position||'',
           username: r.username||'',
-          pin: PIN_CACHE.get(String(r.id)) || '', // only if revealed
+          pin: PIN_CACHE.get(String(r.id)) || '',
           status: r.status||'',
           email: r.email||'',
           manager: r.report_to||''
@@ -1267,34 +1308,45 @@
     });
 
     // ================== DATA LOAD ==================
-    async function reloadData(){
-      qs('#serverStatus').textContent='pending'; qs('#serverStatus').className='ml-1 font-semibold text-yellow-700';
-      const list = await fetchEmployees();
-      
-      let meta = [];
-      try {
-        const { data: metaData, error: metaErr } = await supabase.rpc('admin_auth_meta', { p_admin_id: session?.admin_id || null });
-        if (!metaErr) meta = metaData || [];
-      } catch (_) {}
+   async function reloadData(){
+  qs('#serverStatus').textContent='pending'; 
+  qs('#serverStatus').className='ml-1 font-semibold text-yellow-700';
 
-      const metaMap = new Map(meta.map(m => [String(m.id), m]));
+  const list = await fetchEmployees();
+  
+  let meta = [];
+  try {
+    const { data: metaData, error: metaErr } = await supabase.rpc('admin_auth_meta', { 
+      p_admin_id: session?.admin_id || null 
+    });
+    if (!metaErr) meta = metaData || [];
+  } catch (_) {}
 
-      rows = list.map(r => {
-        const m = metaMap.get(String(r.id));
-        return {
-          ...r,
-          username: m?.username ?? r.username,
-          email:    m?.email    ?? r.email,
-          has_pin:  m?.has_pin  ?? r.has_pin,
-          pin_hint_last2: m?.pin_hint_last2
-        };
-      });
+  const metaMap = new Map(meta.map(m => [String(m.id), m]));
 
-      ALL_EMP_NAMES = rows.map(r=>({ id:r.id, name:r.full_name||nameFromRow(r) })).filter(x=>x.name).sort((a,b)=>a.name.localeCompare(b.name));
+ rows = list.map(r => {
+  const m = metaMap.get(String(r.id));
+  return {
+    ...r,
+    // Merge username, prioritizing auth meta if employee table field is null
+    username: r[COLS.username] || m?.username || '', 
+    email: r[COLS.email] || m?.email || '',
+    // Merge PIN status/hint, prioritizing auth meta
+    has_pin: r[COLS.has_pin] ?? m?.has_pin ?? false,
+    pin_hint_last2: r[COLS.pin_hint] || m?.pin_hint_last2
+  };
+});
+
+      ALL_EMP_NAMES = rows
+        .map(r => ({ id: r.id, name: nameFromRow(r) }))
+        .filter(x => x.name)
+        .sort((a,b) => a.name.localeCompare(b.name));
+
       renderKPIs(rows);
       renderTable();
       populateAuditSelectors();
-      qs('#serverStatus').textContent='ok'; qs('#serverStatus').className='ml-1 font-semibold text-green-700';
+      qs('#serverStatus').textContent='ok'; 
+      qs('#serverStatus').className='ml-1 font-semibold text-green-700';
     }
 
     function populateAuditSelectors(){
@@ -1314,7 +1366,7 @@
       const tbody = qs('#auditTbody');
       tbody.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-jc-muted">Loading…</td></tr>`;
       const rows = await fetchAudit({
-        employee_id: empId ? Number(empId) : null,
+        employee_id: empId, // UUIDs should be passed as strings or null
         action, since: start ? new Date(start).toISOString() : null,
         until: end ? new Date(new Date(end).getTime()+24*3600*1000-1).toISOString() : null,
         limit
