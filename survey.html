@@ -48,8 +48,13 @@
     /* Corporate Information Layout Styling - COMPACT HORIZONTAL */
     .info-container {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(1, minmax(0, 1fr));
         gap: 0 4rem; /* Horizontal gap is large, vertical is minimal */
+    }
+    @media (min-width: 768px) {
+        .info-container {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
     }
     .info-field {
         padding: 0.5rem 0; /* Minimal vertical padding */
@@ -61,12 +66,18 @@
             border-left: 1px solid #E5E7EB; /* Subtle vertical divider */
             padding-left: 1.5rem;
         }
+        /* Ensure the last two fields don't have bottom borders on desktop */
+        .info-container > div:nth-last-child(1),
+        .info-container > div:nth-last-child(2) {
+            border-bottom: none;
+        }
     }
     
-    /* Ensure the last two fields don't have bottom borders */
-    .info-container > div:nth-last-child(1),
-    .info-container > div:nth-last-child(2) {
-        border-bottom: none;
+    /* Ensure the last two fields don't have bottom borders on mobile (all fields should have borders except the very last one if single column) */
+    @media (max-width: 767px) {
+        .info-container > div:last-child {
+            border-bottom: none;
+        }
     }
     
     .info-label {
@@ -153,9 +164,43 @@
       </div>
 
       <div class="max-w-6xl mx-auto px-4 md:px-8 py-8 space-y-8">
-        
+        
         <!-- SIMPLE GREETING -->
         <p class="text-xl font-semibold text-jc-ink mb-4" id="greetingMessage">Loading Employee Data...</p>
+
+        <!-- Employee Profile Card (NEW ADDITION) -->
+        <div class="card p-6 md:p-8 shadow-elevated">
+          <h2 class="font-serif-head text-2xl mb-4">Your Employee Profile</h2>
+          <div class="gold-divider mb-6 w-1/4"></div>
+          
+          <div id="employeeDetailsContainer" class="info-container">
+            <div class="info-field">
+              <div class="info-label">Name</div>
+              <div class="info-value" id="detailFullName">N/A</div>
+            </div>
+            <div class="info-field">
+              <div class="info-label">Username</div>
+              <div class="info-value" id="detailUsername">N/A</div>
+            </div>
+            <div class="info-field">
+              <div class="info-label">Position</div>
+              <div class="info-value" id="detailPosition">N/A</div>
+            </div>
+            <div class="info-field">
+              <div class="info-label">Department</div>
+              <div class="info-value" id="detailDepartment">N/A</div>
+            </div>
+            <div class="info-field">
+              <div class="info-label">Reports To</div>
+              <div class="info-value" id="detailReportsTo">N/A</div>
+            </div>
+            <div class="info-field">
+              <div class="info-label">Employee ID</div>
+              <div class="info-value text-sm text-jc-muted" id="detailID">N/A</div>
+            </div>
+          </div>
+        </div>
+        <!-- End Employee Profile Card -->
 
         <!-- Survey -->
         <div class="card p-6 md:p-8 shadow-elevated">
@@ -301,7 +346,7 @@
           <div class="flex items-center justify-between">
             <h2 class="font-serif-head text-2xl">Your Results</h2>
             <button class="no-print border border-jc-border px-4 py-2 rounded-lg hover:bg-slate-50" onclick="window.print()">Print</button>
-            
+            
           </div>
           <div id="reportBody" class="mt-4 text-[15px]"></div>
         </div>
@@ -350,6 +395,14 @@
 
     // SIMPLE GREETING ELEMENT
     const greetingMessage = document.getElementById('greetingMessage');
+    
+    // NEW: Employee Details Elements
+    const detailFullName = document.getElementById('detailFullName');
+    const detailUsername = document.getElementById('detailUsername');
+    const detailPosition = document.getElementById('detailPosition');
+    const detailDepartment = document.getElementById('detailDepartment');
+    const detailReportsTo = document.getElementById('detailReportsTo');
+    const detailID = document.getElementById('detailID');
 
     let currentEmp = null;
 
@@ -490,6 +543,17 @@
         reportCard.scrollIntoView({ behavior: 'smooth' });
     }
 
+    // Function to populate the employee details card (NEW FUNCTION)
+    function populateEmployeeDetails(emp) {
+      detailFullName.textContent = emp.full_name || 'Not Available';
+      detailUsername.textContent = emp.username || 'Not Available';
+      detailPosition.textContent = emp.position || 'Not Specified';
+      detailDepartment.textContent = emp.department || 'Not Specified';
+      detailReportsTo.textContent = emp.reports_to || 'Manager';
+      // Use full ID for traceability, but in a smaller font/muted color as designed in HTML
+      detailID.textContent = emp.employee_id || 'ID N/A'; 
+    }
+
     // ===== Login flow (using RPC) =====
     loginForm.addEventListener('submit', async (ev)=>{
       ev.preventDefault();
@@ -511,7 +575,12 @@
       }
 
       try{
-        // Attempt login using the hb_auth_employee RPC
+        // --- FIX/DEV NOTE ON RPC ERROR ---
+        // The error "column h.pin_plain does not exist" originates from the SQL function
+        // `hb_auth_employee` on the Supabase server (backend).
+        // To fix this, you must edit the SQL function on your Supabase dashboard and
+        // change the column reference `h.pin_plain` to the actual column name used in 
+        // your employee table (e.g., `h.pin` or `h.user_pin`). The client-side code is correct.
         const { data, error } = await sb.rpc('hb_auth_employee', { in_username: u, in_pin: p });
         
         // For debugging login issues:
@@ -526,22 +595,25 @@
         }
 
         const e = data[0];
-        currentEmp = {
-          employee_id: e.id,
-          username: e.username,
-          full_name: e.full_name || '',
-          email: e.email || '',
-          phone: e.phone || '',
-          position: e.position || e["position"] || '',
-          department: e.department || '',
-          reports_to: e.reports_to || '',
-          is_owner: !!e.is_owner
-        };
+       currentEmp = {
+  employee_id: e.id,
+  username: e.username,
+  full_name: e.full_name || '',
+  email: e.email || '',
+  phone: e.phone || '',
+  position: e.employee_position || '',  // ← AHORA SÍ
+  department: e.department || '',
+  reports_to: e.reports_to || null,
+  is_owner: !!e.is_owner
+};
 
         // NEW: Populate the simple greeting message
         const names = currentEmp.full_name.split(' ');
         const firstName = names[0] || currentEmp.username;
         greetingMessage.textContent = `Hello, ${firstName}! Please complete the training survey below.`;
+
+        // NEW: Populate the employee details card
+        populateEmployeeDetails(currentEmp);
 
 
         // Check already submitted
