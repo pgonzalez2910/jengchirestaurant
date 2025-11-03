@@ -472,34 +472,31 @@
     }
 
     // --- Employee search (PUBLIC alias view) ---
-    empSearch.addEventListener("input", ()=>{
-      clearTimeout(timer);
-      timer=setTimeout(async ()=>{
-        const q=empSearch.value.trim();
-        empList.innerHTML=""; empList.classList.add("hidden");
-        if(!q){ return; }
-
-        const { data, error } = await sb
-          .from('v_employees_masked')
-          .select('id, full_name, username, position_title, hire_date, dob, phone_primary, email, address_line1, address_line2, ssn_masked')
-          .or(`full_name.ilike.%${q}%,username.ilike.%${q}%`)
-          .order('full_name')
-          .limit(25);
-
-        if (error) { console.error('search error:', error.message); return; }
-        if (!data || data.length===0) return;
-
-        empList.classList.remove("hidden");
-        data.forEach(e=>{
-          const row=document.createElement("div");
-          row.className="px-3 py-2 rounded-md hover:bg-slate-100 cursor-pointer text-sm";
-          row.textContent=`${e.full_name} — ${e.position_title ?? ""}`;
-          row.onclick=()=>selectEmployee(e);
-          empList.appendChild(row);
-        });
-      },220);
+   // --- Employee search (CORREGIDO) ---
+empSearch.addEventListener("input", ()=>{
+  clearTimeout(timer);
+  timer=setTimeout(async ()=>{
+    const q=empSearch.value.trim();
+    empList.innerHTML=""; empList.classList.add("hidden");
+    if(!q){ return; }
+    const { data, error } = await sb
+      .from('v_employees_masked')
+      .select('id, full_name, username, position_title, hire_date, dob, phone_primary, email, address_line1, address_line2, ssn_masked, employee_id') // ← AGREGADO
+      .or(`full_name.ilike.%${q}%,username.ilike.%${q}%`)
+      .order('full_name')
+      .limit(25);
+    if (error) { console.error('search error:', error.message); return; }
+    if (!data || data.length===0) return;
+    empList.classList.remove("hidden");
+    data.forEach(e=>{
+      const row=document.createElement("div");
+      row.className="px-3 py-2 rounded-md hover:bg-slate-100 cursor-pointer text-sm";
+      row.textContent=`${e.full_name} — ${e.position_title ?? ""}`;
+      row.onclick=()=>selectEmployee(e);
+      empList.appendChild(row);
     });
-
+  },220);
+});
     function hydrateEmployeeUiFromHR(e){
       setVal("job_title",  e.position_title ?? "");
       setVal("hire_date",  e.hire_date ?? "");
@@ -511,19 +508,17 @@
       setVal("ssn",        e.ssn_masked ?? "");
     }
 
-    async function selectEmployee(e){
-      EMP = e;
-      empList.classList.add("hidden");
-      empSearch.value = e.full_name;
-      empInfo.textContent = `Title: ${e.position_title ?? "—"} • User: ${e.username ?? "—"} • Hired: ${e.hire_date ?? "—"}`;
-
-      clearForNewEmployee();
-      hydrateEmployeeUiFromHR(e);
-
-      await preloadEnrollment();
-      updatePrices();
-      [btnSave,btnSave2,btnPDF,btnPDF2].forEach(b=> b.disabled = false);
-    }
+ async function selectEmployee(e){
+  EMP = e;
+  empList.classList.add("hidden");
+  empSearch.value = e.full_name;
+  empInfo.textContent = `Title: ${e.position_title ?? "—"} • User: ${e.username ?? "—"} • Hired: ${e.hire_date ?? "—"}`;
+  clearForNewEmployee();
+  hydrateEmployeeUiFromHR(e);
+  await preloadEnrollment();
+  updatePrices();
+  [btnSave,btnSave2,btnPDF,btnPDF2].forEach(b=> b.disabled = false);
+}
 
     document.getElementById("addKid").addEventListener("click", ()=> addKidRow());
     function addKidRow(row=null){
@@ -564,14 +559,13 @@
       }
       div.querySelector(".bene_remove").onclick=()=>div.remove();
     }
-
-    async function preloadEnrollment(){
-      if(!EMP) return;
-      const { data } = await sb
-        .from("benefit_enrollments")
-        .select("*")
-        .eq("employee_id", Number(EMP.id))
-        .maybeSingle();
+async function preloadEnrollment(){
+  if(!EMP) return;
+  const { data } = await sb
+    .from("benefit_enrollments")
+    .select("*")
+    .eq("employee_id", EMP.employee_id || Number(EMP.id))  // ← Usa el correcto
+    .maybeSingle();
 
       if(!data) return;
 
@@ -693,7 +687,7 @@
     : [];
 
   const payload = {
-    employee_id: Number(EMP.id),           // ← ¡CORRECTO! Usa el ID del empleado seleccionado
+   employee_id: e.employee_id || Number(EMP.id),         // ← ¡CORRECTO! Usa el ID del empleado seleccionado
     employee_id_uuid: null,                // ← Limpia UUID si no lo usas
     employee_id_legacy: null,              // ← Limpia legacy
     tier_election: tierSel.value || null,
@@ -725,7 +719,11 @@
     .eq("employee_id", payload.employee_id);
 
   // INSERTA nuevo registro
-  const { error } = await sb.from("benefit_enrollments").insert(payload);
+ const { data: enr, error: enrErr } = await sb
+  .from("benefit_enrollments")
+  .select("*")
+  .eq("employee_id", employeeId)  // ← Usa employee_id
+  .maybeSingle();
 
   msg.textContent = error ? `Error: ${error.message}` : "Saved ✔";
   setTimeout(() => msg.textContent = "", 2000);
@@ -794,4 +792,5 @@ const res = await fetch(url, {
   </script>
 </body>
 </html>
+
 
