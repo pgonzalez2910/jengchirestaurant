@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en" class="h-full bg-slate-50">
+<head>
+  <meta charset="utf-8" />
+  <title>Jeng Chi – Sign Enrollment</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
+  <style>
+    body{
+      background:
+        radial-gradient(1200px 800px at 80% -10%, rgba(185,150,90,.10), transparent 60%),
+        radial-gradient(1000px 700px at -20% 20%, rgba(14,165,233,.08), transparent 55%),
+        #F8FAFC;
+    }
+  </style>
+</head>
+<body class="h-full">
+<header class="bg-white/90 backdrop-blur border-b border-slate-200">
+  <div class="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
+    <div>
+      <div class="text-[11px] font-semibold tracking-widest text-amber-600 uppercase">Jeng Chi • Enrollment</div>
+      <h1 class="font-serif text-2xl text-slate-900 -mt-0.5">Employee Signature Portal</h1>
+    </div>
+    <span class="text-sm text-slate-500">Secure</span>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto px-6 py-6 space-y-6">
+  <!-- Login -->
+  <section id="loginBox" class="bg-white border rounded-2xl p-5 shadow-sm">
+    <div class="grid sm:grid-cols-3 gap-3">
+      <div>
+        <label class="block text-xs font-semibold text-slate-600 mb-1">Username</label>
+        <input id="username" class="w-full border rounded-lg p-2" placeholder="Username" autocomplete="username">
+      </div>
+      <div>
+        <label class="block text-xs font-semibold text-slate-600 mb-1">PIN</label>
+        <input id="pin" class="w-full border rounded-lg p-2" placeholder="PIN" type="password" inputmode="numeric" autocomplete="current-password">
+      </div>
+      <div class="flex items-end">
+        <button id="btnLogin" class="rounded-lg bg-slate-900 text-white px-4 py-2 w-full">Sign in</button>
+      </div>
+    </div>
+    <p id="loginMsg" class="text-sm text-slate-600 mt-2"></p>
+  </section>
+
+  <!-- App -->
+  <section id="app" class="hidden space-y-6">
+    <div class="bg-white border rounded-2xl p-5">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="text-sm text-slate-600">Welcome, <b id="empName">—</b></div>
+          <div class="text-xs text-slate-500">Review your enrollment PDF and sign below.</div>
+        </div>
+        <button id="btnStart" class="rounded-lg bg-emerald-600 text-white px-4 py-2">Create Sign Request</button>
+      </div>
+      <iframe id="pdf" class="w-full h-[70vh] mt-4 border rounded" title="PDF Preview"></iframe>
+    </div>
+
+    <div class="bg-white border rounded-2xl p-5">
+      <div class="mb-3 text-sm text-slate-700">Type your full legal name, then draw your signature.</div>
+      <input id="sigName" class="border rounded-lg p-2 w-full mb-3" placeholder="Full legal name" />
+      <div class="border rounded-lg bg-slate-100">
+        <canvas id="sigPad" class="bg-white block w-full" style="height:220px"></canvas>
+      </div>
+      <div class="flex gap-2 mt-2">
+        <button id="btnClear"  class="rounded border px-3 py-1">Clear</button>
+        <button id="btnSubmit" class="rounded bg-slate-900 text-white px-4 py-1">Submit Signature</button>
+      </div>
+      <p id="msg" class="text-sm text-slate-700 mt-2"></p>
+    </div>
+
+    <details>
+      <summary class="cursor-pointer text-sm text-slate-500">Show last response</summary>
+      <pre id="dbg" class="mt-2 bg-black text-green-300 p-3 rounded text-xs overflow-auto h-40"></pre>
+    </details>
+  </section>
+</main>
+
+<script>
+const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
+const FN_URL = `${SUPABASE_URL}/functions/v1/employee-benefits`; // this edge function file
+
+const { createClient } = window.supabase;
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// UI refs
+const loginBox = document.getElementById("loginBox");
+const username = document.getElementById("username");
+const pin      = document.getElementById("pin");
+const btnLogin = document.getElementById("btnLogin");
+const loginMsg = document.getElementById("loginMsg");
+
+const app      = document.getElementById("app");
+const empName  = document.getElementById("empName");
+const pdf      = document.getElementById("pdf");
+const btnStart = document.getElementById("btnStart");
+
+const sigName  = document.getElementById("sigName");
+const sigPadEl = document.getElementById("sigPad");
+const btnClear = document.getElementById("btnClear");
+const btnSubmit= document.getElementById("btnSubmit");
+const msg      = document.getElementById("msg");
+const dbg      = document.getElementById("dbg");
+
+let EMP = null;   // { employee_id, full_name, email, username }
+let TOKEN = null; // one-time token
+let pad   = null;
+
+function log(o){ try{ dbg.textContent = JSON.stringify(o,null,2);}catch{ dbg.textContent = String(o);} }
+
+// fetch PDF with auth headers, then preview via blob URL (fixes 401)
+async function loadPdfFor(employeeId){
+  const r = await fetch(`${FN_URL}?employee_id=${encodeURIComponent(employeeId)}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      apikey: SUPABASE_ANON_KEY,
+      Accept: "application/pdf"
+    }
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(()=> "");
+    throw new Error(`PDF error ${r.status}: ${t || "unknown"}`);
+  }
+  const blob = await r.blob();
+  const url  = URL.createObjectURL(blob);
+  pdf.src = url;
+}
+
+function resizeCanvas() {
+  const ratio = Math.max(window.devicePixelRatio || 1, 1);
+  sigPadEl.width  = sigPadEl.offsetWidth * ratio;
+  sigPadEl.height = 220 * ratio;
+  sigPadEl.getContext("2d").scale(ratio, ratio);
+  if (pad) pad.clear();
+}
+window.addEventListener("resize", () => { if (!app.classList.contains("hidden")) resizeCanvas(); });
+
+btnLogin.addEventListener("click", async () => {
+  loginMsg.textContent = "Checking…";
+  try {
+    // your RPC must return: [{ employee_id, full_name, username, email }]
+    const { data, error } = await sb.rpc('hb_login', { p_username: username.value.trim(), p_pin: pin.value.trim() });
+    if (error) throw error;
+    if (!data || !data[0]) { loginMsg.textContent = "Invalid username or PIN."; return; }
+
+    EMP = data[0];
+    loginBox.classList.add("hidden");
+    app.classList.remove("hidden");
+    empName.textContent = EMP.full_name || EMP.username;
+
+    // secure preview
+    await loadPdfFor(EMP.employee_id);
+
+    setTimeout(() => {
+      if (!pad) pad = new SignaturePad(sigPadEl, { minWidth: 0.7, maxWidth: 1.8 });
+      resizeCanvas();
+    }, 60);
+  } catch (e) {
+    loginMsg.textContent = e.message || String(e);
+  }
+});
+
+// Create sign request
+btnStart.addEventListener("click", async () => {
+  if (!EMP) return;
+  msg.textContent = "Preparing request…";
+  try {
+    const r = await fetch(`${FN_URL}/request`, {
+      method: "POST",
+      headers: {
+        "Content-Type":"application/json",
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        apikey: SUPABASE_ANON_KEY
+      },
+      body: JSON.stringify({
+        employee_id: EMP.employee_id,
+        signer_email: EMP.email || null,
+        signer_name:  EMP.full_name || EMP.username,
+        doc_slug: "employee-enrollment"
+      })
+    });
+    const j = await r.json();
+    log(j);
+    if (!r.ok) throw new Error(j.error || "Could not create request");
+    TOKEN = j.token;
+    msg.textContent = "Ready to sign.";
+  } catch (e) {
+    msg.textContent = e.message || String(e);
+  }
+});
+
+btnClear.addEventListener("click", () => pad && pad.clear());
+
+// Finalize signature
+btnSubmit.addEventListener("click", async () => {
+  if (!EMP)   { msg.textContent = "Sign in first."; return; }
+  if (!TOKEN) { msg.textContent = "Click “Create Sign Request” first."; return; }
+  if (!sigName.value.trim()) { msg.textContent = "Type your full legal name."; return; }
+  if (!pad || pad.isEmpty()) { msg.textContent = "Please draw your signature."; return; }
+
+  msg.textContent = "Submitting…";
+  try {
+    const dataUrl = pad.toDataURL("image/png");
+    const r = await fetch(`${FN_URL}/finalize`, {
+      method: "POST",
+      headers: {
+        "Content-Type":"application/json",
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        apikey: SUPABASE_ANON_KEY
+      },
+      body: JSON.stringify({ token: TOKEN, signer_name: sigName.value.trim(), signature_data_url: dataUrl })
+    });
+    const j = await r.json();
+    log(j);
+    if (!r.ok) throw new Error(j.error || "Could not finalize");
+    msg.textContent = "Signed ✔ A copy was emailed to you. Thank you!";
+    if (j.url) window.open(j.url, "_blank", "noopener");
+  } catch (e) {
+    msg.textContent = e.message || String(e);
+  }
+});
+</script>
+</body>
+</html>
