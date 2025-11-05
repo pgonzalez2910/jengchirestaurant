@@ -54,7 +54,6 @@
           <div class="text-sm text-slate-600">Welcome, <b id="empName">—</b></div>
           <div class="text-xs text-slate-500">Review your enrollment PDF and sign below.</div>
         </div>
-        <button id="btnStart" class="rounded-lg bg-emerald-600 text-white px-4 py-2">Create Sign Request</button>
       </div>
       <iframe id="pdf" class="w-full h-[70vh] mt-4 border rounded" title="PDF Preview"></iframe>
     </div>
@@ -66,162 +65,127 @@
         <canvas id="sigPad" class="bg-white block w-full" style="height:220px"></canvas>
       </div>
       <div class="flex gap-2 mt-2">
-        <button id="btnClear"  class="rounded border px-3 py-1">Clear</button>
+        <button id="btnClear" class="rounded border px-3 py-1">Clear</button>
         <button id="btnSubmit" class="rounded bg-slate-900 text-white px-4 py-1">Submit Signature</button>
       </div>
       <p id="msg" class="text-sm text-slate-700 mt-2"></p>
     </div>
-
-    <details>
-      <summary class="cursor-pointer text-sm text-slate-500">Show last response</summary>
-      <pre id="dbg" class="mt-2 bg-black text-green-300 p-3 rounded text-xs overflow-auto h-40"></pre>
-    </details>
   </section>
 </main>
 
 <script>
 const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
-const FN_URL = `${SUPABASE_URL}/functions/v1/employee-benefits`; // this edge function file
+const FN_URL = `${SUPABASE_URL}/functions/v1/employee-benefits`;
 
 const { createClient } = window.supabase;
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// UI refs
+let EMP = null;
+let pad = null;
+
 const loginBox = document.getElementById("loginBox");
-const username = document.getElementById("username");
-const pin      = document.getElementById("pin");
-const btnLogin = document.getElementById("btnLogin");
-const loginMsg = document.getElementById("loginMsg");
-
-const app      = document.getElementById("app");
-const empName  = document.getElementById("empName");
-const pdf      = document.getElementById("pdf");
-const btnStart = document.getElementById("btnStart");
-
-const sigName  = document.getElementById("sigName");
+const app = document.getElementById("app");
+const empName = document.getElementById("empName");
+const pdf = document.getElementById("pdf");
+const sigName = document.getElementById("sigName");
 const sigPadEl = document.getElementById("sigPad");
 const btnClear = document.getElementById("btnClear");
-const btnSubmit= document.getElementById("btnSubmit");
-const msg      = document.getElementById("msg");
-const dbg      = document.getElementById("dbg");
+const btnSubmit = document.getElementById("btnSubmit");
+const msg = document.getElementById("msg");
+const loginMsg = document.getElementById("loginMsg");
+const username = document.getElementById("username");
+const pin = document.getElementById("pin");
+const btnLogin = document.getElementById("btnLogin");
 
-let EMP = null;   // { employee_id, full_name, email, username }
-let TOKEN = null; // one-time token
-let pad   = null;
-
-function log(o){ try{ dbg.textContent = JSON.stringify(o,null,2);}catch{ dbg.textContent = String(o);} }
-
-// fetch PDF with auth headers, then preview via blob URL (fixes 401)
-async function loadPdfFor(employeeId){
-  const r = await fetch(`${FN_URL}?employee_id=${encodeURIComponent(employeeId)}`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      apikey: SUPABASE_ANON_KEY,
-      Accept: "application/pdf"
-    }
-  });
-  if (!r.ok) {
-    const t = await r.text().catch(()=> "");
-    throw new Error(`PDF error ${r.status}: ${t || "unknown"}`);
+// Load PDF from benefit_enrollments.pdf_url
+async function loadPdfForEmployee(emp) {
+  // If login RPC already handed us a URL, use it
+  if (emp.pdf_url) {
+    pdf.src = emp.pdf_url;
+    return;
   }
-  const blob = await r.blob();
-  const url  = URL.createObjectURL(blob);
-  pdf.src = url;
+  // Otherwise, generate (this endpoint returns the PDF inline and also saves pdf_url in DB)
+  if (!emp.employee_id) throw new Error("Missing employee_id for PDF generation");
+  // Load inline directly in the iframe:
+  pdf.src = `${FN_URL}?employee_id=${encodeURIComponent(emp.employee_id)}`;
 }
+
+// Login
+btnLogin.addEventListener("click", async () => {
+  const u = username.value.trim();
+  const p = pin.value.trim();
+  if (!u || !p) {
+    loginMsg.textContent = "Enter username and PIN.";
+    return;
+  }
+
+  loginMsg.textContent = "Logging in…";
+  btnLogin.disabled = true;
+
+  try {
+    const { data, error } = await sb.rpc('hb_login', { p_username: u, p_pin: p });
+    if (error || !data?.[0]) throw new Error("Invalid credentials");
+
+    EMP = data[0]; // { employee_id, username, full_name, email, pdf_url }
+    loginBox.classList.add("hidden");
+    app.classList.remove("hidden");
+    empName.textContent = EMP.full_name || EMP.username;
+
+    // Init signature pad before resize
+    pad = new SignaturePad(sigPadEl, { minWidth: 0.7, maxWidth: 1.8 });
+    resizeCanvas();
+
+    // Load (or generate) their PDF
+    await loadPdfForEmployee(EMP);
+
+  } catch (e) {
+    loginMsg.textContent = e.message;
+    btnLogin.disabled = false;
+  }
+});
 
 function resizeCanvas() {
   const ratio = Math.max(window.devicePixelRatio || 1, 1);
-  sigPadEl.width  = sigPadEl.offsetWidth * ratio;
+  sigPadEl.width = sigPadEl.offsetWidth * ratio;
   sigPadEl.height = 220 * ratio;
   sigPadEl.getContext("2d").scale(ratio, ratio);
   if (pad) pad.clear();
 }
 window.addEventListener("resize", () => { if (!app.classList.contains("hidden")) resizeCanvas(); });
 
-btnLogin.addEventListener("click", async () => {
-  loginMsg.textContent = "Checking…";
-  try {
-    // your RPC must return: [{ employee_id, full_name, username, email }]
-    const { data, error } = await sb.rpc('hb_login', { p_username: username.value.trim(), p_pin: pin.value.trim() });
-    if (error) throw error;
-    if (!data || !data[0]) { loginMsg.textContent = "Invalid username or PIN."; return; }
+btnClear.addEventListener("click", () => pad.clear());
 
-    EMP = data[0];
-    loginBox.classList.add("hidden");
-    app.classList.remove("hidden");
-    empName.textContent = EMP.full_name || EMP.username;
-
-    // secure preview
-    await loadPdfFor(EMP.employee_id);
-
-    setTimeout(() => {
-      if (!pad) pad = new SignaturePad(sigPadEl, { minWidth: 0.7, maxWidth: 1.8 });
-      resizeCanvas();
-    }, 60);
-  } catch (e) {
-    loginMsg.textContent = e.message || String(e);
-  }
-});
-
-// Create sign request
-btnStart.addEventListener("click", async () => {
-  if (!EMP) return;
-  msg.textContent = "Preparing request…";
-  try {
-    const r = await fetch(`${FN_URL}/request`, {
-      method: "POST",
-      headers: {
-        "Content-Type":"application/json",
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        apikey: SUPABASE_ANON_KEY
-      },
-      body: JSON.stringify({
-        employee_id: EMP.employee_id,
-        signer_email: EMP.email || null,
-        signer_name:  EMP.full_name || EMP.username,
-        doc_slug: "employee-enrollment"
-      })
-    });
-    const j = await r.json();
-    log(j);
-    if (!r.ok) throw new Error(j.error || "Could not create request");
-    TOKEN = j.token;
-    msg.textContent = "Ready to sign.";
-  } catch (e) {
-    msg.textContent = e.message || String(e);
-  }
-});
-
-btnClear.addEventListener("click", () => pad && pad.clear());
-
-// Finalize signature
 btnSubmit.addEventListener("click", async () => {
-  if (!EMP)   { msg.textContent = "Sign in first."; return; }
-  if (!TOKEN) { msg.textContent = "Click “Create Sign Request” first."; return; }
-  if (!sigName.value.trim()) { msg.textContent = "Type your full legal name."; return; }
-  if (!pad || pad.isEmpty()) { msg.textContent = "Please draw your signature."; return; }
+  if (!EMP || !pad || pad.isEmpty() || !sigName.value.trim()) {
+    msg.textContent = "Complete name and signature.";
+    return;
+  }
 
-  msg.textContent = "Submitting…";
+  msg.textContent = "Creating signature request…";
   try {
-    const dataUrl = pad.toDataURL("image/png");
-    const r = await fetch(`${FN_URL}/finalize`, {
+    const reqRes = await fetch(`${FN_URL}/request`, {
       method: "POST",
-      headers: {
-        "Content-Type":"application/json",
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        apikey: SUPABASE_ANON_KEY
-      },
-      body: JSON.stringify({ token: TOKEN, signer_name: sigName.value.trim(), signature_data_url: dataUrl })
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY },
+      body: JSON.stringify({ employee_id: EMP.employee_id, signer_name: sigName.value.trim(), signer_email: EMP.email })
     });
-    const j = await r.json();
-    log(j);
-    if (!r.ok) throw new Error(j.error || "Could not finalize");
-    msg.textContent = "Signed ✔ A copy was emailed to you. Thank you!";
-    if (j.url) window.open(j.url, "_blank", "noopener");
+    const reqJson = await reqRes.json();
+    if (!reqRes.ok) throw new Error(reqJson.error);
+
+    msg.textContent = "Submitting signature…";
+    const dataUrl = pad.toDataURL("image/png");
+    const finRes = await fetch(`${FN_URL}/finalize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}`, apikey: SUPABASE_ANON_KEY },
+      body: JSON.stringify({ token: reqJson.token, signer_name: sigName.value.trim(), signature_data_url: dataUrl })
+    });
+    const finJson = await finRes.json();
+    if (!finRes.ok) throw new Error(finJson.error);
+
+    msg.textContent = "Signed! Email sent to you and HR.";
+    if (finJson.url) window.open(finJson.url, "_blank");
   } catch (e) {
-    msg.textContent = e.message || String(e);
+    msg.textContent = e.message;
   }
 });
 </script>
