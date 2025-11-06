@@ -330,9 +330,7 @@
             </button>
             <div id="benePctMsg" class="mt-2 text-xs text-slate-600"></div>
           </div>
-<!-- Buttons -->
-
-
+          <!-- Buttons -->
           <div class="mt-6 flex gap-3">
             <button id="btnSave" type="button" class="inline-flex items-center rounded-lg bg-tech text-white px-5 py-2.5 font-semibold hover:brightness-110">Save & Update PDF</button>
             <button id="btnPDF" type="button" class="inline-flex items-center rounded-lg bg-ink text-white px-5 py-2.5 font-semibold hover:bg-slate-800">PDF</button>
@@ -340,8 +338,6 @@
           </div>
         </div>
       </section>
-
-
       <!-- 6. Plan Elections (Summary) — after section 5 -->
       <section id="sec-elections-summary" class="soft-card">
         <div class="section-cap"></div>
@@ -499,10 +495,10 @@
     const addContingent = document.getElementById("addContingent");
     const benePctMsg = document.getElementById("benePctMsg");
     const val = id => document.getElementById(id)?.value.trim();
-const setVal = (id, v) => {
-    const el = document.getElementById(id);
-    if (el) el.value = (v ?? "");
-};
+    const setVal = (id, v) => {
+        const el = document.getElementById(id);
+        if (el) el.value = (v ?? "");
+    };
     const getCB = id => document.getElementById(id)?.checked || false;
     const setCB = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
     // health
@@ -644,9 +640,13 @@ async function selectEmployee(e) {
     empSearch.value = e.full_name;
     empInfo.textContent = `Title: ${e.position_title ?? "—"} • User: ${e.username ?? "—"} • Hired: ${e.hire_date ?? "—"}`;
     clearForNewEmployee(); // Clear any previous data from the form
-    await preloadEnrollment(); // Ensure the data is preloaded correctly
+    
+    // FIX 1: Populate HR data first so enrollment data can overwrite it.
+    hydrateEmployeeUiFromHR(e); 
+    
+    await preloadEnrollment(); // Now loads saved data OVER the HR data
     updatePrices(); // Update any dependent calculations
-    hydrateEmployeeUiFromHR(e); // Populate the form with the selected employee's data
+    
     [btnSave, btnSave2, btnPDF, btnPDF2].forEach(b => b.disabled = false);
 }
     document.getElementById("addKid").addEventListener("click", ()=> addKidRow());
@@ -746,6 +746,7 @@ async function selectEmployee(e) {
       setCB("oe_change_med",oe.change_med); setCB("oe_change_den",oe.change_den);
       setCB("oe_change_vis",oe.change_vis); setCB("oe_update_vol",oe.update_vol);
       setCB("oe_add_dep",oe.add_dep); setCB("oe_demo",oe.demo_change);
+      // These overwrite the HR data IF enrollment data exists
       if (data.ssn) setVal("ssn", data.ssn);
       if (data.dob) setVal("dob", data.dob);
       if (data.gender) setVal("gender", data.gender);
@@ -823,271 +824,118 @@ async function selectEmployee(e) {
       })).filter(b => b.first || b.last);
       const benePrimary = collectBene(benePrimaryWrap, "primary");
       const beneContingent = collectBene(beneContingentWrap, "contingent");
-      const beneficiaries = [...benePrimary, ...beneContingent];
-     
+      const beneficiaries = [...benePrimary, ...beneContingent] || []; 
+      
+      // The payload structure begins here, replacing the erroneous multiple 'return' blocks
       return {
-        employee_id: EMP.id, // Use EMP.id here
-        tier_election: tierSel.value || null, medical_plan: medPlan.value || null, dental_plan: denPlan.value || null, vision_plan: visPlan.value || null,
-        qualifying_events, oe_changes, ssn: val("ssn") || null, dob: toDateOrNull(val("dob")),
-        gender: val("gender") || null, marital_status: val("marital_status") || null, address, phone: val("phone") || null, email: val("email") || null,
-        job_title: val("job_title") || null, hire_date: toDateOrNull(val("hire_date")), annual_salary: toNumberOrNull(val("annual_salary")),
-        spouse, dependents, hsa_amount: toNumber0(val("hsa_amount")), vol_life_amount: toNumber0(val("vol_life_amount")),
-        beneficiaries,
+        employee_id: EMP.id,
+        tier_election: tierSel.value || null,
+        medical_plan: medPlan.value || null,
+        dental_plan: denPlan.value || null,
+        vision_plan: visPlan.value || null,
+        qualifying_events, oe_changes,
+        ssn: val("ssn") || null,
+        dob: toDateOrNull(val("dob")),
+        gender: val("gender") || null,
+        marital_status: val("marital_status") || null,
+        address, phone: val("phone") || null,
+        email: val("email") || null,
+        job_title: val("job_title") || null,
+        hire_date: toDateOrNull(val("hire_date")),
+        annual_salary: toNumberOrNull(val("annual_salary")),
+        spouse, dependents,
+        hsa_amount: toNumber0(val("hsa_amount")),
+        vol_life_amount: toNumber0(val("vol_life_amount")),
+        beneficiaries, // now always an array
       };
     }
-    // ====== DATABASE SAVE ======
-  // ====== DATABASE SAVE (UPSERT – NO DUPLICATES) ======
-async function performSave(payload) {
-  const benePrimary = payload.beneficiaries.filter(b => b.role === 'primary');
-  const beneContingent = payload.beneficiaries.filter(b => b.role === 'contingent');
-  const pHas = benePrimary.some(b => b.pct != null);
-  const cHas = beneContingent.some(b => b.pct != null);
-  const pTot = benePrimary.reduce((s,b)=> s + (b.pct || 0), 0);
-  const cTot = beneContingent.reduce((s,b)=> s + (b.pct || 0), 0);
-
-  if (pHas && pTot !== 100) {
-    msg.textContent = "Primary % must total 100%.";
-    return { success: false };
-  }
-  if (cHas && cTot !== 100) {
-    msg.textContent = "Contingent % must total 100%.";
-    return { success: false };
-  }
-
-  // UPSERT: UPDATE IF EXISTS, INSERT IF NOT
-  const { error } = await sb
-    .from("benefit_enrollments")
-    .upsert(payload, { onConflict: 'employee_id' });
-
-  if (error) {
-    console.error("Save error:", error);
-    msg.textContent = "Save failed.";
-    return { success: false };
-  }
-
-  return { success: true };
-}
-    // ====== PDF FLOW FUNCTIONS (Mock Client-Side) ======
-    // 1. Generate PDF (MOCK)
-    async function generatePDF(employeeData) {
-      const employeeName = EMP.full_name || "N/A";
-      const medicalPlan = mapPlanLabel("MEDICAL", employeeData.medical_plan);
-     
-      const text = `
-        Mock PDF Document for: ${employeeName}
-        Employee ID: ${employeeData.employee_id}
-        Marital Status: ${employeeData.marital_status}
-       
-        Plan Elections:
-        - Medical: ${medicalPlan}
-        - Dental: ${mapPlanLabel("DENTAL", employeeData.dental_plan)}
-        - Vision: ${mapPlanLabel("VISION", employeeData.vision_plan)}
-        (PDF generation logic would go here)
-      `;
-      const encoder = new TextEncoder();
-      const buffer = encoder.encode(text);
-      return buffer.buffer; // Return ArrayBuffer
-    }
-    // 2. Upload PDF to Supabase Storage
-    async function uploadPDF(pdfBytes, employeeId) {
-      // NOTE: Using 'employee-pdfs' as the assumed bucket name.
-      const BUCKET_NAME = 'employee-pdfs';
-      const file = new File([pdfBytes], `employee_${employeeId}_benefits.pdf`, { type: 'application/pdf' });
-      try {
-        const { data, error } = await sb.storage
-          .from(BUCKET_NAME)
-          .upload(`enrollment_pdfs/employee_${employeeId}_benefits.pdf`, file, {
-              cacheControl: '3600',
-              upsert: true
-          });
-        if (error) {
-          throw new Error(`Supabase Storage Upload Error: ${error.message}`);
-        }
-        // Return the public URL of the uploaded PDF
-        const { data: publicURL } = sb.storage
-            .from(BUCKET_NAME)
-            .getPublicUrl(data.path);
-        return publicURL.publicUrl;
-      } catch (error) {
-        console.error("Error uploading PDF:", error.message);
-        throw new Error(`Failed to upload PDF: ${error.message}`);
+    // ====== DATABASE SAVE (UPSERT – NO DUPLICATES) ======
+    async function performSave(payload) {
+      const benePrimary = payload.beneficiaries.filter(b => b.role === 'primary');
+      const beneContingent = payload.beneficiaries.filter(b => b.role === 'contingent');
+      const pHas = benePrimary.some(b => b.pct != null);
+      const cHas = beneContingent.some(b => b.pct != null);
+      const pTot = benePrimary.reduce((s,b)=> s + (b.pct || 0), 0);
+      const cTot = beneContingent.reduce((s,b)=> s + (b.pct || 0), 0);
+      if (pHas && pTot !== 100) {
+        msg.textContent = "Primary % must total 100%.";
+        return { success: false };
       }
-    }
-    // 3. Save the PDF URL in the Employee's Record
-    async function savePDFUrlToEmployee(employeeId, pdfUrl) {
-      try {
-        const { error } = await sb
-          .from('benefit_enrollments')
-          .update({ pdf_url: pdfUrl })
-          .eq('employee_id', employeeId);
-        if (error) {
-          throw new Error(`Supabase DB Update Error: ${error.message}`);
-        }
-        console.log(`PDF URL saved for employee ${employeeId}: ${pdfUrl}`);
-      } catch (error) {
-        console.error("Error saving PDF URL to employee record:", error.message);
-        throw new Error(`Failed to save PDF URL: ${error.message}`);
+      if (cHas && cTot !== 100) {
+        msg.textContent = "Contingent % must total 100%.";
+        return { success: false };
       }
+      // UPSERT: UPDATE IF EXISTS, INSERT IF NOT
+      const { error } = await sb
+        .from("benefit_enrollments")
+        .upsert(payload, { onConflict: 'employee_id' });
+      if (error) {
+        console.error("Save error:", error);
+        msg.textContent = "Save failed.";
+        return { success: false };
+      }
+      return { success: true };
     }
-    // ====== PDF ORCHESTRATOR (Updated to client-side mock flow) ======
-   async function handlePDF() {
-  if (!EMP) {
-    msg.textContent = "Pick an employee first.";
-    return;
+    
+    // ====== OPEN LATEST PDF IN sign.html ======
+  async function handlePDF() {
+  if (!EMP) { 
+    msg.textContent = "Select an employee first."; 
+    return; 
   }
-  // 1. Save first
-  msg.textContent = "Saving enrollment...";
-  const payload = getFullEnrollmentPayload();
-  const saveResult = await performSave(payload);
-  if (!saveResult.success) {
-    msg.textContent = "Save failed.";
-    return;
-  }
-  // 2. Call Deno Edge Function
-  msg.textContent = "Generating PDF on server...";
   try {
-    const res = await fetch(`${FN_URL}?employee_id=${EMP.id}`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        apikey: SUPABASE_ANON_KEY,
-        Accept: "application/pdf"
-      }
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Server error: ${err}`);
+    const { data, error } = await sb
+      .from("benefit_enrollments")
+      .select("pdf_url")
+      .eq("employee_id", EMP.id)
+      .single();
+
+    if (error || !data?.pdf_url) {
+      msg.textContent = "No PDF yet – save first.";
+      return;
     }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank");
-    msg.textContent = "PDF opened! Success";
+
+    // Open PDF directly in new tab
+    window.open(data.pdf_url, '_blank');
+    msg.textContent = "PDF opened!";
     setTimeout(() => msg.textContent = "", 3000);
   } catch (e) {
-    console.error("PDF Error:", e);
-    msg.textContent = `PDF failed: ${e.message}`;
+    console.error(e);
+    msg.textContent = "Failed to load PDF.";
   }
 }
-// -------------------------------------------------
-    // 2. OPEN LATEST PDF IN sign.html
-    // -------------------------------------------------
-    document.getElementById("btnPDF").onclick = async () => {
-      if (!EMP) { alert("Select an employee first."); return; }
+    // ====== SAVE + REGENERATE PDF + UPDATE DB URL (BOUND TO btnSave) ======
 
-      const { data } = await sb
-        .from("benefit_enrollments")
-        .select("pdf_url")
-        .eq("employee_id", EMP.id)
-        .single();
 
-      if (!data?.pdf_url) {
-        alert("No PDF yet – save first.");
-        return;
-      }
-
-      window.open(`sign.html?pdf=${encodeURIComponent(data.pdf_url)}`, '_blank');
-    };
-
-async function submitForm() {
-  const body = {
-    employeeId: 123, // Example data, replace with actual form data
-    tier_election: 'EE',
-    medical_plan: 'HMO',
-    dental_plan: 'F-PLAN 2W',
-    vision_plan: 'PLAN_1',
-    qualifying_events: ['Marriage'],
-    oe_changes: { add_dep: true },
-    ssn: '123-45-6789',
-    dob: '1990-01-01',
-    gender: 'M',
-    address: '123 Main St',
-    phone: '123-456-7890',
-    email: 'employee@example.com',
-    job_title: 'Software Engineer',
-    hire_date: '2020-01-01',
-    annual_salary: 50000,
-    spouse: { first: 'Jane', last: 'Doe' },
-    dependents: [{ first: 'John', last: 'Doe' }],
-    hsa_amount: 500,
-    marital_status: 'Married',
-  };
-  const response = await fetch('https://kpldzwlftkvjjntgsqxx.supabase.co/functions/v1/employee-benefits', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  const data = await response.json();
-  if (data.success) {
-    console.log('Employee benefits saved successfully');
-    console.log('PDF URL:', data.pdfUrl);
-  } else {
-    console.error('Error saving employee benefits:', data.error);
-  }
-}
-// Check if the employee exists in the 'employees' table
-async function checkEmployeeExists(employeeId) { // Wrap in async
-  const { data: employee, error: employeeError } = await sb.from("employees2025")
-    .select("id") // Or select the unique identifier, e.g., employee_id or employee_id_uuid
-    .eq("id", employeeId) // Match employeeId with the employee table's ID
-    .maybeSingle(); // Ensure it returns a single row or null
-  if (employeeError || !employee) {
-    // This function body is incomplete and seems copied from a server-side function, which is outside the main logic flow.
-    // I will comment out the server-side logic that was incorrectly inserted here.
-    /* return json({ error: "Employee not found" }, 400); */ // Original code had server-side return here
-    console.error("Employee check failed or employee not found.");
-    return null;
-  }
-  return employee;
-}
-// The following block of server-side code was placed outside a function and is removed/modified.
-/*
-const { error: insertError } = await sb.from("benefit_enrollments").insert([{
-  employee_id_uuid: employee.id, // Use employee's ID
-  tier_election,
-  medical_plan,
-  dental_plan,
-  vision_plan,
-  qualifying_events,
-  oe_changes,
-  ssn,
-  dob,
-  gender,
-  address,
-  phone,
-  email,
-  job_title,
-  hire_date,
-  annual_salary,
-  spouse,
-  dependents,
-  hsa_amount,
-  marital_status,
-  pdf_url: "", // We'll update this later with the PDF URL
-}]);
-if (insertError) {
-  return json({ error: insertError.message }, 500); // Return error if insert fails
-}
-*/
-    // ====== SAVE LOGIC HOOK ======
-   async function handleSave() {
+    async function handleSave() {
   if (!EMP) { msg.textContent = "Select an employee first."; return; }
 
-  msg.textContent = "Saving...";
+  msg.textContent = "Saving data...";
   const payload = getFullEnrollmentPayload();
 
   const result = await performSave(payload);
   if (!result.success) return;
 
-  // RELOAD FRESH DATA
   await preloadEnrollment();
 
-  // REGENERATE & UPDATE PDF
-  msg.textContent = "Updating PDF...";
+  msg.textContent = "Generating PDF...";
   try {
-    const res = await fetch(`${FN_URL}?employee_id=${EMP.id}`);
-    if (!res.ok) throw new Error("PDF generation failed");
+    const url = `${FN_URL}?employee_id=${EMP.id}`;
+    console.log("Calling PDF function:", url);
+
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+        "apikey": SUPABASE_ANON_KEY
+      }
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("PDF Function Error:", err);
+      throw new Error(`Server error: ${err}`);
+    }
 
     const pdfBytes = await res.arrayBuffer();
     const pdfKey = `enrollment_pdfs/employee_${EMP.id}.pdf`;
@@ -1108,20 +956,22 @@ if (insertError) {
     msg.textContent = "Saved & PDF Updated!";
     setTimeout(() => msg.textContent = "", 3000);
   } catch (e) {
-    msg.textContent = "PDF failed.";
+    console.error("PDF Update/Save Error:", e);
+    msg.textContent = "PDF failed (check console).";
   }
 }
-      // Simplified preloadEnrollment for brevity
-      /* The full async preloadEnrollment function is defined above */
-   
-    // Events
+   // ====== EVENTS ======
     [tierSel, medPlan, denPlan, visPlan, hsaInput, vlInput, document.getElementById("marital_status")].forEach(el=>el.addEventListener("input", updatePrices));
-    document.getElementById("btnSave").addEventListener("click", handleSave);
-    document.getElementById("btnSave2").addEventListener("click", handleSave);
-    document.getElementById("btnPDF").addEventListener("click", handlePDF);
-    document.getElementById("btnPDF2").addEventListener("click", handlePDF);
-    document.getElementById("btnSave").onclick = handleSave;
-    // Boot - converted to async IIFE to allow await loadRates()
+    
+    // Bind main Save buttons to handleSave
+    btnSave.addEventListener("click", handleSave);
+    btnSave2.addEventListener("click", handleSave);
+    
+    // Bind PDF buttons to handlePDF (for viewing)
+    btnPDF.addEventListener("click", handlePDF);
+    btnPDF2.addEventListener("click", handlePDF); 
+
+    // ====== BOOT ======
     (async ()=>{ await loadRates(); updatePrices(); })();
   </script>
 </body>
