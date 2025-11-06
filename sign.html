@@ -82,7 +82,9 @@ const { createClient } = window.supabase;
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 let EMP = null;
+let TOKEN = null; // Declared missing global variable
 let pad = null;
+let pdfRefreshInterval = null; // For the auto-refresh feature
 
 const loginBox = document.getElementById("loginBox");
 const app = document.getElementById("app");
@@ -98,17 +100,37 @@ const username = document.getElementById("username");
 const pin = document.getElementById("pin");
 const btnLogin = document.getElementById("btnLogin");
 
-// Load PDF from benefit_enrollments.pdf_url
+/**
+ * Load PDF for the employee, adding a cache-buster timestamp.
+ */
 async function loadPdfForEmployee(emp) {
+  const timestamp = Date.now(); // Cache buster
+
   // If login RPC already handed us a URL, use it
   if (emp.pdf_url) {
-    pdf.src = emp.pdf_url;
+    // Add cache buster to the URL
+    const sep = emp.pdf_url.includes('?') ? '&' : '?';
+    pdf.src = emp.pdf_url + sep + 't=' + timestamp;
     return;
   }
-  // Otherwise, generate (this endpoint returns the PDF inline and also saves pdf_url in DB)
+  
+  // Otherwise, load inline via Edge Function, with cache buster
   if (!emp.employee_id) throw new Error("Missing employee_id for PDF generation");
-  // Load inline directly in the iframe:
-  pdf.src = `${FN_URL}?employee_id=${encodeURIComponent(emp.employee_id)}`;
+  pdf.src = `${FN_URL}?employee_id=${encodeURIComponent(emp.employee_id)}&t=${timestamp}`;
+}
+
+/**
+ * Starts the interval timer to refresh the PDF content every 5 seconds.
+ */
+function startPdfRefresh() {
+  if (pdfRefreshInterval) clearInterval(pdfRefreshInterval);
+
+  pdfRefreshInterval = setInterval(() => {
+    // Only refresh if the user is logged in
+    if (EMP) {
+      loadPdfForEmployee(EMP);
+    }
+  }, 5000); // Refresh every 5 seconds (5000ms)
 }
 
 // Login
@@ -124,6 +146,7 @@ btnLogin.addEventListener("click", async () => {
   btnLogin.disabled = true;
 
   try {
+    // RPC call to login function (assumed to return employee data)
     const { data, error } = await sb.rpc('hb_login', { p_username: u, p_pin: p });
     if (error || !data?.[0]) throw new Error("Invalid credentials");
 
@@ -138,9 +161,15 @@ btnLogin.addEventListener("click", async () => {
 
     // Load (or generate) their PDF
     await loadPdfForEmployee(EMP);
+    
+    // Start the automatic refresh timer
+    startPdfRefresh();
 
   } catch (e) {
+    // If the PDF loading failed, or login failed, report it
     loginMsg.textContent = e.message;
+  } finally {
+    // Always re-enable button
     btnLogin.disabled = false;
   }
 });
@@ -161,10 +190,18 @@ btnSubmit.addEventListener("click", async () => {
     return;
   }
   msg.textContent = "Creating signature request…";
+  // Disable button during submission
+  btnSubmit.disabled = true;
+
   try {
+    // 1. Create Sign Request (to get a token)
     const reqRes = await fetch(`${FN_URL}/request`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { 
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, 
+        "apikey": SUPABASE_ANON_KEY
+      },
       body: JSON.stringify({
         employee_id: EMP.employee_id,
         signer_name: sigName.value.trim(),
@@ -173,14 +210,22 @@ btnSubmit.addEventListener("click", async () => {
     });
     const reqJson = await reqRes.json();
     if (!reqRes.ok) throw new Error(reqJson.error || "Request failed");
+    
+    // Store the token for use in the next step
+    TOKEN = reqJson.token; 
 
+    // 2. Finalize Signature (using the token)
     msg.textContent = "Submitting signature…";
     const dataUrl = pad.toDataURL("image/png");
     const finRes = await fetch(`${FN_URL}/finalize`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { 
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, 
+        "apikey": SUPABASE_ANON_KEY
+      },
       body: JSON.stringify({
-        token: reqJson.token,
+        token: TOKEN,
         signer_name: sigName.value.trim(),
         signature_data_url: dataUrl
       })
@@ -190,13 +235,18 @@ btnSubmit.addEventListener("click", async () => {
 
     msg.textContent = "Signed! Email sent to you and HR.";
     if (finJson.url) window.open(finJson.url, "_blank");
+
+    // Stop refreshing the PDF once the document is signed
+    if (pdfRefreshInterval) clearInterval(pdfRefreshInterval);
+
   } catch (e) {
     msg.textContent = e.message || "Network error";
+  } finally {
+    // Re-enable button after submission attempt
+    btnSubmit.disabled = false;
   }
 });
 
 </script>
 </body>
 </html>
-
-
