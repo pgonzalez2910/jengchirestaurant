@@ -836,20 +836,37 @@ async function selectEmployee(e) {
       };
     }
     // ====== DATABASE SAVE ======
-    async function performSave(payload) {
-      const benePrimary = payload.beneficiaries.filter(b => b.role === 'primary');
-      const beneContingent = payload.beneficiaries.filter(b => b.role === 'contingent');
-      const pHas = benePrimary.some(b => b.pct != null);
-      const cHas = beneContingent.some(b => b.pct != null);
-      const pTot = benePrimary.reduce((s,b)=> s + (b.pct || 0), 0);
-      const cTot = beneContingent.reduce((s,b)=> s + (b.pct || 0), 0);
-      if (pHas && pTot !== 100){ msg.textContent = "Primary beneficiary % must total 100%."; return { error: { message: "Primary beneficiary % must total 100%." }}; }
-      if (cHas && cTot !== 100){ msg.textContent = "Contingent beneficiary % must total 100%." ; return { error: { message: "Contingent beneficiary % must total 100%." }}; }
-      // Use DELETE then INSERT to ensure a clean upsert, handling complex JSON fields reliably.
-      await sb.from("benefit_enrollments").delete().eq("employee_id", payload.employee_id);
-      const { error } = await sb.from("benefit_enrollments").insert(payload);
-      return { success: !error, error };
-    }
+  // ====== DATABASE SAVE (UPSERT – NO DUPLICATES) ======
+async function performSave(payload) {
+  const benePrimary = payload.beneficiaries.filter(b => b.role === 'primary');
+  const beneContingent = payload.beneficiaries.filter(b => b.role === 'contingent');
+  const pHas = benePrimary.some(b => b.pct != null);
+  const cHas = beneContingent.some(b => b.pct != null);
+  const pTot = benePrimary.reduce((s,b)=> s + (b.pct || 0), 0);
+  const cTot = beneContingent.reduce((s,b)=> s + (b.pct || 0), 0);
+
+  if (pHas && pTot !== 100) {
+    msg.textContent = "Primary % must total 100%.";
+    return { success: false };
+  }
+  if (cHas && cTot !== 100) {
+    msg.textContent = "Contingent % must total 100%.";
+    return { success: false };
+  }
+
+  // UPSERT: UPDATE IF EXISTS, INSERT IF NOT
+  const { error } = await sb
+    .from("benefit_enrollments")
+    .upsert(payload, { onConflict: 'employee_id' });
+
+  if (error) {
+    console.error("Save error:", error);
+    msg.textContent = "Save failed.";
+    return { success: false };
+  }
+
+  return { success: true };
+}
     // ====== PDF FLOW FUNCTIONS (Mock Client-Side) ======
     // 1. Generate PDF (MOCK)
     async function generatePDF(employeeData) {
@@ -1054,47 +1071,46 @@ if (insertError) {
 }
 */
     // ====== SAVE LOGIC HOOK ======
-    async function handleSave() {
-        if (!EMP) { msg.textContent = "Pick an employee first."; return; }
-        const payload = getFullEnrollmentPayload();
-        const { error } = await performSave(payload);
-        msg.textContent = error ? `Error: ${error.message}` : "Saved ✔";
-        setTimeout(() => msg.textContent = "", 2000);
-    }
-   
-    // --- Existing boot and event listeners ---
-    (async () => {
-      const el = document.getElementById("health");
-      try {
-        const r = await sb.from('benefit_rates').select('coverage').limit(1);
-        el.textContent = r.error ? 'REST Error' : 'DB Connected';
-      } catch { el.textContent = "Blocked by browser"; }
-    })();
-    // Employee search/load logic...
-    empSearch.addEventListener("input", ()=>{
-        clearTimeout(timer);
-        timer=setTimeout(async ()=>{
-          const q=empSearch.value.trim();
-          empList.innerHTML=""; empList.classList.add("hidden");
-          if(!q){ return; }
-        const { data, error } = await sb
-    .from('v_employees_masked')
-    .select('id, full_name, username, position_title, hire_date, dob, phone_primary, email, address_line1, address_line2, ssn_masked')
-    .or(`full_name.ilike.%${q}%,username.ilike.%${q}%`)
-    .order('full_name')
-    .limit(25);
-          if (error) { console.error('search error:', error.message); return; }
-          if (!data || data.length===0) return;
-          empList.classList.remove("hidden");
-          data.forEach(e=>{
-            const row=document.createElement("div");
-            row.className="px-3 py-2 rounded-md hover:bg-slate-100 cursor-pointer text-sm";
-            row.textContent=`${e.full_name} — ${e.position_title ?? ""}`;
-            row.onclick=()=>selectEmployee(e);
-            empList.appendChild(row);
-          });
-        },220);
-      });
+   async function handleSave() {
+  if (!EMP) { msg.textContent = "Select an employee first."; return; }
+
+  msg.textContent = "Saving...";
+  const payload = getFullEnrollmentPayload();
+
+  const result = await performSave(payload);
+  if (!result.success) return;
+
+  // RELOAD FRESH DATA
+  await preloadEnrollment();
+
+  // REGENERATE & UPDATE PDF
+  msg.textContent = "Updating PDF...";
+  try {
+    const res = await fetch(`${FN_URL}?employee_id=${EMP.id}`);
+    if (!res.ok) throw new Error("PDF generation failed");
+
+    const pdfBytes = await res.arrayBuffer();
+    const pdfKey = `enrollment_pdfs/employee_${EMP.id}.pdf`;
+
+    await sb.storage
+      .from('employee-pdfs')
+      .upload(pdfKey, pdfBytes, { upsert: true, contentType: "application/pdf" });
+
+    const { data: { publicUrl } } = sb.storage
+      .from('employee-pdfs')
+      .getPublicUrl(pdfKey);
+
+    await sb
+      .from("benefit_enrollments")
+      .update({ pdf_url: publicUrl })
+      .eq("employee_id", EMP.id);
+
+    msg.textContent = "Saved & PDF Updated!";
+    setTimeout(() => msg.textContent = "", 3000);
+  } catch (e) {
+    msg.textContent = "PDF failed.";
+  }
+}
       // Simplified preloadEnrollment for brevity
       /* The full async preloadEnrollment function is defined above */
    
@@ -1110,3 +1126,4 @@ if (insertError) {
   </script>
 </body>
 </html>
+
