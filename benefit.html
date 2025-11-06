@@ -348,8 +348,9 @@
           </div>
 
           <div class="mt-6 flex gap-3">
-            <button id="btnSave" type="button" class="inline-flex items-center rounded-lg bg-tech text-white px-5 py-2.5 font-semibold hover:brightness-110">Save</button>
-            <button id="btnPDF" type="button" class="inline-flex items-center rounded-lg bg-ink text-white px-5 py-2.5 font-semibold hover:bg-slate-800">PDF</button>
+<button id="btnSave" type="button" class="inline-flex items-center rounded-lg bg-tech text-white px-5 py-2.5 font-semibold hover:brightness-110">
+  Save & Update PDF
+</button>            <button id="btnPDF" type="button" class="inline-flex items-center rounded-lg bg-ink text-white px-5 py-2.5 font-semibold hover:bg-slate-800">PDF</button>
             <p id="msg" class="text-sm text-slate-700 self-center"></p>
           </div>
         </div>
@@ -1134,48 +1135,65 @@ if (insertError) {
 
 
     // ====== SAVE LOGIC HOOK ======
-    async function handleSave() {
-        if (!EMP) { msg.textContent = "Pick an employee first."; return; }
-        const payload = getFullEnrollmentPayload();
-        const { error } = await performSave(payload);
-        msg.textContent = error ? `Error: ${error.message}` : "Saved ✔";
-        setTimeout(() => msg.textContent = "", 2000);
-    }
-    
-    // --- Existing boot and event listeners ---
-    (async () => {
-      const el = document.getElementById("health");
-      try {
-        const r = await sb.from('benefit_rates').select('coverage').limit(1);
-        el.textContent = r.error ? 'REST Error' : 'DB Connected';
-      } catch { el.textContent = "Blocked by browser"; }
-    })();
-    // Employee search/load logic...
-    empSearch.addEventListener("input", ()=>{
-        clearTimeout(timer);
-        timer=setTimeout(async ()=>{
-          const q=empSearch.value.trim();
-          empList.innerHTML=""; empList.classList.add("hidden");
-          if(!q){ return; }
-        const { data, error } = await sb
-    .from('v_employees_masked')
-    .select('id, full_name, username, position_title, hire_date, dob, phone_primary, email, address_line1, address_line2, ssn_masked')
-    .or(`full_name.ilike.%${q}%,username.ilike.%${q}%`)
-    .order('full_name')
-    .limit(25);
+   // ====== SAVE LOGIC HOOK (ACTUALIZA PDF CADA VEZ) ======
+async function handleSave() {
+  if (!EMP) { 
+    msg.textContent = "Pick an employee first."; 
+    return; 
+  }
 
-          if (error) { console.error('search error:', error.message); return; }
-          if (!data || data.length===0) return;
-          empList.classList.remove("hidden");
-          data.forEach(e=>{
-            const row=document.createElement("div");
-            row.className="px-3 py-2 rounded-md hover:bg-slate-100 cursor-pointer text-sm";
-            row.textContent=`${e.full_name} — ${e.position_title ?? ""}`;
-            row.onclick=()=>selectEmployee(e);
-            empList.appendChild(row);
-          });
-        },220);
+  msg.textContent = "Saving enrollment...";
+  const payload = getFullEnrollmentPayload();
+
+  // 1. GUARDAR DATOS
+  const saveResult = await performSave(payload);
+  if (!saveResult.success) {
+    msg.textContent = "Save failed.";
+    return;
+  }
+
+  // 2. REGENERAR PDF
+  msg.textContent = "Generating new PDF...";
+  try {
+    const res = await fetch(`${FN_URL}?employee_id=${EMP.id}`);
+    if (!res.ok) throw new Error("PDF generation failed");
+
+    const pdfBytes = await res.arrayBuffer();
+    const pdfKey = `enrollment_pdfs/employee_${EMP.id}.pdf`;
+
+    // 3. SUBIR NUEVO PDF (UPSERT)
+    const { error: upErr } = await sb.storage
+      .from('employee-pdfs')  // ← TU BUCKET
+      .upload(pdfKey, pdfBytes, {
+        upsert: true,
+        contentType: "application/pdf"
       });
+    if (upErr) throw upErr;
+
+    // 4. OBTENER URL PÚBLICA
+    const { data: { publicUrl } } = sb.storage
+      .from('employee-pdfs')
+      .getPublicUrl(pdfKey);
+
+    // 5. ACTUALIZAR TABLA
+    const { error: dbErr } = await sb
+      .from("benefit_enrollments")
+      .update({ pdf_url: publicUrl })
+      .eq("employee_id", EMP.id);
+
+    if (dbErr) throw dbErr;
+
+    msg.textContent = "Saved & PDF updated! ✔";
+    setTimeout(() => msg.textContent = "", 3000);
+
+    // OPCIONAL: Recargar iframe si lo tienes
+    // document.getElementById("pdfPreview")?.setAttribute("src", publicUrl + "?" + Date.now());
+
+  } catch (e) {
+    console.error(e);
+    msg.textContent = "PDF update failed.";
+  }
+}
       // Simplified preloadEnrollment for brevity
       /* The full async preloadEnrollment function is defined above */
     
@@ -1191,3 +1209,4 @@ if (insertError) {
   </script>
 </body>
 </html>
+
