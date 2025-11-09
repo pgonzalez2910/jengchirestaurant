@@ -62,7 +62,8 @@
       <div class="mb-3 text-sm text-slate-700">Type your full legal name, then draw your signature.</div>
       <input id="sigName" class="border rounded-lg p-2 w-full mb-3" placeholder="Full legal name" />
       <div class="border rounded-lg bg-slate-100">
-        <canvas id="sigPad" class="bg-white block w-full" style="height:220px"></canvas>
+        <!-- Shrunk from 220px to 140px -->
+        <canvas id="sigPad" class="bg-white block w-full" style="height:140px"></canvas>
       </div>
       <div class="flex gap-2 mt-2">
         <button id="btnClear" class="rounded border px-3 py-1">Clear</button>
@@ -141,7 +142,7 @@ btnLogin.addEventListener("click", async () => {
     empName.textContent = EMP.full_name || EMP.username;
 
     // init signature pad
-    pad = new SignaturePad(sigPadEl, { minWidth: 0.7, maxWidth: 1.8 });
+    pad = new SignaturePad(sigPadEl, { minWidth: 0.8, maxWidth: 2.0 });
     resizeCanvas();
 
     await loadPdfForEmployee(EMP);
@@ -157,13 +158,54 @@ btnLogin.addEventListener("click", async () => {
 function resizeCanvas() {
   const ratio = Math.max(window.devicePixelRatio || 1, 1);
   sigPadEl.width = sigPadEl.offsetWidth * ratio;
-  sigPadEl.height = 220 * ratio;
+  sigPadEl.height = 140 * ratio; // keep JS height in sync with CSS
   sigPadEl.getContext("2d").scale(ratio, ratio);
   if (pad) pad.clear();
 }
 window.addEventListener("resize", () => {
   if (!app.classList.contains("hidden")) resizeCanvas();
 });
+
+/* -------------------- UTIL: TRIM SIGNATURE PNG -------------------- */
+/* Crops transparent margins so the stroke fills its box.
+   This keeps long or small signatures looking right on the PDF line. */
+function getTrimmedPNG(canvas, padding = 8) {
+  const w = canvas.width;
+  const h = canvas.height;
+  const ctx = canvas.getContext("2d");
+  const img = ctx.getImageData(0, 0, w, h);
+  const data = img.data;
+
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const a = data[(y * w + x) * 4 + 3]; // alpha
+      if (a > 0) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY) return null; // empty
+
+  minX = Math.max(minX - padding, 0);
+  minY = Math.max(minY - padding, 0);
+  maxX = Math.min(maxX + padding, w - 1);
+  maxY = Math.min(maxY + padding, h - 1);
+
+  const cw = maxX - minX + 1;
+  const ch = maxY - minY + 1;
+
+  const off = document.createElement("canvas");
+  off.width = cw;
+  off.height = ch;
+  off.getContext("2d").drawImage(canvas, minX, minY, cw, ch, 0, 0, cw, ch);
+  return off.toDataURL("image/png");
+}
 
 /* -------------------- SIGNATURE ACTIONS -------------------- */
 btnClear.addEventListener("click", () => pad && pad.clear());
@@ -195,9 +237,9 @@ btnSubmit.addEventListener("click", async () => {
     if (!reqRes.ok) throw new Error(reqJson.error || "Request failed");
     TOKEN = reqJson.token;
 
-    // 2) Finalize (send PNG)
+    // 2) Finalize (send TRIMMED PNG)
     msg.textContent = "Submitting signature…";
-    const dataUrl = pad.toDataURL("image/png");
+    const trimmed = getTrimmedPNG(sigPadEl) || pad.toDataURL("image/png");
     const finRes = await fetch(`${FN_URL}/finalize`, {
       method: "POST",
       headers: {
@@ -208,17 +250,16 @@ btnSubmit.addEventListener("click", async () => {
       body: JSON.stringify({
         token: TOKEN,
         signer_name: sigName.value.trim(),
-        signature_data_url: dataUrl
+        signature_data_url: trimmed
       })
     });
     const finJson = await finRes.json();
     if (!finRes.ok) throw new Error(finJson.error || "Finalize failed");
 
     msg.textContent = "Signed! Email sent to you and HR.";
-    stopPdfRefresh();                   // stop polling once signed
-    if (finJson.url) window.open(finJson.url, "_blank"); // optional: open signed copy
-    // Also refresh the preview to the latest version:
-    loadPdfForEmployee(EMP);
+    stopPdfRefresh();
+    if (finJson.url) window.open(finJson.url, "_blank");
+    loadPdfForEmployee(EMP); // refresh preview
 
   } catch (e) {
     msg.textContent = e.message || "Network error";
