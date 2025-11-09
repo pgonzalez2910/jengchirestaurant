@@ -8,29 +8,11 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
   <style>
-    body{
+    body {
       background:
         radial-gradient(1200px 800px at 80% -10%, rgba(185,150,90,.10), transparent 60%),
         radial-gradient(1000px 700px at -20% 20%, rgba(14,165,233,.08), transparent 55%),
         #F8FAFC;
-
-<iframe id="pdf" class="w-full h-screen" style="border:none"></iframe>
-
-<script>
-  const params = new URLSearchParams(location.search);
-  const pdfUrl = params.get('pdf');
-  
-  if (pdfUrl) {
-    const iframe = document.getElementById('pdf');
-    iframe.src = pdfUrl;
-    
-    // Auto-refresh every 5 seconds to show latest PDF
-    setInterval(() => {
-      iframe.src = pdfUrl + "?t=" + Date.now();
-    }, 5000);
-  }
-</script>
-
     }
   </style>
 </head>
@@ -88,27 +70,24 @@
       </div>
       <p id="msg" class="text-sm text-slate-700 mt-2"></p>
     </div>
-
-<div id="signatureLine" style="position: absolute; width: 200px; height: 2px; background-color: #000; left: 50px; top: 400px;"></div>
-
-
-    
   </section>
 </main>
 
 <script>
+/* -------------------- CONFIG -------------------- */
 const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
 const FN_URL = `${SUPABASE_URL}/functions/v1/employee-benefits`;
-
 const { createClient } = window.supabase;
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+/* -------------------- STATE -------------------- */
 let EMP = null;
-let TOKEN = null; // Declared missing global variable
+let TOKEN = null;
 let pad = null;
-let pdfRefreshInterval = null; // For the auto-refresh feature
+let pdfRefreshInterval = null;
 
+/* -------------------- DOM -------------------- */
 const loginBox = document.getElementById("loginBox");
 const app = document.getElementById("app");
 const empName = document.getElementById("empName");
@@ -123,54 +102,37 @@ const username = document.getElementById("username");
 const pin = document.getElementById("pin");
 const btnLogin = document.getElementById("btnLogin");
 
-/**
- * Load PDF for the employee, adding a cache-buster timestamp.
- */
+/* -------------------- PDF LOADING -------------------- */
 async function loadPdfForEmployee(emp) {
-  const timestamp = Date.now(); // Cache buster
-
-  // If login RPC already handed us a URL, use it
+  const t = Date.now(); // cache-buster
   if (emp.pdf_url) {
-    // Add cache buster to the URL
-    const sep = emp.pdf_url.includes('?') ? '&' : '?';
-    pdf.src = emp.pdf_url + sep + 't=' + timestamp;
+    const sep = emp.pdf_url.includes("?") ? "&" : "?";
+    pdf.src = emp.pdf_url + sep + "t=" + t;
     return;
   }
-  
-  // Otherwise, load inline via Edge Function, with cache buster
   if (!emp.employee_id) throw new Error("Missing employee_id for PDF generation");
-  pdf.src = `${FN_URL}?employee_id=${encodeURIComponent(emp.employee_id)}&t=${timestamp}`;
+  pdf.src = `${FN_URL}?employee_id=${encodeURIComponent(emp.employee_id)}&t=${t}`;
 }
 
-/**
- * Starts the interval timer to refresh the PDF content every 5 seconds.
- */
 function startPdfRefresh() {
   if (pdfRefreshInterval) clearInterval(pdfRefreshInterval);
-
-  pdfRefreshInterval = setInterval(() => {
-    // Only refresh if the user is logged in
-    if (EMP) {
-      loadPdfForEmployee(EMP);
-    }
-  }, 5000); // Refresh every 5 seconds (5000ms)
+  pdfRefreshInterval = setInterval(() => { if (EMP) loadPdfForEmployee(EMP); }, 5000);
+}
+function stopPdfRefresh() {
+  if (pdfRefreshInterval) { clearInterval(pdfRefreshInterval); pdfRefreshInterval = null; }
 }
 
-// Login
+/* -------------------- LOGIN -------------------- */
 btnLogin.addEventListener("click", async () => {
   const u = username.value.trim();
   const p = pin.value.trim();
-  if (!u || !p) {
-    loginMsg.textContent = "Enter username and PIN.";
-    return;
-  }
+  if (!u || !p) { loginMsg.textContent = "Enter username and PIN."; return; }
 
   loginMsg.textContent = "Logging in…";
   btnLogin.disabled = true;
 
   try {
-    // RPC call to login function (assumed to return employee data)
-    const { data, error } = await sb.rpc('hb_login', { p_username: u, p_pin: p });
+    const { data, error } = await sb.rpc("hb_login", { p_username: u, p_pin: p });
     if (error || !data?.[0]) throw new Error("Invalid credentials");
 
     EMP = data[0]; // { employee_id, username, full_name, email, pdf_url }
@@ -178,25 +140,20 @@ btnLogin.addEventListener("click", async () => {
     app.classList.remove("hidden");
     empName.textContent = EMP.full_name || EMP.username;
 
-    // Init signature pad before resize
+    // init signature pad
     pad = new SignaturePad(sigPadEl, { minWidth: 0.7, maxWidth: 1.8 });
     resizeCanvas();
 
-    // Load (or generate) their PDF
     await loadPdfForEmployee(EMP);
-    
-    // Start the automatic refresh timer
     startPdfRefresh();
-
   } catch (e) {
-    // If the PDF loading failed, or login failed, report it
-    loginMsg.textContent = e.message;
+    loginMsg.textContent = e.message || "Login error";
   } finally {
-    // Always re-enable button
     btnLogin.disabled = false;
   }
 });
 
+/* -------------------- CANVAS SIZING -------------------- */
 function resizeCanvas() {
   const ratio = Math.max(window.devicePixelRatio || 1, 1);
   sigPadEl.width = sigPadEl.offsetWidth * ratio;
@@ -204,66 +161,41 @@ function resizeCanvas() {
   sigPadEl.getContext("2d").scale(ratio, ratio);
   if (pad) pad.clear();
 }
-window.addEventListener("resize", () => { if (!app.classList.contains("hidden")) resizeCanvas(); });
+window.addEventListener("resize", () => {
+  if (!app.classList.contains("hidden")) resizeCanvas();
+});
 
-btnClear.addEventListener("click", () => pad.clear());
-// Add an event listener to capture the position when the user submits the signature
+/* -------------------- SIGNATURE ACTIONS -------------------- */
+btnClear.addEventListener("click", () => pad && pad.clear());
+
 btnSubmit.addEventListener("click", async () => {
   if (!EMP || !pad || pad.isEmpty() || !sigName.value.trim()) {
     msg.textContent = "Complete name and signature.";
     return;
   }
   msg.textContent = "Creating signature request…";
-  // Disable button during submission
   btnSubmit.disabled = true;
 
   try {
-    // Get the position of the signature relative to the canvas
-    -  const rect = sigPadEl.getBoundingClientRect();
- const signaturePosition = {
-  x: rect.left,
-  y: rect.top,
- };
-
-  // 1) Create Sign Request (to get a token)
-  const reqRes = await fetch(`${FN_URL}/request`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-      "apikey": SUPABASE_ANON_KEY
-    },
-    body: JSON.stringify({
-      employee_id: EMP.employee_id,
-      signer_name: sigName.value.trim(),
-      signer_email: EMP.email,
-    signature_position: signaturePosition,
-    })
-  });
-
-  // 2) Finalize Signature
-  const dataUrl = pad.toDataURL("image/png");
-  const finRes = await fetch(`${FN_URL}/finalize`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-      "apikey": SUPABASE_ANON_KEY
-    },
-    body: JSON.stringify({
-      token: TOKEN,
-      signer_name: sigName.value.trim(),
-      signature_data_url: dataUrl,
--     signature_position: signaturePosition,
-    })
-  });
-
+    // 1) Create Sign Request (get token)
+    const reqRes = await fetch(`${FN_URL}/request`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+        "apikey": SUPABASE_ANON_KEY
+      },
+      body: JSON.stringify({
+        employee_id: EMP.employee_id,
+        signer_name: sigName.value.trim(),
+        signer_email: EMP.email
+      })
+    });
     const reqJson = await reqRes.json();
     if (!reqRes.ok) throw new Error(reqJson.error || "Request failed");
-
     TOKEN = reqJson.token;
 
-    // 2. Finalize Signature (using the token)
+    // 2) Finalize (send PNG)
     msg.textContent = "Submitting signature…";
     const dataUrl = pad.toDataURL("image/png");
     const finRes = await fetch(`${FN_URL}/finalize`, {
@@ -276,18 +208,17 @@ btnSubmit.addEventListener("click", async () => {
       body: JSON.stringify({
         token: TOKEN,
         signer_name: sigName.value.trim(),
-        signature_data_url: dataUrl,
-        signature_position: signaturePosition, // Send the position to the backend
+        signature_data_url: dataUrl
       })
     });
     const finJson = await finRes.json();
     if (!finRes.ok) throw new Error(finJson.error || "Finalize failed");
 
     msg.textContent = "Signed! Email sent to you and HR.";
-    if (finJson.url) window.open(finJson.url, "_blank");
-
-    // Stop refreshing the PDF once the document is signed
-    if (pdfRefreshInterval) clearInterval(pdfRefreshInterval);
+    stopPdfRefresh();                   // stop polling once signed
+    if (finJson.url) window.open(finJson.url, "_blank"); // optional: open signed copy
+    // Also refresh the preview to the latest version:
+    loadPdfForEmployee(EMP);
 
   } catch (e) {
     msg.textContent = e.message || "Network error";
@@ -295,9 +226,6 @@ btnSubmit.addEventListener("click", async () => {
     btnSubmit.disabled = false;
   }
 });
-
 </script>
 </body>
 </html>
-
-
