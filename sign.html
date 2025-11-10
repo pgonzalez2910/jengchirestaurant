@@ -7,14 +7,28 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
+  <!-- Add PDF.js library for rendering multi-page PDFs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+  <script>
+    // Set worker source for PDF.js
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+  </script>
   <style>
     /* Custom Styling for Corporate Look */
-    .navy { background-color: #2C3E50; } /* Dark blue/Navy for corporate look */
-    .accent { background-color: #2980B9; } /* Accent color */
+    .navy { background-color: #2C3E50; } 
+    .accent { background-color: #2980B9; } 
     .accent:hover { background-color: #1A6F97; }
     .card { background-color: white; border-radius: 1rem; box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.1); padding: 2rem; }
-    /* The CSS class sets the visual size. JS will adjust the internal buffer. */
     .signature-canvas { height: 200px; width: 100%; } 
+    /* Style for rendered PDF pages */
+    #pdfContainer canvas {
+        display: block;
+        margin: 20px auto;
+        border: 1px solid #ddd;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        width: 100%;
+        max-width: 800px; /* Optional: limit max width of the page */
+    }
   </style>
 </head>
 <body class="min-h-screen">
@@ -66,13 +80,14 @@
         <p class="text-lg text-gray-600 mt-3">Please review the document and provide your electronic signature</p>
       </div>
 
-      <!-- PDF Viewer (Reverted to iFrame for reliability) -->
+      <!-- PDF Viewer (Now uses PDF.js to render all pages into the container) -->
       <div class="card overflow-hidden">
         <div class="bg-gray-100 p-4 border-b border-gray-200">
           <h3 class="font-semibold text-gray-700">Benefit Enrollment Document</h3>
         </div>
-        <!-- Set large fixed height for corporate viewing -->
-        <iframe id="pdf" class="w-full" style="height: 700px;" title="Benefit Enrollment PDF" sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe> 
+        <div id="pdfContainer" class="p-4">
+          <!-- PDF pages will be rendered as <canvas> elements here -->
+        </div> 
         <p id="pdfError" class="text-red-600 text-center p-4 hidden">Unable to load document.</p>
       </div>
 
@@ -112,24 +127,58 @@
     const loginEl = document.getElementById("login");
     const appEl = document.getElementById("app");
     const empNameEl = document.getElementById("empName");
-    const pdfEl = document.getElementById("pdf");
+    const pdfContainerEl = document.getElementById("pdfContainer"); // New element for PDF.js
+    const pdfErrorEl = document.getElementById("pdfError");
     const signerNameEl = document.getElementById("signerName");
     const canvas = document.getElementById("sigPad");
     const clearBtn = document.getElementById("clearBtn");
     const signBtn = document.getElementById("signBtn");
     const resultEl = document.getElementById("result");
 
+    /* --- PDF.js RENDERING FUNCTION --- */
+    async function loadPDF(pdfUrl) {
+      pdfContainerEl.innerHTML = ''; // Clear previous content
+      pdfErrorEl.classList.add('hidden');
+      
+      const loadingTask = pdfjsLib.getDocument(pdfUrl);
+      try {
+        const pdf = await loadingTask.promise;
+        const totalPages = pdf.numPages;
+        
+        for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
+          const page = await pdf.getPage(pageNumber);
+          const scale = 1.5; 
+          const viewport = page.getViewport({ scale: scale });
+          const canvasEl = document.createElement('canvas');
+          const context = canvasEl.getContext('2d');
+          
+          // Set canvas dimensions
+          canvasEl.height = viewport.height;
+          canvasEl.width = viewport.width;
+          
+          pdfContainerEl.appendChild(canvasEl);
+          
+          // Render the page
+          await page.render({
+            canvasContext: context,
+            viewport: viewport
+          }).promise;
+        }
+      } catch (error) {
+        console.error("Error loading PDF:", error);
+        pdfErrorEl.textContent = "Error loading document. Please check the URL or try again later.";
+        pdfErrorEl.classList.remove("hidden");
+      }
+    }
+
+
     /* --- CRITICAL FIX: SIGNATURE PAD Resizing Function --- */
     function resizeCanvas() {
         if (!canvas) return; 
-
         const ratio = Math.max(window.devicePixelRatio || 1, 1);
-        
         canvas.width = canvas.offsetWidth * ratio;
-        // Match the height set by the .signature-canvas CSS class (200px)
         const cssHeight = 200; 
         canvas.height = cssHeight * ratio;
-        
         canvas.getContext('2d').scale(ratio, ratio);
         if (pad) pad.clear(); 
     }
@@ -154,6 +203,8 @@
       }
 
       resultEl.textContent = "Processing...";
+      resultEl.classList.remove('text-red-600');
+      resultEl.classList.add('text-indigo-700');
       signBtn.disabled = true;
 
       try {
@@ -163,6 +214,12 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ employee_id: empId })
         });
+        
+        if (!tokenRes.ok) {
+            const errorText = await tokenRes.text();
+            throw new Error(`Token Request failed: ${errorText}`);
+        }
+        
         const { token } = await tokenRes.json();
         if (!token) throw new Error("Could not get submission token.");
 
@@ -173,22 +230,36 @@
             body: JSON.stringify({
                 token,
                 signer_name: name,
-                // ** FIX APPLIED HERE: Using image/png to resolve 'Invalid signature PNG' error **
+                // FIX APPLIED HERE: Ensure PNG format and strong error reporting
                 signature_data_url: pad.toDataURL("image/png") 
             })
         });
+
+        if (!finalRes.ok) {
+            const errorText = await finalRes.text();
+            try {
+                const errorJson = JSON.parse(errorText);
+                throw new Error(errorJson.error || `Finalize failed: ${errorText}`);
+            } catch {
+                throw new Error(`Finalize failed: ${errorText}`);
+            }
+        }
+        
         const response = await finalRes.json();
 
-        if (finalRes.ok && response.pdf_url) {
+        if (response.pdf_url) {
+            resultEl.textContent = "Signed successfully! Document updated above. Reloading PDF...";
+            // Re-load the PDF using PDF.js to show the signed version
+            await loadPDF(response.pdf_url + "?t=" + Date.now());
             resultEl.textContent = "Signed successfully! Document updated above.";
-            // Refresh PDF with cache buster to show the signed version
-            pdfEl.src = response.pdf_url + "?t=" + Date.now();
         } else {
-            // Display the specific error message from the backend if available
-            resultEl.textContent = response.error || "Submission failed.";
+            resultEl.textContent = response.error || "Submission failed with no specific PDF URL returned.";
         }
       } catch (e) {
+        // Display the specific error caught from the fetch checks
         resultEl.textContent = `Error: ${e.message}`;
+        resultEl.classList.remove('text-indigo-700');
+        resultEl.classList.add('text-red-600');
       } finally {
         signBtn.disabled = false;
       }
@@ -215,10 +286,10 @@
         appEl.classList.remove("hidden");
         empNameEl.textContent = `${emp.first_name} ${emp.last_name}`;
         
-        // Load PDF document
-        pdfEl.src = emp.pdf_url;
+        // Load PDF document using the new function
+        await loadPDF(emp.pdf_url);
 
-        // ** CORE FIX: Initialize Pad and attach handlers here, when the canvas is visible **
+        // ** CORE FIX: Initialize Pad and attach handlers here **
         if (canvas) {
            pad = new SignaturePad(canvas, {
               backgroundColor: "white",
