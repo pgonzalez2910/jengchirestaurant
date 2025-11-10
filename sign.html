@@ -7,16 +7,14 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
-  <!-- Include PDF.js -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
   <style>
     /* Custom Styling for Corporate Look */
-    .navy { background-color: #4C1D95; /* Deep Violet/Purple */ }
-    .accent { background-color: #6366f1; /* Indigo */ }
-    .accent:hover { background-color: #4f46e5; }
+    .navy { background-color: #2C3E50; } /* Dark blue/Navy for corporate look */
+    .accent { background-color: #2980B9; } /* Accent color */
+    .accent:hover { background-color: #1A6F97; }
     .card { background-color: white; border-radius: 1rem; box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.1); padding: 2rem; }
-    canvas { background-color: white; border-radius: 1rem; border: 2px solid #E5E7EB; margin-bottom: 20px; }
-    .signature-canvas { height: 350px; width: 100%; }
+    /* The CSS class sets the visual size. JS will adjust the internal buffer. */
+    .signature-canvas { height: 200px; width: 100%; } 
   </style>
 </head>
 <body class="min-h-screen">
@@ -32,14 +30,14 @@
           <p class="text-sm text-black opacity-90">Employee Benefits Enrollment Portal</p>
         </div>
       </div>
-      <div class="flex items-center space-x-4 text-sm">
+      <div class="flex items-center space-x-4 text-sm text-gray-600">
         <span class="flex items-center">
-          <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+          <svg class="w-4 h-4 mr-1 text-green-500" fill="currentColor" viewBox="0 0 20 20">
             <path fill-rule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z"/>
           </svg> Secure
         </span>
         <span class="flex items-center">
-          <svg class="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20">
+          <svg class="w-4 h-4 mr-1 text-indigo-500" fill="currentColor" viewBox="0 0 20 20">
             <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z"/>
           </svg> Confidential
         </span>
@@ -68,12 +66,13 @@
         <p class="text-lg text-gray-600 mt-3">Please review the document and provide your electronic signature</p>
       </div>
 
-      <!-- PDF Viewer -->
+      <!-- PDF Viewer (Reverted to iFrame for reliability) -->
       <div class="card overflow-hidden">
         <div class="bg-gray-100 p-4 border-b border-gray-200">
           <h3 class="font-semibold text-gray-700">Benefit Enrollment Document</h3>
         </div>
-        <div id="pdfContainer"></div> <!-- Dynamic canvas will be added here -->
+        <!-- Set large fixed height for corporate viewing -->
+        <iframe id="pdf" class="w-full" style="height: 700px;" title="Benefit Enrollment PDF" sandbox="allow-scripts allow-same-origin allow-popups allow-forms"></iframe> 
         <p id="pdfError" class="text-red-600 text-center p-4 hidden">Unable to load document.</p>
       </div>
 
@@ -107,16 +106,101 @@
     const FN_URL = `${SUPABASE_URL}/functions/v1/employee-benefits`;
     let empId = null, pad = null;
 
+    // --- DOM REFERENCES ---
+    const loginBtn = document.getElementById("loginBtn");
+    const loginMsgEl = document.getElementById("loginMsg");
+    const loginEl = document.getElementById("login");
+    const appEl = document.getElementById("app");
+    const empNameEl = document.getElementById("empName");
+    const pdfEl = document.getElementById("pdf");
+    const signerNameEl = document.getElementById("signerName");
+    const canvas = document.getElementById("sigPad");
+    const clearBtn = document.getElementById("clearBtn");
+    const signBtn = document.getElementById("signBtn");
+    const resultEl = document.getElementById("result");
+
+    /* --- CRITICAL FIX: SIGNATURE PAD Resizing Function --- */
+    function resizeCanvas() {
+        if (!canvas) return; 
+
+        const ratio = Math.max(window.devicePixelRatio || 1, 1);
+        
+        canvas.width = canvas.offsetWidth * ratio;
+        // Match the height set by the .signature-canvas CSS class (200px)
+        const cssHeight = 200; 
+        canvas.height = cssHeight * ratio;
+        
+        canvas.getContext('2d').scale(ratio, ratio);
+        if (pad) pad.clear(); 
+    }
+    
+    // Attach resize listener globally once
+    window.addEventListener('resize', resizeCanvas);
+
+
+    // --- CLEAR Signature Handler ---
+    function handleClearSignature() {
+      if (pad) pad.clear();
+      resultEl.textContent = "";
+    };
+
+    // --- SIGN and Submit Handler ---
+    async function handleSubmitSignature() {
+      const name = signerNameEl.value.trim();
+      
+      if (!pad || pad.isEmpty() || !name) {
+        resultEl.textContent = "Please provide a name and signature.";
+        return;
+      }
+
+      resultEl.textContent = "Processing...";
+      signBtn.disabled = true;
+
+      try {
+        // 1. Request Token
+        const tokenRes = await fetch(`${FN_URL}/request`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ employee_id: empId })
+        });
+        const { token } = await tokenRes.json();
+        if (!token) throw new Error("Could not get submission token.");
+
+        // 2. Finalize Submission
+        const finalRes = await fetch(`${FN_URL}/finalize`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                token,
+                signer_name: name,
+                signature_data_url: pad.toDataURL("image/jpeg") 
+            })
+        });
+        const response = await finalRes.json();
+
+        if (finalRes.ok && response.pdf_url) {
+            resultEl.textContent = "Signed successfully! Document updated above.";
+            // Refresh PDF with cache buster to show the signed version
+            pdfEl.src = response.pdf_url + "?t=" + Date.now();
+        } else {
+            resultEl.textContent = response.error || "Submission failed.";
+        }
+      } catch (e) {
+        resultEl.textContent = `Error: ${e.message}`;
+      } finally {
+        signBtn.disabled = false;
+      }
+    };
+
     // --- LOGIN LOGIC ---
-    document.getElementById("loginBtn").onclick = async () => {
+    loginBtn.onclick = async () => {
       const u = document.getElementById("username").value.trim().toUpperCase();
       const p = document.getElementById("pin").value.trim();
-      const loginMsgEl = document.getElementById("loginMsg");
-
+      
       if (!u || !p) return loginMsgEl.textContent = "Enter username and PIN";
 
       loginMsgEl.textContent = "Authenticating...";
-      document.getElementById("loginBtn").disabled = true;
+      loginBtn.disabled = true;
 
       try {
         const { data: emp, error } = await supabase.from("employees2025")
@@ -125,108 +209,33 @@
         if (error || !emp || emp.pin !== p) throw new Error("Invalid credentials");
 
         empId = emp.id;
-        document.getElementById("login").classList.add("hidden");
-        document.getElementById("app").classList.remove("hidden");
-        document.getElementById("empName").textContent = `${emp.first_name} ${emp.last_name}`;
+        loginEl.classList.add("hidden");
+        appEl.classList.remove("hidden");
+        empNameEl.textContent = `${emp.first_name} ${emp.last_name}`;
+        
+        // Load PDF document
+        pdfEl.src = emp.pdf_url;
 
-        // Load PDF document using PDF.js
-        const pdfUrl = emp.pdf_url;
-        const loadingTask = pdfjsLib.getDocument(pdfUrl);
-        loadingTask.promise.then(function(pdf) {
-          const container = document.getElementById('pdfContainer');
-          const totalPages = pdf.numPages;
+        // ** CORE FIX: Initialize Pad and attach handlers here, when the canvas is visible **
+        if (canvas) {
+           pad = new SignaturePad(canvas, {
+              backgroundColor: "white",
+              penColor: "black",
+              minWidth: 0.8,
+              maxWidth: 2.5 
+           });
+           resizeCanvas(); // Call initial resize immediately
+           
+           // Attach button handlers now
+           clearBtn.onclick = handleClearSignature;
+           signBtn.onclick = handleSubmitSignature;
+        }
 
-          // Render all pages of the PDF
-          for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
-            pdf.getPage(pageNumber).then(function(page) {
-              const scale = 1.5;
-              const viewport = page.getViewport({ scale: scale });
-              const canvas = document.createElement('canvas');
-              const context = canvas.getContext('2d');
-              canvas.height = viewport.height;
-              canvas.width = viewport.width;
-              container.appendChild(canvas); // Add the canvas to the container
-
-              // Render the page
-              page.render({
-                canvasContext: context,
-                viewport: viewport
-              });
-            });
-          }
-        }).catch(function(error) {
-          document.getElementById("pdfError").classList.remove("hidden");
-          console.error("Error loading PDF: ", error);
-        });
-
-        // Initialize signature pad
-        pad = new SignaturePad(document.getElementById('sigPad'), {
-          backgroundColor: 'white',
-          penColor: 'black',
-          minWidth: 0.8,
-          maxWidth: 2.5
-        });
 
       } catch (err) {
         loginMsgEl.textContent = err.message;
       } finally {
-        document.getElementById("loginBtn").disabled = false;
-      }
-    };
-
-    // --- CLEAR Signature ---
-    document.getElementById("clearBtn").onclick = () => {
-      pad.clear();
-      document.getElementById("result").textContent = "";
-    };
-
-    // --- SIGN and Submit ---
-    document.getElementById("signBtn").onclick = async () => {
-      const name = document.getElementById("signerName").value.trim();
-      const resultEl = document.getElementById("result");
-      const signBtnEl = document.getElementById("signBtn");
-
-      if (!pad || pad.isEmpty() || !name) {
-        resultEl.textContent = "Please provide a name and signature.";
-        return;
-      }
-
-      resultEl.textContent = "Processing...";
-      signBtnEl.disabled = true;
-
-      try {
-        // 1. Request Token
-        const tokenRes = await fetch(`${FN_URL}/request`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ employee_id: empId })
-        });
-        const { token } = await tokenRes.json();
-        if (!token) throw new Error("Could not get submission token.");
-
-        // 2. Finalize Submission
-        const finalRes = await fetch(`${FN_URL}/finalize`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            token,
-            signer_name: name,
-            signature_data_url: pad.toDataURL("image/jpeg")
-          })
-        });
-        const response = await finalRes.json();
-
-        if (finalRes.ok && response.pdf_url) {
-          resultEl.textContent = "Signed successfully! Document updated above.";
-          // Refresh PDF with cache buster to show the signed version
-          document.getElementById("pdfCanvas").src = response.pdf_url + "?t=" + Date.now();
-        } else {
-          resultEl.textContent = response.error || "Submission failed.";
-        }
-      } catch (e) {
-        resultEl.textContent = `Error: ${e.message}`;
-      } finally {
-        signBtnEl.disabled = false;
+        loginBtn.disabled = false;
       }
     };
   </script>
