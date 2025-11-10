@@ -651,20 +651,11 @@
 
     // --- FINAL FIXED: Use EMP.uuid (real Supabase UUID) as employee_id ---
 async function resolveEmployeeUUID(hrRow) {
-  console.log("Resolving UUID for employee:", hrRow.id);  // Log the ID for debugging
+  console.log("Resolving UUID for employee:", hrRow.id);
 
-  const employeeId = String(hrRow.id);  // Ensure employee ID is in string format
+  const employeeId = String(hrRow.id);
 
-  // Check if the ID is valid and formatted as a UUID
-  const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(EMP.uuid);
-  if (!isUUID) {
-    console.warn(`Invalid UUID format for employee: ${EMP.uuid}`);
-    // Use employee external_id as fallback if UUID is not found
-    EMP.uuid = EMP.external_id;
-    console.warn(`Using external ID ${EMP.uuid} as primary key to proceed.`);
-  }
-
-  // Continue with fetching the employee UUID from the bridge table if needed
+  // Step 1: Look up existing mapping
   const { data, error } = await sb
     .from("hb_access")
     .select("employee_id")
@@ -672,51 +663,90 @@ async function resolveEmployeeUUID(hrRow) {
     .maybeSingle();
 
   if (error) {
-    console.error("Error retrieving UUID:", error);
-    return null; // Return null if an error occurs
+    console.error("DB error looking up hb_access:", error);
+    return null;
   }
 
-  if (!data?.employee_id) {
-    console.error("No UUID found for employee:", hrRow.id);
-    return null; // Return null if UUID is missing
+  // Step 2: If we have a REAL UUID (contains dashes), use it
+  if (data?.employee_id && data.employee_id.includes('-')) {
+    console.log("Valid UUID found:", data.employee_id);
+    return data.employee_id;
   }
 
-  console.log("UUID found:", data.employee_id);
-  return data.employee_id; // Return the UUID
+  // Step 3: Row exists but employee_id is numeric → FIX IT (update in place)
+  if (data?.employee_id) {
+    console.warn("Found old numeric employee_id. Fixing it now...");
+    const newUuid = crypto.randomUUID();
+
+    const { error: updErr } = await sb
+      .from("hb_access")
+      .update({
+        employee_id: newUuid,
+        initials: "HR"
+      })
+      .eq("employee_external_id", employeeId);
+
+    if (updErr) {
+      console.error("Failed to update existing row:", updErr);
+      return null;
+    }
+
+    console.log("Fixed! New UUID:", newUuid);
+    return newUuid;
+  }
+
+  // Step 4: No row at all → create fresh
+  console.warn("No mapping found. Creating new one...");
+  const newUuid = crypto.randomUUID();
+
+  const { error: insErr } = await sb
+    .from("hb_access")
+    .insert({
+      employee_external_id: employeeId,
+      employee_id: newUuid,
+      initials: "HR"
+    });
+
+  if (insErr) {
+    console.error("Failed to insert new mapping:", insErr);
+    return null;
+  }
+
+  console.log("Created new UUID:", newUuid);
+  return newUuid;
 }
 
 
+async function selectEmployee(e) {
+  try {
+    EMP = { ...e, external_id: String(e.id) };
+    EMP.uuid = await resolveEmployeeUUID(e);  // Ensure this returns a valid UUID
 
-    async function selectEmployee(e) {
-      try {
-        EMP = { ...e, external_id: String(e.id) };
-        EMP.uuid = await resolveEmployeeUUID(e);
-        
-        // FIX: If UUID is not found in the bridge table (EMP.uuid is null), 
-        // use the external ID as the key to prevent crashing and allow data saving.
-        if (!EMP.uuid) {
-            EMP.uuid = EMP.external_id;
-            console.warn(`[FIX]: UUID not found in hb_access. Using external ID ${EMP.uuid} as primary key to proceed.`);
-        }
+    // Ensure EMP.uuid is populated before proceeding
+if (!EMP.uuid || !EMP.uuid.includes('-')) {
+  EMP.uuid = EMP.external_id;
+  console.warn("[FALLBACK] Using external_id as key (will fail PDF)");
+}
+    console.log("Employee UUID (or external_id):", EMP.uuid);  // Log for debugging
 
-        EMP.username = e.username ?? EMP.full_name?.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0,12) + "_" + String(e.id).slice(-6);
-        EMP.full_name = e.full_name;
+    EMP.username = e.username ?? EMP.full_name?.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0,12) + "_" + String(e.id).slice(-6);
+    EMP.full_name = e.full_name;
 
-        empList.classList.add("hidden");
-        empSearch.value = e.full_name || "";
-        clearForNewEmployee();
-        hydrateEmployeeUiFromHR(e);
+    empList.classList.add("hidden");
+    empSearch.value = e.full_name || "";
+    clearForNewEmployee();
+    hydrateEmployeeUiFromHR(e);
 
-        empInfo.innerHTML = `Ready • Key: ${EMP.uuid}`;
-        await preloadEnrollment();
-        updatePrices();
-        [btnSave, btnSave2, btnPDF, btnPDF2].forEach(b => b.disabled = false);
-      } catch (err) {
-        console.error("Select employee failed:", err);
-        empInfo.innerHTML = `<b class="text-rose-700">Error: ${err.message}</b>`;
-        EMP = null;
-      }
-    }
+    empInfo.innerHTML = `Ready • Key: ${EMP.uuid}`;
+    await preloadEnrollment();
+    updatePrices();
+    [btnSave, btnSave2, btnPDF, btnPDF2].forEach(b => b.disabled = false);
+  } catch (err) {
+    console.error("Select employee failed:", err);
+    empInfo.innerHTML = `<b class="text-rose-700">Error: ${err.message}</b>`;
+    EMP = null;
+  }
+}
 
     function getEnrollmentFilter() {
       return EMP?.uuid ? { column: "employee_id", value: EMP.uuid } : null;
@@ -1007,58 +1037,86 @@ async function resolveEmployeeUUID(hrRow) {
       return true;
     }
 
-    async function handlePDF() {
-      if (!(await ensureEmployeeSelected())) return;
-      const filt = getEnrollmentFilter();
-      if (!filt){ msg.textContent = "Missing employee key."; return; }
-      try {
-        const { data, error } = await sb
-          .from("benefit_enrollments").select("pdf_url")
-          .eq(filt.column, filt.value).maybeSingle();
-
-        if (error || !data?.pdf_url) { msg.textContent = "No PDF yet – save first."; return; }
-        window.open(data.pdf_url, '_blank');
-        msg.textContent = "PDF opened!";
-        setTimeout(() => msg.textContent = "", 3000);
-      } catch (e) { console.error(e); msg.textContent = "Failed to load PDF."; }
-    }
-
-    async function handleSave() {
+   async function handlePDF() {
   if (!(await ensureEmployeeSelected())) return;
-
-  msg.textContent = "Saving data...";
-
-  const payload = getFullEnrollmentPayload();
-  const result = await performSave(payload);
-  if (!result.success) return;
-  
-  await preloadEnrollment();
-
-  msg.textContent = "Generating PDF...";
+  const filt = getEnrollmentFilter();
+  if (!filt) { msg.textContent = "Missing employee key."; return; }
 
   try {
-    // Check if EMP.uuid is numeric or UUID
-    const isNumeric = /^\d+$/.test(EMP.uuid);
-    
-    // Send the request with the appropriate parameter
-    const url = isNumeric 
-      ? `${FN_URL}?employee_id=${EMP.uuid}`  // Send numeric ID
-      : `${FN_URL}?employee_uuid=${EMP.uuid}`;  // Send UUID
-      console.log("PDF URL →", url);
+    // First: try to get from DB
+    const { data, error } = await sb
+      .from("benefit_enrollments")
+      .select("pdf_url")
+      .eq(filt.column, filt.value)
+      .maybeSingle();
 
-    const res = await fetch(url, {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-        "apikey": SUPABASE_ANON_KEY
-      }
-    });
+    let url = data?.pdf_url;
 
-    if (!res.ok) {
-      const err = await res.text();
-      console.error("PDF Function Error:", err);
-      throw new Error(`Server error: ${err}`);
+    // If not in DB, generate on-the-fly (fallback)
+    if (!url) {
+      msg.textContent = "Generating PDF now...";
+      const pdfUrl = FN_URL + `?employee_uuid=${EMP.uuid}`;
+      const res = await fetch(pdfUrl, {
+        headers: {
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+          "apikey": SUPABASE_ANON_KEY
+        }
+      });
+      if (!res.ok) throw new Error("Failed to generate PDF");
+      const pdfBytes = await res.arrayBuffer();
+      const key = `enrollment_pdfs/employee_${EMP.uuid}.pdf`;
+      await sb.storage.from('employee-pdfs').upload(key, pdfBytes, { upsert: true });
+      const { data: { publicUrl } } = sb.storage.from('employee-pdfs').getPublicUrl(key);
+      url = publicUrl;
+
+      // Update DB so next time it's instant
+      await sb.from("benefit_enrollments").update({ pdf_url: url }).eq(filt.column, filt.value);
     }
+
+    window.open(url, '_blank');
+    msg.textContent = "PDF opened!";
+    setTimeout(() => msg.textContent = "", 3000);
+  } catch (e) {
+    console.error(e);
+    msg.textContent = "Failed to load PDF.";
+  }
+}
+
+     async function handleSave() {
+      if (!(await ensureEmployeeSelected())) return;
+      msg.textContent = "Saving data...";
+      const payload = getFullEnrollmentPayload();
+      const result = await performSave(payload);
+      if (!result.success) return;
+ 
+      await preloadEnrollment();
+      msg.textContent = "Generating PDF...";
+      try {
+        // FIXED: Correctly detect numeric vs UUID and use right query param
+        let pdfUrl = FN_URL;
+        if (EMP.uuid && /^\d+$/.test(EMP.uuid)) {
+          pdfUrl += `?employee_id=${EMP.uuid}`;
+        } else if (EMP.uuid && EMP.uuid.includes('-')) {
+          pdfUrl += `?employee_uuid=${EMP.uuid}`;
+        } else {
+          throw new Error("Invalid employee key: " + EMP.uuid);
+        }
+
+        console.log("PDF Generation URL →", pdfUrl);
+        const res = await fetch(pdfUrl, {
+          method: "GET",
+          headers: {
+            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+            "apikey": SUPABASE_ANON_KEY
+          }
+        });
+
+        if (!res.ok) {
+          const err = await res.text();
+          console.error("PDF Function Error:", err);
+          throw new Error(`Server error: ${err}`);
+        }
+        // ... rest of your existing code (upload, update pdf_url, etc.)
 
     const pdfBytes = await res.arrayBuffer();
     const pdfKey = `enrollment_pdfs/employee_${EMP.uuid}.pdf`;
@@ -1068,17 +1126,20 @@ async function resolveEmployeeUUID(hrRow) {
 
     const { data: { publicUrl } } = sb.storage.from('employee-pdfs').getPublicUrl(pdfKey);
 
+    // Check if the pdf_url is being correctly updated
+    console.log("Generated PDF URL:", publicUrl);
+
     const filt = getEnrollmentFilter();
     await sb.from("benefit_enrollments").update({ pdf_url: publicUrl }).eq(filt.column, filt.value);
 
     msg.textContent = "Saved & PDF Updated!";
     setTimeout(() => msg.textContent = "", 3000);
-
   } catch (e) {
     console.error("PDF Update/Save Error:", e);
     msg.textContent = "PDF failed (check console).";
   }
 }
+
 
 
     [tierSel, medPlan, denPlan, visPlan, document.getElementById("marital_status")]
