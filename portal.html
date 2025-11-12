@@ -90,6 +90,7 @@
         <!-- NAV -->
         <nav class="flex gap-3 mb-6 overflow-x-auto">
             <button id="tabDocs" class="px-4 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 font-medium whitespace-nowrap">Signed Documents</button>
+            <button id="tabSummary" class="px-4 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 font-medium whitespace-nowrap hidden">Benefit Summary</button>
             <button id="tabUsers" class="px-4 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 font-medium whitespace-nowrap hidden">Authorized Users</button>
             <button id="tabLogs" class="px-4 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 font-medium whitespace-nowrap hidden">Access Logs</button>
         </nav>
@@ -112,6 +113,31 @@
                 </tbody>
             </table>
         </section>
+
+        <!-- SUMMARY SECTION (Admin only) -->
+        <section id="summarySection" class="bg-white rounded-xl shadow-lg p-6 overflow-x-auto hidden">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4 border-b pb-2">Employee Benefit Summary</h2>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <input id="employeeSearch" type="text" placeholder="Search by Name or Username..." class="col-span-full md:col-span-1 border w-full p-2 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#B9965A]" />
+            </div>
+
+            <div id="employeeSelectionArea" class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <!-- Employee List for Selection -->
+                <div class="md:col-span-1 bg-gray-50 p-4 rounded-xl shadow-inner max-h-[500px] overflow-y-auto">
+                    <h3 class="font-semibold text-gray-800 mb-2">Select Employee:</h3>
+                    <div id="employeeList" class="space-y-1">
+                        <p class="text-gray-500 text-sm py-2">Loading users...</p>
+                    </div>
+                </div>
+
+                <!-- Summary Card Container -->
+                <div id="summaryCardContainer" class="md:col-span-2 min-h-[200px] flex items-center justify-center">
+                    <p class="text-gray-500 text-center">Select an employee from the list to view their detailed summary card.</p>
+                </div>
+            </div>
+        </section>
+
 
         <!-- USERS SECTION (Admin only) -->
         <section id="usersSection" class="bg-white rounded-xl shadow-lg p-6 overflow-x-auto hidden">
@@ -193,6 +219,11 @@
         const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
         const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+        // --- IMPORTANT RATE CONFIGURATION ---
+        // !!! UPDATE THIS VALUE WITH YOUR ACTUAL ACTIVE SCHEDULE ID !!!
+        const RATE_SCHEDULE_ID = 'YOUR_ACTIVE_RATE_SCHEDULE_UUID'; 
+        // --- END RATE CONFIGURATION ---
+
         // --- GLOBAL STATE ---
         let currentUser = null;
         let employeeDataCache = []; // Global cache for employee data (Signed Docs List)
@@ -206,7 +237,6 @@
         let nextAuthUserId = 5; 
         
         // --- AUTH/SESSION STATE ---
-        // FIX: stordUser declared once here (outside the initialization block)
         const storedUser = localStorage.getItem("auth_user"); 
         
         // --- DATA ARRAYS (Mock data for initial load/CRUD simulation) ---
@@ -220,9 +250,75 @@
 
         // --- FETCHERS (LIVE DATABASE CALLS) ---
 
+        // NEW: Fetches the plan rate (employee cost) for a given plan code and tier
+        async function fetchPlanRates(planCodes, tier) {
+            if (RATE_SCHEDULE_ID === 'YOUR_ACTIVE_RATE_SCHEDULE_UUID') {
+                 console.warn("RATE_SCHEDULE_ID is not configured. Using $0.00 placeholders for premiums.");
+                 // Return zero rates if configuration is missing
+                 return planCodes.map(code => ({ plan_code: code, monthly_cost: 0 }));
+            }
+
+            const { data, error } = await supabase
+                .from('benefit2_rates')
+                .select('plan_code, amount, per_year_periods')
+                .eq('schedule_id', RATE_SCHEDULE_ID)
+                .eq('tier', tier)
+                .in('plan_code', planCodes);
+            
+            if (error) {
+                console.error("Error fetching plan rates:", error);
+                return planCodes.map(code => ({ plan_code: code, monthly_cost: 0 }));
+            }
+
+            // Calculate monthly cost: amount / per_year_periods * 12
+            // Example: amount 500.00, per_year_periods 26 (bi-weekly), Monthly = (500/26)*12
+            const monthlyRates = data.map(rate => ({
+                plan_code: rate.plan_code,
+                monthly_cost: (parseFloat(rate.amount) * 12) / parseInt(rate.per_year_periods)
+            }));
+            
+            return monthlyRates;
+        }
+
+        // NEW: Fetches full employee details and their latest enrollment for the Summary Card
+        async function fetchEmployeeDetails(username) {
+            // 1. Fetch employee record (employees2025) - Basic details
+            const { data: employees, error: empError } = await supabase
+                .from('employees2025')
+                .select(`id, first_name, last_name, job_title, original_hire_date, username`)
+                .eq('username', username);
+            
+            const employee = employees ? employees[0] : null;
+
+            if (empError || !employee) {
+                console.error("Error fetching employee details:", empError);
+                return { employee: null, enrollment: null };
+            }
+
+            // 2. Fetch the LATEST benefit enrollment record for the employee (Includes required plans and tier)
+            const { data: enrollments, error: enrollError } = await supabase
+                .from('benefit_enrollments')
+                .select(`
+                    tier_election, medical_plan, dental_plan, vision_plan, 
+                    dependents, beneficiaries,
+                    spouse, signed_at 
+                `)
+                .eq('username', username)
+                .order('created_at', { ascending: false }) // Get the most recent
+                .limit(1);
+
+            const enrollment = enrollments ? enrollments[0] : null;
+
+            if (enrollError) {
+                console.error("Error fetching enrollment details:", enrollError);
+            }
+
+            return { employee, enrollment };
+        }
+
+
         async function fetchEmployeeData() {
-            // FIX: Removed complex inner join logic and simplified to filtering by signed_pdf_url NOT NULL.
-            // This is the most reliable filter since the trigger ensures this column is set only when signed=true.
+            // Fetch employees who have a signed document (simplest reliable filter)
             const { data, error } = await supabase
                 .from('employees2025')
                 .select(`
@@ -234,7 +330,7 @@
                     signed_pdf_url,
                     job_title 
                 `)
-                .neq('signed_pdf_url', null); // Simplified filter
+                .neq('signed_pdf_url', null); 
 
             if (error) {
                 console.error("Error fetching employee data:", error);
@@ -260,7 +356,7 @@
         }
 
         async function fetchAuthorizedUsers() {
-            // NOTE: This remains mock data as your schema for 'authorized_users' is not a table we can query.
+            // NOTE: This remains mock data for the portal login credentials
             authorizedUsersCache = AUTHORIZED_USERS;
             
             // Calculate next ID based on mock data
@@ -313,6 +409,14 @@
 
 
         // --- UTILITY FUNCTIONS ---
+
+        const formatCurrency = (amount) => {
+            return new Intl.NumberFormat(LOCALE, { style: 'currency', currency: 'USD' }).format(amount || 0);
+        };
+        const formatDate = (dateString) => {
+            if (!dateString) return 'N/A';
+            return new Date(dateString).toLocaleDateString(LOCALE);
+        };
 
         // HTML Escaping
         const esc = (t) => String(t ?? "").replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
@@ -373,10 +477,8 @@
                 setupButton(primaryText, 'accent-gold', () => {
                     if (type === 'prompt') {
                         resolve(fInput.value.trim());
-                    } else if (type === 'confirm') {
-                        resolve(true);
-                    } else { // Alert
-                        resolve(true);
+                    } else { // Alert or Confirm
+                        resolve(type === 'confirm' ? true : true);
                     }
                 });
 
@@ -396,9 +498,12 @@
 
         // --- TAB CONTROL ---
         const tabDocs = document.getElementById("tabDocs");
+        const tabSummary = document.getElementById("tabSummary");
         const tabLogs = document.getElementById("tabLogs");
         const tabUsers = document.getElementById("tabUsers");
+
         const docsSection = document.getElementById("docsSection");
+        const summarySection = document.getElementById("summarySection");
         const logsSection = document.getElementById("logsSection");
         const usersSection = document.getElementById("usersSection");
 
@@ -407,13 +512,13 @@
             unsubscribeFromDocs(); 
 
             // Remove active state from all tabs and add default gray background
-            [tabDocs, tabLogs, tabUsers].forEach(b => {
+            [tabDocs, tabSummary, tabLogs, tabUsers].forEach(b => {
                 b.classList.remove("bg-gray-900","text-white");
                 b.classList.add("bg-gray-200","text-gray-800");
             });
             
             // Hide all sections
-            [docsSection, logsSection, usersSection].forEach(s => s.classList.add("hidden"));
+            [docsSection, summarySection, logsSection, usersSection].forEach(s => s.classList.add("hidden"));
 
             // Set active state for selected tab and load data
             if (tab === "docs") {
@@ -421,7 +526,12 @@
                 tabDocs.classList.remove("bg-gray-200","text-gray-800");
                 docsSection.classList.remove("hidden");
                 loadDocs(); // Initiates subscription
-            } else if (tab === "logs" && currentUser.role === 'admin') {
+            } else if (tab === "summary" && currentUser.role === 'admin') {
+                tabSummary.classList.add("bg-gray-900","text-white");
+                tabSummary.classList.remove("bg-gray-200","text-gray-800");
+                summarySection.classList.remove("hidden");
+                loadSummary();
+            } else if (tab === "logs" && currentUser.role === 'admin') {
                 tabLogs.classList.add("bg-gray-900","text-white");
                 tabLogs.classList.remove("bg-gray-200","text-gray-800");
                 logsSection.classList.remove("hidden");
@@ -434,6 +544,7 @@
             }
         }
         tabDocs.onclick = () => switchTab("docs");
+        tabSummary.onclick = () => switchTab("summary");
         tabLogs.onclick = () => switchTab("logs");
         tabUsers.onclick = () => switchTab("users");
 
@@ -520,11 +631,13 @@
             portalRole.textContent = `Portal Access — ${isAdmin ? 'Administrator' : 'Standard User'}`;
 
             if (isAdmin) {
+                tabSummary.classList.remove("hidden");
                 tabUsers.classList.remove("hidden");
                 tabLogs.classList.remove("hidden");
                 printContainer.classList.remove("hidden");
                 switchTab("docs"); // Changed default to docs for testing
             } else {
+                tabSummary.classList.add("hidden");
                 tabUsers.classList.add("hidden");
                 tabLogs.classList.add("hidden");
                 printContainer.classList.add("hidden");
@@ -547,6 +660,92 @@
             // Start the subscription and let the subscription handle the initial rendering.
             subscribeToDocs(); 
         }
+
+        // NEW: Live search functionality
+        async function loadSummary() {
+            const container = document.getElementById('summaryCardContainer');
+            const searchInput = document.getElementById('employeeSearch');
+            
+            // 1. Initial Load: Fetch employees who have signed documents
+            showSpinner();
+            await fetchEmployeeData(); 
+            hideSpinner();
+            
+            if (employeeDataCache.length === 0) {
+                container.innerHTML = `<p class="text-red-500 text-center">No signed documents found. Cannot generate summary card.</p>`;
+                return;
+            }
+
+            // 2. Set up event listeners for real-time filtering
+            searchInput.oninput = () => renderEmployeeList(searchInput.value.toLowerCase());
+
+            // 3. Render the full list initially
+            renderEmployeeList('');
+
+            // 4. Default message cleared by list or selection
+            container.innerHTML = `<p class="text-gray-500 text-center">Select an employee from the list to view their detailed summary card.</p>`;
+        }
+
+        function renderEmployeeList(filterText) {
+            const employeeListEl = document.getElementById('employeeList');
+            employeeListEl.innerHTML = '';
+            
+            // FIX: Use employeeDataCache (signed employees) for the list
+            const filteredUsers = employeeDataCache.filter(u => 
+                u.first_name.toLowerCase().includes(filterText) || 
+                u.last_name.toLowerCase().includes(filterText) ||
+                u.username.toLowerCase().includes(filterText)
+            ).sort((a, b) => a.last_name.localeCompare(b.last_name));
+
+            if (filteredUsers.length === 0) {
+                employeeListEl.innerHTML = `<p class="text-gray-500 text-sm py-2">No employees match your search.</p>`;
+                return;
+            }
+
+            filteredUsers.forEach(u => {
+                const userButton = document.createElement('button');
+                userButton.className = 'w-full text-left p-2 rounded-lg hover:bg-[#B9965A]/20 transition duration-150 text-gray-800 text-sm';
+                userButton.textContent = `${u.first_name} ${u.last_name} (${u.username})`;
+                userButton.dataset.username = u.username;
+                userButton.onclick = () => handleEmployeeSelect(u.username);
+                employeeListEl.appendChild(userButton);
+            });
+        }
+        
+        async function handleEmployeeSelect(username) {
+            const container = document.getElementById('summaryCardContainer');
+            container.innerHTML = `<div class="spinner"></div><p class="mt-4 text-gray-500">Loading benefits data...</p>`;
+            
+            showSpinner();
+            
+            // 1. Fetch employee details and enrollment
+            const { employee, enrollment } = await fetchEmployeeDetails(username);
+            
+            if (!employee || !enrollment) {
+                hideSpinner();
+                container.innerHTML = `
+                    <div class="p-6 text-center bg-yellow-50 rounded-xl border border-yellow-200">
+                        <p class="font-semibold text-gray-800">Employee data not fully available for ${username}.</p>
+                        <p class="text-sm text-gray-500">Could not find employee record or completed enrollment form.</p>
+                    </div>`;
+                return;
+            }
+
+            // 2. Determine which plans were chosen
+            const chosenPlans = [];
+            if (enrollment.medical_plan && !enrollment.medical_plan.toUpperCase().includes('WAIVE')) chosenPlans.push(enrollment.medical_plan);
+            if (enrollment.dental_plan && !enrollment.dental_plan.toUpperCase().includes('WAIVE')) chosenPlans.push(enrollment.dental_plan);
+            if (enrollment.vision_plan && !enrollment.vision_plan.toUpperCase().includes('WAIVE')) chosenPlans.push(enrollment.vision_plan);
+
+            // 3. Fetch rates based on chosen plans and employee tier
+            const rates = await fetchPlanRates(chosenPlans, enrollment.tier_election);
+            
+            // 4. Render the final card
+            renderSummaryCard(employee, enrollment, rates); // PASS RATES HERE
+            
+            hideSpinner();
+        }
+
 
         function loadUsers() {
             if (currentUser.role !== 'admin') return;
@@ -572,38 +771,37 @@
                         <td class="space-x-3 px-1">
                             <button class="text-blue-600 hover:underline js-edit">Edit</button>
                             <button class="text-red-600 hover:underline js-del">Delete</button>
-                        </td>
                     </tr>
                 `);
             });
         }
 
-        function loadLogs() {
-            if (currentUser.role !== 'admin') return;
+    function loadLogs() {
+    if (currentUser.role !== 'admin') return;
 
-            const logBody = document.getElementById("logBody");
-            logBody.innerHTML = "";
+    const logBody = document.getElementById("logBody");
+    logBody.innerHTML = "";
 
-            if (ACCESS_LOGS.length === 0) {
-                logBody.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-gray-400">No logs available</td></tr>`;
-                return;
-            }
+    if (ACCESS_LOGS.length === 0) {
+        logBody.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-gray-400">No logs available</td></tr>`;
+        return;
+    }
 
-            ACCESS_LOGS.sort((a, b) => new Date(b.login_time) - new Date(a.login_time)).forEach(l => {
-                const loginTimeCST = formatTime(new Date(l.login_time));
-                const logoutTimeCST = l.logout_time ? formatTime(new Date(l.logout_time)) : 'Active';
-                const duration = calculateDuration(l.login_time, l.logout_time);
+    ACCESS_LOGS.sort((a, b) => new Date(b.login_time) - new Date(a.login_time)).forEach(l => {
+        const loginTimeCST = formatTime(new Date(l.login_time));
+        const logoutTimeCST = l.logout_time ? formatTime(new Date(l.logout_time)) : 'Active';
+        const duration = calculateDuration(l.login_time, l.logout_time);
 
-                logBody.insertAdjacentHTML("beforeend", `
-                    <tr class="border-b hover:bg-gray-50">
-                        <td class="py-2 px-1">${esc(l.username)}</td>
-                        <td class="px-1">${esc(loginTimeCST)}</td>
-                        <td class="px-1">${esc(logoutTimeCST)}</td>
-                        <td class="px-1">${duration}</td>
-                    </tr>
-                `);
-            });
-        }
+        logBody.insertAdjacentHTML("beforeend", `
+            <tr class="border-b hover:bg-gray-50">
+                <td class="py-2 px-1">${esc(l.username)}</td>
+                <td class="px-1">${esc(loginTimeCST)}</td>
+                <td class="px-1">${esc(logoutTimeCST)}</td>
+                <td class="px-1">${duration}</td>
+            </tr>
+        `);
+    });
+}
         
         // --- PRINTING LOGIC ---
 
@@ -636,6 +834,134 @@
                 `);
             });
         }
+
+        // --- NEW SUMMARY CARD RENDERING LOGIC ---
+
+        function renderSummaryCard(employee, enrollment, rates) {
+            const container = document.getElementById('summaryCardContainer');
+            
+            // Helper function to format dependent and beneficiary lists
+            const renderList = (items) => {
+                if (!items || items.length === 0 || JSON.stringify(items) === '[]') {
+                    return `<span class="text-gray-500">None declared</span>`;
+                }
+                const listHtml = items.map((item, index) => {
+                    const name = item.first ? `${item.first} ${item.last || ''}` : `Covered Individual ${index + 1}`;
+                    const details = item.relationship || item.role || 'N/A';
+                    return `<li class="flex justify-between py-1 border-b border-dashed border-gray-100">
+                                <span>${esc(name)}</span>
+                                <span class="text-gray-600 text-sm">${esc(details)}</span>
+                            </li>`;
+                }).join('');
+                return `<ul class="space-y-1 mt-2">${listHtml}</ul>`;
+            };
+
+            // Helper for plan display
+            const getPlanText = (plan) => {
+                const p = esc(plan);
+                if (p.toUpperCase().includes('WAIVE') || p.toUpperCase() === 'NO' || !p) {
+                    return `<span class="text-red-600 font-semibold">${p || 'WAIVE'}</span>`;
+                }
+                return `<span class="text-green-600 font-semibold">${p}</span>`;
+            };
+
+            // Calculate costs based on the fetched rates dictionary
+            const getMonthlyCost = (planCode, enrollmentPlan, rates) => {
+                // If the employee waived the plan, the cost is 0 regardless of the rate table.
+                if (enrollmentPlan.toUpperCase().includes('WAIVE') || enrollmentPlan.toUpperCase() === 'NO') {
+                    return 0;
+                }
+                
+                // Find the matching rate in the dictionary
+                const rateItem = rates.find(r => r.plan_code === planCode);
+                return rateItem ? parseFloat(rateItem.monthly_cost) : 0;
+            };
+
+            const medicalPlanCode = enrollment.medical_plan;
+            const dentalPlanCode = enrollment.dental_plan;
+            const visionPlanCode = enrollment.vision_plan;
+
+            const costMedical = getMonthlyCost(medicalPlanCode, medicalPlanCode, rates);
+            const costDental = getMonthlyCost(dentalPlanCode, dentalPlanCode, rates);
+            const costVision = getMonthlyCost(visionPlanCode, visionPlanCode, rates);
+            
+            const totalMonthlyPremium = costMedical + costDental + costVision;
+
+            const cardHtml = `
+            <div class="w-full bg-white border border-gray-200 rounded-xl shadow-2xl overflow-hidden my-4">
+                <div class="accent-gold p-6 text-white">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <h3 class="text-3xl font-extrabold tracking-tight">${esc(employee.first_name)} ${esc(employee.last_name)}</h3>
+                            <p class="text-sm font-light opacity-80 mt-1">Benefit Enrollment Summary — Signed ${formatDate(enrollment.signed_at)}</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-base font-medium">${esc(employee.username)}</p>
+                            <p class="text-xs opacity-70">${esc(employee.job_title)}</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="p-6 space-y-8">
+                    <!-- SECTION 1: FINANCIAL & TIER -->
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 border-b pb-6">
+                        <div class="p-3 bg-gray-50 rounded-lg shadow-inner col-span-full">
+                            <p class="text-sm font-medium text-gray-500">Tier Election</p>
+                            <p class="text-lg font-bold text-gray-800">${esc(enrollment.tier_election || 'N/A')}</p>
+                        </div>
+                        <div class="p-3 bg-gray-50 rounded-lg shadow-inner col-span-full sm:col-span-3">
+                            <p class="text-sm font-medium text-gray-500">Total Monthly Premium</p>
+                            <p class="text-xl font-bold text-gray-800">${formatCurrency(totalMonthlyPremium)}</p>
+                        </div>
+                    </div>
+
+                    <!-- SECTION 2: PLAN CHOICES & COSTS -->
+                    <div class="space-y-4">
+                        <h4 class="text-xl font-semibold text-gray-800 border-b pb-2">Plan Choices & Employee Monthly Cost</h4>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <!-- MEDICAL -->
+                            <div class="p-3 border rounded-lg ${costMedical > 0 ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'}">
+                                <p class="font-medium">Medical Plan</p>
+                                <p class="text-sm">${getPlanText(enrollment.medical_plan)}</p>
+                                <p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costMedical)} / mo</p>
+                            </div>
+                            <!-- DENTAL -->
+                            <div class="p-3 border rounded-lg ${costDental > 0 ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'}">
+                                <p class="font-medium">Dental Plan</p>
+                                <p class="text-sm">${getPlanText(enrollment.dental_plan)}</p>
+                                <p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costDental)} / mo</p>
+                            </div>
+                            <!-- VISION -->
+                            <div class="p-3 border rounded-lg ${costVision > 0 ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'}">
+                                <p class="font-medium">Vision Plan</p>
+                                <p class="text-sm">${getPlanText(enrollment.vision_plan)}</p>
+                                <p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costVision)} / mo</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- SECTION 3: COVERED INDIVIDUALS -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-8 pt-4 border-t">
+                        <div>
+                            <h4 class="text-lg font-semibold text-gray-800 mb-2">Dependents/Spouse</h4>
+                            <div class="bg-gray-50 p-3 rounded-lg">
+                                ${enrollment.spouse ? `<p class="text-sm font-medium text-gray-800 mb-1">Spouse: ${enrollment.spouse.full_name || 'Covered'}</p>` : ''}
+                                ${renderList(enrollment.dependents)}
+                            </div>
+                        </div>
+                        <div>
+                            <h4 class="text-lg font-semibold text-gray-800 mb-2">Beneficiaries</h4>
+                            <div class="bg-gray-50 p-3 rounded-lg">
+                                ${renderList(enrollment.beneficiaries)}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            `;
+            container.innerHTML = cardHtml;
+        }
+
 
         // Event listener for per-employee print button in Documents table
         const docBody = document.getElementById("docBody");
@@ -767,7 +1093,7 @@
                 showSpinner();
                 // Simulate Delete
                 // NOTE: This should be a Supabase DELETE call in a production app.
-                const index = authorizedUsersCache.findIndex(u => u.id === id);
+                const index = AUTHORIZED_USERS.findIndex(u => u.id === id);
                 if (index > -1) {
                     authorizedUsersCache.splice(index, 1);
                     showAlert(`User **${esc(user.full_name)}** deleted successfully.`, "User Deleted");
