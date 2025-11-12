@@ -221,7 +221,7 @@
 
         // --- IMPORTANT RATE CONFIGURATION ---
         // !!! UPDATE THIS VALUE WITH YOUR ACTUAL ACTIVE SCHEDULE ID !!!
-        const RATE_SCHEDULE_ID = 'YOUR_ACTIVE_RATE_SCHEDULE_UUID'; 
+        const RATE_SCHEDULE_ID = '10729793-8776-423e-a4e4-b7532c64031b';
         // --- END RATE CONFIGURATION ---
 
         // --- GLOBAL STATE ---
@@ -251,34 +251,31 @@
         // --- FETCHERS (LIVE DATABASE CALLS) ---
 
         // NEW: Fetches the plan rate (employee cost) for a given plan code and tier
-        async function fetchPlanRates(planCodes, tier) {
-            if (RATE_SCHEDULE_ID === 'YOUR_ACTIVE_RATE_SCHEDULE_UUID') {
-                 console.warn("RATE_SCHEDULE_ID is not configured. Using $0.00 placeholders for premiums.");
-                 // Return zero rates if configuration is missing
-                 return planCodes.map(code => ({ plan_code: code, monthly_cost: 0 }));
-            }
+       async function fetchPlanRates(planCodes, tier) {
+    if (RATE_SCHEDULE_ID === 'YOUR_ACTIVE_RATE_SCHEDULE_UUID') {
+        console.warn("RATE_SCHEDULE_ID not set");
+        return planCodes.map(code => ({ plan_code: code, per_period_cost: 0 }));
+    }
 
-            const { data, error } = await supabase
-                .from('benefit2_rates')
-                .select('plan_code, amount, per_year_periods')
-                .eq('schedule_id', RATE_SCHEDULE_ID)
-                .eq('tier', tier)
-                .in('plan_code', planCodes);
-            
-            if (error) {
-                console.error("Error fetching plan rates:", error);
-                return planCodes.map(code => ({ plan_code: code, monthly_cost: 0 }));
-            }
+    const { data, error } = await supabase
+        .from('benefit2_rates')
+        .select('plan_code, amount')
+        .eq('schedule_id', RATE_SCHEDULE_ID)
+        .eq('tier', tier)
+        .in('plan_code', planCodes);
 
-            // Calculate monthly cost: amount / per_year_periods * 12
-            // Example: amount 500.00, per_year_periods 26 (bi-weekly), Monthly = (500/26)*12
-            const monthlyRates = data.map(rate => ({
-                plan_code: rate.plan_code,
-                monthly_cost: (parseFloat(rate.amount) * 12) / parseInt(rate.per_year_periods)
-            }));
-            
-            return monthlyRates;
-        }
+    if (error || !data) {
+        console.error("Rate fetch error:", error);
+        return planCodes.map(code => ({ plan_code: code, per_period_cost: 0 }));
+    }
+
+    const rates = data.map(rate => ({
+        plan_code: rate.plan_code,
+        per_period_cost: parseFloat(rate.amount)  // ← PER PAYCHECK, NO MATH
+    }));
+
+    return rates;
+}
 
         // NEW: Fetches full employee details and their latest enrollment for the Summary Card
         async function fetchEmployeeDetails(username) {
@@ -866,24 +863,22 @@
             };
 
             // Calculate costs based on the fetched rates dictionary
-            const getMonthlyCost = (planCode, enrollmentPlan, rates) => {
-                // If the employee waived the plan, the cost is 0 regardless of the rate table.
-                if (enrollmentPlan.toUpperCase().includes('WAIVE') || enrollmentPlan.toUpperCase() === 'NO') {
-                    return 0;
-                }
-                
-                // Find the matching rate in the dictionary
-                const rateItem = rates.find(r => r.plan_code === planCode);
-                return rateItem ? parseFloat(rateItem.monthly_cost) : 0;
-            };
+         const getPerPeriodCost = (planCode, enrollmentPlan, rates) => {
+    if (enrollmentPlan.toUpperCase().includes('WAIVE') || enrollmentPlan.toUpperCase() === 'NO') {
+        return 0;
+    }
+    
+    const rateItem = rates.find(r => r.plan_code === planCode);
+    return rateItem ? rateItem.per_period_cost : 0;
+};
 
             const medicalPlanCode = enrollment.medical_plan;
             const dentalPlanCode = enrollment.dental_plan;
             const visionPlanCode = enrollment.vision_plan;
 
-            const costMedical = getMonthlyCost(medicalPlanCode, medicalPlanCode, rates);
-            const costDental = getMonthlyCost(dentalPlanCode, dentalPlanCode, rates);
-            const costVision = getMonthlyCost(visionPlanCode, visionPlanCode, rates);
+         const costMedical = getPerPeriodCost(medicalPlanCode, medicalPlanCode, rates);
+            const costDental = getPerPeriodCost(dentalPlanCode, dentalPlanCode, rates);
+const costVision = getPerPeriodCost(visionPlanCode, visionPlanCode, rates);
             
             const totalMonthlyPremium = costMedical + costDental + costVision;
 
@@ -910,8 +905,8 @@
                             <p class="text-lg font-bold text-gray-800">${esc(enrollment.tier_election || 'N/A')}</p>
                         </div>
                         <div class="p-3 bg-gray-50 rounded-lg shadow-inner col-span-full sm:col-span-3">
-                            <p class="text-sm font-medium text-gray-500">Total Monthly Premium</p>
-                            <p class="text-xl font-bold text-gray-800">${formatCurrency(totalMonthlyPremium)}</p>
+                           <p class="text-sm font-medium text-gray-500">Total Per Pay Period</p>
+<p class="text-xl font-bold text-gray-800">${formatCurrency(totalMonthlyPremium)} per pay period</p>
                         </div>
                     </div>
 
@@ -923,20 +918,17 @@
                             <div class="p-3 border rounded-lg ${costMedical > 0 ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'}">
                                 <p class="font-medium">Medical Plan</p>
                                 <p class="text-sm">${getPlanText(enrollment.medical_plan)}</p>
-                                <p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costMedical)} / mo</p>
-                            </div>
+<p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costMedical)} / pay period</p>                            </div>
                             <!-- DENTAL -->
                             <div class="p-3 border rounded-lg ${costDental > 0 ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'}">
                                 <p class="font-medium">Dental Plan</p>
                                 <p class="text-sm">${getPlanText(enrollment.dental_plan)}</p>
-                                <p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costDental)} / mo</p>
-                            </div>
+<p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costDental)} / pay period</p>                            </div>
                             <!-- VISION -->
                             <div class="p-3 border rounded-lg ${costVision > 0 ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'}">
                                 <p class="font-medium">Vision Plan</p>
                                 <p class="text-sm">${getPlanText(enrollment.vision_plan)}</p>
-                                <p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costVision)} / mo</p>
-                            </div>
+<p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costVision)} / pay period</p>                            </div>
                         </div>
                     </div>
 
