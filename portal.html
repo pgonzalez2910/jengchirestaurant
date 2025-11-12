@@ -15,6 +15,20 @@
         .accent-gold{background:#B9965A;color:#fff}
         .accent-gold:hover{background:#a9874e}
         .accent-gold-text { color: #B9965A; }
+
+        /* Print Styles: Hide everything except the print view when printing */
+        @media print {
+            #dashboard, #loginScreen, #spinnerOverlay, #feedbackModal, #userModal { display: none !important; }
+            #printView { display: block !important; }
+            /* Force iframes to take up page space for printing */
+            .print-iframe { page-break-after: always; margin-bottom: 0 !important; }
+            iframe {
+                width: 100%;
+                /* Use a height close to a full page (e.g., 95% of viewport height) */
+                height: 95vh;
+                border: none !important;
+            }
+        }
     </style>
 </head>
 
@@ -113,11 +127,12 @@
                         <th class="text-left px-1">Username</th>
                         <th class="text-left px-1">PIN</th>
                         <th class="text-left px-1">Role</th>
+                        <th class="text-left px-1">Active</th>
                         <th class="text-left px-1">Actions</th>
                     </tr>
                 </thead>
                 <tbody id="userBody">
-                    <tr><td colspan="5" class="text-center py-4 text-gray-400">Loading users...</td></tr>
+                    <tr><td colspan="6" class="text-center py-4 text-gray-400">Loading users...</td></tr>
                 </tbody>
             </table>
         </section>
@@ -153,6 +168,9 @@
                     <option value="user">Standard User</option>
                     <option value="admin">Administrator</option>
                 </select>
+                <label id="modalActiveContainer" class="flex items-center gap-2 text-sm">
+                    <input id="modalActive" type="checkbox" /> Portal Active
+                </label>
             </div>
             <div class="flex justify-end gap-3 mt-6">
                 <button id="modalCancel" class="px-4 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 transition duration-150">Cancel</button>
@@ -161,10 +179,21 @@
         </div>
     </div>
 
+    <!-- PRINT ALL DOCUMENTS VIEW -->
+    <section id="printView" class="hidden max-w-7xl mx-auto px-4 sm:px-6 py-8">
+        <h1 class="text-3xl font-bold mb-6 text-center">Jeng Chi Employee Documents (Print View)</h1>
+        <p class="text-center text-gray-600 mb-6 print:hidden">The browser's print dialog should have appeared. All documents are embedded below. Click 'Close' when done printing.</p>
+        <button id="closePrintView" class="mb-8 accent-gold px-4 py-2 rounded-lg block mx-auto print:hidden">Close Print View</button>
+        <div id="printContainerContent" class="space-y-8">
+            <!-- IFRAMES will be injected here -->
+        </div>
+    </section>
+
     <script>
         // --- DATA SIMULATION ---
+
+        // 1. Employee Document Data (Used for the Documents Tab) - Stays as the large array of employees/documents
         const EMPLOYEE_DATA = [
-            // Note: I'm adding a 'role' field for portal access control.
             { id: 187, first_name: "Pablo", last_name: "Gonzalez", username: "PG", pin: "9367", signed_pdf_url: null, role: "admin" },
             { id: 3, first_name: "Shoko", last_name: "Teng", username: "ST", pin: "3764", signed_pdf_url: null, role: "user" },
             { id: 314, first_name: "Rony", last_name: "Carranza", username: "RC", pin: "5288", signed_pdf_url: "https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/employee-pdfs/enrollment_pdfs/signed_314.pdf?t=1762899036085", role: "user" },
@@ -216,10 +245,19 @@
             { id: 278, first_name: "Guadalupe", last_name: "Joaquin", username: "GJ", pin: "1479", signed_pdf_url: "https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/employee-pdfs/enrollment_pdfs/signed_278.pdf?t=1762897641376", role: "user" }
         ];
 
+        // 2. Portal Access Users (Simulates the 'authorized_users' table for login/Admin CRUD)
+        // Note: PINs are treated as strings for consistency in comparison, though stored as numbers in the mock DB.
+        let AUTHORIZED_USERS = [
+            { id: 1, full_name: "Francisco Teng", username: "FT", pin: "9094", role: "user", active: true, created_at: "2025-11-11T17:53:22.499Z" },
+            { id: 2, full_name: "Pablo Gonzalez", username: "PG", pin: "9367", role: "admin", active: true, created_at: "2025-11-11T17:53:22.499Z" },
+            { id: 3, full_name: "Garret Moore", username: "GM", pin: "1740", role: "user", active: true, created_at: "2025-11-11T17:53:22.499Z" },
+            { id: 4, full_name: "Janelle Teng", username: "JT", pin: "2316", role: "user", active: true, created_at: "2025-11-11T17:53:22.499Z" }
+        ];
+        let nextAuthUserId = AUTHORIZED_USERS.reduce((max, user) => Math.max(max, user.id), 0) + 1;
+
+
         // Access logs (Simulated in memory)
         let ACCESS_LOGS = [];
-        // Unique ID tracking for new users
-        let nextUserId = 99999;
         
         // --- GLOBAL STATE ---
         let currentUser = null;
@@ -352,11 +390,21 @@
         // --- AUTHENTICATION & SESSION MANAGEMENT ---
         const loginScreen = document.getElementById("loginScreen");
         const dashboard = document.getElementById("dashboard");
+        const printView = document.getElementById("printView");
+        const printContainerContent = document.getElementById("printContainerContent");
+        const closePrintView = document.getElementById("closePrintView");
         const loginBtn = document.getElementById("loginBtn");
         const logoutBtn = document.getElementById("logoutBtn");
         const loginError = document.getElementById("loginError");
         const printContainer = document.getElementById("printContainer");
         const portalRole = document.getElementById("portalRole");
+        
+        closePrintView.onclick = () => {
+            printView.classList.add("hidden");
+            dashboard.classList.remove("hidden");
+            printContainerContent.innerHTML = ''; // Clear embedded documents
+        };
+
 
         loginBtn.onclick = async () => {
             const u = document.getElementById("username").value.trim().toUpperCase();
@@ -368,10 +416,11 @@
             await new Promise(r => setTimeout(r, 500));
             hideSpinner();
 
-            const user = EMPLOYEE_DATA.find(e => e.username === u && String(e.pin) === p);
+            // *** Authenticate against the new AUTHORIZED_USERS list ***
+            const user = AUTHORIZED_USERS.find(e => e.username === u && String(e.pin) === p && e.active);
 
             if (user) {
-                currentUser = { ...user, full_name: `${user.first_name} ${user.last_name}`, role: user.role || 'user' };
+                currentUser = { ...user, full_name: user.full_name, role: user.role || 'user' };
                 localStorage.setItem("auth_user", JSON.stringify(currentUser));
 
                 // Log login time
@@ -383,7 +432,7 @@
 
                 showDashboard();
             } else {
-                loginError.textContent = "Invalid username or PIN.";
+                loginError.textContent = "Invalid username, PIN, or inactive account.";
                 loginError.classList.remove("hidden");
             }
         };
@@ -473,19 +522,21 @@
             const userBody = document.getElementById("userBody");
             userBody.innerHTML = "";
 
-            if (EMPLOYEE_DATA.length === 0) {
-                userBody.innerHTML = `<tr><td colspan="5" class="py-4 text-center text-gray-400">No authorized users found</td></tr>`;
+            // *** Use AUTHORIZED_USERS for user table ***
+            if (AUTHORIZED_USERS.length === 0) {
+                userBody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-gray-400">No authorized users found</td></tr>`;
                 return;
             }
 
-            EMPLOYEE_DATA.sort((a, b) => a.username.localeCompare(b.username)).forEach(u => {
-                const fullName = `${u.first_name} ${u.last_name}`;
+            AUTHORIZED_USERS.sort((a, b) => a.username.localeCompare(b.username)).forEach(u => {
+                const isActive = u.active ? "Yes" : "No";
                 userBody.insertAdjacentHTML("beforeend", `
                     <tr class="border-b hover:bg-gray-50" data-id="${u.id}">
-                        <td class="py-2 px-1">${esc(fullName)}</td>
+                        <td class="py-2 px-1">${esc(u.full_name)}</td>
                         <td class="px-1">${esc(u.username)}</td>
                         <td class="px-1">${esc(u.pin)}</td>
                         <td class="px-1">${esc(u.role)}</td>
+                        <td class="px-1">${isActive}</td>
                         <td class="space-x-3 px-1">
                             <button class="text-blue-600 hover:underline js-edit">Edit</button>
                             <button class="text-red-600 hover:underline js-del">Delete</button>
@@ -552,24 +603,32 @@
                 return showAlert("No signed documents found to print.");
             }
 
-            showSpinner(); // Show spinner during batch process
+            showSpinner(); // Show spinner while preparing view
 
-            let openedCount = 0;
-            // Iterate and open documents with a slight delay
-            for (const doc of docsToPrint) {
-                // Open each document in a new tab
-                window.open(doc.signed_pdf_url, "_blank");
-                openedCount++;
-                // Add a very small non-blocking delay (helps browser cope)
-                await new Promise(r => setTimeout(r, 10)); 
-            }
+            // 1. Prepare HTML content
+            const iframeHtml = docsToPrint.map((doc, index) => `
+                <div class="print-iframe p-4 bg-white rounded-lg shadow-md mb-8">
+                    <h2 class="text-xl font-semibold mb-2 accent-gold-text">Document ${index + 1}: ${doc.first_name} ${doc.last_name} (${doc.username})</h2>
+                    <!-- Embed PDF using iframe -->
+                    <iframe src="${esc(doc.signed_pdf_url)}" class="w-full" style="height: 80vh; border: 1px solid #ccc;"></iframe>
+                </div>
+            `).join('');
             
+            printContainerContent.innerHTML = iframeHtml;
+            
+            // 2. Switch to print view
+            dashboard.classList.add("hidden");
+            printView.classList.remove("hidden");
+
             hideSpinner();
-
-            // Inform the user, explicitly mentioning the pop-up blocker issue.
-            showAlert(`Attempted to open ${openedCount} document(s) in new tabs for printing.
-
-If you only saw one or two, please **check your browser's pop-up blocker settings** as it may have prevented the rest from opening. You must allow pop-ups for this site.`, "Print Initiated");
+            
+            // 3. Trigger print (with slight delay to ensure view renders)
+            await new Promise(r => setTimeout(r, 50)); 
+            
+            window.print();
+            
+            // Inform the user about the next step
+            showAlert("The Print View is now open. Please use your browser's Print function (Ctrl+P or Cmd+P). Click **'Close Print View'** when done to return to the dashboard.", "Print View Ready");
         };
 
         document.getElementById("printByEmployee").onclick = async () => {
@@ -615,6 +674,7 @@ If you only saw one or two, please **check your browser's pop-up blocker setting
                  return showAlert(`No signed documents found for **${selectedUser}**.`);
             }
 
+            // Since only one user is selected, opening in a new tab is efficient and reliable
             documentsToPrint.forEach(d => window.open(d.signed_pdf_url, "_blank"));
             showAlert(`Opened ${documentsToPrint.length} document(s) for **${selectedUser}** in new tabs.`, "Print Initiated");
         };
@@ -628,7 +688,8 @@ If you only saw one or two, please **check your browser's pop-up blocker setting
             const row = e.target.closest("tr[data-id]");
             if (!row) return;
             const id = parseInt(row.dataset.id);
-            const user = EMPLOYEE_DATA.find(u => u.id === id);
+            // *** Find user in AUTHORIZED_USERS ***
+            const user = AUTHORIZED_USERS.find(u => u.id === id);
             if (!user) return;
 
             if (e.target.classList.contains("js-edit")) {
@@ -637,23 +698,19 @@ If you only saw one or two, please **check your browser's pop-up blocker setting
             }
 
             if (e.target.classList.contains("js-del")) {
-                const fullName = `${user.first_name} ${user.last_name}`;
-                const isConfirmed = await showConfirm(`Are you sure you want to delete the user: **${esc(fullName)} (${esc(user.username)})**?`);
+                const isConfirmed = await showConfirm(`Are you sure you want to delete the user: **${esc(user.full_name)} (${esc(user.username)})**?`);
 
                 if (!isConfirmed) return;
 
                 showSpinner();
                 // Simulate Delete
-                const index = EMPLOYEE_DATA.findIndex(u => u.id === id);
+                const index = AUTHORIZED_USERS.findIndex(u => u.id === id);
                 if (index > -1) {
-                    EMPLOYEE_DATA.splice(index, 1);
-                    showAlert(`User **${esc(fullName)}** deleted successfully.`, "User Deleted");
+                    AUTHORIZED_USERS.splice(index, 1);
+                    showAlert(`User **${esc(user.full_name)}** deleted successfully.`, "User Deleted");
                 }
                 
-                // Update nextUserId if deleted user was the highest ID (less important for this sim)
-                if (id === nextUserId - 1) {
-                    nextUserId = id;
-                }
+                // *** No need to update nextAuthUserId since it only auto-increments ***
 
                 loadUsers();
                 hideSpinner();
@@ -667,6 +724,7 @@ If you only saw one or two, please **check your browser's pop-up blocker setting
         const modalUsername = document.getElementById("modalUsername");
         const modalPin = document.getElementById("modalPin");
         const modalRole = document.getElementById("modalRole");
+        const modalActive = document.getElementById("modalActive"); // Added active checkbox
         const modalCancel = document.getElementById("modalCancel");
         const modalSave = document.getElementById("modalSave");
         let editingId = null;
@@ -676,15 +734,17 @@ If you only saw one or two, please **check your browser's pop-up blocker setting
         function openModal(user) {
             editingId = user ? user.id : null;
             modalTitle.textContent = editingId ? "Edit Authorized User" : "Add New Authorized User";
-            modalFullName.value = user ? `${user.first_name} ${user.last_name}` : "";
+            modalFullName.value = user?.full_name || "";
             modalUsername.value = user?.username || "";
             modalPin.value = user?.pin || "";
             modalRole.value = user?.role || "user";
+            modalActive.checked = user ? !!user.active : true;
             
-            // Disable editing username/role for the admin PG
-            const isPg = user?.username === 'PG';
+            // Disable editing username/role for the admin PG (id 2)
+            const isPg = user?.id === 2; 
             modalUsername.disabled = isPg;
             modalRole.disabled = isPg;
+            modalActive.disabled = isPg;
 
             modal.classList.remove("hidden");
             modalFullName.focus();
@@ -699,15 +759,16 @@ If you only saw one or two, please **check your browser's pop-up blocker setting
             await new Promise(r => setTimeout(r, 200)); // Simulate save delay
 
             const fullName = modalFullName.value.trim();
-            const [firstName, ...lastNameParts] = fullName.split(' ');
-            const lastName = lastNameParts.join(' ') || '';
+            
+            // Ensure pin is converted to string for storage matching
+            const pinString = String(modalPin.value).trim();
 
             const payload = {
-                first_name: firstName,
-                last_name: lastName,
+                full_name: fullName,
                 username: modalUsername.value.trim().toUpperCase(),
-                pin: modalPin.value.trim(),
+                pin: pinString,
                 role: modalRole.value,
+                active: modalActive.checked,
             };
 
             if (!payload.username || !payload.pin || !fullName) {
@@ -715,7 +776,7 @@ If you only saw one or two, please **check your browser's pop-up blocker setting
                 return showAlert("All fields (Full Name, Username, PIN) are required.", "Input Error");
             }
             
-            if (payload.pin.length !== 4) {
+            if (payload.pin.length !== 4 || isNaN(payload.pin)) {
                  hideSpinner();
                  return showAlert("PIN must be exactly 4 digits.", "Input Error");
             }
@@ -724,38 +785,61 @@ If you only saw one or two, please **check your browser's pop-up blocker setting
 
             if (editingId) {
                 // UPDATE
-                const index = EMPLOYEE_DATA.findIndex(u => u.id === editingId);
+                const index = AUTHORIZED_USERS.findIndex(u => u.id === editingId);
                 if (index > -1) {
-                    EMPLOYEE_DATA[index] = { ...EMPLOYEE_DATA[index], ...payload };
+                    // Uniqueness checks for PIN/Username during update (must ignore current user)
+                    const isUsernameTaken = AUTHORIZED_USERS.some(u => u.username === payload.username && u.id !== editingId);
+                    const isPinTaken = AUTHORIZED_USERS.some(u => u.pin === payload.pin && u.id !== editingId);
+                    
+                    if (isUsernameTaken) {
+                        hideSpinner();
+                        return showAlert(`The username **${payload.username}** is already in use by another user.`, "Update Failed");
+                    }
+                    if (isPinTaken) {
+                        hideSpinner();
+                        return showAlert(`The PIN **${payload.pin}** is already in use by another user.`, "Update Failed");
+                    }
+                    
+                    AUTHORIZED_USERS[index] = { ...AUTHORIZED_USERS[index], ...payload };
                 }
             } else {
                 // CREATE
                 action = "Created";
-                const isUsernameTaken = EMPLOYEE_DATA.some(u => u.username === payload.username);
+                
+                // Uniqueness checks for new user
+                const isUsernameTaken = AUTHORIZED_USERS.some(u => u.username === payload.username);
+                const isPinTaken = AUTHORIZED_USERS.some(u => u.pin === payload.pin);
+
                 if (isUsernameTaken) {
                     hideSpinner();
                     return showAlert(`The username **${payload.username}** is already in use.`, "Creation Failed");
                 }
+                if (isPinTaken) {
+                    hideSpinner();
+                    return showAlert(`The PIN **${payload.pin}** is already in use.`, "Creation Failed");
+                }
                 
-                EMPLOYEE_DATA.push({
-                    id: nextUserId++,
+                AUTHORIZED_USERS.push({
+                    id: nextAuthUserId++,
                     ...payload,
-                    signed_pdf_url: null, // New users start without signed docs
+                    created_at: new Date().toISOString()
                 });
             }
 
-            showAlert(`User **${esc(payload.username)}** ${action.toLowerCase()} successfully.`, `${action} Success`);
-            
+            // *** Load the user list automatically after save/create ***
             loadUsers();
+            
+            showAlert(`User **${esc(payload.username)}** ${action.toLowerCase()} successfully. The user list has been updated.`, `${action} Success`);
+            
             hideSpinner();
             modal.classList.add("hidden");
         };
 
         // --- INITIALIZATION ---
-        // Ensure nextUserId is higher than any existing ID for new users
-        EMPLOYEE_DATA.forEach(u => {
-            if (u.id >= nextUserId) {
-                nextUserId = u.id + 1;
+        // Ensure nextAuthUserId is higher than any existing ID for new users
+        AUTHORIZED_USERS.forEach(u => {
+            if (u.id >= nextAuthUserId) {
+                nextAuthUserId = u.id + 1;
             }
         });
 
