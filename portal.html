@@ -229,18 +229,8 @@
         let employeeDataCache = []; // Global cache for employee data (Signed Docs List)
         let authorizedUsersCache = []; // Global cache for authorized users (Login/CRUD List)
         let docSubscription = null; // Real-time subscription handle
-        let planDisplayNames = {}; // <--- ADD THIS LINE
-// NEW: Static map derived from your benefit2_plans table (Image_0ab92c.png)
-const STATIC_PLAN_NAMES = {
-    "F_PLAN_2W": "F-PLAN 2W / Base MAC",
-    "F_PLAN_3W": "F-PLAN 3W / Buy Up MAC",
-    "HMO": "HMO / ATBAB303",
-    "HMO_HSA": "HMO / ATBAP393 HSA",
-    "LIFE_CORE": "Allstate Term Life & AD&D (Employer-Paid)",
-    "PLAN_1": "UC ClearVision Plan 1",
-    "PPO": "PPO / ATBCB402",
 
-        const TIMEZONE = 'America/Chicago'; // CST/CDT
+        const TIMEZONE = 'America/Chicago'; // FIX: Grouping const declarations
         const LOCALE = 'en-US';
         
         let ACCESS_LOGS = []; // Access logs (Simulated in memory)
@@ -256,36 +246,50 @@ const STATIC_PLAN_NAMES = {
             { id: 3, full_name: "Garret Moore", username: "GM", pin: "1740", role: "user", active: true, created_at: "2025-11-11T17:53:22.499Z" },
             { id: 4, full_name: "Janelle Teng", username: "JT", pin: "2316", role: "user", active: true, created_at: "2025-11-11T17:53:22.499Z" }
         ];
+        
+        // NEW: Static plan names for better readability in the summary card
+        const STATIC_PLAN_NAMES = {
+            "F_PLAN_2W": "F-PLAN 2W / Base MAC",
+            "F_PLAN_3W": "F-PLAN 3W / Buy Up MAC",
+            "HMO": "HMO / ATBAB303",
+            "HMO_HSA": "HMO / ATBAP393 HSA",
+            "LIFE_CORE": "Allstate Term Life & AD&D (Employer-Paid)",
+            "PLAN_1": "UC ClearVision Plan 1",
+            "PPO": "PPO / ATBCB402",
+        };
+        let planDisplayNames = STATIC_PLAN_NAMES; // Global dictionary for plan names
 
 
         // --- FETCHERS (LIVE DATABASE CALLS) ---
 
         // NEW: Fetches the plan rate (employee cost) for a given plan code and tier
-       async function fetchPlanRates(planCodes, tier) {
-    if (RATE_SCHEDULE_ID === 'YOUR_ACTIVE_RATE_SCHEDULE_UUID') {
-        console.warn("RATE_SCHEDULE_ID not set");
-        return planCodes.map(code => ({ plan_code: code, per_period_cost: 0 }));
-    }
+        async function fetchPlanRates(planCodes, tier) {
+            if (RATE_SCHEDULE_ID === 'YOUR_ACTIVE_RATE_SCHEDULE_UUID') {
+                 console.warn("RATE_SCHEDULE_ID is not configured. Using $0.00 placeholders for premiums.");
+                 // Return zero rates if configuration is missing
+                 return planCodes.map(code => ({ plan_code: code, per_period_cost: 0 }));
+            }
 
-    const { data, error } = await supabase
-        .from('benefit2_rates')
-        .select('plan_code, amount')
-        .eq('schedule_id', RATE_SCHEDULE_ID)
-        .eq('tier', tier)
-        .in('plan_code', planCodes);
+            const { data, error } = await supabase
+                .from('benefit2_rates')
+                .select('plan_code, amount, per_year_periods')
+                .eq('schedule_id', RATE_SCHEDULE_ID)
+                .eq('tier', tier)
+                .in('plan_code', planCodes);
+            
+            if (error) {
+                console.error("Error fetching plan rates:", error);
+                return planCodes.map(code => ({ plan_code: code, per_period_cost: 0 }));
+            }
 
-    if (error || !data) {
-        console.error("Rate fetch error:", error);
-        return planCodes.map(code => ({ plan_code: code, per_period_cost: 0 }));
-    }
-
-    const rates = data.map(rate => ({
-        plan_code: rate.plan_code,
-        per_period_cost: parseFloat(rate.amount)  // ← PER PAYCHECK, NO MATH
-    }));
-
-    return rates;
-}
+            // Calculate per period cost: amount / per_year_periods 
+            const perPeriodRates = data.map(rate => ({
+                plan_code: rate.plan_code,
+                per_period_cost: parseFloat(rate.amount) 
+            }));
+            
+            return perPeriodRates;
+        }
 
         // NEW: Fetches full employee details and their latest enrollment for the Summary Card
         async function fetchEmployeeDetails(username) {
@@ -642,27 +646,14 @@ const STATIC_PLAN_NAMES = {
             }
         }
 
-   // Check for existing session on load
-// Check for existing session on load
-// Check for existing session on load
-if (storedUser) {
-    currentUser = JSON.parse(storedUser);
-    showSpinner();
-    
-    // Set the global map immediately to ensure lookups work
-    planDisplayNames = STATIC_PLAN_NAMES; // <--- NEW STATIC ASSIGNMENT
-    
-    // Fetch user and employee data, then show dashboard.
-    fetchAuthorizedUsers()
-        .then(() => fetchEmployeeData())
-        .then(showDashboard)
-        .catch(error => { 
-            console.error("Initial data load failed:", error);
-            showAlert("Error loading data. Please try logging in again.", "Connection Error");
-            logoutBtn.onclick(); // Force logout to clear session
-        })
-        .finally(hideSpinner); 
-}
+        // Check for existing session on load
+        if (storedUser) {
+            currentUser = JSON.parse(storedUser);
+            // Need to re-fetch data to ensure documents/users are up to date
+            showSpinner();
+            fetchAuthorizedUsers().then(() => fetchEmployeeData().then(showDashboard));
+        }
+
 
         // --- DATA LOADERS ---
         
@@ -867,50 +858,47 @@ if (storedUser) {
             };
 
             // Helper for plan display
-      // Helper for plan display - NOW USES DISPLAY NAME
-// Helper for plan display - NOW USES DISPLAY NAME
-// Helper for plan display - NOW USES DISPLAY NAME
-const getPlanText = (planCode) => {
-    const code = esc(planCode);
-    // Use the uppercase version for lookups and checks
-    const upperCaseCode = code.toUpperCase(); 
-    
-    // Fallback variable for the display value (used if lookup fails or for WAIVE)
-    let displayValue = planCode; 
-    
-    // Check for waiver/no selection first (using the uppercase code)
-    if (upperCaseCode.includes('WAIVE') || upperCaseCode === 'NO' || !code) {
-        // If it's a waiver, use the original (unescaped) code/planCode as the value
-        displayValue = planCode || 'WAIVE';
-    } else {
-        // Lookup the full display name using the normalized code. This now uses the static map.
-        displayValue = planDisplayNames[upperCaseCode] || planCode; 
-    }
-    
-    // HTML-escape the final output string just before returning
-    const escapedDisplay = esc(displayValue);
+            const getPlanText = (planCode) => {
+                const code = esc(planCode);
+                // Use the uppercase version for lookups and checks
+                const upperCaseCode = code.toUpperCase(); 
+                
+                // Fallback variable for the display value (used if lookup fails or for WAIVE)
+                let displayValue = planCode; 
+                
+                // Check for waiver/no selection first (using the uppercase code)
+                if (upperCaseCode.includes('WAIVE') || upperCaseCode === 'NO' || !code) {
+                    // If it's a waiver, use the original (unescaped) code/planCode as the value
+                    displayValue = planCode || 'WAIVE';
+                } else {
+                    // Lookup the full display name using the normalized code. This now uses the static map.
+                    displayValue = planDisplayNames[upperCaseCode] || planCode; 
+                }
+                
+                // HTML-escape the final output string just before returning
+                const escapedDisplay = esc(displayValue);
 
-    // Return the formatted HTML using the escaped value
-    return `<span class="text-green-600 font-semibold">${escapedDisplay}</span>`;
-};
+                // Return the formatted HTML using the escaped value
+                return `<span class="text-green-600 font-semibold">${escapedDisplay}</span>`;
+            };
                     
                     
-                    const getPerPeriodCost = (planCode, enrollmentPlan, rates) => {
-    if (enrollmentPlan.toUpperCase().includes('WAIVE') || enrollmentPlan.toUpperCase() === 'NO') {
-        return 0;
-    }
-    
-    const rateItem = rates.find(r => r.plan_code === planCode);
-    return rateItem ? rateItem.per_period_cost : 0;
-};
+            const getPerPeriodCost = (planCode, enrollmentPlan, rates) => {
+                if (enrollmentPlan.toUpperCase().includes('WAIVE') || enrollmentPlan.toUpperCase() === 'NO') {
+                    return 0;
+                }
+                
+                const rateItem = rates.find(r => r.plan_code === planCode);
+                return rateItem ? rateItem.per_period_cost : 0;
+            };
 
             const medicalPlanCode = enrollment.medical_plan;
             const dentalPlanCode = enrollment.dental_plan;
             const visionPlanCode = enrollment.vision_plan;
 
-         const costMedical = getPerPeriodCost(medicalPlanCode, medicalPlanCode, rates);
+            const costMedical = getPerPeriodCost(medicalPlanCode, medicalPlanCode, rates);
             const costDental = getPerPeriodCost(dentalPlanCode, dentalPlanCode, rates);
-const costVision = getPerPeriodCost(visionPlanCode, visionPlanCode, rates);
+            const costVision = getPerPeriodCost(visionPlanCode, visionPlanCode, rates);
             
             const totalMonthlyPremium = costMedical + costDental + costVision;
 
@@ -938,7 +926,7 @@ const costVision = getPerPeriodCost(visionPlanCode, visionPlanCode, rates);
                         </div>
                         <div class="p-3 bg-gray-50 rounded-lg shadow-inner col-span-full sm:col-span-3">
                            <p class="text-sm font-medium text-gray-500">Total Per Pay Period</p>
-<p class="text-xl font-bold text-gray-800">${formatCurrency(totalMonthlyPremium)} per pay period</p>
+                           <p class="text-xl font-bold text-gray-800">${formatCurrency(totalMonthlyPremium)} per pay period</p>
                         </div>
                     </div>
 
@@ -950,17 +938,20 @@ const costVision = getPerPeriodCost(visionPlanCode, visionPlanCode, rates);
                             <div class="p-3 border rounded-lg ${costMedical > 0 ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'}">
                                 <p class="font-medium">Medical Plan</p>
                                 <p class="text-sm">${getPlanText(enrollment.medical_plan)}</p>
-<p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costMedical)} / pay period</p>                            </div>
+                                <p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costMedical)} / pay period</p>
+                            </div>
                             <!-- DENTAL -->
                             <div class="p-3 border rounded-lg ${costDental > 0 ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'}">
                                 <p class="font-medium">Dental Plan</p>
                                 <p class="text-sm">${getPlanText(enrollment.dental_plan)}</p>
-<p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costDental)} / pay period</p>                            </div>
+                                <p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costDental)} / pay period</p>
+                            </div>
                             <!-- VISION -->
                             <div class="p-3 border rounded-lg ${costVision > 0 ? 'border-green-300 bg-green-50' : 'border-gray-300 bg-gray-50'}">
                                 <p class="font-medium">Vision Plan</p>
                                 <p class="text-sm">${getPlanText(enrollment.vision_plan)}</p>
-<p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costVision)} / pay period</p>                            </div>
+                                <p class="text-sm mt-1 font-semibold text-gray-700">Cost: ${formatCurrency(costVision)} / pay period</p>
+                            </div>
                         </div>
                     </div>
 
@@ -1257,11 +1248,3 @@ const costVision = getPerPeriodCost(visionPlanCode, visionPlanCode, rates);
     </script>
 </body>
 </html>
-
-
-
-
-
-
-
-
