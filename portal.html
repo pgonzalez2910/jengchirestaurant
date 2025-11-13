@@ -829,33 +829,67 @@ window.addEventListener('beforeunload', recordLogout);
             });
         }
 
-    function loadLogs() {
+function loadLogs() {
     if (currentUser.role !== 'admin') return;
 
     const logBody = document.getElementById("logBody");
-    logBody.innerHTML = "";
+    logBody.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-gray-400">Fetching logs from database...</td></tr>`;
 
-    if (ACCESS_LOGS.length === 0) {
-        logBody.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-gray-400">No logs available</td></tr>`;
-        return;
-    }
+    supabase
+        .from('portal_logs')
+        .select(`
+            login_time, 
+            logout_time, 
+            duration_minutes,
+            employee_data:employee_id (username)  /* <-- RENAMED ALIAS for safety */
+        `)
+        .order('login_time', { ascending: false })
+        .limit(50) 
+        .then(({ data: logData, error }) => {
+            if (error) {
+                console.error("DB Error fetching logs:", error);
+                logBody.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-red-600">Error fetching logs from database. Check RLS policies.</td></tr>`;
+                return;
+            }
 
-    ACCESS_LOGS.sort((a, b) => new Date(b.login_time) - new Date(a.login_time)).forEach(l => {
-        const loginTimeCST = formatTime(new Date(l.login_time));
-        const logoutTimeCST = l.logout_time ? formatTime(new Date(l.logout_time)) : 'Active';
-        const duration = calculateDuration(l.login_time, l.logout_time);
+            if (!logData || logData.length === 0) {
+                logBody.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-gray-400">No logs available.</td></tr>`;
+                return;
+            }
+            
+            logBody.innerHTML = "";
+            logData.forEach(l => {
+                // Access the username via the alias we created: l.employee_data.username
+                const username = l.employee_data?.username || 'N/A';
+                const loginTimeCST = formatTime(new Date(l.login_time));
+                const logoutTimeCST = l.logout_time ? formatTime(new Date(l.logout_time)) : 'Active';
+                
+                // Display duration from the database field
+                let durationDisplay = 'N/A';
+                if (l.logout_time) {
+                    // Check if duration_minutes is a valid number (non-null and non-negative)
+                    durationDisplay = (typeof l.duration_minutes === 'number' && l.duration_minutes >= 0) 
+                                      ? `${l.duration_minutes} min` 
+                                      : 'N/A';
+                } else {
+                    durationDisplay = 'Active';
+                }
 
-        logBody.insertAdjacentHTML("beforeend", `
-            <tr class="border-b hover:bg-gray-50">
-                <td class="py-2 px-1">${esc(l.username)}</td>
-                <td class="px-1">${esc(loginTimeCST)}</td>
-                <td class="px-1">${esc(logoutTimeCST)}</td>
-                <td class="px-1">${duration}</td>
-            </tr>
-        `);
-    });
-}
-        
+                logBody.insertAdjacentHTML("beforeend", `
+                    <tr class="border-b hover:bg-gray-50">
+                        <td class="py-2 px-1">${esc(username)}</td>
+                        <td class="px-1">${esc(loginTimeCST)}</td>
+                        <td class="px-1">${esc(logoutTimeCST)}</td>
+                        <td class="px-1">${durationDisplay}</td>
+                    </tr>
+                `);
+            });
+        })
+        .catch(e => {
+            console.error("Unknown error during log fetch:", e);
+            logBody.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-red-600">Unknown client error occurred.</td></tr>`;
+        });
+}   
         // --- PRINTING LOGIC ---
 
         // Helper function to render the actual table content
@@ -1300,4 +1334,5 @@ window.addEventListener('beforeunload', recordLogout);
     </script>
 </body>
 </html>
+
 
