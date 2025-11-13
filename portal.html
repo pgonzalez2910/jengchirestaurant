@@ -621,26 +621,54 @@
     hideSpinner();
 };
 
-        logoutBtn.onclick = () => {
-            const user = JSON.parse(localStorage.getItem("auth_user") || "{}");
+        logoutBtn.onclick = async () => {
+        const user = currentUser; // Use currentUser global object
+        const logoutTime = new Date();
 
-            // Log logout time
-            const activeLog = ACCESS_LOGS.find(l => l.username === user.username && l.logout_time === null);
-            if (activeLog) {
-                activeLog.logout_time = new Date().toISOString();
-            }
+        // --- DB UPDATE LOG (Manual Logout) ---
+        if (user && user.log_id) {
+            
+            // 1. Calculate duration (This step must be done first before async update)
+            const { data: logEntry, error: fetchError } = await supabase
+                .from('portal_logs')
+                .select('login_time')
+                .eq('id', user.log_id)
+                .single();
+            
+            let durationMin = 0;
+            if (!fetchError && logEntry && logEntry.login_time) {
+                const loginTime = new Date(logEntry.login_time);
+                const durationMs = logoutTime.getTime() - loginTime.getTime();
+                durationMin = Math.round(durationMs / (1000 * 60)); 
+            } else {
+                console.warn("Could not retrieve login time for duration calculation.");
+            }
 
-            // Crucial: Unsubscribe from real-time updates on logout
-            unsubscribeFromDocs();
+            // 2. Perform the update
+            const { error: updateError } = await supabase
+                .from('portal_logs')
+                .update({ 
+                    logout_time: logoutTime.toISOString(),
+                    duration_minutes: durationMin // Set the calculated duration
+                })
+                .eq('id', user.log_id);
 
-            currentUser = null;
-            sessionStorage.removeItem("auth_user");
-            loginScreen.classList.remove("hidden");
-            dashboard.classList.add("hidden");
-            // Clear input fields
-            document.getElementById("username").value = '';
-            document.getElementById("pin").value = '';
-        };
+            if (updateError) {
+                console.error("Failed to record manual logout/duration to DB:", updateError);
+                showAlert(`Error logging out session ID ${user.log_id}. See console for details.`, "Logout Failed");
+            }
+        }
+        // --- END DB UPDATE LOG ---
+
+        // Local UI/Session Cleanup
+        unsubscribeFromDocs();
+        currentUser = null;
+        sessionStorage.removeItem("auth_user");
+        loginScreen.classList.remove("hidden");
+        dashboard.classList.add("hidden");
+        document.getElementById("username").value = '';
+        document.getElementById("pin").value = '';
+    };
 
    function showDashboard() {
     loginScreen.classList.add("hidden");
@@ -689,18 +717,38 @@
 // --- SESSION LOGOUT HOOK ---
 
 // Function to record the exact logout time before the window closes
+// Function to record the exact logout time before the window closes
 function recordLogout() {
-    const user = JSON.parse(sessionStorage.getItem("auth_user"));
-    if (!user) return; 
+    const user = currentUser || JSON.parse(sessionStorage.getItem("auth_user"));
+    if (!user || !user.log_id) return;
+    
+    const logoutTime = new Date();
+    
+    // We cannot reliably calculate duration synchronously on 'beforeunload'.
+    // We only send the logout_time and let the server/an admin recalculate duration.
+    const payload = { 
+        logout_time: logoutTime.toISOString(),
+        duration_minutes: -1 // Use -1 as a flag for server-side processing/admin attention
+    };
+    
+    const syncXhr = new XMLHttpRequest();
+    
+    // This MUST be a synchronous call (false) so the browser waits
+    syncXhr.open('PUT', `${SUPABASE_URL}/rest/v1/portal_logs?id=eq.${user.log_id}`, false); 
+    
+    syncXhr.setRequestHeader('apikey', SUPABASE_KEY);
+    syncXhr.setRequestHeader('Authorization', `Bearer ${SUPABASE_KEY}`);
+    syncXhr.setRequestHeader('Content-Type', 'application/json');
 
-    // Find the current active log entry for this user
-    const activeLog = ACCESS_LOGS.find(l => l.username === user.username && l.logout_time === null);
-
-    if (activeLog) {
-        // Set the logout time to the current time just before closing/navigating away
-        activeLog.logout_time = new Date().toISOString();
-        console.log(`Auto-Logout recorded for ${user.username}.`);
+    try {
+        syncXhr.send(JSON.stringify(payload));
+        console.log(`Synchronous auto-logout signal sent for ID: ${user.log_id}`);
+    } catch (e) {
+        console.error("Failed synchronous DB update on close:", e);
     }
+    
+    // Ensure session is cleared immediately regardless of DB success
+    sessionStorage.removeItem("auth_user");
 }
 
 // Attach the function to run just before the user leaves the page.
