@@ -229,6 +229,7 @@
         let employeeDataCache = []; // Global cache for employee data (Signed Docs List)
         let authorizedUsersCache = []; // Global cache for authorized users (Login/CRUD List)
         let docSubscription = null; // Real-time subscription handle
+        let planDisplayNames = {}; // <--- ADD THIS LINE
 
         const TIMEZONE = 'America/Chicago'; // CST/CDT
         const LOCALE = 'en-US';
@@ -409,7 +410,27 @@
             hour: '2-digit', minute: '2-digit', second: '2-digit',
             hour12: true
         });
-        
+        // NEW: Fetches all plan display names for lookup
+async function fetchAllPlanDisplayNames() {
+    // NOTE: This assumes 'benefit2_plans' exists as per your schema
+    const { data, error } = await supabase
+        .from('benefit2_plans')
+        .select('plan_code, display_name');
+
+    if (error || !data) {
+        console.error("Error fetching plan display names:", error);
+        return;
+    }
+
+    // Map the data into the global cache
+    planDisplayNames = data.reduce((map, plan) => {
+        map[plan.plan_code] = plan.display_name;
+        return map;
+    }, {});
+    console.log("Plan Display Cache Loaded:", planDisplayNames);
+}
+// --------------------------------------------------------------------------------
+// ... rest of the code (fetchEmployeeData starts here)
         // Duration calculation
         const calculateDuration = (loginTime, logoutTime) => {
             if (!logoutTime) return 'Active';
@@ -627,20 +648,21 @@
         }
 
    // Check for existing session on load
+// Check for existing session on load
 if (storedUser) {
-    currentUser = JSON.parse(storedUser);
-    showSpinner();
-    // Wrap the entire promise chain in a try/catch or use .catch()
-    fetchAuthorizedUsers()
-        .then(() => fetchEmployeeData())
-        .then(showDashboard)
-        .catch(error => { // <--- ADD THIS BLOCK
-            console.error("Initial data load failed:", error);
-            hideSpinner(); // Crucial: Hide the spinner on failure
-            showAlert("Error loading data. Please try logging in again.", "Connection Error");
-            // Also force a logout to clear the session
-            logoutBtn.onclick(); 
-        });
+    currentUser = JSON.parse(storedUser);
+    showSpinner();
+    // Fetch all plan display names first, then user data, then employee data, then show dashboard.
+    fetchAllPlanDisplayNames() // <--- NEW CALL
+        .then(() => fetchAuthorizedUsers())
+        .then(() => fetchEmployeeData())
+        .then(showDashboard)
+        .catch(error => { 
+            console.error("Initial data load failed:", error);
+            showAlert("Error loading data. Please try logging in again.", "Connection Error");
+            logoutBtn.onclick(); // Force logout to clear session
+        })
+        .finally(hideSpinner); // <-- ENSURE SPINNER HIDES AFTER ALL ATTEMPTS
 }
 
 
@@ -847,14 +869,20 @@ if (storedUser) {
             };
 
             // Helper for plan display
-            const getPlanText = (plan) => {
-                const p = esc(plan);
-                if (p.toUpperCase().includes('WAIVE') || p.toUpperCase() === 'NO' || !p) {
-                    return `<span class="text-red-600 font-semibold">${p || 'WAIVE'}</span>`;
-                }
-                return `<span class="text-green-600 font-semibold">${p}</span>`;
-            };
-
+      // Helper for plan display - NOW USES DISPLAY NAME
+const getPlanText = (planCode) => {
+    const code = esc(planCode);
+    
+    // Check for waiver/no selection first
+    if (code.toUpperCase().includes('WAIVE') || code.toUpperCase() === 'NO' || !code) {
+        return `<span class="text-red-600 font-semibold">${code || 'WAIVE'}</span>`;
+    }
+    
+    // Lookup the full display name, fall back to code if not found
+    const displayName = planDisplayNames[planCode] || code; // <--- NEW LOOKUP LOGIC
+    
+    return `<span class="text-green-600 font-semibold">${displayName}</span>`;
+};
             // Calculate costs based on the fetched rates dictionary
          const getPerPeriodCost = (planCode, enrollmentPlan, rates) => {
     if (enrollmentPlan.toUpperCase().includes('WAIVE') || enrollmentPlan.toUpperCase() === 'NO') {
@@ -1218,5 +1246,6 @@ const costVision = getPerPeriodCost(visionPlanCode, visionPlanCode, rates);
     </script>
 </body>
 </html>
+
 
 
