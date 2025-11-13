@@ -570,37 +570,56 @@
 
 
         loginBtn.onclick = async () => {
-            const u = document.getElementById("username").value.trim().toUpperCase();
-            const p = document.getElementById("pin").value.trim();
-            loginError.classList.add("hidden");
-            showSpinner();
+    const u = document.getElementById("username").value.trim().toUpperCase();
+    const p = document.getElementById("pin").value.trim();
+    loginError.classList.add("hidden");
+    showSpinner();
 
-            await fetchAuthorizedUsers();
-            
-            // *** Authenticate against the live AUTHORIZED_USERS list ***
-            const user = authorizedUsersCache.find(e => e.username === u && String(e.pin) === p && e.active);
+    // 1. Authenticate against local users
+    await fetchAuthorizedUsers();
+    const user = authorizedUsersCache.find(e => e.username === u && String(e.pin) === p && e.active);
+    
+    // 2. Fetch employee ID required for logging BEFORE proceeding
+    await fetchEmployeeData(); // Ensure employeeDataCache is up-to-date
+    const employeeRecord = employeeDataCache.find(e => e.username === u); // <--- Re-find record after cache update
 
-            if (user) {
-                currentUser = { ...user, full_name: user.full_name, role: user.role || 'user' };
-                sessionStorage.setItem("auth_user", JSON.stringify(currentUser));
+    if (user) {
+        currentUser = { ...user, full_name: user.full_name, role: user.role || 'user' };
+        
+        if (!employeeRecord) { // <-- Check for required ID before logging attempt
+            console.error(`Employee record (and ID) not found for username ${u}. Cannot log access.`);
+            // Log this error to the user interface:
+            showAlert(`Login successful for ${u}, but log tracking failed (Employee ID not found).`, "Log Error");
+        } else {
+            // --- DB INSERT LOG ---
+            const { data: logData, error: logError } = await supabase
+                .from('portal_logs')
+                .insert([
+                    { 
+                        employee_id: employeeRecord.id, // Use the required ID
+                        login_time: new Date().toISOString(),
+                    },
+                ]).select('id');
 
-                // Log login time (Simulated)
-                ACCESS_LOGS.unshift({
-                    username: currentUser.username,
-                    login_time: new Date().toISOString(),
-                    logout_time: null
-                });
-                
-                // Fetch employee data right after login, as it's needed for loadDocs/Printing
-                await fetchEmployeeData(); 
-
-                showDashboard();
-            } else {
-                loginError.textContent = "Invalid username, PIN, or inactive account.";
-                loginError.classList.remove("hidden");
-            }
-            hideSpinner();
-        };
+            if (logError) {
+                console.error("Failed to record login to DB:", logError);
+                showAlert(`Login recorded, but DB log insert failed. Error: ${logError.message}`, "Log Error");
+            } else {
+                // Store the ID of the new log entry in the currentUser session for the later update (logout)
+                currentUser.log_id = logData[0].id; // Store the ID column from the new row
+            }
+            // --- END DB INSERT LOG ---
+        }
+        
+        sessionStorage.setItem("auth_user", JSON.stringify(currentUser));
+        await fetchEmployeeData(); 
+        showDashboard();
+    } else {
+        loginError.textContent = "Invalid username, PIN, or inactive account.";
+        loginError.classList.remove("hidden");
+    }
+    hideSpinner();
+};
 
         logoutBtn.onclick = () => {
             const user = JSON.parse(localStorage.getItem("auth_user") || "{}");
@@ -1281,3 +1300,4 @@ window.addEventListener('beforeunload', recordLogout);
     </script>
 </body>
 </html>
+
