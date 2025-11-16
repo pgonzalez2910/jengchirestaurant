@@ -81,14 +81,7 @@
                     <!-- Suggestions populated by JS -->
                 </div>
             </div>
-            <button onclick="searchEmployee()" id="searchBtn" class="mt-6 w-full px-8 py-4 bg-corp-main hover:bg-blue-800 text-corp-white font-black rounded-2xl transition duration-300 shadow-lg">
-                <span class="flex items-center justify-center">
-                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-                    FIND EMPLOYEE
-                </span>
-            </button>
-            <p id="searchMsg" class="mt-4 text-sm text-red-500 hidden text-center font-medium">No employee found matching your search.</p>
-        </div>
+            
 
         <!-- Employee Details and Update Form -->
         <div id="employeeCard" class="card p-8 hidden">
@@ -181,7 +174,7 @@
                 await sb.from(EMPLOYEE_TABLE).select('id', { head: true });
                 document.getElementById('status').textContent = 'System Operational';
                 document.getElementById('status').className = 'text-green-600 font-semibold';
-                await seedMockData();
+            
             } catch (error) {
                 console.error("Initialization error:", error);
                 showModal("Database Connection Error", "Could not connect to Supabase. Check the console for details.");
@@ -197,17 +190,7 @@
             { first_name: "Maria", last_name: "Garcia", username: "mgarcia", department: "BOH", primary_phone: "555-333-7777", email: "maria.g@jengchi.com" },
         ];
 
-        async function seedMockData() {
-            try {
-                const { count } = await sb.from(EMPLOYEE_TABLE).select('id', { head: true, count: 'exact' });
-                if (count === 0) {
-                    const { error } = await sb.from(EMPLOYEE_TABLE).insert(mockEmployees);
-                    if (error) console.error("Mock data seeding failed. Ensure 'department' and 'email' columns exist.", error);
-                }
-            } catch (e) {
-                 // Ignore potential "table not found" errors during initial seeding check
-            }
-        }
+       
 
         // --- Autocomplete Logic ---
 
@@ -256,72 +239,63 @@
         };
 
         // --- Search and Update Logic ---
+async function loadEmployee(id) {
+    try {
+        const { data, error } = await sb
+            .from(EMPLOYEE_TABLE)
+            .select('id, first_name, last_name, username, primary_phone, email, department')
+            .eq('id', id)
+            .single();
 
-        async function loadEmployee(id) {
-            document.getElementById('searchBtn').disabled = true;
-            try {
-                const { data, error } = await sb
-                    .from(EMPLOYEE_TABLE)
-                    .select('id, first_name, last_name, username, primary_phone, email, department')
-                    .eq('id', id)
-                    .single();
+        if (error) throw error;
+        if (data) displayEmployee(data);
 
-                if (error) throw error;
-                if (data) displayEmployee(data);
+    } catch (e) {
+        console.error("Load employee error:", e);
+        showModal("Error", "Failed to load employee details.");
+    }
+}
 
-            } catch (e) {
-                showModal("Error", "Failed to load employee details.");
-            } finally {
-                document.getElementById('searchBtn').disabled = false;
-            }
+window.searchEmployee = async function() {
+    const searchValue = document.getElementById('searchInput').value.trim();
+    const lowerSearch = searchValue.toLowerCase();
+    const searchMsg = document.getElementById('searchMsg');
+    const employeeCard = document.getElementById('employeeCard');
+
+    if (searchMsg) searchMsg.classList.add('hidden');
+    if (employeeCard) employeeCard.classList.add('hidden');
+    document.getElementById('suggestions').classList.add('hidden');
+
+    if (!searchValue) {
+        showModal("Required", "Please enter a name to search.");
+        return;
+    }
+
+    try {
+        const { data: employees, error } = await sb
+            .from(EMPLOYEE_TABLE)
+            .select('id, first_name, last_name, username, primary_phone, email, department')
+            .or(
+                `first_name.ilike.%${lowerSearch}%,` +
+                `last_name.ilike.%${lowerSearch}%,` +
+                `username.ilike.%${lowerSearch}%`
+            );
+
+        if (error) throw error;
+        
+        if (employees?.length > 0) {
+            const employeeData = employees[0];
+            currentEmployeeId = employeeData.id;
+            displayEmployee(employeeData);
+        } else if (searchMsg) {
+            searchMsg.textContent = 'No employee found matching the exact name/username.';
+            searchMsg.classList.remove('hidden');
         }
-
-        window.searchEmployee = async function() {
-            const searchValue = document.getElementById('searchInput').value.trim();
-            const lowerSearch = searchValue.toLowerCase();
-            const capSearch = capitalize(searchValue);
-            const searchMsg = document.getElementById('searchMsg');
-            const employeeCard = document.getElementById('employeeCard');
-            searchMsg.classList.add('hidden');
-            employeeCard.classList.add('hidden');
-            document.getElementById('suggestions').classList.add('hidden');
-
-            if (!searchValue) {
-                showModal("Required", "Please enter a name to search.");
-                return;
-            }
-
-            document.getElementById('searchBtn').disabled = true;
-
-            try {
-                // Search for an exact match by username, first_name, or last_name
-                const { data: employees, error } = await sb
-                    .from(EMPLOYEE_TABLE)
-                    .select('id, first_name, last_name, username, primary_phone, email, department')
-                   .or(
-    `first_name.ilike.%${lowerSearch}%,` +
-    `last_name.ilike.%${lowerSearch}%,` +
-    `username.ilike.%${lowerSearch}%`
-)
-
-                
-                if (error) throw error;
-                
-                if (employees?.length > 0) {
-                    const employeeData = employees[0];
-                    currentEmployeeId = employeeData.id;
-                    displayEmployee(employeeData);
-                } else {
-                    searchMsg.textContent = 'No employee found matching the exact name/username.';
-                    searchMsg.classList.remove('hidden');
-                }
-            } catch (e) {
-                console.error("Search failed:", e);
-                showModal("Error", "Search failed. Check console for database issues.");
-            } finally {
-                document.getElementById('searchBtn').disabled = false;
-            }
-        };
+    } catch (e) {
+        console.error("Search failed:", e);
+        showModal("Error", "Search failed. Check console for database issues.");
+    }
+};
 
         function displayEmployee(data) {
             document.getElementById('employeeName').textContent = `${data.first_name || 'N/A'} ${data.last_name || ''}`;
