@@ -911,26 +911,54 @@
         });
 
         document.getElementById("printAll").onclick = async () => {
-            printMenu.classList.add("hidden");
-            const docsToPrint = employeeDataCache.filter(d => d.signed_pdf_url);
-            if (docsToPrint.length === 0) {
-                return showAlert("No signed documents found to print.");
-            }
-            showSpinner();
-            const iframeHtml = docsToPrint.map((doc, index) => `
-                <div class="print-iframe p-4 bg-white rounded-lg shadow-md mb-8">
-                    <h2 class="text-xl font-semibold mb-2 text-gray-900">Document ${index + 1}: ${doc.first_name} ${doc.last_name} (${doc.username})</h2>
-                    <iframe src="${esc(doc.signed_pdf_url)}" class="w-full" style="height: 80vh; border: 1px solid #ccc;"></iframe>
-                </div>
-            `).join('');
-            printContainerContent.innerHTML = iframeHtml;
-            dashboard.classList.add("hidden");
-            printView.classList.remove("hidden");
+    printMenu.classList.add("hidden");
+
+    const docsToPrint = employeeDataCache.filter(d => d.signed_pdf_url);
+    if (docsToPrint.length === 0) {
+        return showAlert("No signed documents found to print.");
+    }
+
+    // Use all employee IDs that have a signed PDF
+    const employeeIds = docsToPrint.map(d => d.id);
+
+    showSpinner();
+
+    try {
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/merge-signed-pdfs`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "apikey": SUPABASE_KEY,
+                "Authorization": `Bearer ${SUPABASE_KEY}`
+            },
+            body: JSON.stringify({ employee_ids: employeeIds })
+        });
+
+        if (!res.ok) {
+            const txt = await res.text();
+            console.error("merge-signed-pdfs error:", txt);
             hideSpinner();
-            await new Promise(r => setTimeout(r, 50));
-            window.print();
-            showAlert("The Print View is now open. Please use your browser's Print function (Ctrl+P or Cmd+P). Click **'Close Print View'** when done to return to the dashboard.", "Print View Ready");
-        };
+            return showAlert("Error generating combined PDF. Check console for details.", "Merge Failed");
+        }
+
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+
+        // Open ONE combined file in a new tab; admin just prints that file
+        window.open(url, "_blank");
+
+        hideSpinner();
+        showAlert(
+            "Combined PDF has been generated and opened in a new tab. Use your browser's Print function to print all pages at once.",
+            "Ready to Print"
+        );
+    } catch (e) {
+        console.error("Unexpected error:", e);
+        hideSpinner();
+        showAlert("Unexpected error calling merge function. See console for details.", "Merge Failed");
+    }
+};
+
 
         document.getElementById("printByEmployee").onclick = async () => {
             printMenu.classList.add("hidden");
@@ -1091,3 +1119,4 @@
     </script>
 </body>
 </html>
+
