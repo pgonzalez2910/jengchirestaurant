@@ -10,287 +10,238 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 
   <script>
-    // --- Configuration & Init ---
-    const SUPABASE_URL = 'https://kpldzwlftkvjjntgsqxx.supabase.co';
-    const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs';
-    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  // --- Configuration & Init ---
+  const SUPABASE_URL = 'https://kpldzwlftkvjjntgsqxx.supabase.co';
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs';
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-    // --- State ---
-    let enrollments = [];
-    let rates = [];
-    let currentYear = '2026';
+  let enrollments = [];
+  let rates = [];
+  let currentYear = '2026';
 
-    const PLAN_NAMES = { 
-      "F_PLAN_2W": "F-PLAN 2W / Base MAC", 
-      "F_PLAN_3W": "F-PLAN 3W / Buy Up MAC", 
-      "HMO": "HMO", 
-      "HMO_HSA": "HMO HSA", 
-      "PPO": "PPO", 
-      "PLAN_1": "Vision Plan 1", 
-      "WAIVE": "Waived" 
+  const PLAN_NAMES = { 
+    "F_PLAN_2W": "F-PLAN 2W / Base MAC", 
+    "F_PLAN_3W": "F-PLAN 3W / Buy Up MAC", 
+    "HMO": "HMO", 
+    "HMO_HSA": "HMO HSA", 
+    "PPO": "PPO", 
+    "PLAN_1": "Vision Plan 1", 
+    "WAIVE": "Waived" 
+  };
+
+  // --- UI Logic: Login ---
+  async function handleLogin() {
+    const u = document.getElementById('username').value.trim().toUpperCase();
+    const p = document.getElementById('pin').value.trim();
+    
+    const { data } = await supabase
+      .from('portal_users')
+      .select()
+      .eq('username', u)
+      .eq('pin', p)
+      .maybeSingle();
+
+    const isEmergencyAuth = (u === 'ADMIN' && p === '1234');
+
+    if (data || isEmergencyAuth) {
+      document.getElementById('loginScreen').classList.add('hidden');
+      document.getElementById('adminPanel').classList.remove('hidden');
+      loadData();
+    } else {
+      alert('Invalid Credentials. Try ADMIN / 1234.');
+    }
+  }
+
+  function handleLogout() {
+    location.reload();
+  }
+
+  // --- Data Loading ---
+  async function loadData() {
+    try {
+      currentYear = document.getElementById('yearSelect').value;
+
+      const ratesReq = await supabase.from('benefit_rates').select('*');
+      rates = ratesReq.data || [];
+
+      const enrollReq = await supabase
+        .from('benefit_enrollments')
+        .select('*')
+        .eq('benefit_year', currentYear)
+        .not('full_name', 'is', null)
+        .order('full_name');
+      
+      enrollments = enrollReq.data || [];
+      renderTable();
+
+    } catch (err) {
+      console.error("Error loading data:", err);
+      enrollments = [];
+      renderTable();
+    }
+  }
+
+  function getRate(plan, tier, type) {
+    if (!plan || plan === 'WAIVE') return 0;
+    const r = rates.find(rt => 
+      rt.effective_year == currentYear && 
+      rt.plan_code === plan && 
+      rt.tier === tier && 
+      (rt.coverage || '').toLowerCase() === type.toLowerCase()
+    );
+    return r ? parseFloat(r.amount) : 0; 
+  }
+
+  function renderTable() {
+    const tbody = document.querySelector('#benefitsTable tbody');
+    if (!tbody) return;
+    
+    tbody.innerHTML = '';
+
+    if (enrollments.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" class="p-8 text-center text-slate-400">No enrollments found for ${currentYear}</td></tr>`;
+      return;
+    }
+
+    const buildOpts = (opts, selected) => opts.map(o => {
+      const value = typeof o === 'object' ? o.value : o;
+      const label = typeof o === 'object' ? o.label : (PLAN_NAMES[o] || o);
+      return `<option value="${value}" ${selected===value?'selected':''}>${label}</option>`;
+    }).join('');
+
+    enrollments.forEach(en => {
+      const medicalCost = getRate(en.medical_plan, en.tier_election, 'medical');
+      const dentalCost = getRate(en.dental_plan, en.tier_election, 'dental');
+      const visionCost = getRate(en.vision_plan, en.tier_election, 'vision');
+      const total = medicalCost + dentalCost + visionCost;
+      const totalAnnual = total * 26;
+
+      const row = document.createElement('tr');
+      row.className = "hover:bg-slate-50 transition-colors";
+      row.dataset.id = en.id;
+
+      row.innerHTML = `
+        <td class="p-4 border-b font-medium text-slate-700">
+          <div class="flex flex-col">
+            <span>${en.full_name || 'Unknown'}</span>
+            <span class="text-xs text-slate-400">${en.username || ''}</span>
+          </div>
+        </td>
+        <td class="p-4 border-b">
+          <select class="tier w-full p-2 border rounded bg-white focus:ring-2 focus:ring-brand-accent outline-none text-sm">
+            ${buildOpts(['EO','ES','EC','EF'], en.tier_election)}
+          </select>
+        </td>
+        <td class="p-4 border-b">
+          <select class="medical w-full p-2 border rounded bg-white focus:ring-2 focus:ring-brand-accent outline-none text-sm">
+            ${buildOpts([
+              {value: 'WAIVE', label: 'Waived'},
+              {value: 'ATBCB402', label: 'PPO'},
+              {value: 'ATBAB303', label: 'HMO'},
+              {value: 'ATBAP393', label: 'HMO HSA'}
+            ], en.medical_plan)}
+          </select>
+        </td>
+        <td class="p-4 border-b">
+          <select class="dental w-full p-2 border rounded bg-white focus:ring-2 focus:ring-brand-accent outline-none text-sm">
+            ${buildOpts(['WAIVE','F_PLAN_2W','F_PLAN_3W'], en.dental_plan)}
+          </select>
+        </td>
+        <td class="p-4 border-b">
+          <select class="vision w-full p-2 border rounded bg-white focus:ring-2 focus:ring-brand-accent outline-none text-sm">
+            ${buildOpts(['WAIVE','PLAN_1'], en.vision_plan)}
+          </select>
+        </td>
+        <td class="p-4 border-b font-bold text-brand-primary text-right pr-8 group relative cursor-help">
+          $${total.toFixed(2)}
+          <div class="absolute bottom-full right-0 mb-2 hidden group-hover:block w-48 bg-slate-800 text-white text-xs rounded p-2 shadow-lg z-50">
+            Annual: $${totalAnnual.toLocaleString(undefined, {minimumFractionDigits: 2})}
+            <div class="text-slate-400 text-[10px]">(26 Pay Periods)</div>
+          </div>
+        </td>
+        <td class="p-4 border-b text-center">
+          <button class="text-slate-400 hover:text-red-600 transition delete-btn" title="Clear Enrollment">
+            <i class="fas fa-trash-alt"></i>
+          </button>
+        </td>
+      `;
+      tbody.appendChild(row);
+    });
+
+    // BULLETPROOF EVENT DELEGATION
+    const tableBody = tbody;
+    tableBody.onclick = (e) => {
+      const btn = e.target.closest('.delete-btn');
+      if (btn) deleteEnrollment(btn.closest('tr'));
+    };
+    tableBody.onchange = (e) => {
+      const select = e.target.closest('select');
+      if (select) saveRow(select.closest('tr'));
+    };
+  }
+
+  async function saveRow(row) {
+    if (!row) return;
+    const id = row.dataset.id;
+    if (!id) return;
+
+    const updates = {
+      tier_election: row.querySelector('.tier')?.value || 'EO',
+      medical_plan: row.querySelector('.medical')?.value || 'WAIVE',
+      dental_plan: row.querySelector('.dental')?.value || 'WAIVE',
+      vision_plan: row.querySelector('.vision')?.value || 'WAIVE'
     };
 
-    // --- UI Logic: Login ---
-    async function handleLogin() {
-      const u = document.getElementById('username').value.trim().toUpperCase();
-      const p = document.getElementById('pin').value.trim();
-      
-      // Check against portal_users table
-      const { data, error } = await supabase
-        .from('portal_users')
-        .select()
-        .eq('username', u)
-        .eq('pin', p)
-        .maybeSingle();
+    const { error } = await supabase
+      .from('benefit_enrollments')
+      .update(updates)
+      .eq('id', id);
 
-      // EMERGENCY FALLBACK:
-      const isEmergencyAuth = (u === 'ADMIN' && p === '1234');
+    if (error) alert("Save failed: " + error.message);
+    else loadData();
+  }
 
-      if (data || isEmergencyAuth) {
-        document.getElementById('loginScreen').classList.add('hidden');
-        document.getElementById('adminPanel').classList.remove('hidden');
-        loadData();
-      } else {
-        alert('Invalid Credentials. Try ADMIN / 1234.');
-      }
+  async function deleteEnrollment(row) {
+    if (!row || !confirm(`Reset benefits for ${row.querySelector('td span')?.textContent}?`)) return;
+    const id = row.dataset.id;
+    const { error } = await supabase
+      .from('benefit_enrollments')
+      .update({ tier_election: 'EO', medical_plan: 'WAIVE', dental_plan: 'WAIVE', vision_plan: 'WAIVE' })
+      .eq('id', id);
+    if (error) alert("Error: " + error.message);
+    else loadData();
+  }
+
+  function toggleAddModal() {
+    document.getElementById('addModal').classList.toggle('hidden');
+  }
+
+  async function addNewEmployee() {
+    const fn = document.getElementById('newFirst').value.trim();
+    const ln = document.getElementById('newLast').value.trim();
+    const un = document.getElementById('newUser').value.trim().toUpperCase();
+    if (!fn || !ln || !un) return alert("Fill all fields");
+
+    const { error } = await supabase.from('benefit_enrollments').insert({
+      username: un,
+      full_name: `${fn} ${ln}`,
+      benefit_year: currentYear,
+      tier_election: 'EO',
+      medical_plan: 'WAIVE',
+      dental_plan: 'WAIVE',
+      vision_plan: 'WAIVE'
+    });
+
+    if (error) alert("Error: " + error.message);
+    else {
+      toggleAddModal();
+      document.getElementById('newFirst').value = '';
+      document.getElementById('newLast').value = '';
+      document.getElementById('newUser').value = '';
+      loadData();
     }
-
-    function handleLogout() {
-      location.reload();
-    }
-
-    // --- Data Loading ---
-    async function loadData() {
-      try {
-        currentYear = document.getElementById('yearSelect').value;
-
-        // 1. Fetch Rates
-        const ratesReq = await supabase.from('benefit_rates').select('*');
-        
-        if (ratesReq.error) console.error('Supabase Rates Error:', ratesReq.error);
-        rates = (ratesReq.data && Array.isArray(ratesReq.data)) ? ratesReq.data : [];
-
-        // 2. Fetch Enrollments
-        const enrollReq = await supabase
-          .from('benefit_enrollments')
-          .select('*')
-          .eq('benefit_year', currentYear)
-          .not('full_name', 'is', null)
-          .order('full_name');
-        
-        if (enrollReq.error) console.error('Supabase Enrollment Error:', enrollReq.error);
-        enrollments = (enrollReq.data && Array.isArray(enrollReq.data)) ? enrollReq.data : [];
-
-        renderTable();
-
-      } catch (err) {
-        console.error("Unexpected error in loadData:", err);
-        enrollments = [];
-        renderTable();
-      }
-    }
-
-    // --- Calculations ---
-    function getRate(plan, tier, type) {
-      if (!plan || plan === 'WAIVE') return 0;
-      if (!rates || !Array.isArray(rates)) return 0;
-
-      const r = rates.find(rt => 
-        rt.effective_year == currentYear && 
-        rt.plan_code === plan && 
-        rt.tier === tier && 
-        (rt.coverage || '').toLowerCase() === type.toLowerCase()
-      );
-      return r ? parseFloat(r.amount) : 0; 
-    }
-
-    function renderTable() {
-      const tbody = document.querySelector('#benefitsTable tbody');
-      if (!tbody) return;
-      
-      tbody.innerHTML = '';
-
-      if (!enrollments || !Array.isArray(enrollments) || enrollments.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="p-8 text-center text-slate-400">No enrollments found for ${currentYear}</td></tr>`;
-        return;
-      }
-
-      enrollments.forEach(en => {
-        // Dynamic Calculation for Display
-        // Note: We calculate this on the fly since we can't save it to the DB yet
-        const medicalCost = getRate(en.medical_plan, en.tier_election, 'medical');
-        const dentalCost = getRate(en.dental_plan, en.tier_election, 'dental');
-        const visionCost = getRate(en.vision_plan, en.tier_election, 'vision');
-        
-        const total = (medicalCost + dentalCost + visionCost);
-        const totalAnnual = total * 26;
-
-        const row = document.createElement('tr');
-        row.className = "hover:bg-slate-50 transition-colors";
-        row.setAttribute('data-id', en.id);
-        
-const buildOpts = (opts, selected) => {
-  return opts.map(o => {
-    const value = typeof o === 'object' ? o.value : o;
-    const label = typeof o === 'object' ? o.label : (PLAN_NAMES[o] || o);
-    return `<option value="${value}" ${selected===value?'selected':''}>${label}</option>`;
-  }).join('');
-};
-
-        row.innerHTML = `
-          <td class="p-4 border-b font-medium text-slate-700">
-            <div class="flex flex-col">
-              <span>${en.full_name || 'Unknown'}</span>
-              <span class="text-xs text-slate-400">${en.username || ''}</span>
-            </div>
-          </td>
-          <td class="p-4 border-b">
-            <select class="tier w-full p-2 border rounded bg-white focus:ring-2 focus:ring-brand-accent outline-none text-sm">
-              ${buildOpts(['EO','ES','EC','EF'], en.tier_election)}
-            </select>
-          </td>
-          <td class="p-4 border-b">
-            <select class="medical w-full p-2 border rounded bg-white focus:ring-2 focus:ring-brand-accent outline-none text-sm">
-             ${buildOpts([
-  {value: 'WAIVE', label: 'Waived'},
-  {value: 'ATBCB402', label: 'PPO'},
-  {value: 'ATBAB303', label: 'HMO'},
-  {value: 'ATBAP393', label: 'HMO HSA'}
-], en.medical_plan)}
-            </select>
-          </td>
-          <td class="p-4 border-b">
-            <select class="dental w-full p-2 border rounded bg-white focus:ring-2 focus:ring-brand-accent outline-none text-sm">
-              ${buildOpts(['WAIVE','F_PLAN_2W','F_PLAN_3W'], en.dental_plan)}
-            </select>
-          </td>
-          <td class="p-4 border-b">
-            <select class="vision w-full p-2 border rounded bg-white focus:ring-2 focus:ring-brand-accent outline-none text-sm">
-              ${buildOpts(['WAIVE','PLAN_1'], en.vision_plan)}
-            </select>
-          </td>
-          <td class="p-4 border-b font-bold text-brand-primary text-right pr-8 group relative cursor-help">
-            $${total.toFixed(2)}
-            <div class="absolute bottom-full right-0 mb-2 hidden group-hover:block w-48 bg-slate-800 text-white text-xs rounded p-2 shadow-lg z-50">
-              Annual: $${totalAnnual.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-              <div class="text-slate-400 text-[10px]">(26 Pay Periods)</div>
-            </div>
-          </td>
-          <td class="p-4 border-b text-center">
-            <button class="text-slate-400 hover:text-red-600 transition delete-btn" title="Clear Enrollment">
-              <i class="fas fa-trash-alt"></i>
-            </button>
-          </td>
-        `;
-        tbody.appendChild(row);
-      });
-
-      // Attach listeners
-      document.querySelectorAll('select').forEach(s => s.addEventListener('change', (e) => {
-        const row = e.target.closest('tr');
-        saveRow(row);
-      }));
-      
-      document.querySelectorAll('.delete-btn').forEach(b => b.addEventListener('click', (e) => {
-        const row = e.target.closest('tr');
-        deleteEnrollment(row);
-      }));
-    }
-
-    // --- Actions ---
-
-    async function saveRow(row) {
-      const id = row.getAttribute('data-id');
-      const tier = row.querySelector('.tier').value;
-      const medPlan = row.querySelector('.medical').value;
-      const denPlan = row.querySelector('.dental').value;
-      const visPlan = row.querySelector('.vision').value;
-
-      // Note: We do NOT save calculated costs (medical_cost, etc.) to Supabase
-      // because the columns do not exist in the schema provided.
-      // The UI will re-calculate them on load based on plan/tier.
-
-      const { error } = await supabase
-        .from('benefit_enrollments')
-        .update({
-          tier_election: tier,
-          medical_plan: medPlan,
-          dental_plan: denPlan,
-          vision_plan: visPlan
-        })
-        .eq('id', id);
-
-      if (error) {
-        console.error("Error saving:", error);
-        alert("Failed to save changes: " + error.message);
-      } else {
-        loadData();
-      }
-    }
-
-    async function deleteEnrollment(row) {
-      const name = row.querySelector('td div span').innerText;
-      if (!confirm(`Reset benefits for ${name}? This will set all plans to Waived.`)) return;
-      
-      const id = row.getAttribute('data-id');
-      
-      const { error } = await supabase
-        .from('benefit_enrollments')
-        .update({
-          tier_election: 'EO',
-          medical_plan: 'WAIVE',
-          dental_plan: 'WAIVE',
-          vision_plan: 'WAIVE'
-        })
-        .eq('id', id);
-        
-      if (error) {
-        alert("Error updating record: " + error.message);
-      } else {
-        loadData();
-      }
-    }
-
-    function toggleAddModal() {
-      const m = document.getElementById('addModal');
-      m.classList.toggle('hidden');
-    }
-
-    async function addNewEmployee() {
-      const fn = document.getElementById('newFirst').value.trim();
-      const ln = document.getElementById('newLast').value.trim();
-      const un = document.getElementById('newUser').value.trim().toUpperCase();
-
-      if(!fn || !ln || !un) {
-        alert("Please fill all fields");
-        return;
-      }
-
-      const { error } = await supabase
-        .from('benefit_enrollments')
-        .insert({
-          username: un,
-          full_name: `${fn} ${ln}`,
-          benefit_year: currentYear,
-          tier_election: 'EO',
-          medical_plan: 'WAIVE',
-          dental_plan: 'WAIVE',
-          vision_plan: 'WAIVE'
-        });
-
-      if (error) {
-        alert("Error adding employee: " + error.message);
-      } else {
-        toggleAddModal();
-        document.getElementById('newFirst').value = '';
-        document.getElementById('newLast').value = '';
-        document.getElementById('newUser').value = '';
-        loadData();
-      }
-    }
-
-    window.onload = () => {};
-  </script>
+  }
+</script>
 
   <style>
     ::-webkit-scrollbar { width: 8px; height: 8px; }
