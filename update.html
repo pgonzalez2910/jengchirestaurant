@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-50">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jeng Chi Benefits Admin Center</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css" rel="stylesheet">
+</head>
+<body class="antialiased">
+
+<!-- LOGIN -->
+<div id="loginScreen" class="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-700">
+  <div class="bg-white p-12 rounded-3xl shadow-2xl w-96 text-center">
+    <h1 class="text-4xl font-bold mb-8 text-slate-900">Benefits Admin Center</h1>
+    <input id="username" placeholder="Username" value="PG" class="w-full p-4 border rounded-xl mb-4 text-lg">
+    <input id="pin" type="password" placeholder="PIN" value="9367" class="w-full p-4 border rounded-xl mb-6 text-lg">
+    <button id="loginBtn" class="w-full bg-slate-900 text-white py-4 rounded-xl text-xl font-bold">Enter</button>
+  </div>
+</div>
+
+<!-- ADMIN PANEL -->
+<div id="adminPanel" class="hidden min-h-screen">
+  <header class="bg-white shadow-xl p-8 flex justify-between items-center">
+    <div>
+      <h1 class="text-4xl font-bold text-slate-900">Jeng Chi Benefits Admin Center</h1>
+      <p class="text-2xl mt-4">Year: 
+        <select id="yearSelect" class="text-2xl font-bold border-4 rounded-xl px-6 py-3">
+          <option>2025</option>
+          <option selected>2026</option>
+          <option>2027</option>
+          <option>2028</option>
+        </select>
+      </p>
+    </div>
+    <button id="logoutBtn" class="text-red-600 text-5xl hover:text-red-800"><i class="fas fa-power-off"></i></button>
+  </header>
+
+  <div class="p-10">
+    <div class="bg-white rounded-3xl shadow-2xl overflow-hidden">
+      <table class="w-full text-left text-lg">
+        <thead class="bg-slate-900 text-white">
+          <tr>
+            <th class="p-6 font-bold">Employee (Last, First)</th>
+            <th class="p-6 font-bold">Tier</th>
+            <th class="p-6 font-bold">Medical</th>
+            <th class="p-6 font-bold">Medical Cost</th>
+            <th class="p-6 font-bold">Dental</th>
+            <th class="p-6 font-bold">Dental Cost</th>
+            <th class="p-6 font-bold">Vision</th>
+            <th class="p-6 font-bold">Vision Cost</th>
+            <th class="p-6 font-bold text-green-400">Total Bi-Weekly</th>
+            <th class="p-6 font-bold">Action</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody" class="divide-y divide-gray-200"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  const supabase = window.supabase.createClient(
+    'https://kpldzwlftkvjjntgsqxx.supabase.co',
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs'
+  );
+
+  // Auto-create admin users
+  if (!localStorage.getItem('jengchi_portal_users_v1')) {
+    localStorage.setItem('jengchi_portal_users_v1', JSON.stringify([
+      {username:"PG",pin:"9367",role:"admin",active:true},
+      {username:"JT",pin:"2316",role:"admin",active:true}
+    ]));
+  }
+
+  document.getElementById('loginBtn').onclick = () => {
+    const u = document.getElementById('username').value.trim().toUpperCase();
+    const p = document.getElementById('pin').value;
+    const users = JSON.parse(localStorage.getItem('jengchi_portal_users_v1') || '[]');
+    if (users.some(x => x.username === u && x.pin === p)) {
+      document.getElementById('loginScreen').classList.add('hidden');
+      document.getElementById('adminPanel').classList.remove('hidden');
+      loadData();
+    } else alert('Wrong credentials');
+  };
+
+  document.getElementById('logoutBtn').onclick = () => location.reload();
+  document.getElementById('yearSelect').onchange = loadData;
+
+  async function loadData() {
+    const year = +document.getElementById('yearSelect').value;
+    const { data: employees } = await supabase.from('employees2025').select('username,first_name,last_name').order('last_name');
+    const { data: enrollments } = await supabase.from('benefit_enrollments').select().eq('benefit_year', year);
+    const { data: rates } = await supabase.from('benefit_rates').select();
+
+    const tbody = document.getElementById('tableBody');
+    tbody.innerHTML = '';
+
+    employees.forEach(emp => {
+      const en = enrollments.find(e => e.username === emp.username) || {};
+      const getCost = (plan, tier, type) => {
+        if (!plan || plan === 'WAIVE') return 0;
+        const r = rates.find(r => r.effective_year === year && r.plan_code === plan && r.tier === tier && r.coverage?.toLowerCase() === type);
+        return r ? +r.amount : 0;
+      };
+
+      const mCost = getCost(en.medical_plan, en.tier_election, 'medical');
+      const dCost = getCost(en.dental_plan, en.tier_election, 'dental');
+      const vCost = getCost(en.vision_plan, en.tier_election, 'vision');
+      const total = (mCost + dCost + vCost).toFixed(2);
+
+      const row = document.createElement('tr');
+      row.className = 'hover:bg-gray-50 transition';
+      row.innerHTML = `
+        <td class="p-6 font-bold">${emp.last_name}, ${emp.first_name}</td>
+        <td class="p-6"><select class="w-full p-3 border rounded tier" data-user="${emp.username}">
+          <option ${en.tier_election==='EO'?'selected':''}>EO</option>
+          <option ${en.tier_election==='ES'?'selected':''}>ES</option>
+          <option ${en.tier_election==='EF'?'selected':''}>EF</option>
+          <option ${en.tier_election==='EC'?'selected':''}>EC</option>
+        </select></td>
+        <td class="p-6"><select class="w-full p-3 border rounded medical" data-user="${emp.username}">
+          <option value="WAIVE" ${!en.medical_plan?'selected':''}>WAIVE</option>
+          <option value="PPO" ${en.medical_plan==='PPO'?'selected':''}>PPO</option>
+          <option value="HMO" ${en.medical_plan==='HMO'?'selected':''}>HMO</option>
+          <option value="HMO_HSA" ${en.medical_plan==='HMO_HSA'?'selected':''}>HMO HSA</option>
+          <option value="ATBAB303" ${en.medical_plan==='ATBAB303'?'selected':''}>ATBAB303</option>
+        </select></td>
+        <td class="p-6 font-bold text-blue-600">$${mCost.toFixed(2)}</td>
+        <td class="p-6"><select class="w-full p-3 border rounded dental" data-user="${emp.username}">
+          <option value="WAIVE" ${!en.dental_plan?'selected':''}>WAIVE</option>
+          <option value="F_PLAN_2W" ${en.dental_plan==='F_PLAN_2W'?'selected':''}>F-PLAN 2W</option>
+          <option value="F_PLAN_3W" ${en.dental_plan==='F_PLAN_3W'?'selected':''}>F-PLAN 3W</option>
+        </select></td>
+        <td class="p-6 font-bold text-blue-600">$${dCost.toFixed(2)}</td>
+        <td class="p-6"><select class="w-full p-3 border rounded vision" data-user="${emp.username}">
+          <option value="WAIVE" ${!en.vision_plan?'selected':''}>WAIVE</option>
+          <option value="PLAN_1" ${en.vision_plan==='PLAN_1'?'selected':''}>PLAN_1</option>
+        </select></td>
+        <td class="p-6 font-bold text-blue-600">$${vCost.toFixed(2)}</td>
+        <td class="p-6 font-bold text-green-600 text-2xl">$${total}</td>
+        <td class="p-6"><button class="text-red-600 font-bold delete" data-user="${emp.username}">Delete</button></td>
+      `;
+      tbody.appendChild(row);
+    });
+
+    document.querySelectorAll('select').forEach(s => s.onchange = () => saveRow(s.dataset.user));
+    document.querySelectorAll('.delete').forEach(b => b.onclick = () => deleteRow(b.dataset.user));
+  }
+
+  async function saveRow(username) {
+    const row = document.querySelector(`[data-user="${username}"]`).closest('tr');
+    const data = {
+      username,
+      benefit_year: +document.getElementById('yearSelect').value,
+      tier_election: row.querySelector('.tier').value,
+      medical_plan: row.querySelector('.medical').value === 'WAIVE' ? null : row.querySelector('.medical').value,
+      dental_plan: row.querySelector('.dental').value === 'WAIVE' ? null : row.querySelector('.dental').value,
+      vision_plan: row.querySelector('.vision').value === 'WAIVE' ? null : row.querySelector('.vision').value
+    };
+
+    const { data: existing } = await supabase.from('benefit_enrollments')
+      .select('id').eq('username', username).eq('benefit_year', data.benefit_year).single();
+
+    if (existing) {
+      await supabase.from('benefit_enrollments').update(data).eq('id', existing.id);
+    } else {
+      await supabase.from('benefit_enrollments').insert(data);
+    }
+    loadData();
+  }
+
+  async function deleteRow(username) {
+    if (confirm('Delete this entire row for this year?')) {
+      await supabase.from('benefit_enrollments')
+        .delete().eq('username', username).eq('benefit_year', +document.getElementById('yearSelect').value);
+      loadData();
+    }
+  }
+</script>
+</body>
+</html>
