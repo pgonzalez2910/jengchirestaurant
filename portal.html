@@ -850,128 +850,244 @@
             document.getElementById("signedCount").textContent = `Total Signed Documents: ${signedCount}`;
         }
 
-      async function renderSummaryCard(employee, enrollmentCurrent) {
+ async function renderSummaryCard(employee, enrollmentCurrent) {
   const container = document.getElementById('summaryCardContainer');
-  container.innerHTML = `<div class="text-center py-20"><div class="spinner"></div><p class="mt-6 text-xl text-gray-600">Loading benefit history...</p></div>`;
+  container.innerHTML = `
+    <div class="text-center py-20">
+      <div class="spinner"></div>
+      <p class="mt-6 text-xl text-gray-600">Loading benefit history...</p>
+    </div>
+  `;
 
-  const currentYear = new Date().getFullYear();
-  const yearsToShow = [2025, 2026, 2027]; // Add 2028+ later if needed
+  // We care about 2025 and 2026 comparison (you can add 2027+ later)
+  const yearsToShow = [2025, 2026];
 
-  // Fetch all enrollments for this employee
-  const { data: allEnrollments } = await supabase
+  // --- Fetch ALL enrollments for this employee for these years ---
+  const { data: allEnrollments, error: enrollErr } = await supabase
     .from('benefit_enrollments')
     .select('*')
     .eq('username', employee.username)
     .in('benefit_year', yearsToShow)
-    .order('benefit_year', { ascending: false });
+    .order('benefit_year', { ascending: true });
 
-  // Load rates once
-  const { data: rates } = await supabase.from('benefit_rates').select('*');
+  if (enrollErr) {
+    console.error('Error loading enrollments:', enrollErr);
+    container.innerHTML = `
+      <div class="p-6 text-center bg-red-50 rounded-xl border border-red-200 w-full">
+        <p class="font-semibold text-red-700">Could not load enrollment history.</p>
+        <p class="text-sm text-red-500">Check benefit_enrollments table permissions (RLS) and try again.</p>
+      </div>`;
+    return;
+  }
 
-  const getRate = (plan, tier, type) => {
+  if (!allEnrollments || allEnrollments.length === 0) {
+    container.innerHTML = `
+      <div class="p-6 text-center bg-yellow-50 rounded-xl border border-yellow-200 w-full">
+        <p class="font-semibold text-gray-800">No enrollment records found.</p>
+        <p class="text-sm text-gray-500">This employee does not have benefit elections on file for 2025 or 2026.</p>
+      </div>`;
+    return;
+  }
+
+  // --- Fetch BENEFIT RATES for these years (same table your update.html uses) ---
+  const { data: rateRows, error: rateErr } = await supabase
+    .from('benefit_rates')
+    .select('*')
+    .in('effective_year', yearsToShow);
+
+  if (rateErr) {
+    console.error('Error loading rates:', rateErr);
+    container.innerHTML = `
+      <div class="p-6 text-center bg-red-50 rounded-xl border border-red-200 w-full">
+        <p class="font-semibold text-red-700">Could not load rate schedule.</p>
+        <p class="text-sm text-red-500">Check benefit_rates table permissions (RLS) and try again.</p>
+      </div>`;
+    return;
+  }
+
+  // Helper: map plan code → pretty label (align with your admin page)
+  const planLabel = (code) => {
+    if (!code || code === 'WAIVE') return 'Waived';
+    const map = {
+      'ATBCB402': 'PPO / ATBCB402',
+      'ATBAB303': 'HMO / ATBAB303',
+      'ATBAP393': 'HMO HSA / ATBAP393',
+      'F_PLAN_2W': 'F-PLAN 2W / Base MAC',
+      'F_PLAN_3W': 'F-PLAN 3W / Buy Up MAC',
+      'PLAN_1': 'Vision Plan 1',
+    };
+    return map[code] || code;
+  };
+
+  // Helper: get rate for a given plan/tier/type/year — SAME LOGIC AS update.html
+  const getRate = (plan, tier, type, year) => {
     if (!plan || plan === 'WAIVE') return 0;
-    const r = rates.find(r =>
-      r.plan_code === plan &&
-      r.tier === tier &&
-      (r.coverage || '').toLowerCase() === type.toLowerCase()
+    const r = rateRows.find(rt =>
+      String(rt.effective_year) === String(year) &&
+      rt.plan_code === plan &&
+      rt.tier === tier &&
+      (rt.coverage || '').toLowerCase() === type.toLowerCase()
     );
     return r ? parseFloat(r.amount) : 0;
   };
 
-  const getCost = (enrollment) => {
+  const getCost = (enrollment, year) => {
     if (!enrollment) return { med: 0, den: 0, vis: 0, total: 0 };
-    const med = getRate(enrollment.medical_plan, enrollment.tier_election, 'medical');
-    const den = getRate(enrollment.dental_plan, enrollment.tier_election, 'dental');
-    const vis = getRate(enrollment.vision_plan, enrollment.tier_election, 'vision');
+    const med = getRate(enrollment.medical_plan, enrollment.tier_election, 'medical', year);
+    const den = getRate(enrollment.dental_plan, enrollment.tier_election, 'dental', year);
+    const vis = getRate(enrollment.vision_plan, enrollment.tier_election, 'vision', year);
     return { med, den, vis, total: med + den + vis };
   };
 
-  const planName = (code) => {
-    const map = {
-      'ATBCB402': 'PPO', 'ATBAB303': 'HMO', 'ATBAP393': 'HMO HSA',
-      'F_PLAN_2W': 'Base Dental', 'F_PLAN_3W': 'Buy-Up Dental',
-      'PLAN_1': 'Vision Plan 1', 'WAIVE': 'Waived'
-    };
-    return map[code] || 'Waived';
+  const tierLabels = {
+    EO: 'Employee Only',
+    ES: 'Employee + Spouse',
+    EC: 'Employee + Children',
+    EF: 'Employee + Family',
   };
 
-  // Build year cards
-  const yearCards = yearsToShow.map(year => {
+  // Build summary for each year (2025 / 2026)
+  const yearSummaries = yearsToShow.map(year => {
     const enrollment = allEnrollments.find(e => e.benefit_year === year);
-    if (!enrollment) return ''; // Hide if no data
+    if (!enrollment) return null;
+    const cost = getCost(enrollment, year);
+    return { year, enrollment, cost };
+  }).filter(Boolean);
 
-    const cost = getCost(enrollment);
-    const isCurrent = year === enrollmentCurrent.benefit_year;
-    const borderColor = isCurrent ? 'border-amber-500 border-4' : 'border-gray-200';
+  if (yearSummaries.length === 0) {
+    container.innerHTML = `
+      <div class="p-6 text-center bg-yellow-50 rounded-xl border border-yellow-200 w-full">
+        <p class="font-semibold text-gray-800">No benefit elections on file for 2025 or 2026.</p>
+      </div>`;
+    return;
+  }
+
+  // Executive header with employee info
+  const hireDate = employee.original_hire_date ? formatDate(employee.original_hire_date) : 'N/A';
+  const jobTitle = employee.job_title || 'Team Member';
+
+  // Create year cards (side-by-side executive layout)
+  const cardsHtml = yearSummaries.map(summary => {
+    const { year, enrollment, cost } = summary;
+    const isCurrent = enrollmentCurrent && enrollmentCurrent.benefit_year === year;
+    const borderClass = isCurrent
+      ? 'border-4 border-amber-500 shadow-2xl'
+      : 'border border-gray-200 shadow-xl';
+
+    const tier = enrollment.tier_election || 'EO';
+    const tierText = tierLabels[tier] || 'Coverage Tier';
 
     return `
-      <div class="bg-white rounded-3xl shadow-xl overflow-hidden ${borderColor} transform transition-all hover:scale-[1.02]">
-        <div class="bg-gradient-to-r from-slate-800 to-slate-900 text-white p-8 text-center">
-          <h3 class="text-4xl font-black">${year} Benefits</h3>
-          ${isCurrent ? '<p class="text-amber-400 text-xl mt-2 font-bold">Current Selection</p>' : ''}
-        </div>
-        <div class="p-8 space-y-6">
-          <div class="grid grid-cols-3 gap-6 text-center">
-            <div class="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl p-6">
-              <p class="text-sm font-semibold text-gray-600">Medical</p>
-              <p class="text-2xl font-black text-gray-800 mt-2">${planName(enrollment.medical_plan)}</p>
-              <p class="text-4xl font-bold text-green-600 mt-4">$${cost.med.toFixed(2)}</p>
-            </div>
-            <div class="bg-gradient-to-br from-teal-50 to-cyan-50 rounded-2xl p-6">
-              <p class="text-sm font-semibold text-gray-600">Dental</p>
-              <p class="text-2xl font-black text-gray-800 mt-2">${planName(enrollment.dental_plan)}</p>
-              <p class="text-4xl font-bold text-green-600 mt-4">$${cost.den.toFixed(2)}</p>
-            </div>
-            <div class="bg-gradient-to-br from-purple-50 to-pink-50 rounded-2xl p-6">
-              <p class="text-sm font-semibold text-gray-600">Vision</p>
-              <p class="text-2xl font-black text-gray-800 mt-2">${planName(enrollment.vision_plan)}</p>
-              <p class="text-4xl font-bold text-green-600 mt-4">$${cost.vis.toFixed(2)}</p>
-            </div>
+      <div class="bg-white rounded-3xl ${borderClass} overflow-hidden flex flex-col">
+        <div class="bg-gradient-to-r from-slate-900 to-slate-800 text-white px-8 py-6 flex items-center justify-between">
+          <div class="text-left">
+            <p class="text-sm uppercase tracking-[0.2em] text-gray-300">Benefit Year</p>
+            <p class="text-3xl font-black">${year}</p>
+            ${isCurrent ? `<p class="mt-1 text-amber-400 font-semibold text-sm">Current Election</p>` : ''}
           </div>
-          <div class="bg-gradient-to-r from-emerald-600 to-teal-700 text-white rounded-3xl p-10 text-center">
-            <p class="text-2xl font-bold opacity-90">Total Bi-Weekly Deduction</p>
-            <p class="text-7xl font-black mt-4">$${cost.total.toFixed(2)}</p>
-            <p class="text-xl mt-4 opacity-90">Annual: $${(cost.total * 26).toFixed(2)}</p>
+          <div class="text-right">
+            <p class="text-xs uppercase tracking-[0.2em] text-gray-400">Bi-Weekly Total</p>
+            <p class="text-3xl font-black text-emerald-400 mt-1">${formatCurrency(cost.total)}</p>
+            <p class="text-xs text-gray-300 mt-1">Annual: ${formatCurrency(cost.total * 26)}</p>
+          </div>
+        </div>
+
+        <div class="p-8 flex-1 flex flex-col gap-6">
+          <div class="inline-flex items-center gap-3 px-4 py-2 bg-slate-50 rounded-full border border-slate-200 w-fit">
+            <span class="text-xs font-semibold tracking-[0.18em] text-slate-500 uppercase">Tier</span>
+            <span class="text-sm font-bold text-slate-900">${tier}</span>
+            <span class="text-xs text-slate-500">· ${tierText}</span>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            <div class="bg-gradient-to-br from-slate-50 to-blue-50 rounded-2xl p-5 border border-slate-100">
+              <p class="text-xs uppercase tracking-[0.18em] text-slate-500">Medical</p>
+              <p class="mt-2 text-base font-semibold text-slate-900">${planLabel(enrollment.medical_plan)}</p>
+              <p class="mt-4 text-2xl font-black text-emerald-600">${formatCurrency(cost.med)}</p>
+              <p class="text-xs text-slate-500 mt-1">Bi-Weekly</p>
+            </div>
+
+            <div class="bg-gradient-to-br from-slate-50 to-teal-50 rounded-2xl p-5 border border-slate-100">
+              <p class="text-xs uppercase tracking-[0.18em] text-slate-500">Dental</p>
+              <p class="mt-2 text-base font-semibold text-slate-900">${planLabel(enrollment.dental_plan)}</p>
+              <p class="mt-4 text-2xl font-black text-emerald-600">${formatCurrency(cost.den)}</p>
+              <p class="text-xs text-slate-500 mt-1">Bi-Weekly</p>
+            </div>
+
+            <div class="bg-gradient-to-br from-slate-50 to-purple-50 rounded-2xl p-5 border border-slate-100">
+              <p class="text-xs uppercase tracking-[0.18em] text-slate-500">Vision</p>
+              <p class="mt-2 text-base font-semibold text-slate-900">${planLabel(enrollment.vision_plan)}</p>
+              <p class="mt-4 text-2xl font-black text-emerald-600">${formatCurrency(cost.vis)}</p>
+              <p class="text-xs text-slate-500 mt-1">Bi-Weekly</p>
+            </div>
           </div>
         </div>
       </div>
     `;
-  }).filter(Boolean).join('');
+  }).join('');
 
-  const visibleYears = allEnrollments.map(e => e.benefit_year);
-  const latestCost = getCost(allEnrollments[0] || enrollmentCurrent);
-  const previousCost = getCost(allEnrollments[1] || null);
-  const diff = latestCost.total - previousCost.total;
-  const diffColor = diff > 0 ? 'text-red-600' : diff < 0 ? 'text-emerald-600' : 'text-gray-500';
+  // Comparison (difference between 2026 and 2025 if both exist)
+  let comparisonHtml = '';
+  if (yearSummaries.length >= 2) {
+    const sorted = [...yearSummaries].sort((a, b) => a.year - b.year);
+    const first = sorted[0];   // usually 2025
+    const last  = sorted[sorted.length - 1]; // usually 2026
+    const diff  = last.cost.total - first.cost.total;
+    const diffLabel = diff > 0 ? 'Increase in Bi-Weekly Deduction' :
+                      diff < 0 ? 'Savings per Pay Period' :
+                      'No Change vs Prior Year';
+    const diffColor = diff > 0 ? 'text-red-500' : diff < 0 ? 'text-emerald-400' : 'text-slate-200';
+    const sign = diff > 0 ? '+' : diff < 0 ? '−' : '';
 
+    comparisonHtml = `
+      <div class="mt-12 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white rounded-3xl p-10 shadow-2xl">
+        <p class="text-xs uppercase tracking-[0.3em] text-slate-400 text-center">2025 → 2026 Comparison</p>
+        <p class="text-3xl font-bold mt-3 text-center">${diffLabel}</p>
+        <p class="mt-6 text-7xl font-black text-center ${diffColor}">
+          ${sign}${formatCurrency(Math.abs(diff))}
+        </p>
+        <p class="mt-4 text-sm text-slate-300 text-center">Bi-Weekly difference between ${first.year} and ${last.year}</p>
+      </div>
+    `;
+  }
+
+  // Final executive layout
   container.innerHTML = `
-    <div class="max-w-7xl mx-auto">
-      <div class="bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-3xl p-12 text-center mb-12 shadow-2xl">
-        <h2 class="text-6xl font-black mb-4">${employee.first_name} ${employee.last_name}</h2>
-        <p class="text-2xl opacity-90">Benefit Plan Summary & Comparison</p>
+    <div class="max-w-7xl mx-auto space-y-10">
+      <!-- Top header with employee details -->
+      <div class="bg-white rounded-3xl shadow-xl border border-slate-200 p-8 flex flex-col md:flex-row md:items-center md:justify-between">
+        <div>
+          <p class="text-xs uppercase tracking-[0.25em] text-slate-400 mb-2">Employee Benefit Summary</p>
+          <h2 class="text-3xl md:text-4xl font-black text-slate-900">
+            ${employee.first_name} ${employee.last_name}
+          </h2>
+          <p class="mt-2 text-sm text-slate-600">
+            ${jobTitle} · Hired ${hireDate}
+          </p>
+        </div>
+        <div class="mt-4 md:mt-0 flex flex-col items-start md:items-end gap-2">
+          <p class="text-xs uppercase tracking-[0.25em] text-slate-400">Years Displayed</p>
+          <div class="inline-flex flex-wrap gap-2">
+            ${yearSummaries.map(y => `
+              <span class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-900 text-white">
+                ${y.year}
+              </span>
+            `).join('')}
+          </div>
+        </div>
       </div>
 
-      ${yearCards ? `
-        <div class="grid lg:grid-cols-${Math.min(visibleYears.length, 3)} gap-10 mb-16">
-          ${yearCards}
-        </div>
-      ` : '<p class="text-center text-gray-500 text-xl">No enrollment data found.</p>'}
+      <!-- Year-by-year cards -->
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-8">
+        ${cardsHtml}
+      </div>
 
-      ${visibleYears.length > 1 ? `
-        <div class="bg-gradient-to-r from-slate-800 to-slate-900 text-white rounded-3xl p-16 text-center shadow-2xl">
-          <p class="text-4xl font-bold opacity-80">Latest Change</p>
-          <p class="text-9xl font-black mt-6 ${diffColor}">
-            ${diff > 0 ? '+' : ''}$${Math.abs(diff).toFixed(2)}
-          </p>
-          <p class="text-3xl font-bold mt-8 ${diffColor}">
-            ${diff > 0 ? 'Increase' : diff < 0 ? 'Savings' : 'No Change'}
-          </p>
-          <p class="text-xl mt-6 opacity-80">Bi-Weekly • Compared to previous year</p>
-        </div>
-      ` : ''}
+      <!-- Comparison block -->
+      ${comparisonHtml}
     </div>
   `;
 }
+
         // --- EVENT HANDLERS ---
         const docBody = document.getElementById("docBody");
         docBody.addEventListener("click", (e) => {
