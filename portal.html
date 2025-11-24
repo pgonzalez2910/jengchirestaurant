@@ -1101,118 +1101,87 @@
   });
 
   loginBtn.addEventListener("click", login);
-
-  async function login() {
-    if (!supabase) {
-      alert("Supabase connection failed. Please reload the page.");
-      return;
-    }
-    const initials = loginInitials.value.trim().toUpperCase();
-    const pin = loginPin.value.trim();
-
-    if (!initials || !pin) {
+async function login() {
+  if (!supabase) {
+    alert("Supabase connection failed. Please reload the page.");
+    return;
+  }
+  const initials = loginInitials.value.trim().toUpperCase();
+  const pin = loginPin.value.trim();
+  if (!initials || !pin) {
+    showToast({
+      title: "Invalid credentials",
+      message: "Initials and PIN are required.",
+      type: "error",
+    });
+    return;
+  }
+  if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+    showToast({
+      title: "Invalid PIN",
+      message: "PIN must be exactly 4 digits.",
+      type: "error",
+    });
+    return;
+  }
+  try {
+    const { data: user, error } = await supabase
+      .from("portal_users")
+      .select("*")
+      .eq("initials", initials)
+      .eq("pin", pin)
+      .eq("active", true)
+      .maybeSingle();
+    if (error) throw error;
+    if (!user) {
       showToast({
         title: "Invalid credentials",
-        message: "Initials and PIN are required.",
-        type: "error",
-      });
-      return;
-    }
-    if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
-      showToast({
-        title: "Invalid PIN",
-        message: "PIN must be exactly 4 digits.",
+        message: "Check your initials and PIN.",
         type: "error",
       });
       return;
     }
 
-    try {
-      const { data: user, error } = await supabase
-        .from("portal_users")
-        .select("*")
-        .eq("initials", initials)
-        .eq("pin", pin)
-        .eq("active", true)
-        .maybeSingle();
+    currentUser = user;
+await supabase.from("portal_users").update({ last_login: new Date().toISOString() }).eq("id", user.id);
 
-      if (error) {
-        console.error("Login query error", error);
-        showToast({
-          title: "Login error",
-          message: "Unable to verify credentials. Please try again.",
-          type: "error",
-        });
-        return;
-      }
+// FIXED: Don't link employee_id (it's UUID, but employee.id is integer)
+const { data: logRow, error: logError } = await supabase
+  .from("portal_logs")
+  .insert([{
+    portal_user_id: user.id,
+    employee_id: null   // ← This fixes the UUID error
+  }])
+  .select("id")
+  .single();
 
-      if (!user) {
-        showToast({
-          title: "Invalid credentials",
-          message: "Check your initials and PIN.",
-          type: "error",
-        });
-        return;
-      }
+if (logError) {
+  console.error("Failed to create portal log:", logError);
+  showToast({ title: "Warning", message: "Logged in but audit log failed", type: "error" });
+} else if (logRow) {
+  currentLogId = logRow.id;
+}
+    sessionStorage.setItem(
+      "portal_user",
+      JSON.stringify({ ...currentUser, log_id: currentLogId || null })
+    );
 
-      currentUser = user;
-      await supabase.from("portal_users").update({ last_login: new Date().toISOString() }).eq("id", user.id);
+    showToast({
+      title: "Login successful",
+      message: "Redirecting to the Executive Benefits Portal.",
+      type: "success",
+    });
+    setTimeout(() => showDashboard(), 700);
 
-      let employee = null;
-      const { data: empByUsername } = await supabase
-        .from("employees2025")
-        .select("id, username")
-        .eq("username", user.initials)
-        .maybeSingle();
-
-      if (empByUsername) employee = empByUsername;
-
-      if (!employee && user.username) {
-        const { data: empByLegacy } = await supabase
-          .from("employees2025")
-          .select("id, username")
-          .eq("username", user.username)
-          .maybeSingle();
-        if (empByLegacy) employee = empByLegacy;
-      }
-
-      if (employee) {
-        const { data: logRow, error: logError } = await supabase
-          .from("portal_logs")
-          .insert([{ employee_id: employee.id }])
-          .select("id")
-          .single();
-
-        if (!logError && logRow) {
-          currentLogId = logRow.id;
-        }
-      }
-
-      sessionStorage.setItem(
-        "portal_user",
-        JSON.stringify({ ...currentUser, log_id: currentLogId || null })
-      );
-
-      showToast({
-        title: "Login successful",
-        message: "Redirecting to the Executive Benefits Portal.",
-        type: "success",
-      });
-
-      setTimeout(() => {
-        showDashboard();
-      }, 700);
-
-    } catch (err) {
-      console.error("Login error", err);
-      showToast({
-        title: "Login error",
-        message: "Unexpected error. See console for details.",
-        type: "error",
-      });
-    }
+  } catch (err) {
+    console.error("Login error", err);
+    showToast({
+      title: "Login error",
+      message: "Unexpected error. See console for details.",
+      type: "error",
+    });
   }
-
+}
   // ------------------------ DASHBOARD SETUP ------------------------
   const logoutButton = document.getElementById("logoutButton");
   logoutButton.addEventListener("click", handleLogout);
@@ -2499,56 +2468,68 @@
     }
   });
 
-  async function loadAuditLogs() {
-    const tbody = document.getElementById("auditBody");
-    tbody.innerHTML = '<tr><td colspan="4" class="px-4 py-4 text-center text-xs text-slate-500">Loading audit logs...</td></tr>';
-    
-    try {
-      const { data: logs, error: logsError } = await supabase
-        .from("portal_logs")
-        .select("id, employee_id, login_time, logout_time, duration_minutes")
-        .order("login_time", { ascending: false });
-      
-      if (logsError) throw logsError;
+ async function loadAuditLogs() {
+  const tbody = document.getElementById("auditBody");
+  tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-xs text-slate-500">Loading audit logs...</td></tr>';
 
-      const employeeIds = [...new Set(logs.map(log => log.employee_id).filter(Boolean))];
-      
-      const { data: employees, error: empError } = await supabase
-        .from("employees2025")
-        .select("id, first_name, last_name")
-        .in("id", employeeIds);
-      
-      if (empError) throw empError;
+  try {
+    const { data: logs, error } = await supabase
+      .from("portal_logs")
+      .select("id, portal_user_id, employee_id, login_time, logout_time, duration_minutes, tab_accessed")
+      .order("login_time", { ascending: false });
 
-      const empMap = Object.fromEntries(
-        (employees || []).map(e => [e.id, `${e.first_name} ${e.last_name}`])
-      );
+    if (error) throw error;
 
-      tbody.innerHTML = "";
-      (logs || []).forEach(log => {
-        const employeeName = log.employee_id ? (empMap[log.employee_id] || 'Unknown') : 'System';
-        
-        let duration = log.duration_minutes;
-        if (!duration && log.login_time && log.logout_time) {
-          const loginTime = new Date(log.login_time);
-          const logoutTime = new Date(log.logout_time);
-          duration = Math.round((logoutTime - loginTime) / (1000 * 60));
-        }
-        
-        tbody.insertAdjacentHTML("beforeend", `
-          <tr>
-            <td class="px-4 py-2">${esc(employeeName)}</td>
-            <td class="px-4 py-2">${formatDate(log.login_time)}</td>
-            <td class="px-4 py-2">${log.logout_time ? formatDate(log.logout_time) : '<span class="text-amber-600">Still Active</span>'}</td>
-            <td class="px-4 py-2">${duration ? duration + ' min' : '—'}</td>
-          </tr>
-        `);
-      });
-    } catch (err) {
-      console.error(err);
-      tbody.innerHTML = '<tr><td colspan="4" class="px-4 py-4 text-center text-xs text-red-600">Error loading logs</td></tr>';
-    }
+    // Get portal user names
+    const portalUserIds = [...new Set(logs.map(l => l.portal_user_id).filter(Boolean))];
+    const { data: portalUsers } = await supabase
+      .from("portal_users")
+      .select("id, full_name, initials")
+      .in("id", portalUserIds);
+
+    const userMap = Object.fromEntries((portalUsers || []).map(u => [u.id, u]));
+
+    // Get employee names if needed
+    const empIds = [...new Set(logs.map(l => l.employee_id).filter(Boolean))];
+    const { data: employees } = await supabase
+      .from("employees2025")
+      .select("id, first_name, last_name")
+      .in("id", empIds);
+    const empMap = Object.fromEntries((employees || []).map(e => [e.id, `${e.first_name} ${e.last_name}`]));
+
+    tbody.innerHTML = "";
+    logs.forEach(log => {
+      const portalUser = log.portal_user_id ? userMap[log.portal_user_id] : null;
+      const name = portalUser 
+        ? `${portalUser.full_name} (${portalUser.initials})`
+        : (log.employee_id ? (empMap[log.employee_id] || "Unknown Employee") : "System");
+
+      const tab = log.tab_accessed 
+        ? (log.tab_accessed === "medical" ? "Medical Plans" :
+           log.tab_accessed === "dental" ? "Dental Plans" :
+           log.tab_accessed === "vision" ? "Vision Plans" : log.tab_accessed)
+        : "—";
+
+      const duration = log.duration_minutes || (log.login_time && log.logout_time 
+        ? Math.round((new Date(log.logout_time) - new Date(log.login_time)) / 60000) : null);
+
+      tbody.insertAdjacentHTML("beforeend", `
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-2.5">${esc(name)}</td>
+          <td class="px-4 py-2.5">${formatDate(log.login_time)}</td>
+          <td class="px-4 py-2.5">${log.logout_time ? formatDate(log.logout_time) : '<span class="text-amber-600">Active</span>'}</td>
+          <td class="px-4 py-2.5">${duration ? duration + ' min' : '—'}</td>
+          <td class="px-4 py-2.5">${esc(tab)}</td>
+          <td class="px-4 py-2.5 text-xs text-slate-500">${log.id}</td>
+        </tr>
+      `);
+    });
+  } catch (err) {
+    console.error("Audit log error:", err);
+    tbody.innerHTML = '<tr><td colspan="6" class="text-red-600 text-center">Failed to load logs</td></tr>';
   }
+}
+
 
  // ------------------------ 2026 EMPLOYEE LIST (CLEAN VERSION) ------------------------
 async function load2026EmployeeList() {
@@ -2732,6 +2713,18 @@ async function load2026EmployeeList() {
   }
 }
 
+
+// Add this function (if not already there)
+async function logTabAccess(tabName) {
+  if (!currentLogId) return;
+  await supabase
+    .from("portal_logs")
+    .update({ tab_accessed: tabName })
+    .eq("id", currentLogId);
+}
+
+
+
 // ------------------------ GRID TABS / EXPORT / SEARCH (SINGLE SOURCE OF TRUTH) ------------------------
 
 // Tab buttons & content containers
@@ -2852,3 +2845,4 @@ if (coverageFilterSelect) {
 </script>
 </body>
 </html>
+
