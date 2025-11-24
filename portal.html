@@ -169,6 +169,13 @@
     </section>
   </div>
 </main>
+
+
+   
+ 
+
+
+
 <div id="dashboardView" class="hidden min-h-screen bg-slate-50">
   <header class="bg-white border-b border-slate-200">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-4">
@@ -791,6 +798,7 @@
               <th class="text-left px-4 py-2.5">Login Time</th>
               <th class="text-left px-4 py-2.5">Logout Time</th>
               <th class="text-left px-4 py-2.5">Duration (min)</th>
+               <th class="text-left px-4 py-2.5 font-semibold text-[color:var(--jc-red)]">Last Tab Viewed</th>
             </tr>
           </thead>
           <tbody id="auditBody" class="divide-y divide-slate-100">
@@ -1457,40 +1465,41 @@ if (logError) {
     });
   }
 
-  tabDocs.addEventListener("click", () => {
-    activateTab("docs");
-    loadSignedDocuments();
-  });
-  
-  tabAnalytics.addEventListener("click", () => {
-    activateTab("analytics");
-    if (!analyticsRendered) {
-      loadAnalytics().then(() => {
-        analyticsRendered = true;
-      });
-    } else {
-        if (planYearStats && planYearStats[2026]) {
-            initCharts(planYearStats[2026]);
-        }
-    }
-  });
+  // Replace your current tab click listeners with these:
+tabDocs.addEventListener("click", () => {
+  activateTab("docs");
+  loadSignedDocuments();
+  logTabAccess("Signed Documents");
+});
 
-  tabComparison.addEventListener("click", () => {
-    activateTab("comparison");
-    loadComparisonTab();
-  });
+tabAnalytics.addEventListener("click", () => {
+  activateTab("analytics");
+  if (!analyticsRendered) loadAnalytics().then(() => analyticsRendered = true);
+  logTabAccess("Benefit Summary");
+});
 
-  tabEmployeeList.addEventListener("click", () => {
-    activateTab("employeelist");
-    load2026EmployeeList();
-  });
-  
-  tabAudit.addEventListener("click", () => {
-    activateTab("audit");
-    loadAuditLogs();
-  });
-  
-  tabUsers.addEventListener("click", () => activateTab("users"));
+tabComparison.addEventListener("click", () => {
+  activateTab("comparison");
+  loadComparisonTab();
+  logTabAccess("Employee Comparison");
+});
+
+tabEmployeeList.addEventListener("click", () => {
+  activateTab("employeelist");
+  load2026EmployeeList();
+  logTabAccess("2026 Employee Elections");
+});
+
+tabAudit.addEventListener("click", () => {
+  activateTab("audit");
+  loadAuditLogs();
+  logTabAccess("Audit Logs");
+});
+
+tabUsers.addEventListener("click", () => {
+  activateTab("users");
+  logTabAccess("Authorized Users & Portal Credentials");
+});
 
   // ------------------------ SIGNED DOCUMENTS ------------------------
   async function loadSignedDocuments() {
@@ -2470,63 +2479,61 @@ if (logError) {
 
  async function loadAuditLogs() {
   const tbody = document.getElementById("auditBody");
-  tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-xs text-slate-500">Loading audit logs...</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-4 text-center text-xs text-slate-500">Loading audit logs...</td></tr>';
 
   try {
     const { data: logs, error } = await supabase
       .from("portal_logs")
-      .select("id, portal_user_id, employee_id, login_time, logout_time, duration_minutes, tab_accessed")
+      .select("id, portal_user_id, login_time, logout_time, duration_minutes, tab_accessed")
       .order("login_time", { ascending: false });
 
     if (error) throw error;
 
-    // Get portal user names
+    // Fetch portal user names
     const portalUserIds = [...new Set(logs.map(l => l.portal_user_id).filter(Boolean))];
     const { data: portalUsers } = await supabase
       .from("portal_users")
       .select("id, full_name, initials")
       .in("id", portalUserIds);
-
     const userMap = Object.fromEntries((portalUsers || []).map(u => [u.id, u]));
 
-    // Get employee names if needed
-    const empIds = [...new Set(logs.map(l => l.employee_id).filter(Boolean))];
-    const { data: employees } = await supabase
-      .from("employees2025")
-      .select("id, first_name, last_name")
-      .in("id", empIds);
-    const empMap = Object.fromEntries((employees || []).map(e => [e.id, `${e.first_name} ${e.last_name}`]));
-
     tbody.innerHTML = "";
+
     logs.forEach(log => {
       const portalUser = log.portal_user_id ? userMap[log.portal_user_id] : null;
-      const name = portalUser 
+      const name = portalUser
         ? `${portalUser.full_name} (${portalUser.initials})`
-        : (log.employee_id ? (empMap[log.employee_id] || "Unknown Employee") : "System");
+        : "Unknown User";
 
-      const tab = log.tab_accessed 
-        ? (log.tab_accessed === "medical" ? "Medical Plans" :
-           log.tab_accessed === "dental" ? "Dental Plans" :
-           log.tab_accessed === "vision" ? "Vision Plans" : log.tab_accessed)
-        : "—";
+      // Translate tab_accessed into human-readable tab name
+      const tabName = {
+        "docs": "Signed Documents",
+        "analytics": "Benefit Summary",
+        "comparison": "Employee Comparison",
+        "employeelist": "2026 Employee Elections",
+        "audit": "Audit Logs",
+        "users": "Authorized Users"
+      }[log.tab_accessed] || "Dashboard / Unknown";
 
-      const duration = log.duration_minutes || (log.login_time && log.logout_time 
-        ? Math.round((new Date(log.logout_time) - new Date(log.login_time)) / 60000) : null);
+      const duration = log.duration_minutes ? `${log.duration_minutes} min` : "—";
 
-      tbody.insertAdjacentHTML("beforeend", `
-        <tr class="hover:bg-slate-50">
-          <td class="px-4 py-2.5">${esc(name)}</td>
-          <td class="px-4 py-2.5">${formatDate(log.login_time)}</td>
-          <td class="px-4 py-2.5">${log.logout_time ? formatDate(log.logout_time) : '<span class="text-amber-600">Active</span>'}</td>
-          <td class="px-4 py-2.5">${duration ? duration + ' min' : '—'}</td>
-          <td class="px-4 py-2.5">${esc(tab)}</td>
-          <td class="px-4 py-2.5 text-xs text-slate-500">${log.id}</td>
-        </tr>
-      `);
+   
+
+
+
+tbody.insertAdjacentHTML("beforeend", `
+  <tr class="hover:bg-slate-50">
+    <td class="px-4 py-2.5">${esc(name)}</td>
+    <td class="px-4 py-2.5">${formatDate(log.login_time)}</td>
+    <td class="px-4 py-2.5">${log.logout_time ? formatDate(log.logout_time) : '<span class="text-amber-600">Active</span>'}</td>
+    <td class="px-4 py-2.5">${duration}</td>
+    <td class="px-4 py-2.5 font-medium text-[color:var(--jc-red)]">${esc(tabName)}</td>
+  </tr>
+`);
     });
   } catch (err) {
     console.error("Audit log error:", err);
-    tbody.innerHTML = '<tr><td colspan="6" class="text-red-600 text-center">Failed to load logs</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" class="text-red-600 text-center">Failed to load logs</td></tr>';
   }
 }
 
