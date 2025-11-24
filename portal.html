@@ -169,13 +169,6 @@
     </section>
   </div>
 </main>
-
-
-   
- 
-
-
-
 <div id="dashboardView" class="hidden min-h-screen bg-slate-50">
   <header class="bg-white border-b border-slate-200">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-4">
@@ -349,7 +342,7 @@
     <section id="tabAnalyticsContent" class="hidden space-y-8">
       <header class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div class="space-y-1.5">
-          <p class="text-[0.65rem] uppercase tracking-[0.22em] text-slate-500">
+          <p class="text-[0.65rem] uppercase tracking-[0.22em] text-slate-500 mb-2">
             Benefit summary workspace
           </p>
           <h2 class="text-lg md:text-xl font-semibold text-slate-900">
@@ -794,16 +787,16 @@
         <table class="min-w-full text-sm">
           <thead class="bg-slate-50 border-b border-slate-200 text-xs text-slate-500">
             <tr>
-              <th class="text-left px-4 py-2.5">Employee Name</th>
+              <th class="text-left px-4 py-2.5">Portal User</th>
               <th class="text-left px-4 py-2.5">Login Time</th>
               <th class="text-left px-4 py-2.5">Logout Time</th>
               <th class="text-left px-4 py-2.5">Duration (min)</th>
-               <th class="text-left px-4 py-2.5 font-semibold text-[color:var(--jc-red)]">Last Tab Viewed</th>
+              <th class="text-left px-4 py-2.5">Tab History</th>
             </tr>
           </thead>
           <tbody id="auditBody" class="divide-y divide-slate-100">
             <tr>
-              <td colspan="4" class="px-4 py-4 text-center text-xs text-slate-500">
+              <td colspan="5" class="px-4 py-4 text-center text-xs text-slate-500">
                 Loading audit logs...
               </td>
             </tr>
@@ -1109,87 +1102,89 @@
   });
 
   loginBtn.addEventListener("click", login);
-async function login() {
-  if (!supabase) {
-    alert("Supabase connection failed. Please reload the page.");
-    return;
-  }
-  const initials = loginInitials.value.trim().toUpperCase();
-  const pin = loginPin.value.trim();
-  if (!initials || !pin) {
-    showToast({
-      title: "Invalid credentials",
-      message: "Initials and PIN are required.",
-      type: "error",
-    });
-    return;
-  }
-  if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
-    showToast({
-      title: "Invalid PIN",
-      message: "PIN must be exactly 4 digits.",
-      type: "error",
-    });
-    return;
-  }
-  try {
-    const { data: user, error } = await supabase
-      .from("portal_users")
-      .select("*")
-      .eq("initials", initials)
-      .eq("pin", pin)
-      .eq("active", true)
-      .maybeSingle();
-    if (error) throw error;
-    if (!user) {
+  async function login() {
+    if (!supabase) {
+      alert("Supabase connection failed. Please reload the page.");
+      return;
+    }
+    const initials = loginInitials.value.trim().toUpperCase();
+    const pin = loginPin.value.trim();
+    if (!initials || !pin) {
       showToast({
         title: "Invalid credentials",
-        message: "Check your initials and PIN.",
+        message: "Initials and PIN are required.",
         type: "error",
       });
       return;
     }
+    if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+      showToast({
+        title: "Invalid PIN",
+        message: "PIN must be exactly 4 digits.",
+        type: "error",
+      });
+      return;
+    }
+    try {
+      const { data: user, error } = await supabase
+        .from("portal_users")
+        .select("*")
+        .eq("initials", initials)
+        .eq("pin", pin)
+        .eq("active", true)
+        .maybeSingle();
+      if (error) throw error;
+      if (!user) {
+        showToast({
+          title: "Invalid credentials",
+          message: "Check your initials and PIN.",
+          type: "error",
+        });
+        return;
+      }
 
-    currentUser = user;
-await supabase.from("portal_users").update({ last_login: new Date().toISOString() }).eq("id", user.id);
+      currentUser = user;
+      await supabase.from("portal_users").update({ last_login: new Date().toISOString() }).eq("id", user.id);
 
-// FIXED: Don't link employee_id (it's UUID, but employee.id is integer)
-const { data: logRow, error: logError } = await supabase
-  .from("portal_logs")
-  .insert([{
-    portal_user_id: user.id,
-    employee_id: null   // ← This fixes the UUID error
-  }])
-  .select("id")
-  .single();
+      // Create a log row linked to portal_user_id (MANDATORY)
+      const { data: logRow, error: logError } = await supabase
+        .from("portal_logs")
+        .insert([{
+          portal_user_id: user.id,
+          employee_id: null,
+          tab_history: ["Dashboard"] // Initialize history
+        }])
+        .select("id")
+        .single();
 
-if (logError) {
-  console.error("Failed to create portal log:", logError);
-  showToast({ title: "Warning", message: "Logged in but audit log failed", type: "error" });
-} else if (logRow) {
-  currentLogId = logRow.id;
-}
-    sessionStorage.setItem(
-      "portal_user",
-      JSON.stringify({ ...currentUser, log_id: currentLogId || null })
-    );
+      if (logError) {
+        console.error("Failed to create portal log:", logError);
+        showToast({ title: "Warning", message: "Logged in but audit log failed", type: "error" });
+      } else if (logRow) {
+        currentLogId = logRow.id;
+      }
+      
+      sessionStorage.setItem(
+        "portal_user",
+        JSON.stringify({ ...currentUser, log_id: currentLogId || null })
+      );
 
-    showToast({
-      title: "Login successful",
-      message: "Redirecting to the Executive Benefits Portal.",
-      type: "success",
-    });
-    setTimeout(() => showDashboard(), 700);
+      showToast({
+        title: "Login successful",
+        message: "Redirecting to the Executive Benefits Portal.",
+        type: "success",
+      });
+      setTimeout(() => showDashboard(), 700);
 
-  } catch (err) {
-    console.error("Login error", err);
-    showToast({
-      title: "Login error",
-      message: "Unexpected error. See console for details.",
-      type: "error",
-    });
+    } catch (err) {
+      console.error("Login error", err);
+      showToast({
+        title: "Login error",
+        message: "Unexpected error. See console for details.",
+        type: "error",
+      });
+    }
   }
-}
   // ------------------------ DASHBOARD SETUP ------------------------
   const logoutButton = document.getElementById("logoutButton");
   logoutButton.addEventListener("click", handleLogout);
@@ -1465,41 +1460,41 @@ if (logError) {
     });
   }
 
-  // Replace your current tab click listeners with these:
-tabDocs.addEventListener("click", () => {
-  activateTab("docs");
-  loadSignedDocuments();
-  logTabAccess("Signed Documents");
-});
+  // Tab click listeners
+  tabDocs.addEventListener("click", () => {
+    activateTab("docs");
+    loadSignedDocuments();
+    logTabAccess("Signed Documents");
+  });
 
-tabAnalytics.addEventListener("click", () => {
-  activateTab("analytics");
-  if (!analyticsRendered) loadAnalytics().then(() => analyticsRendered = true);
-  logTabAccess("Benefit Summary");
-});
+  tabAnalytics.addEventListener("click", () => {
+    activateTab("analytics");
+    if (!analyticsRendered) loadAnalytics().then(() => analyticsRendered = true);
+    logTabAccess("Benefit Summary");
+  });
 
-tabComparison.addEventListener("click", () => {
-  activateTab("comparison");
-  loadComparisonTab();
-  logTabAccess("Employee Comparison");
-});
+  tabComparison.addEventListener("click", () => {
+    activateTab("comparison");
+    loadComparisonTab();
+    logTabAccess("Employee Comparison");
+  });
 
-tabEmployeeList.addEventListener("click", () => {
-  activateTab("employeelist");
-  load2026EmployeeList();
-  logTabAccess("2026 Employee Elections");
-});
+  tabEmployeeList.addEventListener("click", () => {
+    activateTab("employeelist");
+    load2026EmployeeList();
+    logTabAccess("2026 Employee Elections");
+  });
 
-tabAudit.addEventListener("click", () => {
-  activateTab("audit");
-  loadAuditLogs();
-  logTabAccess("Audit Logs");
-});
+  tabAudit.addEventListener("click", () => {
+    activateTab("audit");
+    loadAuditLogs();
+    logTabAccess("Audit Logs");
+  });
 
-tabUsers.addEventListener("click", () => {
-  activateTab("users");
-  logTabAccess("Authorized Users & Portal Credentials");
-});
+  tabUsers.addEventListener("click", () => {
+    activateTab("users");
+    logTabAccess("Authorized Users & Portal Credentials");
+  });
 
   // ------------------------ SIGNED DOCUMENTS ------------------------
   async function loadSignedDocuments() {
@@ -2477,358 +2472,380 @@ tabUsers.addEventListener("click", () => {
     }
   });
 
- async function loadAuditLogs() {
-  const tbody = document.getElementById("auditBody");
-  tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-4 text-center text-xs text-slate-500">Loading audit logs...</td></tr>';
+  async function loadAuditLogs() {
+    const tbody = document.getElementById("auditBody");
+    tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-4 text-center text-xs text-slate-500">Loading audit logs...</td></tr>';
+    
+    try {
+      const { data: logs, error } = await supabase
+        .from("portal_logs")
+        .select("id, portal_user_id, login_time, logout_time, duration_minutes, tab_accessed, tab_history")
+        .order("login_time", { ascending: false });
 
-  try {
-    const { data: logs, error } = await supabase
-      .from("portal_logs")
-      .select("id, portal_user_id, login_time, logout_time, duration_minutes, tab_accessed")
-      .order("login_time", { ascending: false });
+      if (error) throw error;
 
-    if (error) throw error;
+      // Ensure portal users are loaded for lookup
+      if (portalUsersCache.length === 0) {
+          await loadPortalUsers(); 
+      }
+      const userMap = Object.fromEntries(portalUsersCache.map(u => [u.id, u]));
+      
+      tbody.innerHTML = "";
 
-    // Fetch portal user names
-    const portalUserIds = [...new Set(logs.map(l => l.portal_user_id).filter(Boolean))];
-    const { data: portalUsers } = await supabase
-      .from("portal_users")
-      .select("id, full_name, initials")
-      .in("id", portalUserIds);
-    const userMap = Object.fromEntries((portalUsers || []).map(u => [u.id, u]));
+      (logs || []).forEach(log => {
+        const user = log.portal_user_id ? userMap[log.portal_user_id] : null;
+        const name = user ? `${user.full_name} (${user.initials})` : "Unknown";
 
-    tbody.innerHTML = "";
+        const duration = log.duration_minutes ? `${log.duration_minutes} min` : "—";
+        
+        // Show full tab history (last 5 entries, newest first)
+        const history = (log.tab_history || [])
+          .slice(-5) 
+          .reverse()
+          .map(entry => `<div class="text-xs text-slate-700">${esc(entry)}</div>`)
+          .join("") || '<span class="text-slate-400">Dashboard</span>';
 
-    logs.forEach(log => {
-      const portalUser = log.portal_user_id ? userMap[log.portal_user_id] : null;
-      const name = portalUser
-        ? `${portalUser.full_name} (${portalUser.initials})`
-        : "Unknown User";
-
-      // NOW WE USE THE FULL TAB NAME DIRECTLY – NO MAPPING NEEDED!
-      const lastTab = log.tab_accessed || "Dashboard";
-
-      const duration = log.duration_minutes ? `${log.duration_minutes} min` : "—";
-
-      tbody.insertAdjacentHTML("beforeend", `
-        <tr class="hover:bg-slate-50">
-          <td class="px-4 py-2.5">${esc(name)}</td>
-          <td class="px-4 py-2.5">${formatDate(log.login_time)}</td>
-          <td class="px-4 py-2.5">${log.logout_time ? formatDate(log.logout_time) : '<span class="text-amber-600">Active</span>'}</td>
-          <td class="px-4 py-2.5">${duration}</td>
-          <td class="px-4 py-2.5 font-medium text-[color:var(--jc-red)]">${esc(lastTab)}</td>
-        </tr>
-      `);
-    });
-  } catch (err) {
-    console.error("Audit log error:", err);
-    tbody.innerHTML = '<tr><td colspan="5" class="text-red-600 text-center">Failed to load logs</td></tr>';
+        tbody.insertAdjacentHTML("beforeend", `
+          <tr class="hover:bg-slate-50">
+            <td class="px-4 py-2.5">${esc(name)}</td>
+            <td class="px-4 py-2.5">${formatDate(log.login_time)}</td>
+            <td class="px-4 py-2.5">${log.logout_time ? formatDate(log.logout_time) : '<span class="text-amber-600">Active</span>'}</td>
+            <td class="px-4 py-2.5">${duration}</td>
+            <td class="px-4 py-2.5 space-y-1 max-w-xs">${history}</td>
+          </tr>
+        `);
+      });
+    } catch (err) {
+      console.error("Audit logs failed:", err);
+      tbody.innerHTML = '<tr><td colspan="5" class="text-red-600 text-center">Failed to load</td></tr>';
+    }
   }
-}
 
+  // New function to log the tab accessed by the user
+  async function logTabAccess(tabName) {
+    if (!currentUser || !currentUser.id || !currentLogId) {
+      console.error("No valid currentUser, user.id, or log ID. Cannot log tab access.");
+      return;
+    }
+
+    const timestampedEntry = `${new Date().toLocaleTimeString()} - ${tabName}`;
+
+    try {
+      // 1. Fetch current history array (safest method for array manipulation)
+      const { data: currentLog, error: fetchError } = await supabase
+          .from("portal_logs")
+          .select("tab_history")
+          .eq("id", currentLogId)
+          .maybeSingle();
+
+      if (fetchError || !currentLog) throw fetchError || new Error("Log not found");
+
+      const existingHistory = currentLog.tab_history || [];
+      
+      // 2. Append the new entry and limit size (e.g., to 20 entries)
+      const newHistory = [...existingHistory, timestampedEntry].slice(-20);
+      
+      // 3. Update the log row
+      await supabase
+        .from("portal_logs")
+        .update({ 
+          tab_accessed: tabName, // Update the last accessed tab field (for quick lookup)
+          tab_history: newHistory, // Update the history array
+        })
+        .eq("id", currentLogId);
+     
+    } catch (err) {
+      console.error("Failed to log tab access:", err);
+    }
+  }
 
  // ------------------------ 2026 EMPLOYEE LIST (CLEAN VERSION) ------------------------
-async function load2026EmployeeList() {
-  try {
-    showToast({
-      title: "Loading...",
-      message: "Loading 2026 benefit elections...",
-      type: "info",
-    });
+  async function load2026EmployeeList() {
+    try {
+      showToast({
+        title: "Loading...",
+        message: "Loading 2026 benefit elections...",
+        type: "info",
+      });
 
-    // 1) Load enrollments for 2026
-    const { data: enrollments, error: enrError } = await supabase
-      .from("benefit_enrollments")
-      .select("username, medical_plan, dental_plan, vision_plan")
-      .eq("benefit_year", 2026);
+      // 1) Load enrollments for 2026
+      const { data: enrollments, error: enrError } = await supabase
+        .from("benefit_enrollments")
+        .select("username, medical_plan, dental_plan, vision_plan")
+        .eq("benefit_year", 2026);
 
-    if (enrError) throw enrError;
-    if (!enrollments || !enrollments.length) {
-      throw new Error("No enrollment data found for 2026.");
-    }
-
-    // 2) Load basic employee info for those usernames
-    const usernames = [...new Set(enrollments.map((e) => e.username).filter(Boolean))];
-
-    const { data: employees, error: empError } = await supabase
-      .from("employees2025")
-      .select("username, first_name, last_name")
-      .in("username", usernames);
-
-    if (empError) throw empError;
-
-    const empMap = Object.fromEntries(
-      (employees || []).map((e) => [e.username, `${e.last_name}, ${e.first_name}`])
-    );
-
-    // 3) Clear all grid containers
-    const gridIds = [
-      "gridWaived",
-      "grid303",
-      "grid393",
-      "grid402",
-      "gridDentalWaive",
-      "gridF2W",
-      "gridF3W",
-      "gridVisionWaive",
-      "gridVision1",
-    ];
-
-    gridIds.forEach((id) => {
-      const el = document.getElementById(id);
-      if (el) {
-        el.innerHTML = "";
-      } else {
-        console.warn(`Grid element not found: ${id}`);
+      if (enrError) throw enrError;
+      if (!enrollments || !enrollments.length) {
+        throw new Error("No enrollment data found for 2026.");
       }
-    });
 
-    // 4) Counters
-    let medicalActive = 0,
-      dentalActive = 0,
-      visionActive = 0;
+      // 2) Load basic employee info for those usernames
+      const usernames = [...new Set(enrollments.map((e) => e.username).filter(Boolean))];
 
-    const counts = {
-      waived: 0,
-      p303: 0,
-      p393: 0,
-      p402: 0,
-      dentalWaive: 0,
-      f2w: 0,
-      f3w: 0,
-      visionWaive: 0,
-      vision1: 0,
-    };
+      const { data: employees, error: empError } = await supabase
+        .from("employees2025")
+        .select("username, first_name, last_name")
+        .in("username", usernames);
 
-    // Helper to append a small employee card into a specific grid section
-    function appendEmployeeCard(targetId, fullName) {
-      const el = document.getElementById(targetId);
-      if (!el) return;
+      if (empError) throw empError;
 
-      const safeName = fullName || "";
-      const parts = safeName.split(", ");
-      const initials =
-        parts.length >= 2
-          ? (parts[0].charAt(0) + parts[1].charAt(0)).toUpperCase()
-          : safeName.substring(0, 2).toUpperCase();
+      const empMap = Object.fromEntries(
+        (employees || []).map((e) => [e.username, `${e.last_name}, ${e.first_name}`])
+      );
 
-      el.insertAdjacentHTML(
-        "beforeend",
-        `
-        <div class="card px-3 py-3 hover:shadow-md transition-shadow">
-          <div class="flex items-center gap-3">
-            <div class="w-10 h-10 rounded-full bg-[color:var(--jc-navy)] text-white flex items-center justify-center text-xs font-bold">
-              ${esc(initials)}
-            </div>
-            <div class="flex-1 min-w-0">
-              <p class="text-sm font-medium text-slate-900 truncate">${esc(safeName)}</p>
+      // 3) Clear all grid containers
+      const gridIds = [
+        "gridWaived",
+        "grid303",
+        "grid393",
+        "grid402",
+        "gridDentalWaive",
+        "gridF2W",
+        "gridF3W",
+        "gridVisionWaive",
+        "gridVision1",
+      ];
+
+      gridIds.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.innerHTML = "";
+        } else {
+          console.warn(`Grid element not found: ${id}`);
+        }
+      });
+
+      // 4) Counters
+      let medicalActive = 0,
+        dentalActive = 0,
+        visionActive = 0;
+
+      const counts = {
+        waived: 0,
+        p303: 0,
+        p393: 0,
+        p402: 0,
+        dentalWaive: 0,
+        f2w: 0,
+        f3w: 0,
+        visionWaive: 0,
+        vision1: 0,
+      };
+
+      // Helper to append a small employee card into a specific grid section
+      function appendEmployeeCard(targetId, fullName) {
+        const el = document.getElementById(targetId);
+        if (!el) return;
+
+        const safeName = fullName || "";
+        const parts = safeName.split(", ");
+        const initials =
+          parts.length >= 2
+            ? (parts[0].charAt(0) + parts[1].charAt(0)).toUpperCase()
+            : safeName.substring(0, 2).toUpperCase();
+
+        el.insertAdjacentHTML(
+          "beforeend",
+          `
+          <div class="card px-3 py-3 hover:shadow-md transition-shadow">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 rounded-full bg-[color:var(--jc-navy)] text-white flex items-center justify-center text-xs font-bold">
+                ${esc(initials)}
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="text-sm font-medium text-slate-900 truncate">${esc(safeName)}</p>
+              </div>
             </div>
           </div>
-        </div>
-      `
-      );
+        `
+        );
+      }
+
+      // 5) Distribute enrollments into buckets
+      enrollments.forEach((e) => {
+        const name = empMap[e.username] || e.username || "Unknown";
+
+        // MEDICAL
+        if (!e.medical_plan || e.medical_plan === "WAIVE") {
+          appendEmployeeCard("gridWaived", name);
+          counts.waived++;
+        } else {
+          medicalActive++;
+          if (e.medical_plan === "ATBAB303") {
+            appendEmployeeCard("grid303", name);
+            counts.p303++;
+          } else if (e.medical_plan === "ATBAP393") {
+            appendEmployeeCard("grid393", name);
+            counts.p393++;
+          } else if (e.medical_plan === "ATBCB402") {
+            appendEmployeeCard("grid402", name);
+            counts.p402++;
+          }
+        }
+
+        // DENTAL
+        if (!e.dental_plan || e.dental_plan === "WAIVE") {
+          appendEmployeeCard("gridDentalWaive", name);
+          counts.dentalWaive++;
+        } else {
+          dentalActive++;
+          if (e.dental_plan === "F_PLAN_2W") {
+            appendEmployeeCard("gridF2W", name);
+            counts.f2w++;
+          } else if (e.dental_plan === "F_PLAN_3W") {
+            appendEmployeeCard("gridF3W", name);
+            counts.f3w++;
+          }
+        }
+
+        // VISION
+        if (!e.vision_plan || e.vision_plan === "WAIVE") {
+          appendEmployeeCard("gridVisionWaive", name);
+          counts.visionWaive++;
+        } else {
+          visionActive++;
+          appendEmployeeCard("gridVision1", name);
+          counts.vision1++;
+        }
+      });
+
+      // 6) Update KPI summary cards
+      document.getElementById("gridTotalEnrolled").textContent = enrollments.length;
+      document.getElementById("gridMedicalCoverage").textContent = medicalActive;
+      document.getElementById("gridDentalCoverage").textContent = dentalActive;
+      document.getElementById("gridVisionCoverage").textContent = visionActive;
+
+      // 7) Update badges
+      document.getElementById("countWaived").textContent = `${counts.waived} employees`;
+      document.getElementById("count303").textContent = `${counts.p303} employees`;
+      document.getElementById("count393").textContent = `${counts.p393} employees`;
+      document.getElementById("count402").textContent = `${counts.p402} employees`;
+      document.getElementById("countDentalWaive").textContent = `${counts.dentalWaive} employees`;
+      document.getElementById("countF2W").textContent = `${counts.f2w} employees`;
+      document.getElementById("countF3W").textContent = `${counts.f3w} employees`;
+      document.getElementById("countVisionWaive").textContent = `${counts.visionWaive} employees`;
+      document.getElementById("countVision1").textContent = `${counts.vision1} employees`;
+
+      showToast({
+        title: "Loaded successfully",
+        message: `Loaded ${enrollments.length} employee elections for 2026.`,
+        type: "success",
+      });
+    } catch (err) {
+      console.error("Load 2026 list error:", err);
+      showToast({
+        title: "Load Error",
+        message: "Failed to load 2026 benefit elections. " + (err.message || ""),
+        type: "error",
+      });
     }
+  }
 
-    // 5) Distribute enrollments into buckets
-    enrollments.forEach((e) => {
-      const name = empMap[e.username] || e.username || "Unknown";
+  // ------------------------ GRID TABS / EXPORT / SEARCH (SINGLE SOURCE OF TRUTH) ------------------------
 
-      // MEDICAL
-      if (!e.medical_plan || e.medical_plan === "WAIVE") {
-        appendEmployeeCard("gridWaived", name);
-        counts.waived++;
-      } else {
-        medicalActive++;
-        if (e.medical_plan === "ATBAB303") {
-          appendEmployeeCard("grid303", name);
-          counts.p303++;
-        } else if (e.medical_plan === "ATBAP393") {
-          appendEmployeeCard("grid393", name);
-          counts.p393++;
-        } else if (e.medical_plan === "ATBCB402") {
-          appendEmployeeCard("grid402", name);
-          counts.p402++;
-        }
-      }
+  // Tab buttons & content containers
+  const medicalTab = document.getElementById("gridTabMedical");
+  const dentalTab = document.getElementById("gridTabDental");
+  const visionTab = document.getElementById("gridTabVision");
 
-      // DENTAL
-      if (!e.dental_plan || e.dental_plan === "WAIVE") {
-        appendEmployeeCard("gridDentalWaive", name);
-        counts.dentalWaive++;
-      } else {
-        dentalActive++;
-        if (e.dental_plan === "F_PLAN_2W") {
-          appendEmployeeCard("gridF2W", name);
-          counts.f2w++;
-        } else if (e.dental_plan === "F_PLAN_3W") {
-          appendEmployeeCard("gridF3W", name);
-          counts.f3w++;
-        }
-      }
+  const medicalContent = document.getElementById("gridContentMedical");
+  const dentalContent = document.getElementById("gridContentDental");
+  const visionContent = document.getElementById("gridContentVision");
 
-      // VISION
-      if (!e.vision_plan || e.vision_plan === "WAIVE") {
-        appendEmployeeCard("gridVisionWaive", name);
-        counts.visionWaive++;
-      } else {
-        visionActive++;
-        appendEmployeeCard("gridVision1", name);
-        counts.vision1++;
-      }
+  function switchGridTab(activeTab, activeContent) {
+    [medicalTab, dentalTab, visionTab].forEach((tab) => {
+      tab.classList.remove("border-[color:var(--jc-red)]", "text-[color:var(--jc-red)]");
+      tab.classList.add("border-transparent", "text-slate-600");
     });
 
-    // 6) Update KPI summary cards
-    document.getElementById("gridTotalEnrolled").textContent = enrollments.length;
-    document.getElementById("gridMedicalCoverage").textContent = medicalActive;
-    document.getElementById("gridDentalCoverage").textContent = dentalActive;
-    document.getElementById("gridVisionCoverage").textContent = visionActive;
-
-    // 7) Update badges
-    document.getElementById("countWaived").textContent = `${counts.waived} employees`;
-    document.getElementById("count303").textContent = `${counts.p303} employees`;
-    document.getElementById("count393").textContent = `${counts.p393} employees`;
-    document.getElementById("count402").textContent = `${counts.p402} employees`;
-    document.getElementById("countDentalWaive").textContent = `${counts.dentalWaive} employees`;
-    document.getElementById("countF2W").textContent = `${counts.f2w} employees`;
-    document.getElementById("countF3W").textContent = `${counts.f3w} employees`;
-    document.getElementById("countVisionWaive").textContent = `${counts.visionWaive} employees`;
-    document.getElementById("countVision1").textContent = `${counts.vision1} employees`;
-
-    showToast({
-      title: "Loaded successfully",
-      message: `Loaded ${enrollments.length} employee elections for 2026.`,
-      type: "success",
+    [medicalContent, dentalContent, visionContent].forEach((content) => {
+      content.classList.add("hidden");
     });
-  } catch (err) {
-    console.error("Load 2026 list error:", err);
-    showToast({
-      title: "Load Error",
-      message: "Failed to load 2026 benefit elections. " + (err.message || ""),
-      type: "error",
+
+    activeTab.classList.add("border-[color:var(--jc-red)]", "text-[color:var(--jc-red)]");
+    activeTab.classList.remove("border-transparent", "text-slate-600");
+    activeContent.classList.remove("hidden");
+
+    // Log the current tab the user is viewing
+    logTabAccess(activeTab.textContent.trim());
+  }
+
+  // Attach tab handlers once
+  if (medicalTab && dentalTab && visionTab) {
+    medicalTab.addEventListener("click", () => switchGridTab(medicalTab, medicalContent));
+    dentalTab.addEventListener("click", () => switchGridTab(dentalTab, dentalContent));
+    visionTab.addEventListener("click", () => switchGridTab(visionTab, visionContent));
+  }
+
+  // Export CSV for the whole registry
+  const exportGridBtn = document.getElementById("exportGridCsv");
+  if (exportGridBtn) {
+    exportGridBtn.addEventListener("click", () => {
+      function getGridData(coverageType, planLabel, containerId) {
+        const container = document.getElementById(containerId);
+        if (!container) return [];
+        const cards = Array.from(container.querySelectorAll("div.card p.text-sm"));
+        return cards.map((p) => `"${coverageType}","${planLabel}","${p.textContent.replace(/"/g, '""')}"`);
+      }
+
+      const rows = [
+        '"Coverage Type","Plan Name","Employee Name"',
+        ...getGridData("Medical", "Waived Coverage", "gridWaived"),
+        ...getGridData("Medical", "HMO / ATBAB303", "grid303"),
+        ...getGridData("Medical", "HMO HSA / ATBAP393", "grid393"),
+        ...getGridData("Medical", "PPO / ATBCB402", "grid402"),
+        ...getGridData("Dental", "Waived Coverage", "gridDentalWaive"),
+        ...getGridData("Dental", "F-PLAN 2W / Base MAC", "gridF2W"),
+        ...getGridData("Dental", "F-PLAN 3W / Buy Up MAC", "gridF3W"),
+        ...getGridData("Vision", "Waived Coverage", "gridVisionWaive"),
+        ...getGridData("Vision", "Vision Plan 1", "gridVision1"),
+      ];
+
+      const csv = rows.join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `JengChi_2026_Elections_${new Date().toISOString().split("T")[0]}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      showToast({
+        title: "Export Complete",
+        message: "2026 benefit elections exported successfully.",
+        type: "success",
+      });
     });
   }
-}
 
-
-// Add this function (if not already there)
-async function logTabAccess(tabName) {
-  if (!currentLogId) return;
-
-  try {
-    await supabase
-      .from("portal_logs")
-      .update({ tab_accessed: tabName })
-      .eq("id", currentLogId);
-    // No need to wait for response — fire and forget is fine here
-  } catch (err) {
-    // Silent fail — not critical
-    console.warn("Failed to log tab access:", err);
+  // Search by name across all cards
+  const gridSearchInput = document.getElementById("gridSearch");
+  if (gridSearchInput) {
+    gridSearchInput.addEventListener("input", (e) => {
+      const query = e.target.value.toLowerCase();
+      document.querySelectorAll('[id^="grid"] > div.card').forEach((card) => {
+        const nameEl = card.querySelector("p.text-sm");
+        if (!nameEl) return;
+        const name = nameEl.textContent.toLowerCase();
+        card.style.display = name.includes(query) ? "" : "none";
+      });
+    });
   }
-}
 
-
-// ------------------------ GRID TABS / EXPORT / SEARCH (SINGLE SOURCE OF TRUTH) ------------------------
-
-// Tab buttons & content containers
-const medicalTab = document.getElementById("gridTabMedical");
-const dentalTab = document.getElementById("gridTabDental");
-const visionTab = document.getElementById("gridTabVision");
-
-const medicalContent = document.getElementById("gridContentMedical");
-const dentalContent = document.getElementById("gridContentDental");
-const visionContent = document.getElementById("gridContentVision");
-
-function switchGridTab(activeTab, activeContent) {
-  [medicalTab, dentalTab, visionTab].forEach((tab) => {
-    tab.classList.remove("border-[color:var(--jc-red)]", "text-[color:var(--jc-red)]");
-    tab.classList.add("border-transparent", "text-slate-600");
-  });
-
-  [medicalContent, dentalContent, visionContent].forEach((content) => {
-    content.classList.add("hidden");
-  });
-
-  activeTab.classList.add("border-[color:var(--jc-red)]", "text-[color:var(--jc-red)]");
-  activeTab.classList.remove("border-transparent", "text-slate-600");
-  activeContent.classList.remove("hidden");
-}
-
-// Attach tab handlers once
-if (medicalTab && dentalTab && visionTab) {
-  medicalTab.addEventListener("click", () => switchGridTab(medicalTab, medicalContent));
-  dentalTab.addEventListener("click", () => switchGridTab(dentalTab, dentalContent));
-  visionTab.addEventListener("click", () => switchGridTab(visionTab, visionContent));
-}
-
-// Export CSV for the whole registry
-const exportGridBtn = document.getElementById("exportGridCsv");
-if (exportGridBtn) {
-  exportGridBtn.addEventListener("click", () => {
-    function getGridData(coverageType, planLabel, containerId) {
-      const container = document.getElementById(containerId);
-      if (!container) return [];
-      const cards = Array.from(container.querySelectorAll("div.card p.text-sm"));
-      return cards.map((p) => `"${coverageType}","${planLabel}","${p.textContent.replace(/"/g, '""')}"`);
-    }
-
-    const rows = [
-      '"Coverage Type","Plan Name","Employee Name"',
-      ...getGridData("Medical", "Waived Coverage", "gridWaived"),
-      ...getGridData("Medical", "HMO / ATBAB303", "grid303"),
-      ...getGridData("Medical", "HMO HSA / ATBAP393", "grid393"),
-      ...getGridData("Medical", "PPO / ATBCB402", "grid402"),
-      ...getGridData("Dental", "Waived Coverage", "gridDentalWaive"),
-      ...getGridData("Dental", "F-PLAN 2W / Base MAC", "gridF2W"),
-      ...getGridData("Dental", "F-PLAN 3W / Buy Up MAC", "gridF3W"),
-      ...getGridData("Vision", "Waived Coverage", "gridVisionWaive"),
-      ...getGridData("Vision", "Vision Plan 1", "gridVision1"),
-    ];
-
-    const csv = rows.join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `JengChi_2026_Elections_${new Date().toISOString().split("T")[0]}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-
-    showToast({
-      title: "Export Complete",
-      message: "2026 benefit elections exported successfully.",
-      type: "success",
+  // Coverage filter dropdown -> switches visible tab
+  const coverageFilterSelect = document.getElementById("gridCoverageFilter");
+  if (coverageFilterSelect) {
+    coverageFilterSelect.addEventListener("change", (e) => {
+      const value = e.target.value;
+      if (value === "all" || value === "medical") {
+        switchGridTab(medicalTab, medicalContent);
+      } else if (value === "dental") {
+        switchGridTab(dentalTab, dentalContent);
+      } else if (value === "vision") {
+        switchGridTab(visionTab, visionContent);
+      }
     });
-  });
-}
-
-// Search by name across all cards
-const gridSearchInput = document.getElementById("gridSearch");
-if (gridSearchInput) {
-  gridSearchInput.addEventListener("input", (e) => {
-    const query = e.target.value.toLowerCase();
-    document.querySelectorAll('[id^="grid"] > div.card').forEach((card) => {
-      const nameEl = card.querySelector("p.text-sm");
-      if (!nameEl) return;
-      const name = nameEl.textContent.toLowerCase();
-      card.style.display = name.includes(query) ? "" : "none";
-    });
-  });
-}
-
-// Coverage filter dropdown -> switches visible tab
-const coverageFilterSelect = document.getElementById("gridCoverageFilter");
-if (coverageFilterSelect) {
-  coverageFilterSelect.addEventListener("change", (e) => {
-    const value = e.target.value;
-    if (value === "all" || value === "medical") {
-      switchGridTab(medicalTab, medicalContent);
-    } else if (value === "dental") {
-      switchGridTab(dentalTab, dentalContent);
-    } else if (value === "vision") {
-      switchGridTab(visionTab, visionContent);
-    }
-  });
-}
+  }
 
 
   (function initFromSession() {
@@ -2847,4 +2864,3 @@ if (coverageFilterSelect) {
 </script>
 </body>
 </html>
-
