@@ -401,76 +401,82 @@
 
     /* ========= EMPLOYEE CARD (FILLS empProfile) ========= */
     
-    async function fillEmployeeCard(){
-      const s = getSession();
-      const initials = getInitials();
-      const started  = getSessionStartedAt();
+  async function fillEmployeeCard(){
+  const s = getSession();
+  const initials = getInitials();
+  const started = getSessionStartedAt();
 
-      // 1) seed from login/session
-      let name        = s?.full_name || null;
-      let position    = s?.position || null;
-      let department  = s?.department || null;
-      let reports_to  = s?.reports_to || null;
-      let email       = s?.email || null;
-      let phone       = s?.phone || null;
-      const username  = s?.username || null;
+  let name       = s?.full_name || null;
+  let position   = s?.position || null;
+  let department = s?.department || null;
+  let reports_to = s?.reports_to || null;
+  let email      = s?.email || null;
+  let phone      = s?.phone || null;
+  const username = s?.username || null;
 
-      // Update global profile object
-      empProfile = { ...s, full_name: name, position, department, reports_to, email, phone };
+  // ───── STEP 1: Get full name if missing ─────
+  if (!name && username) {
+    const { data: ha } = await client
+      .from('hb_handbook_access')
+      .select('employee_name')
+      .eq('username', username)
+      .maybeSingle();
+    if (ha?.employee_name) name = ha.employee_name.trim();
+  }
 
+  // ───── STEP 2: ULTIMATE DYNAMIC REPORTS_TO LOOKUP ─────
+  // This works even if name is slightly different, has accent, or is reversed
+  if (!reports_to && name) {
+    const searchTerms = name.trim()
+      .toLowerCase()
+      .replace(/[^a-z\s]/g, '')  // remove accents/symbols
+      .split(/\s+/)
+      .filter(w => w.length > 2);
 
-      // show what we have right away
-      document.getElementById('fi_user').textContent        = safe(initials || toInitials(username));
-      document.getElementById('fi_name').textContent        = safe(name);
-      document.getElementById('fi_position').textContent    = safe(position);
-      document.getElementById('fi_department').textContent  = safe(department);
-      document.getElementById('fi_reports_to').textContent  = safe(reports_to);
-      document.getElementById('fi_email').textContent       = safe(email);
-      document.getElementById('fi_phone').textContent       = safe(phone);
-      document.getElementById('fi_session_started').textContent = new Date(started).toLocaleString();
+    let query = client.from('v_employee_card')
+      .select('reports_to, full_name')
+      .limit(20);
 
-      // 2) If we still need basics, use hb_handbook_access (by username)
-      if ((!name || !position || !department) && username){
-        const { data: ha } = await client
-          .from('hb_handbook_access')
-          .select('employee_name, position, department')
-          .eq('username', username)
-          .maybeSingle();
-
-        if (ha){
-          name       = name       || ha.employee_name || null;
-          position   = position   || ha.position || null;
-          department = department || ha.department || null;
-
-          document.getElementById('fi_name').textContent        = safe(name);
-          document.getElementById('fi_position').textContent    = safe(position);
-          document.getElementById('fi_department').textContent  = safe(department);
-        }
-      }
-
-      // 3) Use the official employees data for contact + manager (by full_name)
-      if (name){
-        const { data: ec } = await client
-          .from('v_employee_card')
-          .select('email, phone, reports_to, department')
-          .ilike('full_name', name);   // case-insensitive match
-
-        if (ec && ec.length){
-          // pick the first match or the one whose dept matches
-          const row = ec.find(r => r.department && department && r.department.toLowerCase() === department.toLowerCase()) || ec[0];
-
-          email      = email      || row.email || null;
-          phone      = phone      || row.phone || null;
-          reports_to = reports_to || row.reports_to || null;
-
-          document.getElementById('fi_reports_to').textContent  = safe(reports_to);
-          document.getElementById('fi_email').textContent       = safe(email);
-          document.getElementById('fi_phone').textContent       = safe(phone);
-        }
-      }
-      // Final update to global profile object
-      empProfile = { ...empProfile, full_name: name, position, department, reports_to, email, phone };
+    // Build OR condition: any word from name appears in full_name
+    if (searchTerms.length > 0) {
+      const orConditions = searchTerms.map(term => 
+        `full_name.ilike.%${term}%`
+      ).join(',');
+      query = query.or(orConditions);
+    } else {
+      query = query.ilike('full_name', `%${name}%`);
     }
+
+    const { data } = await query;
+
+    if (data && data.length > 0) {
+      // Find best match by word overlap
+      const lowerName = name.toLowerCase();
+      const best = data.find(row => 
+        row.full_name && 
+        searchTerms.every(term => 
+          row.full_name.toLowerCase().includes(term)
+        )
+      ) || data[0];
+
+      if (best?.reports_to) {
+        reports_to = best.reports_to.trim();
+      }
+    }
+  }
+
+  // ───── STEP 3: FINAL UI UPDATE ─────
+  document.getElementById('fi_user').textContent           = safe(initials || toInitials(username));
+  document.getElementById('fi_name').textContent           = safe(name);
+  document.getElementById('fi_position').textContent       = safe(position);
+  document.getElementById('fi_department').textContent    = safe(department);
+  document.getElementById('fi_reports_to').textContent     = safe(reports_to || '—');
+  document.getElementById('fi_email').textContent          = safe(email);
+  document.getElementById('fi_phone').textContent          = safe(phone);
+  document.getElementById('fi_session_started').textContent = new Date(started).toLocaleString();
+
+  empProfile = { ...empProfile, full_name: name, position, department, reports_to, email, phone };
+}
 
 
     /* ========= SECTION DATA (All the HTML content) ========= */
@@ -770,11 +776,9 @@ const SECTION_III = [
     code: "3.8",
     title: "Meal & Rest Breaks",
     html: `
-      <ul class="list-disc pl-6">
-        <li>Texas law does not require meal or rest breaks. When the Company provides a meal period, it is unpaid and you must be fully relieved of duty.</li>
-        <li><strong>Clocking:</strong> Non-exempt employees must clock out at the start of an unpaid meal period and clock back in when returning to work. No off-the-clock work.</li>
-        <li><strong>Location:</strong> Eat only in designated employee dining areas. Do not eat in food-prep, service pass, cookline, or dish areas. Wash hands before returning to duty.</li>
-      </ul>
+      <p><strong>When owed.</strong> Overtime is paid at 1.5× the regular rate for all hours worked over 40 in a workweek. Only hours actually worked count toward the 40-hour threshold.</p>
+      <p><strong>Authorization.</strong> Overtime must be approved in advance by a supervisor. If unapproved overtime occurs, it will be paid and may be addressed through coaching or discipline.</p>
+      <p><strong>Multiple rates.</strong> If you work at different rates in the same week, overtime is based on the weighted average regular rate unless a lawful alternative is used.</p>
     `
   },
   {
@@ -853,7 +857,7 @@ const SECTION_III = [
         <li>Tip pools will be operated only as allowed by law and this policy, with full and prompt distribution on or before the regular payday for the workweek (or as soon as practicable thereafter if necessary for payroll).</li>
       </ul>
       <h3 class="text-lg font-semibold mt-2 mb-1">Credit-Card Processing Fees on Tipped Amounts</h3>
-      <p>When a guest leaves a tip on a credit or debit card, JCR may deduct from the employee’s credit/debit card tip an amount equal to the actual percentage processing fee charged by the card processor on that tip amount, not to exceed three percent (3%). If the actual processing percentage is lower than 3%, only the lower actual percentage will be deducted.</p>
+      <p>When a guest leaves a tip on a credit or debit card, JCR may deduct from the employee’s credit/debit card tip an amount equal to the actual percentage processing fee charged by the card processor on that tip amount, not to exceed three percent (3%). If the actual percentage processing fee is lower than 3%, only the lower actual percentage will be deducted.</p>
       <p><strong>Acknowledgment.</strong> Employees must sign the acknowledgments and any applicable authorizations attached to this policy. Refusal to sign required legal notices may affect eligibility for a tip credit or participation in a tip pool.</p>
     `
   }
@@ -864,7 +868,7 @@ const SECTION_III_CODES = SECTION_III.map(i => i.code);
 
     // Section IV (Conduct)
     /* ========= SECTION IV — Standards of Conduct ========= */
-/* Paste this below your SECTION_III block. It uses the same renderer. */
+/* Paste this below your SECTION_IV block. It uses the same renderer. */
 
 const SECTION_IV = [
   {
@@ -1032,6 +1036,9 @@ const SECTION_IV = [
       <p><strong>Smoke break limit.</strong> One brief smoke break per shift may be permitted at manager discretion and must not interfere with operations.</p>
       <p><strong>Local rules control.</strong> Where local ordinances or landlord rules are stricter, those rules control.
       <p><strong>Enforcement.</strong> Progressive discipline up to termination.</p>
+      <p><strong>Smoke break limit.</strong> One brief smoke break per shift may be permitted at manager discretion and must not interfere with operations.</p>
+      <p><strong>Local rules control.</strong> Where local ordinances or landlord rules are stricter, those rules control.
+      <p><strong>Enforcement.</strong> Progressive discipline up to termination.</p>
     `
   },
   {
@@ -1152,7 +1159,25 @@ const SECTION_IV = [
         <li>Repeated or serious violations may lead to progressive discipline up to termination.</li>
       </ul>
     `
-  }
+  },
+  {
+    code: "4.16",
+    title: "Employee Purchase of Menu Items Policy",
+    html: `
+      <p><strong>Scope</strong><br>
+      This policy applies to all employees (FOH, BOH, managers, part-time, full-time).</p>
+
+      <p><strong>Policy Statement</strong></p>
+      <ol class="list-decimal pl-6 space-y-3">
+        <li>Employees are <strong>not allowed</strong> to ring up or process their own purchases.<br>
+            Any time an employee wants to buy food or beverages from the menu, another cashier or a manager must place and complete the order in the POS system.</li>
+        <li>All employee purchases must be paid for <strong>before consuming the item</strong>.<br>
+            No “pay later,” “I’ll fix it at the end of the shift,” or “I’ll ring it when it slows down.”</li>
+        <li>Violations will be addressed under the Corrective Action Plan (CAP).<br>
+            Failure to follow this policy is considered a cash-handling violation and failure to follow company procedures and may lead to disciplinary action, up to and including termination.</li>
+      </ol>
+    `
+  },
 ];
 
 const SECTION_IV_CODES = SECTION_IV.map(i => i.code);
@@ -1160,7 +1185,7 @@ const SECTION_IV_CODES = SECTION_IV.map(i => i.code);
 
     // Section V (Discipline)
     /* ========= SECTION V — Discipline & Corrective Action ========= */
-/* Paste this below your SECTION_IV block. It uses the same renderer. */
+/* Paste this below your SECTION_IV block. It follows the same renderer shape. */
 
 const SECTION_V = [
   {
@@ -1413,7 +1438,7 @@ const SECTION_V_SUPPLEMENT = [
       <h4 class="font-semibold mt-2 mb-1">Required response if a guest leaves without paying</h4>
       <ol class="list-decimal pl-6">
         <li>Notify the Manager on Duty immediately (do not pursue guests).</li>
-        <li>Preserve evidence: note table/time/guest description; retain the check; identify witnesses.</li>
+        <li>Preserve evidence: note table, time, guest description; retain the check; identify witnesses.</li>
         <li>Manager review: cameras and POS logs; determine next steps (e.g., voids, police report where appropriate).</li>
       </ol>
       <p><strong>Discipline path (default):</strong> Verbal → Verbal → Written → Final/Termination. The Company may skip steps for repeated/serious negligence or any evidence of dishonesty.</p>
@@ -1442,14 +1467,14 @@ const SECTION_V_SUPPLEMENT = [
       <p><strong>Employee input.</strong> You may be interviewed and may submit a written statement. You can request a support person (non-disruptive) in manager meetings.</p>
       <p><strong>Findings & notice.</strong> Management will document the facts, violated policy, required improvements, timelines, and next-step consequences. You’ll receive a copy.</p>
       <p><strong>Recordkeeping.</strong> All discipline and CAPs are stored in the personnel/HR file. Video and electronic logs are preserved per Company retention schedules.</p>
-
+      
       <h3 class="text-lg font-semibold mt-3 mb-1">Corrective Action Plans (CAP) — Required Elements</h3>
       <ul class="list-disc pl-6">
         <li>Issue/standard: what policy or procedure was missed.</li>
         <li>Action steps: training modules, checklists, co-sign-offs, or POS refreshers.</li>
         <li>Owner & timeline: responsible manager; start/end dates (1–2 weeks typical).</li>
         <li>Success measures: e.g., zero missed close-outs; zero unverified device drops; error rate under X%; clean audit reports.</li>
-        <li>Consequence for not meeting the CAP (advance to next step up to termination).</li>
+        <li>Consequence if not met (advance to next step up to termination).</li>
       </ul>
     `
   }
@@ -1594,7 +1619,7 @@ const SECTION_VI = [
       <ol class="list-decimal pl-6">
         <li>Notify your manager or HR as soon as possible (30 days for foreseeable).</li>
         <li>Complete forms provided by HR (FMLA request; medical certification if required).</li>
-        <li>Return medical certification within 15 calendar days (or promptly if not practicable).</li>
+        <li>Return medical certification within 15 calendar days (longer if not practicable).</li>
         <li>For pregnancy-related limitations (before/after FMLA or if ineligible), contact HR to explore PWFA/ADA accommodations (e.g., light duty, schedule changes, additional unpaid time off).</li>
       </ol>
     `
@@ -1658,7 +1683,7 @@ const SECTION_VII = [
       <p>When an absence could qualify for FMLA (e.g., 3+ full calendar days with treatment/continuing care; inpatient care; chronic/serious conditions; pregnancy/prenatal), HR will:</p>
       <ol class="list-decimal pl-6">
         <li>Issue <em>FMLA Eligibility & Rights/Responsibilities</em> (Form WH-381) within 5 business days of learning about a potential FMLA need (absent extenuating circumstances).</li>
-        <li>Request medical certification (Form WH-380-E for the employee, WH-380-F for a family member). You have 15 calendar days to return it; if incomplete, HR will give 7 calendar days to cure deficiencies.</li>
+        <li>Request medical certification (Form WH-380-E for the employee, WH-380-F for a family member). You have 15 calendar days to return it (longer if not practicable). If incomplete, HR will give 7 calendar days to cure deficiencies.</li>
         <li><em>Designation Notice</em> (Form WH-382): Once HR has enough information, we will approve/deny and designate the leave in writing within 5 business days.</li>
         <li><strong>Fitness-for-duty (FFD) on return:</strong> If uniformly required for similar jobs, we may require an FFD related to the condition, and may ask the provider to address essential job functions (we will give you that list with the WH-381).</li>
       </ol>
@@ -1876,19 +1901,13 @@ const SECTION_VIII = [
   },
   {
     code: "8.9",
-    title: "Paid Time Off Policy (PTO) — General",
+    title: "Paid Time Off Policy (PTO) — Accrual Start",
     html: `
-      <p>The Company provides full-time employees with vacation on a periodic basis. Eligibility is determined by length of service as of his or her employment anniversary date. We support healthy work–life balance; details below explain how the plan works.</p>
-      <p><strong>Holiday-season hire exception:</strong> Employees hired in Q4 who reach their anniversary during peak holidays may use first-year rollover PTO until Jan 31 of the new year (not combined with new-year PTO; first year only).</p>
+      <p>This policy governs accrual. Details on use, scheduling, carry, and payout are in the related policies below.</p>
       <ul class="list-disc pl-6">
-        <li>Direct manager approves/denies in Sling.</li>
-        <li>Sling maintains a centralized calendar to prevent overlaps.</li>
-        <li>Employees must arrange coverage for duties during PTO.</li>
-        <li>Management may deny PTO if operations would be disrupted (e.g., insufficient coverage; no server substitute when short-staffed). Alternate dates may be requested.</li>
-        <li>For illness/emergencies, submit the Paid Time Off Request Form upon return for payroll processing.</li>
-        <li>All benefits terminate if an employee resigns without notice or takes a leave &gt; 30 days.</li>
-        <li>If re-hired full-time, eligibility for health/dental/life resumes after a 60-day waiting period; PTO eligibility resumes after 1 year of full-time service.</li>
-        <li>If status drops from full-time to part-time, the PTO benefit is forfeited.</li>
+        <li><strong>Who accrues:</strong> Full-time employees (regularly scheduled 30+ hours/week).</li>
+        <li><strong>When accrual begins:</strong> After 60 calendar days of continuous employment and full-time status.</li>
+        <li>PTO accrual, caps, scheduling, carry, year-end payout, and termination rules are set out in the PTO Policy.</li>
       </ul>
     `
   },
@@ -2046,7 +2065,7 @@ localStorage.setItem(nsKey('last_tab'), tabKey);
               <div class="min-w-[260px] md:w-[320px]">
                 <div class="rounded-xl border border-jc-border bg-white p-4 shadow-sm">
                   <label class="block text-xs text-slate-500 mb-1">Your Initials</label>
-                  <input id="${inputId}" class="w-full rounded-xl border border-jc-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-jc-gold/30" placeholder="Your initials" value="${val}">
+                  <input id="${inputId}" class="w-full rounded-xl border border-jc-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-jc-gold/40" placeholder="Your initials" value="${val}">
                   <div class="mt-3 flex items-center gap-2">
                     <button data-code="${item.code}" 
                             data-input-id="${inputId}"
@@ -2636,5 +2655,3 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
   </script>
 </body>
 </html>
-
-
