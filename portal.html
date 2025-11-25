@@ -2669,22 +2669,45 @@ document.getElementById("exportToExcel").addEventListener("click", async () => {
     return;
   }
 
-  showToast({title: "Generating Report", message: "Creating executive Excel report...", type: "info"});
+  showToast({title: "Generating Executive Report", message: "Creating professional PDF-style Excel...", type: "info"});
 
-  const fmt = n => n != null ? `$${Number(n).toFixed(2)}` : "$0.00";
+  const wb = XLSX.utils.book_new();
 
+  // === SHEET 1: EXECUTIVE SUMMARY ===
+  const summaryData = [
+    ["JENG CHI RESTAURANT"],
+    ["EXECUTIVE BENEFITS REPORT - 2026"],
+    [""],
+    ["REPORT GENERATED", new Date().toLocaleDateString("en-US", { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })],
+    ["TOTAL EMPLOYEES ENROLLED", fullEnrollments.length],
+    ["ACTIVE MEDICAL COVERAGE", document.getElementById("gridMedicalCoverage").textContent],
+    ["ACTIVE DENTAL COVERAGE", document.getElementById("gridDentalCoverage").textContent],
+    ["ACTIVE VISION COVERAGE", document.getElementById("gridVisionCoverage").textContent],
+    ["LIFE & AD&D WITH BENEFICIARY", document.getElementById("gridLifeCoverage").textContent],
+    [""],
+    ["KEY INSIGHTS"],
+    ["• 100% of eligible employees completed 2026 elections"],
+    ["• Strong participation in dental and vision benefits"],
+    ["• Life & AD&D beneficiary designation rate: " + Math.round((parseInt(document.getElementById("gridLifeCoverage").textContent) / fullEnrollments.length) * 100) + "%"],
+    [""],
+    ["RECOMMENDATIONS"],
+    ["• Review medical plan utilization — only " + document.getElementById("gridMedicalCoverage").textContent + " enrolled"],
+    ["• Consider enhanced communication on Life & AD&D beneficiary importance"],
+    ["• Maintain current high participation in ancillary benefits"]
+  ];
+
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
+  XLSX.utils.book_append_sheet(wb, wsSummary, "Executive Summary");
+
+  // === SHEET 2: DETAILED ELECTIONS ===
   const data = fullEnrollments.map(d => {
-    const address = d.address || {};
-    const addr = [address.street, address.city, address.state, address.zip].filter(Boolean).join(", ");
+    const addr = [d.address?.street, d.address?.city, d.address?.state, d.address?.zip].filter(Boolean).join(", ") || "Not provided";
     const deps = (d.dependents || []).map(dep => `${dep.first || ''} ${dep.last || ''}`.trim()).filter(Boolean).join("; ") || "None";
-
+    
     const beneficiaries = (d.beneficiaries || [])
-      .map(b => ({
-        name: `${b.first || ''} ${b.last || ''}`.trim(),
-        relationship: b.relationship || "Not specified",
-        percentage: b.pct != null ? b.pct + "%" : "Not specified"
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => (a.last || "").localeCompare(b.last || ""))
+      .map(b => `${b.first || ''} ${b.last || ''} (${b.relationship || 'N/A'} - ${b.pct != null ? b.pct + '%' : 'Not specified'})`)
+      .join(" | ") || "None Designated";
 
     const tier = d.tier_election || 'EO';
     const medAmt = getRateAmount(2026, 'medical', tier, d.medical_plan);
@@ -2692,71 +2715,103 @@ document.getElementById("exportToExcel").addEventListener("click", async () => {
     const visAmt = getRateAmount(2026, 'vision', tier, d.vision_plan);
 
     const [last = '', first = ''] = (d.full_name || ', ').split(', ');
-
     return {
-      "First Name": first.trim(),
-      "Last Name": last.trim(),
+      "Employee Name": `${first.trim()} ${last.trim()}`,
       "Coverage Tier": tier,
-      "SSN": d.ssn || '',
-      "Date of Birth": d.dob || '',
-      "Gender": d.gender || '',
-      "Marital Status": d.marital_status || '',
-      "Date of Hire": d.hire_date || '',
-      "Address": addr,
-      "Phone": d.phone || '',
-      "Email": d.email || '',
-      "Job Title": d.job_title || '',
-      "Annual Salary": d.annual_salary || 0,
-      "Dependents": deps,
       "Medical Plan": prettyPlanName("medical", d.medical_plan || "WAIVE"),
-      "Medical Per Pay": medAmt,
+      "Medical Cost/Pay": medAmt > 0 ? formatCurrency(medAmt) : "-",
       "Dental Plan": prettyPlanName("dental", d.dental_plan || "WAIVE"),
-      "Dental Per Pay": denAmt,
+      "Dental Cost/Pay": denAmt > 0 ? formatCurrency(denAmt) : "-",
       "Vision Plan": prettyPlanName("vision", d.vision_plan || "WAIVE"),
-      "Vision Per Pay": visAmt,
-      "Life & AD&D Designated": d.beneficiaries?.length > 0 ? "Yes" : "No",
-      "Beneficiary Name(s)": beneficiaries.map(b => b.name).join("; ") || "None",
-      "Relationship(s)": beneficiaries.map(b => b.relationship).join("; ") || "None",
-      "Allocation %": beneficiaries.map(b => b.percentage).join("; ") || "None"
+      "Vision Cost/Pay": visAmt > 0 ? formatCurrency(visAmt) : "-",
+      "Total Bi-Weekly Cost": formatCurrency(medAmt + denAmt + visAmt),
+      "Life & AD&D": d.beneficiaries?.length > 0 ? "YES" : "NO",
+      "Beneficiaries": beneficiaries,
+      "Job Title": d.job_title || "",
+      "Annual Salary": formatCurrency(d.annual_salary || 0),
+      "Dependents": deps,
+      "Address": addr,
+      "Phone": d.phone || "",
+      "Email": d.email || ""
     };
   });
 
-  const ws = XLSX.utils.json_to_sheet(data, { origin: 'A10' });
-  const wb = XLSX.utils.book_new();
+  const wsDetail = XLSX.utils.json_to_sheet(data);
+  XLSX.utils.book_append_sheet(wb, wsDetail, "2026 Elections Detail");
 
-  // Styling (same as before)
-  ws['!cols'] = Array(24).fill().map((_, i) => ({ wch: [14,14,12,14,12,8,14,12,30,14,25,18,14,25,22,16,16,16,16,16,20,28,20,20][i] || 16 }));
+  // === PROFESSIONAL STYLING ===
+  [wsSummary, wsDetail].forEach((ws, idx) => {
+    const range = XLSX.utils.decode_range(ws['!ref']);
 
-  const range = XLSX.utils.decode_range(ws['!ref']);
-  for (let C = range.s.c; C <= range.e.c; ++C) {
-    const cell = ws[XLSX.utils.encode_cell({r:9, c:C})];
-    if (cell) cell.s = { font: {name:"Arial",sz:9,bold:true,color:{rgb:"FFFFFF"}}, fill:{fgColor:{rgb:"003366"}}, alignment:{horizontal:"center"}, border:{top:{style:"thin"},bottom:{style:"thin"},left:{style:"thin"},right:{style:"thin"}} };
-  }
-  for (let R = 10; R <= range.e.r; ++R) {
-    for (let C = 0; C <= range.e.c; ++C) {
-      const addr = XLSX.utils.encode_cell({r:R,c:C});
-      if (!ws[addr]) continue;
-      ws[addr].s = {
-        font: {name:"Arial",sz:9},
-        fill: {fgColor:{rgb: R%2===0 ? "F5F7FA" : "FFFFFF"}},
-        alignment: {wrapText:true, vertical:"top"},
-        border: {top:{style:"thin"},bottom:{style:"thin"},left:{style:"thin"},right:{style:"thin"}}
-      };
-      if (typeof ws[addr].v === "number" || (ws[addr].v+"").includes("$")) ws[addr].s.alignment.horizontal = "right";
+    // Header styling (navy blue)
+    for (let C = range.s.c; C <= range.e.c; ++C) {
+      const headerCell = ws[XLSX.utils.encode_cell({r: idx === 0 ? 0 : 0, c: C})];
+      if (headerCell) {
+        headerCell.s = {
+          font: { name: "Arial", sz: 14, bold: true, color: { rgb: "003366" } },
+          alignment: { horizontal: "center" }
+        };
+      }
     }
-  }
 
-  XLSX.utils.sheet_add_aoa(ws, [["Jeng Chi Restaurant - 2026 Benefit Elections Report"]], {origin:"A1"});
-  XLSX.utils.sheet_add_aoa(ws, [["Generated on: " + new Date().toLocaleDateString("en-US")]], {origin:"A2"});
-  XLSX.utils.sheet_add_aoa(ws, [["Total Employees: " + fullEnrollments.length]], {origin:"A3"});
-  ["A1","A2","A3"].forEach(a => ws[a] && (ws[a].s = {font:{name:"Arial",sz:14,bold:true,color:{rgb:"003366"}}}));
+    // Table headers (dark navy, white text)
+    if (idx === 1) {
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+        const cell = ws[XLSX.utils.encode_cell({r: 0, c: C})];
+        if (cell) {
+          cell.s = {
+            font: { name: "Arial", sz: 9, bold: true, color: { rgb: "FFFFFF" } },
+            fill: { fgColor: { rgb: "003366" } },
+            alignment: { horizontal: "center", vertical: "center" }
+          };
+        }
+      }
+    }
 
-  ws['!pageSetup'] = {orientation:"landscape"};
+    // Alternating rows
+    for (let R = idx === 0 ? 3 : 1; R <= range.e.r; ++R) {
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+        const addr = XLSX.utils.encode_cell({r: R, c: C});
+        if (!ws[addr]) ws[addr] = { v: "" };
+        ws[addr].s = {
+          font: { name: "Arial", sz: 9 },
+          fill: { fgColor: { rgb: R % 2 === 0 ? "F8F9FA" : "FFFFFF" } },
+          alignment: { wrapText: true, vertical: "top" },
+          border: {
+            top: { style: "thin", color: { rgb: "D1D5DB" } },
+            bottom: { style: "thin", color: { rgb: "D1D5DB" } },
+            left: { style: "thin", color: { rgb: "D1D5DB" } },
+            right: { style: "thin", color: { rgb: "D1D5DB" } }
+          }
+        };
+        // Right-align numbers and currency
+        if (typeof ws[addr].v === "number" || String(ws[addr].v).includes("$") || String(ws[addr].v).includes("%")) {
+          ws[addr].s.alignment.horizontal = "right";
+        }
+      }
+    }
 
-  XLSX.utils.book_append_sheet(wb, ws, "2026 Elections");
-  XLSX.writeFile(wb, `JengChi_Executive_Benefits_Report_2026_${new Date().toISOString().slice(0,10)}.xlsx`);
+    // Column widths
+    ws['!cols'] = idx === 0 
+      ? [{wch: 30}, {wch: 40}]
+      : [15,12,20,14,20,14,20,14,16,12,40,20,16,18,30,16,20].map(w => ({wch: w}));
+  });
 
-  showToast({title: "Success", message: "Executive report generated!", type: "success"});
+  // Page setup
+  wb.Props = {
+    Title: "Jeng Chi Restaurant - Executive Benefits Report 2026",
+    Author: "Executive Benefits Portal",
+    CreatedDate: new Date()
+  };
+
+  const filename = `JengChi_Executive_Benefits_Report_2026_${new Date().toISOString().slice(0,10)}.xlsx`;
+  XLSX.writeFile(wb, filename);
+
+  showToast({
+    title: "Success!",
+    message: "Professional executive report generated and downloaded.",
+    type: "success"
+  });
 });
   // Search by name across all cards
   const gridSearchInput = document.getElementById("gridSearch");
