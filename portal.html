@@ -778,6 +778,48 @@
       </div>
     </section>
 
+    <!-- Tier / Medical / Dental / Vision row -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+  <div>
+    <label class="block text-xs font-medium text-slate-700 mb-1">Tier election</label>
+    <select id="modalTier" class="jc-select">
+      <!-- EO / ES / EC / EF options -->
+    </select>
+  </div>
+
+  <div>
+    <label class="block text-xs font-medium text-slate-700 mb-1">Medical plan</label>
+    <select id="modalMedicalPlan" class="jc-select">
+      <!-- options -->
+    </select>
+    <div id="modalMedicalCost" class="mt-1 text-[11px] text-slate-600 italic"></div>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+  <div>
+    <label class="block text-xs font-medium text-slate-700 mb-1">Dental plan</label>
+    <select id="modalDentalPlan" class="jc-select"></select>
+    <div id="modalDentalCost" class="mt-1 text-[11px] text-slate-600 italic"></div>
+  </div>
+  <div>
+    <label class="block text-xs font-medium text-slate-700 mb-1">Vision plan</label>
+    <select id="modalVisionPlan" class="jc-select"></select>
+    <div id="modalVisionCost" class="mt-1 text-[11px] text-slate-600 italic"></div>
+  </div>
+</div>
+
+<!-- Life option row -->
+<div class="mt-4">
+  <label class="block text-xs font-medium text-slate-700 mb-1">Life option</label>
+  <select id="modalLifeOption" class="jc-select">
+    <option value="">-- Select --</option>
+    <option value="WAIVED">Waived</option>
+    <option value="EMPLOYER_PAID">Employer Paid Life</option>
+  </select>
+  <div id="modalLifeCost" class="mt-1 text-[11px] text-slate-600 italic"></div>
+</div>
+
     <!-- ✅ Permissions is now its OWN sibling section, not nested inside Users -->
     <section id="tabPermissionsContent" class="hidden space-y-4">
       <header class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
@@ -819,6 +861,14 @@
    
 
 </div>
+
+
+<div id="modalPanelHistory" data-section-panel="history" class="hidden">
+  <h3 class="text-sm font-semibold text-slate-800 mb-3">Change History</h3>
+  <div id="modalChangeHistory" class="space-y-2"></div>
+</div>
+
+
 <!-- START: Employee Details Modal (Unified) -->
 <div
   id="employeeModal"
@@ -983,6 +1033,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let comprehensiveData = []; // New array to hold combined report data
   let currentEditingEnrollment = null; // Stores data for the modal
   let allEmployees = []; // New state variable for Employee List Grid
+  let modalOriginalEnrollment = null; // snapshot before edits
   const YEARS = [2025, 2026, 2027];
   // CORPORATE DISCLAIMER TEXT
   const BENEFITS_DISCLAIMER_1 = 'CONFIDENTIAL: This benefits census is for internal use by Jeng Chi Restaurant and authorized broker/benefit partners only.';
@@ -1047,6 +1098,417 @@ async function logTabAccess(tabName) {
   }
 }
   // ------------------------ HELPERS ------------------------
+
+
+function getRate(planType, planCode, tier, planYear = 2026) {
+  if (!Array.isArray(benefitRates)) return null;
+  return benefitRates.find(r =>
+    (r.plan_year === planYear || r.plan_year === String(planYear)) &&
+    r.plan_type === planType &&
+    r.plan_code === planCode &&
+    r.tier === tier
+  ) || null;
+}
+
+function formatMoney(n) {
+  if (n == null || isNaN(n)) return "$0.00";
+  return `$${Number(n).toFixed(2)}`;
+}
+// Robust way to parse an ID for .eq("id", value)
+function toIntOrNull(value) {
+  if (value == null || value === "undefined") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+// Try to find benefit_rates row for this combo
+function getBenefitRatesArray() {
+  const w = window;
+  if (Array.isArray(w.benefitRates2026)) return w.benefitRates2026;
+  if (Array.isArray(w.benefitRates)) return w.benefitRates;
+  if (Array.isArray(w.BENEFIT_PLAN_RATES_2026)) return w.BENEFIT_PLAN_RATES_2026;
+  return [];
+}
+function getBenefitRate(planType, planCode, tier, planYear = 2026) {
+  const all = getBenefitRatesArray();
+  if (!all.length || !planCode || !tier) return null;
+
+  const normalizedType = (planType || "").toUpperCase().startsWith("MED")
+    ? "MEDICAL"
+    : (planType || "").toUpperCase().startsWith("DEN")
+    ? "DENTAL"
+    : (planType || "").toUpperCase().startsWith("VIS")
+    ? "VISION"
+    : (planType || "").toUpperCase();
+
+  const codeTrim = String(planCode).trim();
+  const tierUpper = String(tier).toUpperCase();
+
+  return (
+    all.find((r) => {
+      const yearMatches =
+        !r.plan_year || String(r.plan_year) === String(planYear);
+      const typeVal = (r.plan_type || r.coverage_type || "").toUpperCase();
+      const codeVal = (r.plan_code || r.plan_name || "").trim();
+      const tierVal = (
+        r.tier ||
+        r.coverage_tier ||
+        r.coverage_level ||
+        ""
+      ).toUpperCase();
+      return (
+        yearMatches &&
+        typeVal === normalizedType &&
+        codeVal === codeTrim &&
+        tierVal === tierUpper
+      );
+    }) || null
+  );
+}
+
+  if (!planCode || String(planCode).toUpperCase().includes("WAIV")) {
+    return `${planLabel}: Waived (no employee cost)`;
+  }
+  const rate = getBenefitRate(planType, planCode, tier, 2026);
+  if (!rate) return `${planLabel}: rate not configured for this plan / tier.`;
+
+  const empCost =
+    rate.employee_pp ||
+    rate.employee_cost_pp ||
+    rate.employee_cost ||
+    rate.employee ||
+    0;
+  const erCost =
+    rate.employer_pp ||
+    rate.employer_cost_pp ||
+    rate.employer_cost ||
+    rate.employer ||
+    0;
+  const total =
+    rate.total_pp ||
+    rate.total_cost_pp ||
+    (Number(empCost || 0) + Number(erCost || 0));
+
+  return `${planLabel} per pay period — Employee ${formatMoney(
+    empCost
+  )} · Employer ${formatMoney(erCost)} · Total ${formatMoney(total)}`;
+}
+// Compare old vs new enrollment values for Change History
+function buildEnrollmentChangeList(oldData, newData) {
+  const changes = [];
+
+  function add(field, label) {
+    const before = oldData ? oldData[field] : undefined;
+    const after = newData ? newData[field] : undefined;
+    if (JSON.stringify(before) === JSON.stringify(after)) return;
+    changes.push({
+      field,
+      label,
+      from: before,
+      to: after,
+    });
+  }
+
+  add("tier_election", "Tier election");
+  add("medical_plan", "Medical plan");
+  add("dental_plan", "Dental plan");
+  add("vision_plan", "Vision plan");
+  add("life_option", "Life option");
+  add("dependents", "Family & Dependents");
+  add("beneficiaries", "Beneficiaries");
+
+  return changes;
+}
+
+
+  const tbody = document.getElementById("empDependentsBody");
+  if (!tbody) return;
+
+  const list = Array.isArray(deps) ? deps : [];
+  if (!list.length) {
+    tbody.innerHTML = `
+      <tr class="text-xs text-slate-500">
+        <td colspan="4" class="px-3 py-2 italic">No dependents on file.</td>
+      </tr>`;
+    return;
+  }
+
+  tbody.innerHTML = list
+    .map(
+      (d) => `
+      <tr class="dependent-row border-b border-slate-100">
+        <td class="px-2 py-1">
+          <input
+            type="text"
+            class="dep-first w-full text-xs border border-slate-200 rounded px-1 py-0.5"
+            value="${escapeHtml(d.first_name || "")}"
+          />
+        </td>
+        <td class="px-2 py-1">
+          <input
+            type="date"
+            class="dep-dob w-full text-xs border border-slate-200 rounded px-1 py-0.5"
+            value="${(d.dob || "").substring(0, 10)}"
+          />
+        </td>
+        <td class="px-2 py-1">
+          <input
+            type="text"
+            maxlength="4"
+            class="dep-ssn w-full text-xs border border-slate-200 rounded px-1 py-0.5"
+            value="${escapeHtml(d.ssn_last4 || d.ssn || "")}"
+          />
+        </td>
+        <td class="px-2 py-1">
+          <input
+            type="text"
+            class="dep-rel w-full text-xs border border-slate-200 rounded px-1 py-0.5"
+            value="${escapeHtml(d.relationship || "")}"
+          />
+        </td>
+      </tr>`
+    )
+    .join("");
+}
+
+function renderModalBeneficiariesTable(benes) {
+  const tbody = document.getElementById("empBeneficiariesBody");
+  if (!tbody) return;
+
+  const list = Array.isArray(benes) ? benes : [];
+  if (!list.length) {
+    tbody.innerHTML = `
+      <tr class="text-xs text-slate-500">
+        <td colspan="4" class="px-3 py-2 italic">No beneficiaries on file.</td>
+      </tr>`;
+    return;
+  }
+
+  tbody.innerHTML = list
+    .map(
+      (b) => `
+      <tr class="bene-row border-b border-slate-100">
+        <td class="px-2 py-1">
+          <input
+            type="text"
+            class="bene-first w-full text-xs border border-slate-200 rounded px-1 py-0.5"
+            value="${escapeHtml(b.first_name || "")}"
+          />
+        </td>
+        <td class="px-2 py-1">
+          <input
+            type="date"
+            class="bene-dob w-full text-xs border border-slate-200 rounded px-1 py-0.5"
+            value="${(b.dob || "").substring(0, 10)}"
+          />
+        </td>
+        <td class="px-2 py-1">
+          <input
+            type="text"
+            maxlength="4"
+            class="bene-ssn w-full text-xs border border-slate-200 rounded px-1 py-0.5"
+            value="${escapeHtml(b.ssn_last4 || b.ssn || "")}"
+          />
+        </td>
+        <td class="px-2 py-1">
+          <input
+            type="text"
+            class="bene-rel w-full text-xs border border-slate-200 rounded px-1 py-0.5"
+            value="${escapeHtml(b.relationship || "")}"
+          />
+        </td>
+      </tr>`
+    )
+    .join("");
+}
+
+function collectDependentsFromModal() {
+  const tbody = document.getElementById("empDependentsBody");
+  if (!tbody) return [];
+  const rows = tbody.querySelectorAll("tr.dependent-row");
+  const out = [];
+  rows.forEach((tr) => {
+    const first =
+      tr.querySelector(".dep-first")?.value.trim() || "";
+    const dob = tr.querySelector(".dep-dob")?.value || "";
+    const ssn =
+      tr.querySelector(".dep-ssn")?.value.trim() || "";
+    const rel =
+      tr.querySelector(".dep-rel")?.value.trim() || "";
+    if (first || dob || ssn || rel) {
+      out.push({
+        first_name: first,
+        dob,
+        ssn_last4: ssn,
+        relationship: rel,
+      });
+    }
+  });
+  return out;
+}
+
+function collectBeneficiariesFromModal() {
+  const tbody = document.getElementById("empBeneficiariesBody");
+  if (!tbody) return [];
+  const rows = tbody.querySelectorAll("tr.bene-row");
+  const out = [];
+  rows.forEach((tr) => {
+    const first =
+      tr.querySelector(".bene-first")?.value.trim() || "";
+    const dob = tr.querySelector(".bene-dob")?.value || "";
+    const ssn =
+      tr.querySelector(".bene-ssn")?.value.trim() || "";
+    const rel =
+      tr.querySelector(".bene-rel")?.value.trim() || "";
+    if (first || dob || ssn || rel) {
+      out.push({
+        first_name: first,
+        dob,
+        ssn_last4: ssn,
+        relationship: rel,
+      });
+    }
+  });
+  return out;
+}
+
+// ====== CHANGE HISTORY RENDERER ======
+
+function renderModalChangeHistory() {
+  const container = document.getElementById("empChangeHistoryContainer");
+  if (!container) return;
+
+  const enr =
+    (currentEditingEnrollment && currentEditingEnrollment.rawEnrollmentData) ||
+    modalOriginalEnrollment ||
+    {};
+  const history = Array.isArray(enr.change_history)
+    ? enr.change_history
+    : [];
+
+  if (!history.length) {
+    container.innerHTML =
+      '<p class="text-xs text-slate-500 italic">No changes recorded yet.</p>';
+    return;
+  }
+
+  const html = history
+    .slice()
+    .reverse()
+    .map((entry) => {
+      const who = entry.by_user || "Unknown user";
+      const when = entry.display || entry.at;
+      const list = (entry.changes || [])
+        .map((ch) => {
+          const before =
+            typeof ch.from === "object"
+              ? JSON.stringify(ch.from)
+              : ch.from ?? "";
+          const after =
+            typeof ch.to === "object"
+              ? JSON.stringify(ch.to)
+              : ch.to ?? "";
+          return `<li class="leading-snug">
+            <span class="font-medium">${escapeHtml(
+              ch.label
+            )}:</span>
+            <span class="ml-1">"${escapeHtml(
+              before
+            )}" → "${escapeHtml(after)}"</span>
+          </li>`;
+        })
+        .join("");
+
+      return `
+        <div class="border border-slate-200 rounded-lg p-3 bg-slate-50">
+          <div class="text-[11px] text-slate-600 mb-1">
+            <span class="font-semibold">${escapeHtml(
+              who
+            )}</span>
+            <span class="mx-1">•</span>
+            <span>${escapeHtml(when)}</span>
+          </div>
+          <ul class="text-[11px] text-slate-700 space-y-0.5">
+            ${list}
+          </ul>
+        </div>
+      `;
+    })
+    .join("");
+
+  container.innerHTML = html;
+}
+
+
+function updateModalPlanCosts() {
+  if (!currentEditingEnrollment) return;
+
+  const rec = currentEditingEnrollment;
+  const enr = rec.rawEnrollmentData || {};
+
+  const tier =
+    document.getElementById("empTierSelect")?.value ||
+    enr.tier_election ||
+    rec.tier_election ||
+    "EO";
+
+  // Medical
+  const medSel = document.getElementById("empMedPlanSelect");
+  const medLbl = document.getElementById("empMedPlanCostLabel");
+  if (medSel && medLbl) {
+    const code = medSel.value || "";
+    medLbl.textContent = getPlanCostCaption(
+      "Medical",
+      "MEDICAL",
+      code,
+      tier
+    );
+  }
+
+  // Dental
+  const denSel = document.getElementById("empDentalPlanSelect");
+  const denLbl = document.getElementById("empDentalPlanCostLabel");
+  if (denSel && denLbl) {
+    const code = denSel.value || "";
+    denLbl.textContent = getPlanCostCaption(
+      "Dental",
+      "DENTAL",
+      code,
+      tier
+    );
+  }
+
+  // Vision
+  const visSel = document.getElementById("empVisionPlanSelect");
+  const visLbl = document.getElementById("empVisionPlanCostLabel");
+  if (visSel && visLbl) {
+    const code = visSel.value || "";
+    visLbl.textContent = getPlanCostCaption(
+      "Vision",
+      "VISION",
+      code,
+      tier
+    );
+  }
+
+  // Life option (employer-paid vs waived)
+  const lifeSel = document.getElementById("empLifeSelect");
+  const lifeLbl = document.getElementById("empLifeCostLabel");
+  if (lifeSel && lifeLbl) {
+    const val = (lifeSel.value || "").toUpperCase();
+    if (!val || val.startsWith("WAIV")) {
+      lifeLbl.textContent = "Life: waived.";
+    } else if (val === "EMPLOYER_PAID") {
+      lifeLbl.textContent =
+        "Employer-paid basic life benefit (no employee contribution).";
+    } else {
+      lifeLbl.textContent = "";
+    }
+  }
+}
+
+
+
   function esc(str) {
     return String(str ?? "").replace(/[&<>"']/g, (s) => ({
       "&": "&amp;",
@@ -2098,149 +2560,151 @@ if (toggle2027) {
     }
   });
   function displayEmployeeComparison(rec) {
-    const container = document.getElementById("employeeComparisonDisplay");
-    const { employee, byYear } = rec;
-    const enr2025 = byYear[2025];
-    const enr2026 = byYear[2026];
-    if (!enr2025 && !enr2026) {
-      container.innerHTML = `
-        <div class="flex items-center justify-center h-full">
-          <p class="text-sm text-slate-600">No enrollment data available for this employee.</p>
-        </div>
-      `;
-      return;
-    }
-    const calc = (year, enr) => {
-      if (!enr) return { medical: 0, dental: 0, vision: 0, total: 0, biweekly: 0 };
-      const tier = enr.tier_election || 'EO';
-      const medical = getRateAmount(year, 'medical', tier, enr.medical_plan);
-      const dental = getRateAmount(year, 'dental', tier, enr.dental_plan);
-      const vision = getRateAmount(year, 'vision', tier, enr.vision_plan);
-      const total = medical + dental + vision;
-      return { medical, dental, vision, total, biweekly: total };
-    };
-    const cost2025 = calc(2025, enr2025);
-    const cost2026 = calc(2026, enr2026);
-    const annualCost2025 = cost2025.total * 26;
-    const annualCost2026 = cost2026.total * 26;
-    const annualDiff = annualCost2026 - annualCost2025;
-    const percentChange = annualCost2025 > 0 ? ((annualDiff / annualCost2025) * 100) : 0;
-    let changeType = "flat renewal";
-    let changeColor = "text-slate-700";
-    let changeIcon = "fa-minus";
- 
-    if (annualDiff > 100) {
-      changeType = "upgrade";
-      changeColor = "text-emerald-600";
-      changeIcon = "fa-arrow-up";
-    } else if (annualDiff < -100) {
-      changeType = "downgrade";
-      changeColor = "text-red-600";
-      changeIcon = "fa-arrow-down";
-    }
-    const planRow = (label, plan2025, plan2026) => {
-      const name2025 = plan2025 && plan2025 !== 'WAIVE' ? prettyPlanName(label.toLowerCase(), plan2025) : 'Waived';
-      const name2026 = plan2026 && plan2026 !== 'WAIVE' ? prettyPlanName(label.toLowerCase(), plan2026) : 'Waived'; // FIX: Corrected variable name from plan206 to plan2026
-      const changed = name2025 !== name2026; // FIX: Corrected variable name from name206 to name2026
-   
-      return `
-        <tr class="border-b border-slate-100">
-          <td class="py-3 px-4 text-sm font-medium text-slate-700">${label}</td>
-          <td class="py-3 px-4 text-sm ${changed ? 'text-slate-500' : 'text-slate-700'}">${name2025}</td>
-          <td class="py-3 px-4 text-sm ${changed ? 'font-semibold text-[color:var(--jc-red)]' : 'text-slate-700'}">${name2026}</td>
-          <td class="py-3 px-4 text-center">
-            ${changed ? '<i class="fa-solid fa-circle-exclamation text-amber-500"></i>' : '<i class="fa-solid fa-check text-emerald-500"></i>'}
-          </td>
-        </tr>
-      `;
-    };
+  const container = document.getElementById("employeeComparisonDisplay");
+  const { employee, byYear } = rec;
+  const enr2025 = byYear[2025];
+  const enr2026 = byYear[2026];
+  
+  if (!enr2025 && !enr2026) {
     container.innerHTML = `
-      <div class="space-y-6">
-        <header class="border-b border-slate-200 pb-4">
-          <div class="flex items-start justify-between mb-3">
-            <div>
-              <h3 class="text-xl font-bold text-[color:var(--jc-navy)]">
-                ${esc(employee.last_name)}, ${esc(employee.first_name)}
-              </h3>
-              <p class="text-sm text-slate-500 mt-1">
-                Username: ${esc(employee.username)} • Tier: ${enr2026?.tier_election || enr2025?.tier_election || 'N/A'}
-              </p>
-            </div>
-            <span class="pill-badge inline-flex items-center ${changeColor === 'text-emerald-600' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : changeColor === 'text-red-600' ? 'bg-red-50 text-red-700 border-red-100' : 'bg-slate-100 text-slate-700 border-slate-200'} border px-4 py-2">
-              <i class="fa-solid ${changeIcon} mr-2"></i>
-              ${changeType.toUpperCase()}
-            </span>
-          </div>
-        </header>
-         <div class="grid md:grid-cols-3 gap-4">
-          <div class="card bg-slate-50 px-4 py-4">
-            <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">2025 Bi-weekly Cost</p>
-            <p class="text-2xl font-bold text-slate-900">${formatCurrency(cost2025.biweekly)}</p>
-            <p class="text-xs text-slate-500 mt-1">Annual: ${formatCurrency(annualCost2025)}</p>
-          </div>
-       
-          <div class="card bg-slate-50 px-4 py-4">
-            <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">2026 Bi-weekly Cost</p>
-            <p class="text-2xl font-bold text-slate-900">${formatCurrency(cost2026.biweekly)}</p>
-            <p class="text-xs text-slate-500 mt-1">Annual: ${formatCurrency(annualCost2026)}</p>
-          </div>
-       
-          <div class="card bg-slate-50 px-4 py-4">
-            <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Cost Difference</p>
-            <p class="text-2xl font-bold ${changeColor}">
-              ${(cost2026.biweekly - cost2025.biweekly) >= 0 ? '+' : ''}${formatCurrency(cost2026.biweekly - cost2025.biweekly)}
+      <div class="flex items-center justify-center h-full">
+        <p class="text-sm text-slate-600">No enrollment data available for this employee.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const calc = (year, enr) => {
+    if (!enr) return { medical: 0, dental: 0, vision: 0, total: 0, biweekly: 0 };
+    const tier = enr.tier_election || 'EO';
+    const medical = getRateAmount(year, 'medical', tier, enr.medical_plan);
+    const dental = getRateAmount(year, 'dental', tier, enr.dental_plan);
+    const vision = getRateAmount(year, 'vision', tier, enr.vision_plan);
+    const total = medical + dental + vision;
+    return { medical, dental, vision, total, biweekly: total };
+  };
+
+  const cost2025 = calc(2025, enr2025);
+  const cost2026 = calc(2026, enr2026);
+  const annualCost2025 = cost2025.total * 26;
+  const annualCost2026 = cost2026.total * 26;
+  const annualDiff = annualCost2026 - annualCost2025;
+  const percentChange = annualCost2025 > 0 ? ((annualDiff / annualCost2025) * 100) : 0;
+
+  let changeType = "flat renewal";
+  let changeColor = "text-slate-700";
+  let changeIcon = "fa-minus";
+  if (annualDiff > 100) {
+    changeType = "upgrade";
+    changeColor = "text-emerald-600";
+    changeIcon = "fa-arrow-up";
+  } else if (annualDiff < -100) {
+    changeType = "downgrade";
+    changeColor = "text-red-600";
+    changeIcon = "fa-arrow-down";
+  }
+
+  const planRow = (label, plan2025, plan2026) => {
+    const name2025 = plan2025 && plan2025 !== 'WAIVE' ? prettyPlanName(label.toLowerCase(), plan2025) : 'Waived';
+    const name2026 = plan2026 && plan2026 !== 'WAIVE' ? prettyPlanName(label.toLowerCase(), plan2026) : 'Waived';
+    const changed = name2025 !== name2026;
+
+    return `
+      <tr class="border-b border-slate-100">
+        <td class="py-3 px-4 text-sm font-medium text-slate-700">${label}</td>
+        <td class="py-3 px-4 text-sm ${changed ? 'text-slate-500' : 'text-slate-700'}">${name2025}</td>
+        <td class="py-3 px-4 text-sm ${changed ? 'font-semibold text-[color:var(--jc-red)]' : 'text-slate-700'}">${name2026}</td>
+        <td class="py-3 px-4 text-center">
+          ${changed ? '<i class="fa-solid fa-circle-exclamation text-amber-500"></i>' : '<i class="fa-solid fa-check text-emerald-500"></i>'}
+        </td>
+      </tr>
+    `;
+  };
+
+  container.innerHTML = `
+    <div class="space-y-6">
+      <header class="border-b border-slate-200 pb-4">
+        <div class="flex items-start justify-between mb-3">
+          <div>
+            <h3 class="text-xl font-bold text-[color:var(--jc-navy)]">
+              ${escapeHtml(employee.last_name)}, ${escapeHtml(employee.first_name)}
+            </h3>
+            <p class="text-sm text-slate-500 mt-1">
+              Username: ${escapeHtml(employee.username)} • Tier: ${enr2026?.tier_election || enr2025?.tier_election || 'N/A'}
             </p>
-            <p class="text-xs ${changeColor} mt-1 font-semibold">
-              Per pay period
-            </p>
-            <p class="text-xs text-slate-500 mt-1">
-              Annual: ${annualDiff >= 0 ? '+' : ''}${formatCurrency(annualDiff)} (${Math.abs(percentChange).toFixed(1)}%)
-            </p>
           </div>
+          <span class="pill-badge inline-flex items-center ${
+            changeColor === 'text-emerald-600' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 
+            changeColor === 'text-red-600' ? 'bg-red-50 text-red-700 border-red-100' : 
+            'bg-slate-100 text-slate-700 border-slate-200'
+          } border px-4 py-2">
+            <i class="fa-solid ${changeIcon} mr-2"></i>
+            ${changeType.toUpperCase()}
+          </span>
         </div>
-        <div class="space-y-3">
-          <h4 class="text-sm font-semibold text-[color:var(--jc-navy)] uppercase tracking-wider">
-            Plan Elections Comparison
-          </h4>
-          <div class="overflow-x-auto">
-            <table class="w-full">
-              <thead class="bg-slate-100 border-b-2 border-slate-200">
-                <tr>
-                  <th class="py-2 px-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">Coverage</th>
-                  <th class="py-2 px-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">2025 Plan</th>
-                  <th class="py-2 px-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">2026 Plan</th>
-                  <th class="py-2 px-4 text-center text-xs font-semibold text-slate-700 uppercase tracking-wider">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${planRow('Medical', enr2025?.medical_plan, enr2026?.medical_plan)}
-                ${planRow('Dental', enr2025?.dental_plan, enr2026?.dental_plan)}
-                ${planRow('Vision', enr2025?.vision_plan, enr2026?.vision_plan)}
-              </tbody>
-            </table>
-          </div>
+      </header>
+      <div class="grid md:grid-cols-3 gap-4">
+        <div class="card bg-slate-50 px-4 py-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">2025 Bi-weekly Cost</p>
+          <p class="text-2xl font-bold text-slate-900">${formatCurrency(cost2025.biweekly)}</p>
+          <p class="text-xs text-slate-500 mt-1">Annual: ${formatCurrency(annualCost2025)}</p>
         </div>
-        <div class="card bg-blue-50 border-blue-100 px-4 py-3">
-          <div class="flex items-start gap-3">
-            <i class="fa-solid fa-lightbulb text-blue-600 mt-0.5"></i>
-            <div class="flex-1">
-              <p class="text-xs font-semibold text-blue-900 mb-1">Analysis Summary</p>
-              <p class="text-xs text-blue-700 leading-relaxed">
-                ${employee.first_name} ${employee.last_name}'s benefit elections show a <strong>${changeType}</strong>
-                with an annual cost ${annualDiff >= 0 ? 'increase' : 'decrease'} of ${formatCurrency(Math.abs(annualDiff))}.
-                ${annualDiff > 100 ? 'This represents enhanced coverage selections for 2026.' :
-                  annualDiff < -100 ? 'This reflects reduced coverage or cost-saving plan changes.' :
-                  'Benefit selections remain relatively stable year-over-year.'}
-              </p>
-            </div>
+        <div class="card bg-slate-50 px-4 py-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">2026 Bi-weekly Cost</p>
+          <p class="text-2xl font-bold text-slate-900">${formatCurrency(cost2026.biweekly)}</p>
+          <p class="text-xs text-slate-500 mt-1">Annual: ${formatCurrency(annualCost2026)}</p>
+        </div>
+        <div class="card bg-slate-50 px-4 py-4">
+          <p class="text-xs uppercase tracking-wider text-slate-500 mb-2">Cost Difference</p>
+          <p class="text-2xl font-bold ${changeColor}">
+            ${(cost2026.biweekly - cost2025.biweekly) >= 0 ? '+' : ''}${formatCurrency(cost2026.biweekly - cost2025.biweekly)}
+          </p>
+          <p class="text-xs ${changeColor} mt-1 font-semibold">Per pay period</p>
+          <p class="text-xs text-slate-500 mt-1">
+            Annual: ${annualDiff >= 0 ? '+' : ''}${formatCurrency(annualDiff)} (${Math.abs(percentChange).toFixed(1)}%)
+          </p>
+        </div>
+      </div>
+      <div class="space-y-3">
+        <h4 class="text-sm font-semibold text-[color:var(--jc-navy)] uppercase tracking-wider">
+          Plan Elections Comparison
+        </h4>
+        <div class="overflow-x-auto">
+          <table class="w-full">
+            <thead class="bg-slate-100 border-b-2 border-slate-200">
+              <tr>
+                <th class="py-2 px-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">Coverage</th>
+                <th class="py-2 px-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">2025 Plan</th>
+                <th class="py-2 px-4 text-left text-xs font-semibold text-slate-700 uppercase tracking-wider">2026 Plan</th>
+                <th class="py-2 px-4 text-center text-xs font-semibold text-slate-700 uppercase tracking-wider">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${planRow('Medical', enr2025?.medical_plan, enr2026?.medical_plan)}
+              ${planRow('Dental', enr2025?.dental_plan, enr2026?.dental_plan)}
+              ${planRow('Vision', enr2025?.vision_plan, enr2026?.vision_plan)}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card bg-blue-50 border-blue-100 px-4 py-3">
+        <div class="flex items-start gap-3">
+          <i class="fa-solid fa-lightbulb text-blue-600 mt-0.5"></i>
+          <div class="flex-1">
+            <p class="text-xs font-semibold text-blue-900 mb-1">Analysis Summary</p>
+            <p class="text-xs text-blue-700 leading-relaxed">
+              ${escapeHtml(employee.first_name)} ${escapeHtml(employee.last_name)}'s benefit elections show a <strong>${changeType}</strong>
+              with an annual cost ${annualDiff >= 0 ? 'increase' : 'decrease'} of ${formatCurrency(Math.abs(annualDiff))}.
+              ${annualDiff > 100 ? 'This represents enhanced coverage selections for 2026.' :
+                (annualDiff < -100 ? 'This reflects reduced coverage or cost-saving plan changes.' :
+                'Benefit selections remain relatively stable year-over-year.')}
+            </p>
           </div>
         </div>
       </div>
-    `;
-  }
-
-
-
+    </div>
+  `;
+}
 
   // ------------------------ PORTAL USERS ------------------------
   async function loadPortalUsers() {
@@ -2619,6 +3083,121 @@ if (toggle2027) {
       });
     }
   }
+
+
+function openEmployeeModalFromRow(row) {
+  if (!row) return;
+
+  currentEditingEnrollment = row;
+
+  const emp = row.rawEmployeeData || {};
+  const enr = row.rawEnrollmentData || {};
+
+  // snapshot used for Change History comparison
+  modalOriginalEnrollment = JSON.parse(JSON.stringify(enr || {}));
+
+  const firstName = row.first_name || emp.first_name || "";
+  const lastName = row.last_name || emp.last_name || "";
+
+  // Header like: Aguilar, Daira — 2026 Elections
+  const titleEl = document.getElementById("employeeModalTitle");
+  if (titleEl) {
+    titleEl.textContent = `${lastName}, ${firstName} — 2026 Elections`.trim();
+  }
+
+  // Helper to safely set values
+  const setValue = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.value = value != null ? value : "";
+  };
+
+  // PERSONAL & EMPLOYMENT TAB
+  setValue(
+    "empJobTitleInput",
+    emp.job_title || row.job_title || enr.job_title || ""
+  );
+  setValue(
+    "empStatusSelect",
+    emp.employment_status ||
+      row.employment_status ||
+      enr.employment_status ||
+      "ACTIVE"
+  );
+  setValue(
+    "empHireDateInput",
+    emp.original_hire_date || enr.hire_date || row.hire_date || ""
+  );
+  setValue(
+    "empSalaryInput",
+    emp.annual_salary ??
+      enr.annual_salary ??
+      row.annual_salary ??
+      ""
+  );
+  setValue("empHourlyRateInput", emp.hourly_rate ?? "");
+  setValue(
+    "empPhoneInput",
+    emp.primary_phone || enr.phone || row.primary_phone || ""
+  );
+  const addr = enr.address || {};
+  setValue(
+    "empAddressInput",
+    emp.address_line_1 || addr.street || row.address_line_1 || ""
+  );
+  setValue("empCityInput", emp.city || addr.city || row.city || "");
+  setValue("empStateInput", emp.state || addr.state || row.state || "");
+  setValue(
+    "empZipInput",
+    emp.zip_code || addr.zip || row.zip_code || ""
+  );
+
+  // BENEFIT ELECTIONS TAB
+  setValue(
+    "empTierSelect",
+    enr.tier_election || row.tier_election || "EO"
+  );
+  setValue(
+    "empMedPlanSelect",
+    enr.medical_plan ||
+      row.medical_plan_code ||
+      row.medical_plan ||
+      "WAIVE"
+  );
+  setValue(
+    "empDentalPlanSelect",
+    enr.dental_plan ||
+      row.dental_plan_code ||
+      row.dental_plan ||
+      "WAIVE"
+  );
+  setValue(
+    "empVisionPlanSelect",
+    enr.vision_plan ||
+      row.vision_plan_code ||
+      row.vision_plan ||
+      "WAIVE"
+  );
+  setValue("empLifeSelect", enr.life_option || "");
+
+  // FAMILY & DEPENDENTS / BENEFICIARIES
+  renderModalDependentsTable(enr.dependents || []);
+  renderModalBeneficiariesTable(enr.beneficiaries || []);
+
+  // CHANGE HISTORY
+  renderModalChangeHistory();
+
+  // PRICES
+  updateModalPlanCosts();
+
+  const modal = document.getElementById("employeeModal");
+  if (modal) {
+    modal.classList.remove("hidden");
+  }
+}
+
+
+
+
 function renderElections2026Table(rows) {
   const tbody = document.getElementById('elections2026Body'); // or electionsBody2026
   if (!tbody) {
@@ -2653,148 +3232,183 @@ function renderElections2026Table(rows) {
   });
 }
   // --- Filtering and Rendering Logic for Employee List ---
-  function renderEmployeeRow(emp) {
-  // Annual salary only (no “/ yr” text in the cell label)
+function renderEmployeeRow(emp) {
   const annualSalaryDisplay = emp.annual_salary
-    ? formatCurrency(emp.annual_salary)
+    ? `$${Number(emp.annual_salary).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 0})}`
     : '—';
-  const statusColor =
-    (emp.employment_status || '').toUpperCase() === 'ACTIVE'
-      ? 'text-emerald-700'
-      : 'text-red-700';
-  const addressLine = emp.address_line_1 || emp.address || 'N/A';
-  const cityValue = emp.city || 'N/A';
-  const zipValue = emp.zip_code || 'N/A';
   return `
-    <tr class="border-b border-slate-200 hover:bg-slate-50 text-xs">
-      <!-- Employee Name -->
+    <tr class="border-b border-slate-200 hover:bg-slate-50 text-xs" 
+        data-employee-id="${emp.id || ''}"
+        data-employee-name="${escapeHtml((emp.last_name || '') + ', ' + (emp.first_name || ''))}">
+      <td class="px-4 py-3">${escapeHtml(emp.last_name || '')}, ${escapeHtml(emp.first_name || '')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.job_title || '—')}</td>
       <td class="px-4 py-3">
-        <div class="font-semibold text-slate-900">
-          ${esc(emp.last_name)}, ${esc(emp.first_name)}
-        </div>
-      </td>
-      <!-- Job Title -->
-      <td class="px-4 py-3">
-        <div class="text-[11px] text-slate-700">
-          ${esc(emp.job_title || '—')}
-        </div>
-      </td>
-      <!-- Status -->
-      <td class="px-4 py-3">
-        <span class="font-semibold ${statusColor}">
-          ${esc(emp.employment_status || 'N/A')}
+        <span class="font-semibold ${emp.employment_status === 'ACTIVE' ? 'text-emerald-700' : 'text-red-700'}">
+          ${escapeHtml(emp.employment_status || 'ACTIVE')}
         </span>
       </td>
-      <!-- Annual Salary -->
+      <td class="px-4 py-3 text-right">${annualSalaryDisplay}</td>
+      <td class="px-4 py-3">${emp.original_hire_date ? new Date(emp.original_hire_date).toLocaleDateString() : '—'}</td>
+      <td class="px-4 py-3">${formatPhone(emp.primary_phone) || '—'}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.address_line_1 || '—')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.city || '—')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.zip_code || '—')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.tier_election || 'EO')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.medical_plan || '—')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.dental_plan || '—')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.vision_plan || '—')}</td>
+      <td class="px-4 py-3">${emp.life_plan ? 'Yes' : '—'}</td>
       <td class="px-4 py-3">
-        ${annualSalaryDisplay}
-      </td>
-      <!-- Hire Date -->
-      <td class="px-4 py-3">
-        ${emp.original_hire_date ? formatDateOnly(emp.original_hire_date) : 'N/A'}
-      </td>
-      <!-- Phone -->
-      <td class="px-4 py-3">
-        ${emp.primary_phone ? formatPhone(emp.primary_phone) : 'N/A'}
-      </td>
-      <!-- Address (street only) -->
-      <td class="px-4 py-3">
-        ${esc(addressLine)}
-      </td>
-      <!-- City -->
-      <td class="px-4 py-3">
-        ${esc(cityValue)}
-      </td>
-      <!-- ZIP Code -->
-      <td class="px-4 py-3">
-        ${esc(zipValue)}
-      </td>
-      <!-- Tier -->
-      <td class="px-4 py-3">
-        ${esc(emp.tier_election || 'N/A')}
-      </td>
-      <!-- Medical Plan -->
-      <td class="px-4 py-3">
-        ${esc(emp.medical_plan || 'N/A')}
-      </td>
-      <!-- Dental Plan -->
-      <td class="px-4 py-3">
-        ${esc(emp.dental_plan || 'N/A')}
-      </td>
-      <!-- Vision Plan -->
-      <td class="px-4 py-3">
-        ${esc(emp.vision_plan || 'N/A')}
-      </td>
-      <!-- Life -->
-      <td class="px-4 py-3">
-        ${emp.life_plan || emp.has_life ? 'Yes' : '—'}
-      </td>
-      <!-- Actions -->
-      <td class="px-4 py-3">
-        <button
-          class="text-[color:var(--jc-red)] hover:underline"
-          onclick="openEmployeeModal(${emp.id})"
-        >
+        <button class="view-employee-btn text-[color:var(--jc-red)] hover:underline text-sm font-medium">
           View/Edit
         </button>
       </td>
     </tr>
   `;
 }
-  function renderEmployeesTable(rows) {
-    const tbody = document.getElementById('employeeListTableBody');
-    if (!tbody) return;
+
+
+  const tbody = document.getElementById('employeeListTableBody');
+  if (!tbody) return;
   
-   if (rows.length === 0) {
-  tbody.innerHTML = `<tr><td colspan="15" class="px-4 py-4 text-center text-xs text-slate-500">No employees match your current filters.</td></tr>`;
-  return;
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="15" class="px-4 py-4 text-center text-xs text-slate-500">No employees found</td></tr>';
+    return;
+  }
+  
+  tbody.innerHTML = rows.map(emp => `
+    <tr class="border-b border-slate-200 hover:bg-slate-50 text-xs">
+      <td class="px-4 py-3">${emp.last_name}, ${emp.first_name}</td>
+      <td class="px-4 py-3">${emp.job_title || '—'}</td>
+      <td class="px-4 py-3">ACTIVE</td>
+      <td class="px-4 py-3">$${emp.annual_salary || 0}</td>
+      <td class="px-4 py-3">${emp.original_hire_date || '—'}</td>
+      <td class="px-4 py-3">${emp.primary_phone || '—'}</td>
+      <td class="px-4 py-3">${emp.address_line_1 || '—'}</td>
+      <td class="px-4 py-3">${emp.city || '—'}</td>
+      <td class="px-4 py-3">${emp.zip_code || '—'}</td>
+      <td class="px-4 py-3">${emp.tier_election || 'EO'}</td>
+      <td class="px-4 py-3">${emp.medical_plan || '—'}</td>
+      <td class="px-4 py-3">${emp.dental_plan || '—'}</td>
+      <td class="px-4 py-3">${emp.vision_plan || '—'}</td>
+      <td class="px-4 py-3">${emp.life_plan || '—'}</td>
+      <td class="px-4 py-3">
+        <button onclick="openEmployeeModalFromRow(${JSON.stringify(emp)})" class="text-red-600 hover:underline">
+          View/Edit
+        </button>
+      </td>
+    </tr>
+  `).join('');  // ✅ This one is OK
 }
-  
-    tbody.innerHTML = rows.map(renderEmployeeRow).join('');
+function renderEmployeesTable(rows) {
+  const tbody = document.getElementById('employeeListTableBody');
+  if (!tbody) return;
+ 
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="15" class="px-4 py-4 text-center text-xs text-slate-500">No employees found</td></tr>';
+    return;
   }
-  function applyFiltersAndRender() {
-    const search = document.getElementById('employeeSearch')?.value.trim().toLowerCase() || '';
-    const tier = document.getElementById('filterTier')?.value || '';
-    const med = document.getElementById('filterMed')?.value || '';
-    const dental = document.getElementById('filterDental')?.value || '';
-    const life = document.getElementById('filterLife')?.value || '';
-    const city = document.getElementById('filterCity')?.value.trim().toLowerCase() || '';
-    let filtered = allEmployees;
-    if (search) {
-      filtered = filtered.filter(emp => {
-        const fullName = `${emp.first_name || ''} ${emp.last_name || ''}`.toLowerCase();
-        const ssn = (emp.ssn_full || '').toLowerCase(); // Assumes a column `ssn_full` or similar exists in the combined data
-        const username = (emp.username || '').toLowerCase();
-        return fullName.includes(search) || ssn.includes(search) || username.includes(search);
+ 
+  tbody.innerHTML = rows.map(emp => `
+    <tr class="border-b border-slate-200 hover:bg-slate-50 text-xs" 
+        data-employee-id="${emp.id || ''}"
+        data-employee-name="${escapeHtml((emp.last_name || '') + ', ' + (emp.first_name || ''))}">
+      <td class="px-4 py-3">${escapeHtml(emp.last_name || '')}, ${escapeHtml(emp.first_name || '')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.job_title || '—')}</td>
+      <td class="px-4 py-3">
+        <span class="font-semibold ${((emp.employment_status || 'ACTIVE') === 'ACTIVE') ? 'text-emerald-700' : 'text-red-700'}">
+          ${escapeHtml(emp.employment_status || 'ACTIVE')}
+        </span>
+      </td>
+      <td class="px-4 py-3 text-right">
+        ${emp.annual_salary ? `$${Number(emp.annual_salary).toLocaleString('en-US')}` : '—'}
+      </td>
+      <td class="px-4 py-3">${emp.original_hire_date ? new Date(emp.original_hire_date).toLocaleDateString() : '—'}</td>
+      <td class="px-4 py-3">${formatPhone(emp.primary_phone) || '—'}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.address_line_1 || '—')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.city || '—')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.zip_code || '—')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.tier_election || 'EO')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.medical_plan || '—')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.dental_plan || '—')}</td>
+      <td class="px-4 py-3">${escapeHtml(emp.vision_plan || '—')}</td>
+      <td class="px-4 py-3">${emp.life_plan || (emp.has_life ? 'Yes' : '—')}</td>
+      <td class="px-4 py-3">
+        <button class="view-employee-btn text-[color:var(--jc-red)] hover:underline text-sm font-medium">
+          View/Edit
+        </button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+// ✅ GLOBAL EVENT DELEGATION for "View/Edit" buttons
+document.addEventListener('click', async function(e) {
+  if (e.target.matches('.view-employee-btn')) {
+    const row = e.target.closest('tr[data-employee-id]');
+    if (!row) return;
+    
+    const empId = row.dataset.employeeId;
+    const empName = row.dataset.employeeName;
+    
+    // Find the employee record
+    const emp = allEmployees.find(e => String(e.id) === String(empId));
+    if (!emp) {
+      showToast({
+        title: "Error",
+        message: "Employee record not found",
+        type: "error"
       });
+      return;
     }
-    if (tier) {
-      filtered = filtered.filter(emp => emp.tier_election === tier);
-    }
-  
-    if (med) {
-      // Filter by the raw plan code (e.g., ATBCB402)
-      filtered = filtered.filter(emp => (emp.rawEnrollmentData?.medical_plan || 'WAIVE') === med);
-    }
-    if (dental) {
-      filtered = filtered.filter(emp => (emp.rawEnrollmentData?.dental_plan || 'WAIVE') === dental);
-    }
-  
-    if (life) {
-        filtered = filtered.filter(emp => {
-            const hasLife = emp.has_life || emp.life_plan;
-            if (life === 'yes') return hasLife;
-            if (life === 'no') return !hasLife;
-            return true;
-        });
-    }
-  
-    if (city) {
-        filtered = filtered.filter(emp => (emp.city || '').toLowerCase().includes(city));
-    }
-  
-    renderEmployeesTable(filtered);
+    
+    // Open modal with found employee
+    openEmployeeModalFromRow(emp);
   }
+});
+
+
+
+function formatPhone(phone) {
+  if (!phone) return '—';
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 10) {
+    return `(${digits.slice(0,3)}) ${digits.slice(3,6)}-${digits.slice(6)}`;
+  }
+  return phone;
+}
+  function applyFiltersAndRender() {
+  const search = document.getElementById('employeeSearch')?.value.trim().toLowerCase() || '';
+  const tier = document.getElementById('filterTier')?.value || '';
+  const med = document.getElementById('filterMed')?.value || '';
+  const dental = document.getElementById('filterDental')?.value || '';
+  const life = document.getElementById('filterLife')?.value || '';
+  const city = document.getElementById('filterCity')?.value.trim().toLowerCase() || '';
+
+  let filtered = allEmployees;
+
+  if (search) {
+    filtered = filtered.filter(emp => {
+      const fullName = `${emp.first_name || ''} ${emp.last_name || ''}`.toLowerCase();
+      return fullName.includes(search);
+    });
+  }
+
+  if (tier) filtered = filtered.filter(emp => emp.tier_election === tier);
+  if (med) filtered = filtered.filter(emp => emp.rawEnrollmentData?.medical_plan === med);
+  if (dental) filtered = filtered.filter(emp => emp.rawEnrollmentData?.dental_plan === dental);
+  if (life) filtered = filtered.filter(emp => life === 'yes' ? emp.has_life : !emp.has_life);
+  if (city) filtered = filtered.filter(emp => (emp.city || '').toLowerCase().includes(city));
+
+  renderEmployeesTable(filtered);
+}
+
+
+
+
+
+
+
   function initFilters() {
     // Only bind once
     if (window.filtersInitialized) return;
@@ -3124,9 +3738,10 @@ function renderComprehensiveTable() {
       </td>
       <td class="px-3 py-2.5 text-xs text-[color:var(--jc-red)]">
         <!-- Reserved for future "open modal" wiring -->
-        <button type="button" class="hover:underline" onclick="openEmployeeModal(${row.enrollmentId})">
-          View
-        </button>
+       <button type="button" class="view-employee-btn hover:underline text-[color:var(--jc-red)]">
+  View/Edit
+</button>
+
       </td>
     `;
     tbody.appendChild(tr);
@@ -3603,37 +4218,44 @@ function renderComprehensiveReportGrid(data) {
   }
 
   // Expose modal opener globally (for inline onclick in the grid)
-  window.openEmployeeModal = function(enrollmentId) {
-    const idNum = Number(enrollmentId);
-    const rec = allEmployees.find((r) => Number(r.id) === idNum);
-    if (!rec) {
-      showToast({
-        title: "Record not found",
-        message: "Could not locate that enrollment record in memory.",
-        type: "error",
-      });
-      return;
-    }
-    currentEditingEnrollment = rec;
-    initEmployeeModalTabs();
+  window.openEmployeeModal = async function(enrollmentId) {
+  const idNum = Number(enrollmentId);
+  
+  // Find in allEmployees first (Employee List tab)
+  let rec = allEmployees.find(r => Number(r.id) === idNum);
+  
+  // Fallback to comprehensiveData (Reports tab)
+  if (!rec) {
+    rec = comprehensiveData.find(d => Number(d.enrollmentId) === idNum);
+  }
+  
+  if (!rec) {
+    showToast({title: "Error", message: "Employee record not found", type: "error"});
+    return;
+  }
+  
+  currentEditingEnrollment = rec;
+  initEmployeeModalTabs();
+  
+  // Set title
+  const titleEl = document.getElementById("employeeModalTitle");
+  if (titleEl) {
+    const lastName = rec.last_name || rec.employeeName?.split(', ')[0] || '';
+    const firstName = rec.first_name || rec.employeeName?.split(', ')[1] || '';
+    titleEl.textContent = `${lastName}, ${firstName} — 2026 Elections`;
+  }
+  
+  // Render first tab
+  renderEmployeeModalSection("details");
+  
+  // Show modal
+  const modal = document.getElementById("employeeModal");
+  if (modal) {
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+  }
+};
 
-    if (employeeModalTitle) {
-      employeeModalTitle.textContent =
-        `${esc(rec.last_name)}, ${esc(rec.first_name)} — 2026 Elections`;
-    }
-    if (employeeModalStatus) {
-      const empId = rec.employee_id_fk || (rec.rawEmployeeData && rec.rawEmployeeData.id);
-      employeeModalStatus.textContent =
-        `Employee ID: ${empId || "N/A"} · Enrollment ID: ${rec.id}`;
-    }
-
-    renderEmployeeModalSection("details");
-
-    if (employeeModal) {
-      employeeModal.classList.remove("hidden");
-      employeeModal.classList.add("flex");
-    }
-  };
 
 function switchModalTab(key) {
   document.querySelectorAll('.tab-section').forEach(el => el.classList.add('hidden'));
@@ -4325,6 +4947,21 @@ document.addEventListener('DOMContentLoaded', () => {
         applyReportFiltersAndRender();
       }
     });
+    const costWatchIds = [
+  'modalTier',
+  'modalMedicalPlan',
+  'modalDentalPlan',
+  'modalVisionPlan',
+  'modalLifeOption',
+];
+
+costWatchIds.forEach(id => {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener('change', updateModalPlanCosts);
+  }
+});
+
   }
   // 
   // Report filters
@@ -4346,224 +4983,115 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 });
+function collectDependentsFromModal() {
+  const rows = document.querySelectorAll('#modalDependentsTable tbody tr.dependent-row');
+  const result = [];
+  rows.forEach(tr => {
+    const first = tr.querySelector('.dep-first')?.value.trim() || '';
+    const last  = tr.querySelector('.dep-last')?.value.trim() || '';
+    const dob   = tr.querySelector('.dep-dob')?.value.trim() || '';
+    const ssn   = tr.querySelector('.dep-ssn')?.value.trim() || '';
+    const rel   = tr.querySelector('.dep-rel')?.value.trim() || '';
+    if (first || last || dob || ssn || rel) {
+      result.push({ first_name: first, last_name: last, dob, ssn_last4: ssn, relationship: rel });
+    }
+  });
+  return result;
+}
+
+function collectBeneficiariesFromModal() {
+  const rows = document.querySelectorAll('#modalBeneficiariesTable tbody tr.bene-row');
+  const result = [];
+  rows.forEach(tr => {
+    const first = tr.querySelector('.bene-first')?.value.trim() || '';
+    const last  = tr.querySelector('.bene-last')?.value.trim() || '';
+    const dob   = tr.querySelector('.bene-dob')?.value.trim() || '';
+    const ssn   = tr.querySelector('.bene-ssn')?.value.trim() || '';
+    const rel   = tr.querySelector('.bene-rel')?.value.trim() || '';
+    if (first || last || dob || ssn || rel) {
+      result.push({ first_name: first, last_name: last, dob, ssn_last4: ssn, relationship: rel });
+    }
+  });
+  return result;
+}
 
 
   async function saveEmployeeChanges() {
-    if (!currentEditingEnrollment) {
-      showToast({
-        title: "No employee selected",
-        message: "Open an employee record before saving.",
-        type: "error",
-      });
-      return;
+  if (!currentEditingEnrollment) {
+    showToast({title: "Error", message: "No employee selected", type: "error"});
+    return;
+  }
+
+  const rec = currentEditingEnrollment;
+  const emp = rec.rawEmployeeData || {};
+  const enr = rec.rawEnrollmentData || {};
+
+  try {
+    showToast({title: "Saving...", message: "Updating records...", type: "info"});
+
+    // Collect form values safely
+    const jobTitle = document.getElementById("empJobTitleInput")?.value?.trim() || "";
+    const status = document.getElementById("empStatusSelect")?.value || "ACTIVE";
+    const hireDate = document.getElementById("empHireDateInput")?.value || null;
+    const salary = parseFloat(document.getElementById("empSalaryInput")?.value) || null;
+    const phone = document.getElementById("empPhoneInput")?.value?.trim() || "";
+    const tier = document.getElementById("empTierSelect")?.value || "EO";
+    const medPlan = document.getElementById("empMedPlanSelect")?.value || "WAIVE";
+    const dentalPlan = document.getElementById("empDentalPlanSelect")?.value || "WAIVE";
+    const visionPlan = document.getElementById("empVisionPlanSelect")?.value || "WAIVE";
+
+    // Update employees2025
+    if (rec.employee_id_fk) {
+      const { error } = await supabase
+        .from("employees2025")
+        .update({
+          job_title: jobTitle || null,
+          employment_status: status,
+          original_hire_date: hireDate || null,
+          annual_salary: salary,
+          primary_phone: phone || null
+        })
+        .eq("id", rec.employee_id_fk);
+      if (error) throw error;
     }
 
-    const rec = currentEditingEnrollment;
-    const emp = rec.rawEmployeeData || {};
-    const enr = rec.rawEnrollmentData || {};
-
-    // Safely read values from the modal (if a field is on another tab, the element may be null)
-    const jobTitle = document.getElementById("empJobTitleInput")?.value.trim() || "";
-    const status =
-      document.getElementById("empStatusSelect")?.value ||
-      emp.employment_status ||
-      "ACTIVE";
-    const hireDate = document.getElementById("empHireDateInput")?.value || null;
-
-    const salaryRaw = document.getElementById("empSalaryInput")?.value;
-    const salary = salaryRaw ? Number(salaryRaw) : null;
-
-    const hourlyRaw = document.getElementById("empHourlyRateInput")?.value;
-    const hourlyRate = hourlyRaw ? Number(hourlyRaw) : null;
-
-    const phone = document.getElementById("empPhoneInput")?.value.trim() || "";
-    const address1 = document.getElementById("empAddressInput")?.value.trim() || "";
-    const city = document.getElementById("empCityInput")?.value.trim() || "";
-    const state = document.getElementById("empStateInput")?.value.trim() || "";
-    const zip = document.getElementById("empZipInput")?.value.trim() || "";
-
-    const tier =
-      document.getElementById("empTierSelect")?.value ||
-      enr.tier_election ||
-      rec.tier_election ||
-      "EO";
-    const medPlan =
-      document.getElementById("empMedPlanSelect")?.value ||
-      enr.medical_plan ||
-      "WAIVE";
-    const dentalPlan =
-      document.getElementById("empDentalPlanSelect")?.value ||
-      enr.dental_plan ||
-      "WAIVE";
-    const visionPlan =
-      document.getElementById("empVisionPlanSelect")?.value ||
-      enr.vision_plan ||
-      "WAIVE";
-
-    try {
-      showToast({
-        title: "Saving changes",
-        message: "Updating employees2025 and 2026 enrollment...",
-        type: "info",
-      });
-
-      // 1) Update employees2025 (MAIN TABLE)
-      const empId = rec.employee_id_fk || emp.id;
-      if (empId) {
-        const empUpdate = {
-          job_title: jobTitle || null,
-          employment_status: status || null,
-          original_hire_date: hireDate || null, // 'YYYY-MM-DD'
-          annual_salary: salary,
-          primary_phone: phone || null,
-          address_line_1: address1 || null,
-          city: city || null,
-          state: state || null,
-          zip_code: zip || null,
-        };
-        if (hourlyRate != null && !Number.isNaN(hourlyRate)) {
-          empUpdate.hourly_rate = hourlyRate;
-        }
-
-        const { error: empError } = await supabase
-          .from("employees2025")
-          .update(empUpdate)
-          .eq("id", empId);
-
-        if (empError) throw empError;
-      }
-
-      // 2) Update benefit_enrollments (2026 row)
-      const enrUpdate = {
+    // Update benefit_enrollments
+    const { error } = await supabase
+      .from("benefit_enrollments")
+      .update({
         job_title: jobTitle || null,
-        employment_status: status || null,
+        employment_status: status,
         hire_date: hireDate || null,
         annual_salary: salary,
         phone: phone || null,
-        address: {
-          street: address1 || null,
-          city: city || null,
-          state: state || null,
-          zip: zip || null,
-        },
         tier_election: tier,
         medical_plan: medPlan,
         dental_plan: dentalPlan,
-        vision_plan: visionPlan,
-      };
+        vision_plan: visionPlan
+      })
+      .eq("id", rec.id);
+    
+    if (error) throw error;
 
-      const { error: enrError } = await supabase
-        .from("benefit_enrollments")
-        .update(enrUpdate)
-        .eq("id", rec.id); // rec.id is the enrollment id
+    // Update in-memory data
+    rec.job_title = jobTitle;
+    rec.employment_status = status;
+    rec.tier_election = tier;
+    rec.medical_plan = prettyPlanName("medical", medPlan);
+    rec.dental_plan = prettyPlanName("dental", dentalPlan);
+    rec.vision_plan = prettyPlanName("vision", visionPlan);
 
-      if (enrError) throw enrError;
+    // Refresh grid
+    applyFiltersAndRender();
+    
+    showToast({title: "Saved", message: "Employee updated successfully", type: "success"});
+    closeEmployeeModal();
 
-      // 3) Update in-memory copy so the 2026 Employee Elections grid refreshes correctly
-      rec.job_title = jobTitle;
-      rec.employment_status = status;
-      rec.original_hire_date = hireDate;
-      rec.annual_salary = salary;
-      rec.primary_phone = phone;
-      rec.address_line_1 = address1;
-      rec.city = city;
-      rec.state = state;
-      rec.zip_code = zip;
-      rec.tier_election = tier;
-      rec.medical_plan = prettyPlanName("medical", medPlan);
-      rec.dental_plan = prettyPlanName("dental", dentalPlan);
-      rec.vision_plan = prettyPlanName("vision", visionPlan);
-
-      rec.rawEmployeeData = {
-        ...emp,
-        id: empId,
-        job_title: jobTitle,
-        employment_status: status,
-        original_hire_date: hireDate,
-        annual_salary: salary,
-        primary_phone: phone,
-        address_line_1: address1,
-        city,
-        state,
-        zip_code: zip,
-        hourly_rate: hourlyRate,
-      };
-      rec.rawEnrollmentData = {
-        ...enr,
-        job_title: jobTitle,
-        employment_status: status,
-        hire_date: hireDate,
-        annual_salary: salary,
-        phone,
-        address: enrUpdate.address,
-        tier_election: tier,
-        medical_plan: medPlan,
-        dental_plan: dentalPlan,
-        vision_plan: visionPlan,
-      };
-
-      const idx = allEmployees.findIndex(
-        (r) => Number(r.id) === Number(rec.id)
-      );
-      if (idx !== -1) {
-        allEmployees[idx] = rec;
-      }
-
-      // Re-render 2026 Employee Elections grid with current filters
-      applyFiltersAndRender();
-
-      // 4) Add a simple note into this session's tab_history (shows up under Audit Logs)
-      try {
-        if (currentLogId && currentUser) {
-          if (!Array.isArray(currentTabHistory)) currentTabHistory = [];
-          const ts = new Date().toLocaleString("en-US", {
-            timeZone: "America/Chicago",
-            month: "2-digit",
-            day: "2-digit",
-            year: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: true,
-          });
-          const labelName = `${rec.last_name || emp.last_name || ""}, ${
-            rec.first_name || emp.first_name || ""
-          }`.trim();
-          currentTabHistory.push(`Updated 2026 enrollment for ${labelName} · ${ts}`);
-
-          await supabase
-            .from("portal_logs")
-            .update({ tab_history: currentTabHistory })
-            .eq("id", currentLogId);
-        }
-      } catch (logErr) {
-        console.warn(
-          "Failed to append edit note to portal_logs.tab_history",
-          logErr
-        );
-      }
-
-      showToast({
-        title: "Changes saved",
-        message: "employees2025 and 2026 enrollment were updated successfully.",
-        type: "success",
-      });
-    } catch (err) {
-      console.error("saveEmployeeChanges error", err);
-      showToast({
-        title: "Save failed",
-        message: err.message || "Could not save changes. See console for details.",
-        type: "error",
-      });
-    }
+  } catch (err) {
+    console.error("Save error:", err);
+    showToast({title: "Save failed", message: err.message, type: "error"});
   }
-
-  if (employeeModalSaveBtn) {
-    employeeModalSaveBtn.addEventListener("click", () => {
-      saveEmployeeChanges();
-    });
-  }
-
-
+}
 
 
 function applyReportFiltersAndRender() {
@@ -4837,8 +5365,98 @@ window.loadComprehensiveReportData = async function (showToast = true) {
       }
     });
   }
+// Small helpers
+function escapeHtml(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
+function renderModalChangeHistory() {
+  const container = document.getElementById('modalChangeHistory');
+  if (!container) return;
 
+  const history = currentEditingEnrollment?.change_history;
+  if (!Array.isArray(history) || !history.length) {
+    container.innerHTML = '<p class="text-xs text-slate-500 italic">No changes recorded yet.</p>';
+    return;
+  }
+
+  const html = history
+    .slice()
+    .reverse()
+    .map(entry => {
+      const who = entry.by_user || 'Unknown user';
+      const when = entry.display || entry.at;
+      const list = (entry.changes || [])
+        .map(ch => {
+          const before = escapeHtml(
+            typeof ch.from === 'object' ? JSON.stringify(ch.from) : ch.from ?? ''
+          );
+          const after = escapeHtml(
+            typeof ch.to === 'object' ? JSON.stringify(ch.to) : ch.to ?? ''
+          );
+          return `<li class="leading-snug">
+              <span class="font-medium">${escapeHtml(ch.label)}:</span>
+              <span class="ml-1">"${before}" → "${after}"</span>
+            </li>`;
+        })
+        .join('');
+
+      return `
+        <div class="border border-slate-200 rounded-lg p-3 bg-slate-50">
+          <div class="text-[11px] text-slate-600 mb-1">
+            <span class="font-semibold">${escapeHtml(who)}</span>
+            <span class="mx-1">•</span>
+            <span>${escapeHtml(when)}</span>
+          </div>
+          <ul class="text-[11px] text-slate-700 space-y-0.5">
+            ${list}
+          </ul>
+        </div>
+      `;
+    })
+    .join('');
+
+  container.innerHTML = html;
+}
+if (employeeModalSaveBtn) {
+  employeeModalSaveBtn.removeEventListener("click", saveEmployeeChanges); // Remove duplicates
+  employeeModalSaveBtn.addEventListener("click", saveEmployeeChanges);
+}
+
+// ✅ CRITICAL: Fix filters
+function initEmployeeFilters() {
+  const filterIds = ['employeeSearch', 'filterTier', 'filterMed', 'filterDental', 'filterLife', 'filterCity'];
+  filterIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.removeEventListener('input', applyFiltersAndRender);
+      el.removeEventListener('change', applyFiltersAndRender);
+      el.addEventListener('input', applyFiltersAndRender);
+      el.addEventListener('change', applyFiltersAndRender);
+    }
+  });
+  
+  const clearBtn = document.getElementById('clearFilters');
+  if (clearBtn) {
+    clearBtn.removeEventListener('click', clearFiltersHandler);
+    clearBtn.addEventListener('click', () => {
+      filterIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+      });
+      applyFiltersAndRender();
+    });
+  }
+}
+
+// Initialize after DOM loads
+document.addEventListener('DOMContentLoaded', initEmployeeFilters);
 </script>
 </body>
 </html>
