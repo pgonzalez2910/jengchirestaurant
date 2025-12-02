@@ -2520,15 +2520,20 @@ header .max-w-7xl,
         });
 
         // ======================== DASHBOARD SETUP ========================
-        function showDashboard() {
-            loginView.classList.add("hidden");
-            dashboardView.classList.remove("hidden");
-            updateHeaderUser();
-            updateCycleStatusUI();
-            applyRoleVisibility();
-            loadSignedDocuments();
-            loadPortalUsers();
-        }
+     function showDashboard() {
+    loginView.classList.add("hidden");
+    dashboardView.classList.remove("hidden");
+    updateHeaderUser();
+    updateCycleStatusUI();
+    applyRoleVisibility();
+    loadSignedDocuments();
+    loadPortalUsers();
+    
+    // NEW: Start the silent refresh timer only for Admins
+    if (currentUser && currentUser.role === "admin") {
+        startSilentRefresh(); 
+    }
+}
 
         function updateHeaderUser() {
             const nameEl = document.getElementById("headerUserName");
@@ -6245,7 +6250,25 @@ async function loadAuditLogs() {
     }
 }
 
+// Global cache for currently active user IDs (those with a NULL logout_time)
+let activeUserIds = new Set(); 
 
+async function getLatestLogTimes() {
+    try {
+        // Fetches IDs of users whose latest session is still open (logout_time is NULL)
+        const { data, error } = await supabase
+            .from("portal_logs")
+            .select("portal_user_id")
+            .is('logout_time', null);
+
+        if (error) throw error;
+        
+        return new Set((data || []).map(log => log.portal_user_id));
+    } catch (err) {
+        console.error("Failed to fetch active sessions:", err);
+        return new Set();
+    }
+}
 
 
 
@@ -6254,66 +6277,105 @@ async function loadAuditLogs() {
 
 
         // ======================== PORTAL USERS ========================
-        async function loadPortalUsers() {
-            const tbody = document.getElementById("userBody");
-            tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-xs text-slate-500">Loading users...</td></tr>';
+      // Modify existing loadPortalUsers function
+async function loadPortalUsers(isSilent = false) {
+    const tbody = document.getElementById("userBody");
+    
+    // 1. Show the loading placeholder only if it's the initial (non-silent) load
+    if (!isSilent) {
+        tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-xs text-slate-500">Loading users...</td></tr>';
+    }
 
-            try {
-                const { data, error } = await supabase
-                    .from("portal_users")
-                    .select("id, full_name, initials, role, active, last_login, allowed_tabs")
-                    .order("full_name", { ascending: true });
+    try {
+        // STEP 1: Fetch user list
+        const { data, error } = await supabase
+            .from("portal_users")
+            .select("id, full_name, initials, role, active, last_login, allowed_tabs")
+            .order("full_name", { ascending: true });
 
-                if (error) throw error;
+        if (error) throw error;
+        
+        portalUsersCache = data || [];
+        
+        // STEP 2: Update global cache for online status
+        activeUserIds = await getLatestLogTimes(); 
 
-                portalUsersCache = data || [];
-                renderPortalUsersTable();
-            } catch (err) {
-                console.error("Portal users error", err);
-                tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-xs text-red-500">Error loading users.</td></tr>';
-            }
+        // Renders the new table with green/gray dots
+        renderPortalUsersTable(); 
+        
+        // NO SUCCESS TOAST MESSAGE HERE
+
+    } catch (err) {
+        console.error("Portal users error", err);
+        
+        // Only display an error message inside the table (and only if it wasn't a silent call)
+        if (!isSilent) {
+            tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-xs text-red-500">Error loading users.</td></tr>';
         }
+        // NO ERROR TOAST MESSAGE HERE
+    }
+}
 
-        function renderPortalUsersTable() {
-            const tbody = document.getElementById("userBody");
-            const search = document.getElementById("userSearch").value.trim().toLowerCase();
 
-            let rows = portalUsersCache;
-            if (search) {
-                rows = rows.filter((u) => u.full_name.toLowerCase().includes(search));
-            }
 
-            if (!rows.length) {
-                tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-xs text-slate-500">No users match your search.</td></tr>';
-                return;
-            }
+// Helper function to check against the cache
+function checkUserOnlineStatus(userId) {
+    return activeUserIds.has(userId);
+}
 
-            tbody.innerHTML = "";
-            rows.forEach((u) => {
-                const roleBadge =
-                    u.role === "admin"
-                        ? '<span class="inline-flex items-center px-2 py-0.5 pill-badge bg-red-50 text-red-700 border border-red-100">ADMIN</span>'
-                        : '<span class="inline-flex items-center px-2 py-0.5 pill-badge bg-slate-100 text-slate-700 border border-slate-200">STANDARD</span>';
 
-                const statusBadge = u.active
-                    ? '<span class="inline-flex items-center px-2 py-0.5 pill-badge bg-emerald-50 text-emerald-700 border border-emerald-100">ACTIVE</span>'
-                    : '<span class="inline-flex items-center px-2 py-0.5 pill-badge bg-slate-100 text-slate-500 border border-slate-200">INACTIVE</span>';
+function renderPortalUsersTable() {
+    const tbody = document.getElementById("userBody");
+    const search = document.getElementById("userSearch").value.trim().toLowerCase();
 
-                tbody.insertAdjacentHTML("beforeend", `
-                    <tr class="hover:bg-slate-50 text-sm" data-id="${u.id}">
-                        <td class="px-4 py-2.5">${esc(u.full_name)}</td>
-                        <td class="px-4 py-2.5">${esc(u.initials)}</td>
-                        <td class="px-4 py-2.5">${roleBadge}</td>
-                        <td class="px-4 py-2.5 text-xs text-slate-500">${formatDate(u.last_login)}</td>
-                        <td class="px-4 py-2.5">${statusBadge}</td>
-                        <td class="px-4 py-2.5 text-xs">
-                            <button class="text-[color:var(--jc-red)] hover:underline mr-3" data-action="edit">Edit</button>
-                            <button class="text-slate-500 hover:text-red-600" data-action="delete">Delete</button>
-                        </td>
-                    </tr>
-                `);
-            });
-        }
+    let rows = portalUsersCache;
+    if (search) {
+        rows = rows.filter((u) => u.full_name.toLowerCase().includes(search));
+    }
+
+    if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-xs text-slate-500">No users match your search.</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = "";
+    rows.forEach((u) => {
+        const roleBadge =
+            u.role === "admin"
+                ? '<span class="inline-flex items-center px-2 py-0.5 pill-badge bg-red-50 text-red-700 border border-red-100">ADMIN</span>'
+                : '<span class="inline-flex items-center px-2 py-0.5 pill-badge bg-slate-100 text-slate-700 border border-slate-200">STANDARD</span>';
+
+        const statusBadge = u.active
+            ? '<span class="inline-flex items-center px-2 py-0.5 pill-badge bg-emerald-50 text-emerald-700 border border-emerald-100">ACTIVE</span>'
+            : '<span class="inline-flex items-center px-2 py-0.5 pill-badge bg-slate-100 text-slate-500 border border-slate-200">INACTIVE</span>';
+
+        // --- THE CRITICAL FIX: Solid RED Dot for Offline ---
+        const isOnline = checkUserOnlineStatus(u.id);
+        const statusDot = isOnline
+            ? '<i class="fa-solid fa-circle text-emerald-500 text-[8px] mr-2 animate-pulse" title="Online Now"></i>' // Green Pulsing Dot (Active)
+            : '<i class="fa-solid fa-circle text-red-600 text-[8px] mr-2" title="Offline"></i>'; // Solid RED Dot (Offline Default)
+        // ----------------------------------------------------
+
+
+        tbody.insertAdjacentHTML("beforeend", `
+            <tr class="hover:bg-slate-50 text-sm" data-id="${u.id}">
+                <td class="px-4 py-2.5 flex items-center">
+                    ${statusDot} 
+                    <span class="font-medium">${esc(u.full_name)}</span>
+                </td>
+                <td class="px-4 py-2.5">${esc(u.initials)}</td>
+                <td class="px-4 py-2.5">${roleBadge}</td>
+                <td class="px-4 py-2.5 text-xs text-slate-500">${formatDate(u.last_login)}</td>
+                <td class="px-4 py-2.5">${statusBadge}</td>
+                <td class="px-4 py-2.5 text-xs">
+                    <button class="text-[color:var(--jc-red)] hover:underline mr-3" data-action="edit">Edit</button>
+                    <button class="text-slate-500 hover:text-red-600" data-action="delete">Delete</button>
+                </td>
+            </tr>
+        `);
+    });
+}
+
 
         document.getElementById("userSearch").addEventListener("input", renderPortalUsersTable);
 
@@ -8965,6 +9027,9 @@ async function refreshAllTabs() {
 
 // Clean up real-time listener on logout
 async function handleLogoutWithCleanup() {
+    // NEW: Stop the silent refresh timer
+    stopSilentRefresh(); 
+    
     if (realtimeChannel) {
         await supabase.removeChannel(realtimeChannel);
         realtimeChannel = null;
@@ -8974,7 +9039,6 @@ async function handleLogoutWithCleanup() {
     // Call original logout
     await handleLogout();
 }
-
 // Update logout button to use new function
 document.getElementById('logoutButton').removeEventListener('click', handleLogout);
 document.getElementById('logoutButton').addEventListener('click', handleLogoutWithCleanup);
@@ -9332,17 +9396,27 @@ function refreshTerminationHandlers() {
 
 
 function renderAuditTabButton(tabId, label, colorClass = 'text-slate-700') {
-    // Add logic to highlight the "Active" user (GM in your case)
-    const isActiveUser = colorClass.includes('emerald'); 
+    // Determine if the user is active based on the colorClass passed from loadAuditLogs
+    // (A color of green/emerald indicates active, slate/gray indicates offline)
+    const isActive = colorClass.includes('emerald');
+    
+    // --- NEW LOGIC: Use Red for Offline, Green (Pulsing) for Online ---
+    const statusDot = isActive
+        ? '<i class="fa-solid fa-circle text-emerald-500 text-[6px] mr-1 animate-pulse"></i>' // Green Pulsing Dot (Online)
+        : '<i class="fa-solid fa-circle text-red-600 text-[6px] mr-1"></i>';                 // Red Solid Dot (Offline Default)
+    // ------------------------------------------------------------------
+
     const labelHtml = `<span class="${colorClass} font-bold">${label}</span>`;
     
     return `<button type="button" 
                     data-tab="${tabId}" 
                     class="audit-tab-btn px-4 py-2 text-sm ${tabId === 'all-logs' ? 'audit-btn-active' : 'audit-btn-inactive'} whitespace-nowrap">
-                ${isActiveUser ? '<i class="fa-solid fa-circle text-emerald-500 text-[6px] mr-1 animate-pulse"></i>' : ''}
+                ${statusDot} 
                 ${labelHtml}
             </button>`;
 }
+
+
 
 
 
@@ -9416,6 +9490,38 @@ function renderFullAuditTable(logs, isSingleUserView = false) {
     `;
 }
 
+
+let refreshIntervalId = null;
+const REFRESH_RATE_MS = 10000; // 10 seconds
+
+// Function to start the silent refresh loop
+function startSilentRefresh() {
+    // Clear any existing interval to prevent duplicates
+    stopSilentRefresh(); 
+    
+    console.log('🔄 Starting silent refresh timer...');
+
+    refreshIntervalId = setInterval(() => {
+        const currentActiveTab = document.querySelector('.tab-btn-active');
+        const tabId = currentActiveTab?.id;
+
+        // Only refresh the relevant data if the user is on the Audit Logs or Authorized Users tab
+        if (tabId === 'tabAudit' || tabId === 'tabUsers') {
+            console.log('🔄 Silent refresh triggered...');
+            // We only need to refresh user data for status dots
+            loadPortalUsers(true); 
+        }
+    }, REFRESH_RATE_MS);
+}
+
+// Function to stop the silent refresh loop
+function stopSilentRefresh() {
+    if (refreshIntervalId !== null) {
+        clearInterval(refreshIntervalId);
+        refreshIntervalId = null;
+        console.log('🚫 Silent refresh timer stopped.');
+    }
+}
 
 
 </script>
