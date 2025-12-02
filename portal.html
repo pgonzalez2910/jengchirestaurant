@@ -8781,35 +8781,31 @@ function initializeRealTimeSync() {
         .on(
             'postgres_changes',
             {
-                event: '*', // Listen to INSERT, UPDATE, DELETE
+                event: '*',
                 schema: 'public',
                 table: 'employees2025'
             },
             (payload) => {
                 console.log('📡 Real-time update detected:', payload);
                 
-                // Show notification to user
-                showToast({
-                    title: "🔄 Data Updated",
-                    message: "Employee data was modified by another user. Refreshing...",
-                    type: "info"
-                });
+                const oldStatus = payload.old?.employment_status;
+                const newStatus = payload.new?.employment_status;
                 
-                // Auto-refresh the current view if on YoY Review tab
-                const yoyTab = document.getElementById('tabYoYReviewContent');
-                if (yoyTab && yoyTab.classList.contains('active')) {
-                    setTimeout(() => {
-                        loadYoYReviewGrid();
-                    }, 1000); // Small delay to let database transaction complete
+                if (oldStatus !== newStatus) {
+                    showToast({
+                        title: "🔄 Status Changed",
+                        message: `Employee status changed from ${oldStatus} to ${newStatus}`,
+                        type: "info"
+                    });
+                } else {
+                    showToast({
+                        title: "🔄 Data Updated",
+                        message: "Employee data was modified. Refreshing...",
+                        type: "info"
+                    });
                 }
                 
-                // Also refresh employee list if on that tab
-                const employeeListTab = document.getElementById('tabEmployeeListContent');
-                if (employeeListTab && employeeListTab.classList.contains('active')) {
-                    setTimeout(() => {
-                        load2026EmployeeList();
-                    }, 1000);
-                }
+                refreshAllTabs();
             }
         )
         .on(
@@ -8822,35 +8818,95 @@ function initializeRealTimeSync() {
             (payload) => {
                 console.log('📡 Enrollment update detected:', payload);
                 
-                showToast({
-                    title: "🔄 Enrollment Updated",
-                    message: "Benefit enrollment was modified. Refreshing data...",
-                    type: "info"
-                });
+                const oldStatus = payload.old?.status;
+                const newStatus = payload.new?.status;
                 
-                // Refresh appropriate views
-                const yoyTab = document.getElementById('tabYoYReviewContent');
-                if (yoyTab && yoyTab.classList.contains('active')) {
-                    setTimeout(() => {
-                        loadYoYReviewGrid();
-                    }, 1000);
+                if (oldStatus !== newStatus) {
+                    showToast({
+                        title: "🔄 Enrollment Status Changed",
+                        message: `Enrollment status changed from ${oldStatus} to ${newStatus}`,
+                        type: "info"
+                    });
+                } else {
+                    showToast({
+                        title: "🔄 Enrollment Updated",
+                        message: "Benefit enrollment was modified. Refreshing data...",
+                        type: "info"
+                    });
                 }
                 
-                const analyticsTab = document.getElementById('tabAnalyticsContent');
-                if (analyticsTab && analyticsTab.classList.contains('active')) {
-                    setTimeout(() => {
-                        loadAnalytics();
-                    }, 1000);
-                }
+                refreshAllTabs();
             }
         )
-        .subscribe((status) => {
+        .subscribe((status, err) => {
             if (status === 'SUBSCRIBED') {
                 console.log('✅ Real-time sync active!');
             } else if (status === 'CHANNEL_ERROR') {
-                console.error('❌ Real-time sync failed');
+                console.error('❌ Real-time sync failed:', err);
+                
+                showToast({
+                    title: "⚠️ Connection Issue",
+                    message: "Real-time sync failed. Attempting to reconnect...",
+                    type: "warning"
+                });
+                
+                setTimeout(() => {
+                    console.log('🔄 Attempting to reconnect real-time sync...');
+                    initializeRealTimeSync();
+                }, 5000);
+            } else if (status === 'TIMED_OUT') {
+                console.error('⏰ Real-time sync timed out');
+                
+                showToast({
+                    title: "⏰ Connection Timeout",
+                    message: "Real-time sync timed out. Reconnecting...",
+                    type: "warning"
+                });
+                
+                setTimeout(() => {
+                    console.log('🔄 Attempting to reconnect after timeout...');
+                    initializeRealTimeSync();
+                }, 3000);
             }
         });
+}
+
+async function refreshAllTabs() {
+    console.log('🔄 Refreshing all tabs after data change...');
+    
+    try {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        if (typeof loadYoYReviewGrid === 'function' && yoyRendered) {
+            console.log('📊 Refreshing Year-over-Year grid...');
+            await loadYoYReviewGrid();
+        }
+        
+        if (typeof load2026EmployeeList === 'function') {
+            const employeeListTab = document.getElementById('tabEmployeeListContent');
+            if (employeeListTab) {
+                console.log('📋 Refreshing Employee List...');
+                await load2026EmployeeList();
+            }
+        }
+        
+        if (typeof loadAnalytics === 'function') {
+            const analyticsTab = document.getElementById('tabAnalyticsContent');
+            if (analyticsTab && analyticsTab.classList.contains('active')) {
+                console.log('📈 Refreshing Analytics...');
+                await loadAnalytics();
+            }
+        }
+        
+        console.log('✅ All tabs refreshed successfully');
+    } catch (err) {
+        console.error('❌ Error refreshing tabs:', err);
+        showToast({
+            title: "⚠️ Refresh Error",
+            message: "Some views may not have updated. Please refresh the page.",
+            type: "warning"
+        });
+    }
 }
 
 // Clean up real-time listener on logout
