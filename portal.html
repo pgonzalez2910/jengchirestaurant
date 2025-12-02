@@ -1246,9 +1246,9 @@ header .max-w-7xl,
                     <i class="fa-solid fa-heart-pulse text-red-600 text-2xl"></i>
                     <div>
                         <p class="text-xs font-semibold text-slate-500 uppercase">Medical Total</p>
-                        <p id="financial-medical-total" class="text-2xl font-bold text-slate-900">$0</p>
-                    </div>
+                                         </div>
                 </div>
+                
                 <div id="financial-medical-change" class="text-sm font-semibold">
                     <!-- Change indicator -->
                 </div>
@@ -3888,16 +3888,16 @@ async function renderFinancialImpactDashboard() {
         const costs2025 = calc(2025, enr2025 || []);
         const costs2026 = calc(2026, enr2026 || []);
 
-       // ONLY COUNT ACTIVE EMPLOYEES (NOT TERMINATED ONES)
-        const activeEmployees = employees.filter(e => e.employment_status !== 'TERMINATED');
-        const activeEnrollments2026 = enrollments2026.filter(e => {
-            const emp = employees.find(emp => emp.username === e.username);
+    // ONLY COUNT ACTIVE (NON-TERMINATED) EMPLOYEES
+        const activeEmployees = employees.filter(emp => emp.employment_status !== 'TERMINATED');
+        const activeEnrollments2026 = enrollments2026.filter(enr => {
+            const emp = employees.find(e => e.username === enr.username);
             return emp && emp.employment_status !== 'TERMINATED';
         });
 
         document.getElementById("kpiTotalExecutives").textContent = activeEmployees.length;
         document.getElementById("kpiEnrolled2026").textContent = activeEnrollments2026.length;
-        document.getElementById("kpiWaived2026").textContent = waived2026;
+        document.getElementById("kpiWaived2026").textContent = activeEnrollments2026.filter(e => e.medical_plan === "WAIVE").length;
         document.getElementById("kpiAvgCostIncrease").textContent = avgIncrease > 0 ? `+$${avgIncrease.toFixed(0)}` : "$0";
 
         // Render comparison chart
@@ -7669,7 +7669,7 @@ async function loadYoYReviewGrid() {
         const [{ data: employees }, { data: enrollments }] = await Promise.all([
             supabase
                 .from("employees2025")
-                .select("id, first_name, last_name, username, signed_pdf_url")
+                .select("id, first_name, last_name, username, signed_pdf_url, employment_status")
                 .not("signed_pdf_url", "is", null)
                 .order("last_name", { ascending: true }),
             supabase
@@ -7704,7 +7704,6 @@ async function loadYoYReviewGrid() {
         renderYoYGrid();
         
         yoyRendered = true;
-
         showToast({
             title: "Grid Loaded",
             message: `${yoyEmployees.length} employees loaded successfully`,
@@ -7724,20 +7723,37 @@ async function loadYoYReviewGrid() {
 
 
 
+// ========================================
+// FIXED KPI CALCULATION FUNCTION
+// ========================================
 
 function calculateYoYStatsGrid() {
     let newEmployees = 0, planChanges = 0, noChanges = 0, terminated = 0;
     
     yoyEmployees.forEach(rec => {
-        const { byYear } = rec;
+        const { employee, byYear } = rec;
         const enr2025 = byYear[2025];
         const enr2026 = byYear[2026];
         
-        if (!enr2025 && enr2026) {
+        // ✅ CHECK EMPLOYMENT STATUS FIRST
+        const empStatus = employee.employment_status || "ACTIVE";
+        const isEmpTerminated = empStatus === "TERMINATED";
+        
+        // ✅ CHECK ENROLLMENT STATUS
+        const is2025Terminated = enr2025?.status === 'TERMINATED';
+        const is2026Terminated = enr2026?.status === 'TERMINATED';
+        
+        // If employee or either enrollment is terminated, count as terminated
+        if (isEmpTerminated || is2025Terminated || is2026Terminated) {
+            terminated++;
+        } else if (!enr2025 && enr2026) {
+            // New employee for 2026
             newEmployees++;
         } else if (enr2025 && !enr2026) {
+            // Had enrollment in 2025 but not 2026 = terminated
             terminated++;
         } else if (enr2025 && enr2026) {
+            // Compare plans
             const medChanged = (enr2025.medical_plan || "WAIVE") !== (enr2026.medical_plan || "WAIVE");
             const denChanged = (enr2025.dental_plan || "WAIVE") !== (enr2026.dental_plan || "WAIVE");
             const visChanged = (enr2025.vision_plan || "WAIVE") !== (enr2026.vision_plan || "WAIVE");
@@ -7751,19 +7767,21 @@ function calculateYoYStatsGrid() {
         }
     });
     
+    // Update KPI cards
     document.getElementById("yoyTotalCount").textContent = yoyEmployees.length;
     document.getElementById("yoyNewCount").textContent = newEmployees;
     document.getElementById("yoyChangedCount").textContent = planChanges;
     document.getElementById("yoyNoChangeCount").textContent = noChanges;
     document.getElementById("yoyTerminatedCount").textContent = terminated;
+    
+    console.log('📊 KPI Stats:', {
+        total: yoyEmployees.length,
+        new: newEmployees,
+        changed: planChanges,
+        noChange: noChanges,
+        terminated: terminated
+    });
 }
-
-
-
-
-
-
-
 
 
 
@@ -7994,12 +8012,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-// Update selected count
-document.addEventListener('change', function(e) {
-    if (e.target.classList.contains('terminate-checkbox')) {
-        updateSelectedCount();
-    }
-});
+
 
 function updateSelectedCount() {
     const checkedBoxes = document.querySelectorAll('.terminate-checkbox:checked');
@@ -8309,74 +8322,22 @@ async function updateEmployeeStatus(username, action) {
 
 
 
-async function terminateEmployeeWithAudit(employeeId, username, enrollment2025Id, enrollment2026Id) {
-    try {
-        // 1. Delete 2025 enrollment
-        if (enrollment2025Id && enrollment2025Id !== 'null') {
-            await supabase
-                .from("benefit_enrollments")
-                .delete()
-                .eq("id", enrollment2025Id);
-        }
-        
-        // 2. Delete 2026 enrollment
-        if (enrollment2026Id && enrollment2026Id !== 'null') {
-            await supabase
-                .from("benefit_enrollments")
-                .delete()
-                .eq("id", enrollment2026Id);
-        }
-        
-        // 3. Update employee status (THIS WILL TRIGGER THE AUDIT LOG)
-        if (employeeId && employeeId !== 'null') {
-            const { error } = await supabase
-                .from("employees2025")
-                .update({ 
-                    employment_status: 'TERMINATED'
-                })
-                .eq("id", employeeId);
-            
-            if (error) throw error;
-        }
-        
-        // 4. Log in enrollment_changes table
-        await supabase.from("enrollment_changes").insert([{
-            enrollment_id: enrollment2026Id || enrollment2025Id,
-            changed_by_user_id: currentUser.id,
-            changed_by_name: currentUser.full_name,
-            change_type: 'TERMINATION',
-            changes: { 
-                status: { old: 'ACTIVE', new: 'TERMINATED' },
-                terminated_by: currentUser.full_name,
-                terminated_at: new Date().toISOString()
-            },
-            changed_at: new Date().toISOString()
-        }]);
-        
-    } catch (err) {
-        console.error("Termination error:", err);
-        throw err;
-    }
-}
-
 // ======================== ATTACH INLINE EDIT LISTENERS ========================
 // ======================== ATTACH INLINE EDIT LISTENERS ========================
 function attachInlineEditListeners() {
     document.querySelectorAll('.terminate-checkbox').forEach(checkbox => {
-        checkbox.addEventListener('change', async function (e) {
+        checkbox.addEventListener('change', async function(e) {
             const row = e.target.closest('tr');
             const statusCell = row.querySelector('.status-cell');
             const name = row.cells[1].textContent.trim().split('\n')[0];
 
-            // Get data from the row
             const employeeId = row.dataset.employeeId;
             const username = row.dataset.username;
-            const enrollment2025Id = row.dataset.enrollment2025Id || 'null';
-            const enrollment2026Id = row.dataset.enrollment2026Id || 'null';
+            const enrollment2025Id = row.dataset.enrollment2025Id || null;
+            const enrollment2026Id = row.dataset.enrollment2026Id || null;
 
             if (e.target.checked) {
-                // TERMINATE
-                if (!confirm(`Terminate ${name}?\n\nThis will permanently mark them as TERMINATED.\nContinue?`)) {
+                if (!confirm(`Terminate ${name}?\nThis will remove all benefits and mark as TERMINATED.\nContinue?`)) {
                     e.target.checked = false;
                     return;
                 }
@@ -8389,30 +8350,32 @@ function attachInlineEditListeners() {
                 try {
                     await terminateEmployee(employeeId, username, enrollment2025Id, enrollment2026Id);
                     showToast({ title: "Success", message: `${name} terminated`, type: "success" });
+                    calculateYoYStatsGrid(); // UPDATE KPI IMMEDIATELY
                 } catch (err) {
-                    alert("Failed to save to database!");
+                    alert("Failed to terminate!");
                     e.target.checked = false;
                     row.classList.remove('terminated-row');
-                    statusCell.innerHTML = '<span class="text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full text-xs font-bold">NO CHANGE</span>';
+                    statusCell.innerHTML = '<span class="inline-flex items-center px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold">NO CHANGE</span>';
                     row.querySelectorAll('select').forEach(s => s.disabled = false);
                 }
-
             } else {
-                // REHIRE
-                if (!confirm(`Rehire ${name}?\n\nRestore their benefits access?`)) {
+                if (!confirm(`Rehire ${name}?`)) {
                     e.target.checked = true;
                     return;
                 }
 
                 row.classList.remove('terminated-row');
-                statusCell.innerHTML = '<span class="text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full text-xs font-bold">NO CHANGE</span>';
+                statusCell.innerHTML = '<span class="inline-flex items-center px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold">NO CHANGE</span>';
                 row.querySelectorAll('select').forEach(s => s.disabled = false);
 
                 try {
-                    await rehireEmployee(employeeId, username, enrollment2025Id, enrollment2026Id);
+                    // You need a rehire function — add this if you want
+                    await supabase.from("employees2025")
+                        .update({ employment_status: 'ACTIVE', terminated_date: null })
+                        .eq("id", employeeId);
                     showToast({ title: "Rehired", message: `${name} is active again`, type: "success" });
+                    calculateYoYStatsGrid();
                 } catch (err) {
-                    alert("Failed to rehire!");
                     e.target.checked = true;
                     row.classList.add('terminated-row');
                     statusCell.innerHTML = '<span class="status-terminated">TERMINATED</span>';
@@ -8422,18 +8385,21 @@ function attachInlineEditListeners() {
         });
     });
 
-    // Apply correct state on page load (for already terminated)
-    document.querySelectorAll('tr[data-employee-id]').forEach(row => {
+    // Apply style on load
+    document.querySelectorAll('tr').forEach(row => {
         const cb = row.querySelector('.terminate-checkbox');
-        if (cb && cb.checked) {
+        if (cb?.checked) {
             row.classList.add('terminated-row');
-            const statusCell = row.querySelector('.status-cell');
-            statusCell.innerHTML = '<span class="status-terminated">TERMINATED</span>';
+            row.querySelector('.status-cell').innerHTML = '<span class="status-terminated">TERMINATED</span>';
             row.querySelectorAll('select').forEach(s => s.disabled = true);
         }
     });
 }
 
+// Call it after grid loads
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(attachInlineEditListeners, 1000);
+});
 
 
 
@@ -8519,89 +8485,6 @@ async function saveInlineEdit(enrollmentId, username, field, newValue, row, year
 }
 
 
-
-
-
-
-
-
-async function terminateEmployee(employeeId, username, enrollment2025Id, enrollment2026Id, row) {
-    try {
-        showToast({
-            title: "Terminating...",
-            message: `Processing termination for ${username}`,
-            type: "info"
-        });
-
-        // Update 2025 enrollment if exists (mark as terminated, no delete)
-        if (enrollment2025Id && enrollment2025Id !== 'null') {
-            await supabase
-                .from("benefit_enrollments")
-                .update({
-                    status: 'TERMINATED',
-                    terminated_date: new Date().toISOString()
-                })
-                .eq("id", enrollment2025Id);
-        }
-
-        // Update 2026 enrollment if exists (mark as terminated, no delete)
-        if (enrollment2026Id && enrollment2026Id !== 'null') {
-            await supabase
-                .from("benefit_enrollments")
-                .update({
-                    status: 'TERMINATED',
-                    terminated_date: new Date().toISOString()
-                })
-                .eq("id", enrollment2026Id);
-        }
-
-        // Update employee status
-        if (employeeId && employeeId !== 'null') {
-            const { error } = await supabase
-                .from("employees2025")
-                .update({ 
-                    employment_status: 'TERMINATED',
-                    terminated_date: new Date().toISOString()
-                })
-                .eq("id", employeeId);
-
-            if (error) throw error;
-        }
-
-        // Log termination
-        await supabase.from("enrollment_changes").insert([{
-            enrollment_id: enrollment2026Id || enrollment2025Id,
-            changed_by_user_id: currentUser.id,
-            changed_by_name: currentUser.full_name,
-            change_type: 'TERMINATION',
-            changes: { 
-                status: { old: 'ACTIVE', new: 'TERMINATED' },
-                terminated_by: currentUser.full_name,
-                terminated_at: new Date().toISOString()
-            },
-            changed_at: new Date().toISOString()
-        }]);
-
-        showToast({
-            title: "✅ Employee Terminated",
-            message: `${username} has been marked as terminated. All data and documents preserved for reference.`,
-            type: "success"
-        });
-
-        // Reload grid
-        await loadYoYReviewGrid();
-
-    } catch (err) {
-        console.error("❌ Termination error:", err);
-        showToast({
-            title: "Termination Failed",
-            message: err.message || "Could not terminate employee",
-            type: "error"
-        });
-    }
-}
-
-
 async function rehireEmployee(employeeId, username, enrollment2025Id, enrollment2026Id) {
     try {
         // Update employee status
@@ -8659,90 +8542,6 @@ async function rehireEmployee(employeeId, username, enrollment2025Id, enrollment
         throw err;
     }
 }
-
-
-// Terminate Function (Sets status to TERMINATED, deletes enrollments)
-async function terminateEmployee(employeeId, username, enrollment2025Id, enrollment2026Id) {
-    try {
-        showToast({
-            title: "Terminating...",
-            message: `Processing termination for ${username}`,
-            type: "info"
-        });
-
-        // Update 2025 enrollment status
-        if (enrollment2025Id && enrollment2025Id !== 'null') {
-            await supabase
-                .from("benefit_enrollments")
-                .update({
-                    status: 'TERMINATED',
-                    terminated_date: new Date().toISOString()
-                })
-                .eq("id", enrollment2025Id);
-        }
-
-        // Update 2026 enrollment status
-        if (enrollment2026Id && enrollment2026Id !== 'null') {
-            await supabase
-                .from("benefit_enrollments")
-                .update({
-                    status: 'TERMINATED',
-                    terminated_date: new Date().toISOString()
-                })
-                .eq("id", enrollment2026Id);
-        }
-
-        // Update employee status
-        if (employeeId && employeeId !== 'null') {
-            const { error } = await supabase
-                .from("employees2025")
-                .update({ 
-                    employment_status: 'TERMINATED',
-                    terminated_date: new Date().toISOString()
-                })
-                .eq("id", employeeId);
-            if (error) throw error;
-        }
-
-        // Audit log
-        await supabase.from("enrollment_changes").insert([{
-            enrollment_id: enrollment2026Id || enrollment2025Id,
-            changed_by_user_id: currentUser.id,
-            changed_by_name: currentUser.full_name,
-            change_type: 'TERMINATION',
-            changes: { 
-                status: { old: 'ACTIVE', new: 'TERMINATED' },
-                terminated_by: currentUser.full_name,
-                terminated_at: new Date().toISOString()
-            },
-            changed_at: new Date().toISOString()
-        }]);
-
-        showToast({
-            title: "✅ Employee Terminated",
-            message: `${username} has been marked as terminated. All data preserved.`,
-            type: "success"
-        });
-
-        await loadYoYReviewGrid(); // Refresh grid to show updated status/badge
-    } catch (err) {
-        console.error("Termination error:", err);
-        showToast({
-            title: "Termination Failed",
-            message: err.message || "Could not terminate employee",
-            type: "error"
-        });
-        throw err; // Revert checkbox on error
-    }
-}
-
-
-
-
-
-
-
-
 
 
 // Excel Export for Grid
@@ -8866,12 +8665,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 });
 
-// Update selected count
-document.addEventListener('change', function(e) {
-    if (e.target.classList.contains('terminate-checkbox')) {
-        updateSelectedCount();
-    }
-});
+
 
 function updateSelectedCount() {
     const checkedBoxes = document.querySelectorAll('.terminate-checkbox:checked');
@@ -8961,57 +8755,12 @@ async function bulkTerminateEmployees() {
 
 
 
-async function terminateEmployeeWithAudit(employeeId, username, enrollment2025Id, enrollment2026Id) {
-    try {
-        // 1. Delete 2025 enrollment
-        if (enrollment2025Id && enrollment2025Id !== 'null') {
-            await supabase
-                .from("benefit_enrollments")
-                .delete()
-                .eq("id", enrollment2025Id);
-        }
-        
-        // 2. Delete 2026 enrollment
-        if (enrollment2026Id && enrollment2026Id !== 'null') {
-            await supabase
-                .from("benefit_enrollments")
-                .delete()
-                .eq("id", enrollment2026Id);
-        }
-        
-        // 3. Update employee status
-        if (employeeId && employeeId !== 'null') {
-            const { error } = await supabase
-                .from("employees2025")
-                .update({ 
-                    employment_status: 'TERMINATED',
-                    terminated_date: new Date().toISOString()
-                })
-                .eq("id", employeeId);
-            
-            if (error) throw error;
-        }
-        
-        // 4. Log in enrollment_changes table
-        await supabase.from("enrollment_changes").insert([{
-            enrollment_id: enrollment2026Id || enrollment2025Id,
-            changed_by_user_id: currentUser.id,
-            changed_by_name: currentUser.full_name,
-            change_type: 'TERMINATION',
-            changes: { 
-                status: { old: 'ACTIVE', new: 'TERMINATED' },
-                terminated_by: currentUser.full_name,
-                terminated_at: new Date().toISOString()
-            },
-            changed_at: new Date().toISOString()
-        }]);
-        
-    } catch (err) {
-        console.error("Termination error:", err);
-        throw err;
-    }
-}
-// ======================== REAL-TIME SYNC ACROSS DEVICES ========================
+
+
+
+
+
+
 
 // Initialize real-time listener when user logs in
 let realtimeChannel = null;
@@ -9119,20 +8868,355 @@ async function handleLogoutWithCleanup() {
 // Update logout button to use new function
 document.getElementById('logoutButton').removeEventListener('click', handleLogout);
 document.getElementById('logoutButton').addEventListener('click', handleLogoutWithCleanup);
-// INSTANT TERMINATED BADGE WHEN CHECKBOX IS CLICKED
-document.addEventListener('change', function(e) {
-    if (e.target.classList.contains('terminate-checkbox')) {
-        const row = e.target.closest('tr');
-        const statusCell = row.querySelector('.status-cell');
 
-        if (e.target.checked) {
+// ========================================
+// TERMINATION HANDLER - FIXED VERSION
+// ========================================
+
+// Single global handler for all termination checkboxes
+let terminationHandlerAttached = false;
+
+function initTerminationHandlers() {
+    if (terminationHandlerAttached) return; // Prevent duplicate attachments
+    
+    // Use event delegation - attach once to document
+    document.addEventListener('change', handleTermination);
+    terminationHandlerAttached = true;
+    console.log('✅ Termination handler initialized');
+}
+
+async function handleTermination(e) {
+    // Check if the changed element is a termination checkbox
+    if (!e.target.matches('input[type="checkbox"][data-employee-id]')) return;
+
+    const checkbox = e.target;
+    const row = checkbox.closest('tr');
+    if (!row) return;
+
+    const statusCell = row.querySelector('.status-cell');
+    if (!statusCell) return;
+
+    // Get employee data
+    const nameElement = row.cells[1]?.querySelector('div') || row.cells[1];
+    const name = nameElement?.textContent.trim() || 'Employee';
+    const employeeId = row.dataset.employeeId;
+    const username = row.dataset.username || name;
+    const enrollment2025Id = row.dataset.enrollment2025Id || null;
+    const enrollment2026Id = row.dataset.enrollment2026Id || null;
+
+    console.log('📋 Termination data:', {
+        employeeId,
+        username,
+        enrollment2025Id,
+        enrollment2026Id,
+        checked: checkbox.checked
+    });
+
+    if (checkbox.checked) {
+        // Confirm termination
+        if (!confirm(`⚠️ Terminate ${name}?\n\nThis will:\n- Mark employee as TERMINATED\n- Update benefits status\n- Save changes to database\n\nContinue?`)) {
+            checkbox.checked = false;
+            return;
+        }
+
+        // Show loading state
+        const originalStatusHTML = statusCell.innerHTML;
+        statusCell.innerHTML = '<span class="inline-flex items-center px-2 py-1 rounded-full bg-yellow-50 text-yellow-700 border border-yellow-200 text-xs font-bold">⏳ SAVING...</span>';
+        checkbox.disabled = true;
+
+        try {
+            // Call termination function
+            await terminateEmployee(employeeId, username, enrollment2025Id, enrollment2026Id);
+            
+            // Update UI on success
+            row.classList.add('terminated-row');
             statusCell.innerHTML = '<span class="status-terminated">TERMINATED</span>';
-        } else {
-            // Restore original badge (you can improve this later)
-            statusCell.innerHTML = '<span class="inline-flex items-center px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold">NO CHANGE</span>';
+            
+            showToast({ 
+                title: "✅ Success", 
+                message: `${name} has been terminated`, 
+                type: "success" 
+            });
+            
+            // Refresh KPIs and data
+            await refreshAfterTermination();
+            
+        } catch (err) {
+            console.error('❌ Termination failed:', err);
+            
+            // Revert UI on failure
+            checkbox.checked = false;
+            row.classList.remove('terminated-row');
+            statusCell.innerHTML = originalStatusHTML;
+            
+            showToast({ 
+                title: "❌ Error", 
+                message: "Failed to save termination to database", 
+                type: "error" 
+            });
+        } finally {
+            checkbox.disabled = false;
+        }
+    } else {
+        // Unterminate (if needed in future)
+        row.classList.remove('terminated-row');
+        statusCell.innerHTML = '<span class="inline-flex items-center px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold">ACTIVE</span>';
+    }
+}
+
+async function terminateEmployee(employeeId, username, enrollment2025Id, enrollment2026Id) {
+    console.log('🔄 Starting termination process...');
+    
+    const terminationDate = new Date().toISOString();
+    const updates = [];
+
+    try {
+        // Update 2025 enrollment if exists
+        if (enrollment2025Id && enrollment2025Id !== 'null' && enrollment2025Id !== 'undefined') {
+            console.log('📝 Updating 2025 enrollment:', enrollment2025Id);
+            const { data, error } = await supabase
+                .from("benefit_enrollments")
+                .update({ 
+                    status: 'TERMINATED', 
+                    terminated_date: terminationDate 
+                })
+                .eq("id", enrollment2025Id);
+            
+            if (error) throw new Error(`2025 enrollment update failed: ${error.message}`);
+            updates.push('2025 enrollment');
+            console.log('✅ 2025 enrollment updated');
+        }
+
+        // Update 2026 enrollment if exists
+        if (enrollment2026Id && enrollment2026Id !== 'null' && enrollment2026Id !== 'undefined') {
+            console.log('📝 Updating 2026 enrollment:', enrollment2026Id);
+            const { data, error } = await supabase
+                .from("benefit_enrollments")
+                .update({ 
+                    status: 'TERMINATED', 
+                    terminated_date: terminationDate 
+                })
+                .eq("id", enrollment2026Id);
+            
+            if (error) throw new Error(`2026 enrollment update failed: ${error.message}`);
+            updates.push('2026 enrollment');
+            console.log('✅ 2026 enrollment updated');
+        }
+
+        // Update employee record
+        if (employeeId && employeeId !== 'null' && employeeId !== 'undefined') {
+            console.log('📝 Updating employee record:', employeeId);
+            const { data, error } = await supabase
+                .from("employees2025")
+                .update({ 
+                    employment_status: 'TERMINATED', 
+                    terminated_date: terminationDate 
+                })
+                .eq("id", employeeId);
+            
+            if (error) throw new Error(`Employee update failed: ${error.message}`);
+            updates.push('employee record');
+            console.log('✅ Employee record updated');
+        }
+
+        if (updates.length === 0) {
+            throw new Error('No valid IDs provided for termination');
+        }
+
+        console.log(`✅ Termination complete: ${updates.join(', ')} updated`);
+        return true;
+        
+    } catch (err) {
+        console.error('❌ Termination error:', err);
+        throw err;
+    }
+}
+
+async function refreshAfterTermination() {
+    console.log('🔄 Refreshing data after termination...');
+    
+    try {
+        // Refresh KPI stats
+        if (typeof calculateYoYStatsGrid === 'function') {
+            await calculateYoYStatsGrid();
+        }
+        
+        // Refresh the grid data
+        if (typeof loadYoYReviewGrid === 'function') {
+            await loadYoYReviewGrid();
+        }
+        
+        console.log('✅ Data refreshed');
+    } catch (err) {
+        console.error('⚠️ Error refreshing data:', err);
+    }
+}
+
+// Apply terminated styling on page load
+function styleTerminatedRows() {
+    setTimeout(() => {
+        document.querySelectorAll('input[type="checkbox"][data-employee-id]:checked').forEach(checkbox => {
+            const row = checkbox.closest('tr');
+            if (row) {
+                row.classList.add('terminated-row');
+                const statusCell = row.querySelector('.status-cell');
+                if (statusCell) {
+                    statusCell.innerHTML = '<span class="status-terminated">TERMINATED</span>';
+                }
+            }
+        });
+        console.log('✅ Terminated rows styled');
+    }, 1000);
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', () => {
+    initTerminationHandlers();
+    styleTerminatedRows();
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+async function terminateEmployee(employeeId, username, enrollment2025Id, enrollment2026Id) {
+    try {
+        if (enrollment2025Id && enrollment2025Id !== 'null') {
+            await supabase.from("benefit_enrollments")
+                .update({ status: 'TERMINATED', terminated_date: new Date().toISOString() })
+                .eq("id", enrollment2025Id);
+        }
+        if (enrollment2026Id && enrollment2026Id !== 'null') {
+            await supabase.from("benefit_enrollments")
+                .update({ status: 'TERMINATED', terminated_date: new Date().toISOString() })
+                .eq("id", enrollment2026Id);
+        }
+        if (employeeId && employeeId !== 'null') {
+            await supabase.from("employees2025")
+                .update({ employment_status: 'TERMINATED', terminated_date: new Date().toISOString() })
+                .eq("id", employeeId);
+        }
+        showToast({ title: "Success", message: `${username} terminated`, type: "success" });
+    } catch (err) {
+        showToast({ title: "Error", message: "Failed to terminate", type: "error" });
+        throw err;
+    }
+}
+
+function refreshTerminationHandlers() {
+    document.querySelectorAll('.terminate-checkbox').forEach(checkbox => {
+        checkbox.onchange = null; // remove old listeners
+        checkbox.onchange = async function () {
+            const row = this.closest('tr');
+            const name = row.cells[1].textContent.trim().split('\n')[0] || 'Employee';
+            const statusCell = row.querySelector('.status-cell');
+
+            if (this.checked) {
+                if (!confirm(`Terminate ${name}?\n\nThis cannot be undone.`)) {
+                    this.checked = false;
+                    return;
+                }
+
+                row.classList.add('terminated-row');
+                statusCell.innerHTML = '<span class="status-terminated">TERMINATED</span>';
+
+                try {
+                    await terminateEmployee(
+                        row.dataset.employeeId,
+                        row.dataset.username,
+                        row.dataset.enrollment2025Id,
+                        row.dataset.enrollment2026Id
+                    );
+                    calculateYoYStatsGrid?.();
+                } catch (err) {
+                    this.checked = false;
+                    row.classList.remove('terminated-row');
+                    statusCell.innerHTML = '<span class="inline-flex items-center px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold">ACTIVE</span>';
+                }
+            }
+        };
+    });
+}
+
+function styleAlreadyTerminatedRows() {
+    document.querySelectorAll('tr').forEach(row => {
+        const isTerminated = row.dataset.employmentStatus === 'TERMINATED' ||
+                            (row.querySelector('.terminate-checkbox')?.checked);
+        if (isTerminated) {
+            row.classList.add('terminated-row');
+            const cell = row.querySelector('.status-cell');
+            if (cell) cell.innerHTML = '<span class="status-terminated">TERMINATED</span>';
+        }
+    });
+}
+
+
+// Main handler – attached once, works on dynamically added rows too
+function attachTerminationHandlers() {
+    document.querySelectorAll('.terminate-checkbox').forEach(checkbox => {
+        // Remove any old listener first (prevents duplicates)
+        checkbox.removeEventListener('change', terminationHandler);
+        checkbox.addEventListener('change', terminationHandler);
+    });
+}
+
+async function terminationHandler(e) {
+    const checkbox = e.target;
+    const row = checkbox.closest('tr');
+    if (!row) return;
+
+    const statusCell = row.querySelector('.status-cell');
+    const name = row.cells[1]?.textContent.trim().split('\n')[0] || 'Employee';
+
+    const employeeId       = row.dataset.employeeId;
+    const username         = row.dataset.username;
+    const enrollment2025Id = row.dataset.enrollment2025Id || null;
+    const enrollment2026Id = row.dataset.enrollment2026Id || null;
+
+    if (checkbox.checked) {
+        if (!confirm(`Terminate ${name}?\n\nThis cannot be undone.`)) {
+            checkbox.checked = false;
+            return;
+        }
+
+        // Instant visual feedback
+        row.classList.add('terminated-row');
+        statusCell.innerHTML = '<span class="status-terminated">TERMINATED</span>';
+
+        try {
+            await terminateEmployee(employeeId, username, enrollment2025Id, enrollment2026Id);
+            calculateYoYStatsGrid?.();          // refresh stats if function exists
+        } catch (err) {
+            // Revert UI on failure
+            checkbox.checked = false;
+            row.classList.remove('terminated-row');
+            statusCell.innerHTML = '<span class="inline-flex items-center px-2 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold">ACTIVE</span>';
         }
     }
-});
+}
+
+// Run after every time you rebuild the table
+function refreshTerminationHandlers() {
+    // small delay to make sure the DOM is updated
+    setTimeout(attachTerminationHandlers, 300);
+}
 </script>
+
 </body>
 </html>
