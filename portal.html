@@ -3888,11 +3888,17 @@ async function renderFinancialImpactDashboard() {
         const costs2025 = calc(2025, enr2025 || []);
         const costs2026 = calc(2026, enr2026 || []);
 
-        // Update KPI cards
-        updateFinancialKPI('medical', costs2025.medical, costs2026.medical);
-        updateFinancialKPI('dental', costs2025.dental, costs2026.dental);
-        updateFinancialKPI('vision', costs2025.vision, costs2026.vision);
-        updateFinancialKPI('grand', costs2025.total, costs2026.total);
+       // ONLY COUNT ACTIVE EMPLOYEES (NOT TERMINATED ONES)
+        const activeEmployees = employees.filter(e => e.employment_status !== 'TERMINATED');
+        const activeEnrollments2026 = enrollments2026.filter(e => {
+            const emp = employees.find(emp => emp.username === e.username);
+            return emp && emp.employment_status !== 'TERMINATED';
+        });
+
+        document.getElementById("kpiTotalExecutives").textContent = activeEmployees.length;
+        document.getElementById("kpiEnrolled2026").textContent = activeEnrollments2026.length;
+        document.getElementById("kpiWaived2026").textContent = waived2026;
+        document.getElementById("kpiAvgCostIncrease").textContent = avgIncrease > 0 ? `+$${avgIncrease.toFixed(0)}` : "$0";
 
         // Render comparison chart
         renderFinancialComparisonChart(costs2025, costs2026);
@@ -8356,83 +8362,80 @@ async function terminateEmployeeWithAudit(employeeId, username, enrollment2025Id
 // ======================== ATTACH INLINE EDIT LISTENERS ========================
 // ======================== ATTACH INLINE EDIT LISTENERS ========================
 function attachInlineEditListeners() {
-    // Handle termination checkbox
     document.querySelectorAll('.terminate-checkbox').forEach(checkbox => {
-        checkbox.addEventListener('change', async (e) => {
+        checkbox.addEventListener('change', async function (e) {
             const row = e.target.closest('tr');
             const statusCell = row.querySelector('.status-cell');
             const name = row.cells[1].textContent.trim().split('\n')[0];
 
+            // Get data from the row
+            const employeeId = row.dataset.employeeId;
+            const username = row.dataset.username;
+            const enrollment2025Id = row.dataset.enrollment2025Id || 'null';
+            const enrollment2026Id = row.dataset.enrollment2026Id || 'null';
+
             if (e.target.checked) {
-                // USER WANTS TO TERMINATE
-                if (!confirm(`Terminate ${name}?\n\nThis will lock all benefits and mark as TERMINATED.\nContinue?`)) {
+                // TERMINATE
+                if (!confirm(`Terminate ${name}?\n\nThis will permanently mark them as TERMINATED.\nContinue?`)) {
                     e.target.checked = false;
                     return;
                 }
 
-                // INSTANTLY UPDATE UI
+                // INSTANT UI UPDATE
                 row.classList.add('terminated-row');
                 statusCell.innerHTML = '<span class="status-terminated">TERMINATED</span>';
-                row.querySelectorAll('select').forEach(sel => sel.disabled = true);
+                row.querySelectorAll('select').forEach(s => s.disabled = true);
 
                 try {
-                    await terminateEmployee(
-                        row.dataset.employeeId,
-                        row.dataset.username,
-                        row.dataset.enrollment2025Id,
-                        row.dataset.enrollment2026Id
-                    );
-                    showToast({ title: "Terminated", message: `${name} is now terminated`, type: "success" });
+                    await terminateEmployee(employeeId, username, enrollment2025Id, enrollment2026Id);
+                    showToast({ title: "Success", message: `${name} terminated`, type: "success" });
                 } catch (err) {
-                    alert("Failed to terminate. Check internet or permissions.");
+                    alert("Failed to save to database!");
                     e.target.checked = false;
                     row.classList.remove('terminated-row');
-                    statusCell.innerHTML = '<span class="text-green-600 font-bold">Active</span>';
-                    row.querySelectorAll('select').forEach(sel => sel.disabled = false);
+                    statusCell.innerHTML = '<span class="text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full text-xs font-bold">NO CHANGE</span>';
+                    row.querySelectorAll('select').forEach(s => s.disabled = false);
                 }
 
             } else {
-                // USER WANTS TO REHIRE
-                if (!confirm(`Rehire ${name}?\n\nRestore access to benefits?\nContinue?`)) {
+                // REHIRE
+                if (!confirm(`Rehire ${name}?\n\nRestore their benefits access?`)) {
                     e.target.checked = true;
                     return;
                 }
 
-                // INSTANTLY RESTORE UI
                 row.classList.remove('terminated-row');
-                statusCell.innerHTML = '<span class="text-green-600 font-bold">Active</span>';
-                row.querySelectorAll('select').forEach(sel => sel.disabled = false);
+                statusCell.innerHTML = '<span class="text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full text-xs font-bold">NO CHANGE</span>';
+                row.querySelectorAll('select').forEach(s => s.disabled = false);
 
                 try {
-                    await rehireEmployee(
-                        row.dataset.employeeId,
-                        row.dataset.username,
-                        row.dataset.enrollment2025Id,
-                        row.dataset.enrollment2026Id
-                    );
-                    showToast({ title: "Rehired", message: `${name} is now active`, type: "success" });
+                    await rehireEmployee(employeeId, username, enrollment2025Id, enrollment2026Id);
+                    showToast({ title: "Rehired", message: `${name} is active again`, type: "success" });
                 } catch (err) {
-                    alert("Failed to rehire.");
+                    alert("Failed to rehire!");
                     e.target.checked = true;
                     row.classList.add('terminated-row');
                     statusCell.innerHTML = '<span class="status-terminated">TERMINATED</span>';
-                    row.querySelectorAll('select').forEach(sel => sel.disabled = true);
+                    row.querySelectorAll('select').forEach(s => s.disabled = true);
                 }
             }
         });
     });
 
-    // Apply correct state on page load
-    document.querySelectorAll('tr').forEach(row => {
+    // Apply correct state on page load (for already terminated)
+    document.querySelectorAll('tr[data-employee-id]').forEach(row => {
         const cb = row.querySelector('.terminate-checkbox');
-        const statusCell = row.querySelector('.status-cell');
         if (cb && cb.checked) {
             row.classList.add('terminated-row');
+            const statusCell = row.querySelector('.status-cell');
             statusCell.innerHTML = '<span class="status-terminated">TERMINATED</span>';
-            row.querySelectorAll('select').forEach(sel => sel.disabled = true);
+            row.querySelectorAll('select').forEach(s => s.disabled = true);
         }
     });
 }
+
+
+
 
 // ======================== SAVE INLINE EDIT ========================
 
