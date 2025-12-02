@@ -505,6 +505,29 @@ header .max-w-7xl,
     text-transform: uppercase;
 }
 
+
+/* ADD THIS to your main <style> block, alongside .tab-btn-active, etc. */
+.audit-btn-active {
+    border-bottom: 2px solid var(--jc-navy); /* Use navy for internal admin tabs */
+    color: var(--jc-navy);
+    font-weight: 600;
+}
+.audit-btn-inactive {
+    border-bottom: 2px solid transparent;
+    color: #6b7280;
+    font-weight: 500;
+    transition: color 0.15s;
+}
+.audit-btn-inactive:hover {
+    color: var(--jc-navy-soft);
+}
+.audit-tab-content {
+    display: none;
+}
+.audit-tab-content.active {
+    display: block;
+}
+
 </style>
 
 
@@ -1822,34 +1845,28 @@ header .max-w-7xl,
             </section>
 
             <!-- ==================== AUDIT LOGS TAB ==================== -->
-            <section id="tabAuditContent" class="tab-content space-y-4">
-                <header class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
-                    <div>
-                        <h2 class="text-lg font-semibold text-slate-900">Audit Logs</h2>
-                        <p class="text-xs text-slate-500 mt-1">Track portal access and actions (admin only).</p>
-                    </div>
-                </header>
+           <section id="tabAuditContent" class="tab-content space-y-4">
+    <header class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+        <div>
+            <h2 class="text-lg font-semibold text-slate-900">Portal Access Audit Logs</h2>
+            <p class="text-xs text-slate-500 mt-1">
+                Track portal login history, session duration, and navigation flow for all users (admin only).
+            </p>
+        </div>
+    </header>
+    
+    <div id="audit-sub-nav" class="flex gap-4 border-b border-slate-200 overflow-x-auto pb-0.5">
+        <p class="text-xs text-slate-500 py-2.5">Loading users...</p>
+    </div>
+    
+    <div id="audit-tabs-container">
+        <div class="card p-6">
+             <p class="text-sm text-slate-500">Select a user's initials above to view their activity log.</p>
+        </div>
+    </div>
+</section>
 
-                <div class="card overflow-x-auto">
-                    <table class="min-w-full text-sm">
-                        <thead class="bg-slate-50 border-b border-slate-200 text-xs text-slate-500">
-                            <tr>
-                                <th class="text-left px-4 py-2.5">Portal User</th>
-                                <th class="text-left px-4 py-2.5">Login Time</th>
-                                <th class="text-left px-4 py-2.5">Logout Time</th>
-                                <th class="text-left px-4 py-2.5">Duration (min)</th>
-                                <th class="text-left px-4 py-2.5">Tab History</th>
-                            </tr>
-                        </thead>
-                        <tbody id="auditBody" class="divide-y divide-slate-100">
-                            <tr>
-                                <td colspan="5" class="px-4 py-4 text-center text-xs text-slate-500">
-                                    Loading audit logs...
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
+
             </section>
 
             <!-- ==================== AUTHORIZED USERS TAB ==================== -->
@@ -6143,59 +6160,98 @@ function applyDetailStyles(ws, headerRow, maxRow, employeeCount) {
 
 
         // ======================== AUDIT LOGS ========================
-        async function loadAuditLogs() {
-            const tbody = document.getElementById("auditBody");
-            tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-4 text-center text-xs text-slate-500">Loading audit logs...</td></tr>';
+       
+async function loadAuditLogs() {
+    // 1. Enforce Admin restriction for full view (assuming 'PG' is admin)
+    const isAdmin = currentUser && currentUser.role === "admin";
+    if (!isAdmin) {
+        // This stops non-admins from getting the full audit view immediately
+        const tabsContainer = document.getElementById("audit-tabs-container");
+        if (tabsContainer) tabsContainer.innerHTML = '<div class="p-6 text-red-600 font-semibold">Access Denied. Only Administrators can view this detailed log.</div>';
+        return; 
+    }
 
-            try {
-                const { data: logs, error } = await supabase
-                    .from("portal_logs")
-                    .select("id, portal_user_id, login_time, logout_time, duration_minutes, tab_accessed, tab_history")
-                    .order("login_time", { ascending: false });
+    // 2. Load all logs and find unique users
+    try {
+        const { data: allLogs, error: logError } = await supabase
+            .from("portal_logs")
+            .select("portal_user_id, login_time, logout_time, tab_history")
+            .not('portal_user_id', 'is', null) // Filter out logs without a user ID
+            .order("login_time", { ascending: false });
 
-                if (error) throw error;
+        if (logError) throw logError;
+        
+        // 3. Get unique user IDs that have logged in
+        const uniqueUserIds = [...new Set(allLogs.map(log => log.portal_user_id))].filter(id => id !== null);
 
-                if (!portalUsersCache.length) {
-                    await loadPortalUsers();
-                }
+        // 4. Load user details
+        const { data: userDetails, error: userError } = await supabase
+            .from("portal_users")
+            .select("id, full_name, initials")
+            .in('id', uniqueUserIds);
 
-                const userMap = Object.fromEntries(portalUsersCache.map((u) => [u.id, u]));
+        if (userError) throw userError;
 
-                tbody.innerHTML = "";
-                (logs || []).forEach((log) => {
-                    const user = log.portal_user_id ? userMap[log.portal_user_id] : null;
-                    const name = user ? `${user.full_name} (${user.initials})` : "Unknown";
-                    const duration = log.duration_minutes != null ? `${log.duration_minutes} min` : "—";
-                    const historyArray = Array.isArray(log.tab_history) ? log.tab_history : [];
-                    const historyHtml = historyArray.length
-                        ? historyArray
-                              .slice(-5)
-                              .reverse()
-                              .map((entry) => `<div class="text-xs text-slate-700">${esc(entry)}</div>`)
-                              .join("")
-                        : '<span class="text-slate-400">Dashboard</span>';
+        // Populate global cache for user details
+        portalUsersCache = userDetails;
 
-                    tbody.insertAdjacentHTML("beforeend", `
-                        <tr class="hover:bg-slate-50">
-                            <td class="px-4 py-2.5">${esc(name)}</td>
-                            <td class="px-4 py-2.5">${formatDate(log.login_time)}</td>
-                            <td class="px-4 py-2.5">
-                                ${log.logout_time ? formatDate(log.logout_time) : '<span class="text-amber-600">Active</span>'}
-                            </td>
-                            <td class="px-4 py-2.5">${duration}</td>
-                            <td class="px-4 py-2.5 space-y-1 max-w-xs">${historyHtml}</td>
-                        </tr>
-                    `);
-                });
+        const navContainer = document.getElementById("audit-sub-nav");
+        const tabsContainer = document.getElementById("audit-tabs-container");
+        navContainer.innerHTML = '';
+        tabsContainer.innerHTML = '';
+        
+        // --- Create Navigation and Tabs ---
+        
+        // a. All Logs Tab (Default view for Admin)
+        navContainer.insertAdjacentHTML('beforeend', renderAuditTabButton('all-logs', 'All Logs'));
+        tabsContainer.insertAdjacentHTML('beforeend', `<div id="audit-content-all-logs" class="audit-tab-content active">${renderFullAuditTable(allLogs, false)}</div>`);
+        
+        let firstUserId = null;
 
-                if (!logs || !logs.length) {
-                    tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-4 text-center text-xs text-slate-500">No audit history yet.</td></tr>';
-                }
-            } catch (err) {
-                console.error("Audit logs failed:", err);
-                tbody.innerHTML = '<tr><td colspan="5" class="text-red-600 text-center text-xs px-4 py-4">Failed to load</td></tr>';
-            }
-        }
+        // b. Individual User Tabs (for users who have logged in)
+        (userDetails || []).forEach(user => {
+            if (!firstUserId) firstUserId = user.id;
+
+            // Check if user is currently active (logout_time is null)
+            const isActive = allLogs.some(l => l.portal_user_id === user.id && l.logout_time === null);
+            const initials = user.initials;
+            const colorClass = isActive ? 'text-emerald-600' : 'text-slate-600';
+            
+            navContainer.insertAdjacentHTML('beforeend', renderAuditTabButton(
+                `user-${user.id}`, 
+                `${initials}`, 
+                colorClass 
+            ));
+            
+            // Render individual log table content
+            const userLogs = allLogs.filter(l => l.portal_user_id === user.id);
+            tabsContainer.insertAdjacentHTML('beforeend', `<div id="audit-content-user-${user.id}" class="audit-tab-content hidden">${renderFullAuditTable(userLogs, true)}</div>`);
+        });
+        
+        // 5. Attach listeners and set initial active tab
+        document.querySelectorAll('.audit-tab-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                switchAuditTab(e.currentTarget.dataset.tab);
+            });
+        });
+
+        // Set 'All Logs' as active by default, or the first user's tab if desired
+        switchAuditTab('all-logs');
+
+    } catch (err) {
+        console.error("Audit logs failed:", err);
+        const tabsContainer = document.getElementById("audit-tabs-container");
+        if (tabsContainer) tabsContainer.innerHTML = '<div class="p-6 text-red-600">Error loading logs.</div>';
+    }
+}
+
+
+
+
+
+
+
+
 
         // ======================== PORTAL USERS ========================
         async function loadPortalUsers() {
@@ -9269,7 +9325,99 @@ async function terminationHandler(e) {
 function refreshTerminationHandlers() {
     // small delay to make sure the DOM is updated
     setTimeout(attachTerminationHandlers, 300);
+
+
 }
+
+
+
+function renderAuditTabButton(tabId, label, colorClass = 'text-slate-700') {
+    // Add logic to highlight the "Active" user (GM in your case)
+    const isActiveUser = colorClass.includes('emerald'); 
+    const labelHtml = `<span class="${colorClass} font-bold">${label}</span>`;
+    
+    return `<button type="button" 
+                    data-tab="${tabId}" 
+                    class="audit-tab-btn px-4 py-2 text-sm ${tabId === 'all-logs' ? 'audit-btn-active' : 'audit-btn-inactive'} whitespace-nowrap">
+                ${isActiveUser ? '<i class="fa-solid fa-circle text-emerald-500 text-[6px] mr-1 animate-pulse"></i>' : ''}
+                ${labelHtml}
+            </button>`;
+}
+
+
+
+function switchAuditTab(tabId) {
+    // 1. Deactivate all buttons and contents
+    document.querySelectorAll('.audit-tab-btn').forEach(btn => {
+        btn.classList.remove('audit-btn-active');
+        btn.classList.add('audit-btn-inactive');
+    });
+    document.querySelectorAll('.audit-tab-content').forEach(content => {
+        content.classList.add('hidden');
+        content.classList.remove('active');
+    });
+
+    // 2. Activate selected tab
+    const activeBtn = document.querySelector(`.audit-tab-btn[data-tab="${tabId}"]`);
+    const activeContent = document.getElementById(`audit-content-${tabId}`);
+    
+    if (activeBtn) {
+        activeBtn.classList.add('audit-btn-active');
+        activeBtn.classList.remove('audit-btn-inactive');
+    }
+    if (activeContent) {
+        activeContent.classList.add('active');
+        activeContent.classList.remove('hidden');
+    }
+}
+
+
+
+// This replaces the old table-rendering logic inside loadAuditLogs
+function renderFullAuditTable(logs, isSingleUserView = false) {
+    const headerHtml = `
+        <tr>
+            ${!isSingleUserView ? '<th class="text-left px-4 py-2.5">Portal User</th>' : ''}
+            <th class="text-left px-4 py-2.5">Login Time</th>
+            <th class="text-left px-4 py-2.5">Logout Time</th>
+            <th class="text-left px-4 py-2.5">Duration (min)</th>
+            <th class="text-left px-4 py-2.5">Tab History</th>
+        </tr>
+    `;
+
+    const bodyHtml = logs.map(log => {
+        const user = portalUsersCache.find(u => u.id === log.portal_user_id) || { full_name: 'Unknown', initials: 'N/A' };
+        const nameDisplay = `${user.full_name} (${user.initials})`;
+        const duration = log.duration_minutes != null ? `${log.duration_minutes} min` : "—";
+        const historyArray = Array.isArray(log.tab_history) ? log.tab_history : [];
+        const historyDisplay = historyArray.join(' | ');
+        const logoutDisplay = log.logout_time ? formatDate(log.logout_time) : '<span class="text-amber-600">Active</span>';
+        
+        const userCell = !isSingleUserView ? `<td class="px-4 py-2.5">${esc(nameDisplay)}</td>` : '';
+
+        return `
+            <tr class="hover:bg-slate-50">
+                ${userCell}
+                <td class="px-4 py-2.5 text-xs text-slate-700">${formatDate(log.login_time)}</td>
+                <td class="px-4 py-2.5 text-xs">${logoutDisplay}</td>
+                <td class="px-4 py-2.5 text-xs">${duration}</td>
+                <td class="px-4 py-2.5 text-xs" title="${esc(historyDisplay)}">${esc(historyDisplay).substring(0, 80)}...</td>
+            </tr>
+        `;
+    }).join('');
+
+    return `
+        <div class="card overflow-x-auto">
+            <table class="min-w-full text-sm">
+                <thead class="bg-slate-50 border-b border-slate-200 text-xs text-slate-500">${headerHtml}</thead>
+                <tbody class="divide-y divide-slate-100">${bodyHtml}</tbody>
+            </table>
+        </div>
+    `;
+}
+
+
+
 </script>
 
 </body>
