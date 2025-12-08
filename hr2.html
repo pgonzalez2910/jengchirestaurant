@@ -608,13 +608,26 @@
                 correct <span class="font-semibold text-slate-700">employees2025</span> record.
               </p>
 
-              <div class="mt-2 flex items-center gap-2">
-                <input
-                  id="discipline-employee-search"
-                  type="text"
-                  placeholder="Search by name or Employee ID"
-                  class="flex-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
-                />
+              <!-- UPDATED: Discipline search with autocomplete -->
+<div class="relative flex-1">
+  <input
+    id="discipline-employee-search"
+    type="text"
+    placeholder="Search by name or Employee ID (type 3+ letters)"
+    class="w-full rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+    autocomplete="off"
+  />
+  <!-- Autocomplete dropdown -->
+  <div
+    id="discipline-search-dropdown"
+    class="hidden absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto"
+  >
+    <!-- Suggestions will appear here -->
+  </div>
+</div>
+
+
+
                 <button
                   id="discipline-employee-search-button"
                   type="button"
@@ -943,13 +956,25 @@
                 <label for="employees-search-input" class="block text-xs font-heading text-slate-800 mb-1">
                   Search Employees
                 </label>
-                <div class="flex items-center gap-2">
-                  <input
-                    id="employees-search-input"
-                    type="text"
-                    placeholder="Search by name, employee ID, or department"
-                    class="flex-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
-                  />
+                <!-- UPDATED: Search input with autocomplete container -->
+<div class="relative flex-1">
+  <input
+    id="employees-search-input"
+    type="text"
+    placeholder="Search by name, employee ID, or department (type 3+ letters)"
+    class="w-full rounded-full border border-slate-200 bg-slate-50 px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+    autocomplete="off"
+  />
+  <!-- Autocomplete dropdown -->
+  <div
+    id="employees-search-dropdown"
+    class="hidden absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-64 overflow-y-auto"
+  >
+    <!-- Suggestions will appear here -->
+  </div>
+</div>
+
+
                   <button
                     id="employees-search-button"
                     type="button"
@@ -4213,6 +4238,248 @@ function initTabs() {
   // Default tab
   switchTab("dashboard");
 }
+// ============================================================
+// AUTOCOMPLETE SEARCH FUNCTIONALITY
+// ============================================================
+
+/**
+ * State to track current autocomplete queries
+ */
+const AutocompleteState = {
+  searchTimeout: null,
+  currentQuery: '',
+  selectedEmployeeId: null
+};
+
+/**
+ * Search employees in Supabase based on query
+ * Searches: first_name, last_name, employee_id
+ */
+async function searchEmployeesAutocomplete(query) {
+  if (!query || query.length < 3) {
+    return [];
+  }
+
+  try {
+    // Use Supabase to search with OR conditions
+    const { data, error } = await supabaseClient
+      .from('employees2025')
+      .select('id, first_name, last_name, employee_id, department, job_title, position_title, risk_level, risk_score')
+      .or(`first_name.ilike.%${query}%,last_name.ilike.%${query}%,employee_id.ilike.%${query}%`)
+      .limit(10);
+
+    if (error) {
+      console.error('Autocomplete search error:', error);
+      return [];
+    }
+
+    return data || [];
+  } catch (err) {
+    console.error('Unexpected autocomplete error:', err);
+    return [];
+  }
+}
+
+/**
+ * Render autocomplete suggestions in dropdown
+ */
+function renderAutocompleteSuggestions(dropdownId, results) {
+  const dropdown = document.getElementById(dropdownId);
+  if (!dropdown) return;
+
+  // Clear previous suggestions
+  dropdown.innerHTML = '';
+
+  if (!results || results.length === 0) {
+    dropdown.classList.add('hidden');
+    return;
+  }
+
+  // Show dropdown
+  dropdown.classList.remove('hidden');
+
+  // Create suggestion items
+  results.forEach((emp) => {
+    const fullName = `${emp.first_name || ''} ${emp.last_name || ''}`.trim();
+    const employeeId = emp.employee_id || '--';
+    const department = emp.department || 'Unassigned';
+    const jobTitle = emp.job_title || emp.position_title || 'Role not set';
+    const riskLevel = (emp.risk_level || 'LOW').toUpperCase();
+    const riskScore = emp.risk_score != null ? Number(emp.risk_score).toFixed(1) : '0.0';
+
+    // Determine risk badge colors
+    let riskBadgeClasses = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+    if (riskLevel === 'HIGH') {
+      riskBadgeClasses = 'bg-rose-50 text-rose-700 border-rose-200';
+    } else if (riskLevel === 'MEDIUM') {
+      riskBadgeClasses = 'bg-amber-50 text-amber-700 border-amber-200';
+    }
+
+    const item = document.createElement('div');
+    item.className = 'px-3 py-2 hover:bg-brand-50 cursor-pointer transition-colors border-b border-slate-100 last:border-b-0';
+    item.innerHTML = `
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex-1 min-w-0">
+          <p class="font-semibold text-sm text-slate-900 truncate">${fullName || 'Unnamed Employee'}</p>
+          <p class="text-xs text-slate-500 truncate">
+            <span class="font-medium">#${employeeId}</span> • ${department} • ${jobTitle}
+          </p>
+        </div>
+        <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.65rem] border ${riskBadgeClasses} flex-shrink-0">
+          ${riskLevel} • ${riskScore}
+        </span>
+      </div>
+    `;
+
+    // Handle click on suggestion
+    item.addEventListener('click', () => {
+      selectEmployeeFromAutocomplete(emp, dropdownId);
+    });
+
+    dropdown.appendChild(item);
+  });
+}
+
+/**
+ * Handle employee selection from autocomplete
+ */
+function selectEmployeeFromAutocomplete(employee, dropdownId) {
+  // Store selected employee ID
+  AutocompleteState.selectedEmployeeId = employee.id;
+
+  // Hide the dropdown
+  const dropdown = document.getElementById(dropdownId);
+  if (dropdown) {
+    dropdown.classList.add('hidden');
+  }
+
+  // Update the search input to show selected employee name
+  const fullName = `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
+  
+  if (dropdownId === 'employees-search-dropdown') {
+    const searchInput = document.getElementById('employees-search-input');
+    if (searchInput) {
+      searchInput.value = fullName;
+    }
+  } else if (dropdownId === 'discipline-search-dropdown') {
+    const searchInput = document.getElementById('discipline-employee-search');
+    if (searchInput) {
+      searchInput.value = fullName;
+    }
+  }
+
+  // Load full employee data into 360 view
+  loadEmployee360(employee.id);
+
+  // Switch to Employees 360 tab automatically
+  switchTab('employees');
+
+  // Show success message
+  showToast(
+    `Employee selected: ${fullName}`,
+    `Loading full profile for Employee ID: ${employee.employee_id || employee.id}`,
+    'success'
+  );
+}
+
+/**
+ * Setup autocomplete for a specific search input
+ */
+function setupAutocomplete(inputId, dropdownId) {
+  const input = document.getElementById(inputId);
+  const dropdown = document.getElementById(dropdownId);
+
+  if (!input || !dropdown) return;
+
+  // Listen for input changes
+  input.addEventListener('input', (e) => {
+    const query = e.target.value.trim();
+
+    // Clear previous timeout
+    if (AutocompleteState.searchTimeout) {
+      clearTimeout(AutocompleteState.searchTimeout);
+    }
+
+    // Hide dropdown if query is too short
+    if (query.length < 3) {
+      dropdown.classList.add('hidden');
+      return;
+    }
+
+    // Debounce search (wait 300ms after user stops typing)
+    AutocompleteState.searchTimeout = setTimeout(async () => {
+      AutocompleteState.currentQuery = query;
+      
+      // Show loading state
+      dropdown.innerHTML = '<div class="px-3 py-2 text-xs text-slate-500">Searching...</div>';
+      dropdown.classList.remove('hidden');
+
+      // Search employees
+      const results = await searchEmployeesAutocomplete(query);
+
+      // Only render if this is still the current query
+      if (AutocompleteState.currentQuery === query) {
+        renderAutocompleteSuggestions(dropdownId, results);
+      }
+    }, 300);
+  });
+
+  // Hide dropdown when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!input.contains(e.target) && !dropdown.contains(e.target)) {
+      dropdown.classList.add('hidden');
+    }
+  });
+
+  // Handle keyboard navigation (optional enhancement)
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      dropdown.classList.add('hidden');
+    }
+  });
+}
+
+/**
+ * Load full employee data into 360 View
+ * This function will be expanded in Section B
+ */
+async function loadEmployee360(employeeId) {
+  try {
+    // Fetch full employee record
+    const { data, error } = await supabaseClient
+      .from('employees2025')
+      .select('*')
+      .eq('id', employeeId)
+      .single();
+
+    if (error) {
+      console.error('Error loading employee 360:', error);
+      showToast('Unable to load employee', 'Error fetching employee data from Supabase.', 'error');
+      return;
+    }
+
+    if (!data) {
+      showToast('Employee not found', 'No record found for this employee ID.', 'warning');
+      return;
+    }
+
+    // Update the selected employee in app state
+    AppState.selectedEmployee = data;
+    
+    // Call existing render functions
+    renderEmployeeProfile(data);
+    renderDisciplineHistory(data);
+
+    // Scroll to top of 360 view
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+  } catch (err) {
+    console.error('Unexpected error loading employee 360:', err);
+    showToast('Error loading employee', 'An unexpected error occurred.', 'error');
+  }
+}
+
+
 
 function initEventHandlers() {
   // Toast close
@@ -4255,6 +4522,11 @@ function initEventHandlers() {
 async function bootstrap() {
   initTabs();
   initEventHandlers();
+   attachEventListeners();
+  
+  // Initialize autocomplete for both search inputs
+  setupAutocomplete('employees-search-input', 'employees-search-dropdown');
+  setupAutocomplete('discipline-employee-search', 'discipline-search-dropdown');
 
   // Load employees and hydrate dashboard / reports / 360 views
   await fetchEmployees();
@@ -4269,5 +4541,3 @@ document.addEventListener("DOMContentLoaded", bootstrap);
   </script>
 </body>
 </html>
-
-
