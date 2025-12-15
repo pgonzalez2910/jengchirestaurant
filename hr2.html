@@ -4422,34 +4422,39 @@ function updateDashboardKPIs(actions = []) {
     const fullName = `${emp.first_name || ''} ${emp.last_name || ''}`.trim().toLowerCase();
     const isOwner = owners.includes(fullName);
     const isActive = emp.employment_status?.toLowerCase() === 'active';
-    return !isOwner && isActive; // ✅ Only active, non-owner employees
+    return !isOwner && isActive;
   });
 
-  // ✅ STEP 2: Active / Inactive counts (from active non-owners only)
+  // ✅ STEP 2: Active / Inactive counts - FIXED
   const activeCount = activeNonOwners.length;
-  const inactiveCount = 0; // We're only showing active now
-  const terminatedCount = AppState.employees.filter(e => {
-    const fullName = `${e.first_name || ''} ${e.last_name || ''}`.trim().toLowerCase();
-    return !owners.includes(fullName) && e.employment_status?.toLowerCase() === 'terminated';
+  
+  // Calculate REAL inactive count (non-owners who are not active)
+  const inactiveCount = AppState.employees.filter(emp => {
+    const fullName = `${emp.first_name || ''} ${emp.last_name || ''}`.trim().toLowerCase();
+    const isOwner = owners.includes(fullName);
+    const isActive = emp.employment_status?.toLowerCase() === 'active';
+    return !isOwner && !isActive; // ← NOT active = inactive
   }).length;
-
+  
   safeText('kpi-active-employees', activeCount);
-  safeText('kpi-inactive-employees', inactiveCount);
-  safeText('kpi-terminated-employees', terminatedCount);
+  safeText('kpi-inactive-employees', inactiveCount); // ✅ NOW SHOWS REAL COUNT
 
-  // ✅ STEP 3: Position Counts (active non-owners only)
+  // ✅ STEP 3: Position Counts - WITH DEBUGGING
   const positionCounts = {
     'foh-manager': 0, 'server': 0, 'bartender': 0, 'host': 0, 'cashier': 0,
     'line-cook': 0, 'wok-chef': 0, 'dumpling-maker': 0, 'prep-cook': 0,
-    'pastry-chef': 0, 'dishwasher': 0,
-    'production-manager': 0,
-    'logistic-coordinator': 0,
-    'busser': 0
+    'pastry-chef': 0, 'dishwasher': 0, 'production-manager': 0,
+    'logistic-coordinator': 0, 'busser': 0
   };
+
+  const unmatchedEmployees = []; // ← TRACK UNMATCHED
 
   activeNonOwners.forEach(emp => {
     let title = (emp.job_title || '').trim();
-    if (!title) return;
+    if (!title) {
+      unmatchedEmployees.push({ name: `${emp.first_name} ${emp.last_name}`, reason: 'No job title', id: emp.employee_id });
+      return;
+    }
     title = title.toLowerCase();
 
     let mapped = positionMap[title];
@@ -4462,17 +4467,31 @@ function updateDashboardKPIs(actions = []) {
         }
       }
     }
+    
     if (mapped && positionCounts[mapped] !== undefined) {
       positionCounts[mapped]++;
+    } else {
+      unmatchedEmployees.push({ 
+        name: `${emp.first_name} ${emp.last_name}`, 
+        title: emp.job_title,
+        reason: 'Job title not in positionMap',
+        id: emp.employee_id 
+      });
     }
   });
 
-  // ✅ Update position KPIs
+  // ✅ LOG UNMATCHED EMPLOYEES
+  if (unmatchedEmployees.length > 0) {
+    console.warn('⚠️ EMPLOYEES NOT COUNTED IN POSITION DISTRIBUTION:');
+    console.table(unmatchedEmployees);
+  }
+
+  // Update position KPIs
   Object.keys(positionCounts).forEach(key => {
     safeText(`kpi-${key}`, positionCounts[key]);
   });
 
-  // ✅ STEP 4: FOH / BOH Totals (active non-owners only)
+  // ✅ STEP 4: FOH / BOH Totals
   const fohPositions = ['foh-manager', 'server', 'bartender', 'host', 'cashier'];
   const bohPositions = ['line-cook', 'wok-chef', 'dumpling-maker', 'prep-cook', 'pastry-chef', 'dishwasher', 'production-manager', 'logistic-coordinator', 'busser'];
   const fohTotal = fohPositions.reduce((sum, p) => sum + positionCounts[p], 0);
@@ -4480,13 +4499,13 @@ function updateDashboardKPIs(actions = []) {
   safeText('kpi-foh-total', fohTotal);
   safeText('kpi-boh-total', bohTotal);
 
-  // ✅ STEP 5: Discipline Counts (active non-owners only)
+  // ✅ STEP 5: Discipline Counts (same as before)
   const fohDisciplines = { verbal: 0, written: 0, final: 0, termination: 0 };
   const bohDisciplines = { verbal: 0, written: 0, final: 0, termination: 0 };
 
   actions.forEach(action => {
     const emp = activeNonOwners.find(e => e.id == action.employee_id);
-    if (!emp) return; // Skip if not in active non-owners
+    if (!emp) return;
 
     const title = (emp.job_title || '').toLowerCase().trim();
     let mapped = positionMap[title] ||
@@ -4514,7 +4533,7 @@ function updateDashboardKPIs(actions = []) {
   safeText('kpi-boh-final', bohDisciplines.final);
   safeText('kpi-boh-termination', bohDisciplines.termination);
 
-  // ✅ STEP 6: Compensation Summary (active non-owners only)
+  // ✅ STEP 6: Compensation Summary (same as before)
   const salaryEmployees = activeNonOwners.filter(e => e.compensation_type === 'salary');
   const hourlyEmployees = activeNonOwners.filter(e => e.compensation_type === 'hourly');
   safeText('kpi-salary-count', salaryEmployees.length);
@@ -4530,7 +4549,7 @@ function updateDashboardKPIs(actions = []) {
   safeText('kpi-average-hourly-rate', `$${avgHourly}`);
   safeText('kpi-average-annual-salary', `$${avgSalary}`);
 
-  // ✅ STEP 7: High-Risk (active non-owners only)
+  // ✅ STEP 7: High-Risk
   const highRiskCount = activeNonOwners.filter(e => {
     const score = computeRiskScore(e);
     return getRiskLevel(score) === 'HIGH';
@@ -4538,20 +4557,32 @@ function updateDashboardKPIs(actions = []) {
   safeText('kpi-high-risk-employees', highRiskCount);
 
   // ✅ STEP 8: Termination Rate
-  const totalCount = activeCount + terminatedCount;
+  const terminatedCount = AppState.employees.filter(e => {
+    const fullName = `${e.first_name || ''} ${e.last_name || ''}`.trim().toLowerCase();
+    return !owners.includes(fullName) && e.employment_status?.toLowerCase() === 'terminated';
+  }).length;
+  
+  const totalCount = activeCount + terminatedCount + inactiveCount;
   const terminationRate = totalCount > 0
     ? ((terminatedCount / totalCount) * 100).toFixed(1)
     : '0.0';
   safeText('kpi-termination-rate', `${terminationRate}%`);
 
-  console.log('✅ Dashboard KPIs updated (active non-owners only):', {
+  console.log('✅ Dashboard KPIs updated:', {
     active: activeCount,
     inactive: inactiveCount,
+    terminated: terminatedCount,
     foh: fohTotal,
     boh: bohTotal,
-    total: activeCount
+    total: activeCount,
+    unmatched: unmatchedEmployees.length
   });
 }
+
+
+
+
+
 
 
 
