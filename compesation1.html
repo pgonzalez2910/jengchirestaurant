@@ -4362,9 +4362,152 @@ function drawMultilineText(page, text, options) {
 
 
 
+// ═══════════════════════════════════════════════════════════════
+// PDF VIEWER FUNCTIONS
+// ═══════════════════════════════════════════════════════════════
+
+let currentPdfUrl = null;
+
+async function viewAdvanceDetails(advanceId) {
+  try {
+    // Get the advance record with PDF URL
+    const { data: advance, error } = await supabaseClient
+      .from('payroll_advances')
+      .select('*')
+      .eq('id', advanceId)
+      .single();
+
+    if (error) throw error;
+
+    // Check if PDF exists
+    if (advance.pdf_url) {
+      // PDF exists - show viewer
+      openPdfViewer(advance.pdf_url, advance.employee_name);
+    } else {
+      // PDF doesn't exist - generate it first
+      if (confirm('PDF not found. Generate it now?')) {
+        await generateApprovedAdvancePDF(advanceId);
+        // Reload to get the new PDF URL
+        const { data: updatedAdvance } = await supabaseClient
+          .from('payroll_advances')
+          .select('pdf_url, employee_name')
+          .eq('id', advanceId)
+          .single();
+        
+        if (updatedAdvance.pdf_url) {
+          openPdfViewer(updatedAdvance.pdf_url, updatedAdvance.employee_name);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error viewing advance:', error);
+    alert('Failed to load PDF: ' + error.message);
+  }
+}
+
+function openPdfViewer(pdfUrl, employeeName) {
+  currentPdfUrl = pdfUrl;
+  
+  // Set the iframe source
+  document.getElementById('pdfViewerFrame').src = pdfUrl;
+  
+  // Show the modal
+  document.getElementById('pdfViewerModal').classList.add('show');
+  
+  console.log('📄 Opening PDF viewer for:', employeeName);
+  console.log('🔗 PDF URL:', pdfUrl);
+}
+
+function closePdfViewer() {
+  document.getElementById('pdfViewerModal').classList.remove('show');
+  document.getElementById('pdfViewerFrame').src = '';
+  currentPdfUrl = null;
+}
+
+function downloadCurrentPdf() {
+  if (currentPdfUrl) {
+    window.open(currentPdfUrl, '_blank');
+  }
+}
+
+// ✅ UPDATED: Generate PDF for denied advances too
+async function regeneratePDF(advanceId) {
+  if (!confirm('Regenerate PDF for this advance?')) return;
+  
+  try {
+    const response = await fetch(
+      'https://kpldzwlftkvjjntgsqxx.supabase.co/functions/v1/generate-payroll-advance-pdf',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({ advanceId: advanceId })
+      }
+    );
+
+    const result = await response.json();
+
+    if (result.success) {
+      alert('✅ PDF regenerated successfully!');
+      
+      // Get employee name
+      const { data: advance } = await supabaseClient
+        .from('payroll_advances')
+        .select('employee_name')
+        .eq('id', advanceId)
+        .single();
+      
+      // Open viewer
+      openPdfViewer(result.pdfUrl, advance.employee_name);
+    } else {
+      throw new Error(result.error);
+    }
+
+  } catch (error) {
+    console.error('❌ PDF regeneration failed:', error);
+    alert('Failed to regenerate PDF: ' + error.message);
+  }
+}
+
+
+
 
 
   </script>
+
+  
+<!-- PDF VIEWER MODAL -->
+<div class="modal" id="pdfViewerModal">
+  <div class="modal-content" style="max-width: 95%; max-height: 95vh; padding: 20px;">
+    <div class="review-modal-header">
+      <h2><i class="fas fa-file-pdf"></i> Payroll Advance PDF</h2>
+      <button class="close-modal" onclick="closePdfViewer()">
+        <i class="fas fa-times"></i> Close
+      </button>
+    </div>
+    
+    <div style="width: 100%; height: 80vh; margin-top: 20px;">
+      <iframe 
+        id="pdfViewerFrame" 
+        style="width: 100%; height: 100%; border: 1px solid #e0e6ed; border-radius: 8px;"
+        src="">
+      </iframe>
+    </div>
+    
+    <div style="margin-top: 20px; text-align: center;">
+      <button class="btn btn-primary" onclick="downloadCurrentPdf()">
+        <i class="fas fa-download"></i> Download PDF
+      </button>
+      <button class="btn btn-secondary" onclick="closePdfViewer()">
+        <i class="fas fa-times"></i> Close
+      </button>
+    </div>
+  </div>
+</div>
+
+
+
 </body>
 </html>
-
