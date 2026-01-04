@@ -824,44 +824,136 @@ currentSchedule = normalizeScheduleData(data.schedule_data || {});
                 }
             }
 
+            // ========== IMPROVED PDF GENERATION WITH CHINESE SUPPORT ==========
             function generatePDF() {
                 const { jsPDF } = window.jspdf;
-                const doc = new jsPDF('landscape');
-                const weekStart = new Date(document.getElementById('weekStart').value);
+                
+                const weekStartValue = document.getElementById('weekStart').value;
+                if (!weekStartValue) {
+                    showToast('Please select a week first', 'error');
+                    return;
+                }
+                
+                const weekStart = new Date(weekStartValue + 'T00:00:00');
                 const weekEnd = new Date(weekStart);
                 weekEnd.setDate(weekStart.getDate() + 6);
 
-                doc.setFontSize(20);
-                doc.text('WOK Restaurant Schedule', 148, 20, { align: 'center' });
-                doc.setFontSize(12);
-                doc.text(`Week: ${weekStart.toLocaleDateString()} - ${weekEnd.toLocaleDateString()}`, 148, 28, { align: 'center' });
+                const doc = new jsPDF('landscape');
 
-                const headers = ['Employee', ...Array.from({length: 7}, (_, i) => {
+                // Corporate-style title with bilingual header
+                doc.setFontSize(22);
+                doc.setTextColor(44, 62, 80);
+                doc.text('WOK Restaurant Schedule', 148, 15, { align: 'center' });
+                
+                doc.setFontSize(16);
+                doc.text('餐厅排班表', 148, 23, { align: 'center' });
+                
+                doc.setFontSize(11);
+                doc.setTextColor(127, 140, 141);
+                doc.text(`Week: ${weekStart.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })} - ${weekEnd.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}`, 148, 30, { align: 'center' });
+
+                // Build headers with dates, Chinese and English
+                const headers = ['Employee\n员工', ...Array.from({length: 7}, (_, i) => {
                     const date = new Date(weekStart);
                     date.setDate(weekStart.getDate() + i);
-                    return `${date.getMonth() + 1}/${date.getDate()}/${date.getFullYear()}\n${daysOfWeek[i].chinese}\n${daysOfWeek[i].english}`;
+                    const monthDay = `${date.getMonth() + 1}/${date.getDate()}`;
+                    return `${monthDay}\n${daysOfWeek[i].chinese}\n${daysOfWeek[i].english}`;
                 })];
 
-                const rows = employees.map(emp => [
-                    emp,
-                    ...Array.from({length: 7}, (_, day) => {
-                        const shifts = currentSchedule[emp]?.[day] || [''];
-                        return shifts.filter(s => s).join('\n\n') || '';
-                    })
-                ]);
+                // Build rows from SLOT-BASED schedule structure
+                const rows = Object.values(currentSchedule).map(slot => {
+                    const empName = slot.employee || 'Unknown';
+                    
+                    return [
+                        empName,
+                        ...Array.from({length: 7}, (_, day) => {
+                            // Get shifts for this day
+                            const shifts = slot.shifts?.[day] || [''];
+                            const validShifts = shifts.filter(s => s && s.trim());
+                            
+                            // Get role badges (Lunch / Noodles)
+                            const roles = slot.roles?.[day];
+                            let roleText = '';
+                            if (roles) {
+                                if (roles.lunch) roleText += '🍱 Lunch\n';
+                                if (roles.noodle) roleText += '🍜 Noodles\n';
+                            }
+                            
+                            // Combine roles and shifts
+                            let content = roleText;
+                            if (validShifts.length > 0) {
+                                content += validShifts.join('\n\n');
+                            }
+                            
+                            return content || '';
+                        })
+                    ];
+                });
 
+                // Professional corporate table styling
                 doc.autoTable({
                     head: [headers],
                     body: rows,
                     startY: 35,
                     theme: 'grid',
-                    styles: { fontSize: 8, cellPadding: 3, halign: 'center', valign: 'top' },
-                    headStyles: { fillColor: [52, 152, 219], textColor: 255, fontSize: 9, fontStyle: 'bold' },
-                    columnStyles: { 0: { fontStyle: 'bold', halign: 'left', cellWidth: 30 } }
+                    styles: { 
+                        fontSize: 8, 
+                        cellPadding: 4, 
+                        halign: 'center', 
+                        valign: 'top',
+                        lineColor: [208, 215, 222],
+                        lineWidth: 0.5,
+                        textColor: [44, 62, 80]
+                    },
+                    headStyles: { 
+                        fillColor: [52, 152, 219], 
+                        textColor: 255, 
+                        fontSize: 9, 
+                        fontStyle: 'bold',
+                        halign: 'center',
+                        valign: 'middle',
+                        cellPadding: 6
+                    },
+                    columnStyles: { 
+                        0: { 
+                            fontStyle: 'bold', 
+                            halign: 'center', 
+                            cellWidth: 30,
+                            fillColor: [246, 248, 250],
+                            textColor: [44, 62, 80]
+                        } 
+                    },
+                    alternateRowStyles: {
+                        fillColor: [249, 250, 251]
+                    },
+                    margin: { left: 10, right: 10 }
                 });
 
-                doc.save(`WOK_Schedule_${weekStart.toLocaleDateString().replace(/\//g, '-')}.pdf`);
-                showToast('PDF generated', 'success');
+                // Professional footer with generation info
+                const pageCount = doc.internal.getNumberOfPages();
+                doc.setFontSize(8);
+                doc.setTextColor(149, 165, 166);
+                for (let i = 1; i <= pageCount; i++) {
+                    doc.setPage(i);
+                    const footerText = `Generated: ${new Date().toLocaleDateString('en-US', { 
+                        month: 'long', 
+                        day: 'numeric', 
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    })} | Page ${i} of ${pageCount}`;
+                    doc.text(
+                        footerText,
+                        148,
+                        doc.internal.pageSize.height - 10,
+                        { align: 'center' }
+                    );
+                }
+
+                // Save with formatted filename
+                const filename = `WOK_Schedule_${weekStart.toLocaleDateString('en-US').replace(/\//g, '-')}.pdf`;
+                doc.save(filename);
+                showToast('✅ PDF generated successfully with schedule data!', 'success');
             }
 
             async function init() {
