@@ -28,6 +28,15 @@
 
 
 
+
+.btn-tiny {
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+  min-width: 32px;
+  height: 26px;
+}
+
+
         .badge {
             display:inline-block;
             padding:4px 8px;
@@ -182,6 +191,40 @@
                 <p><strong>Features:</strong> Smart lunch/noodle assignment, OFF day detection, corporate layout</p>
             </div>
 
+<!-- DUPLICATE SCHEDULE -->
+<div class="control-group">
+  <label>Duplicate Schedule:</label>
+  <select id="duplicate-schedule-select" class="btn-secondary" style="width: auto;">
+    <option value="">— Select week to duplicate —</option>
+    <!-- Options will be populated by JS -->
+  </select>
+  <button class="btn-primary" onclick="ScheduleApp.duplicateSchedule()">🔄 Duplicate</button>
+</div>
+
+<!-- WOK CHEF HOURS REPORT -->
+<div class="control-group" style="flex-direction: row; gap: 8px; align-items: end;">
+  <div style="flex: 1;">
+    <label>Wok Chef Hours (Pay Period):</label>
+    <input type="date" id="report-start-date" style="width: 130px;" />
+    <span>→</span>
+    <input type="date" id="report-end-date" style="width: 130px;" />
+  </div>
+  <button class="btn-success" onclick="ScheduleApp.generateWokChefReport()">📊 Report</button>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+            
+
             <div id="scheduleContainer"></div>
 
             <div class="summary-section">
@@ -248,6 +291,8 @@
                 toast.textContent = message;
                 document.body.appendChild(toast);
                 setTimeout(() => toast.remove(), 6000);
+                // Refresh past schedules list
+setTimeout(() => ScheduleApp.loadPastSchedulesForDuplication(), 500);
             }
 
             function switchTab(tabName) {
@@ -740,7 +785,9 @@
                 return normalized;
             }
 
-            async function loadScheduleById(id) {
+
+
+async function loadScheduleById(id) {
                 if (!dbConnected) return showToast('No database connection', 'error');
 
                 try {
@@ -769,6 +816,234 @@
                     showToast('Failed to load schedule', 'error');
                 }
             }
+
+            // =================== DUPLICATE SCHEDULE ===================
+            async function loadPastSchedulesForDuplication() {
+                if (!dbConnected) return;
+                try {
+                    const { data, error } = await supabaseClient
+                        .from('schedules')
+                        .select('id, week_start_date')
+                        .order('week_start_date', { ascending: false })
+                        .limit(12);
+                    
+                    if (error) throw error;
+
+                    const select = document.getElementById('duplicate-schedule-select');
+                    if (!select) return;
+
+                    select.innerHTML = '<option value="">— Select week to duplicate —</option>';
+                    data.forEach(s => {
+                        const date = new Date(s.week_start_date);
+                        const label = date.toLocaleDateString('en-US', {
+                            weekday: 'short',
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric'
+                        });
+                        const opt = document.createElement('option');
+                        opt.value = s.id;
+                        opt.textContent = `${label}`;
+                        select.appendChild(opt);
+                    });
+                } catch (err) {
+                    console.error('Failed to load past schedules', err);
+                    showToast('❌ Failed to load past schedules', 'error');
+                }
+            }
+
+
+        async function duplicateSchedule() {
+    const select = document.getElementById('duplicate-schedule-select');
+    const id = select.value;
+    if (!id) return showToast('⚠️ Please select a schedule', 'error');
+    
+    try {
+        // First, get the original schedule's date
+        const { data: originalSchedule, error } = await supabaseClient
+            .from('schedules')
+            .select('week_start_date')
+            .eq('id', id)
+            .single();
+        
+        if (error) throw error;
+        
+        // Calculate next Sunday (7 days later)
+        const originalDate = new Date(originalSchedule.week_start_date);
+        const nextSunday = new Date(originalDate);
+        nextSunday.setDate(originalDate.getDate() + 7);
+        const nextSundayStr = nextSunday.toISOString().split('T')[0];
+        
+        // Load the selected schedule
+        await loadScheduleById(id);
+        
+        // Update the week start date to next Sunday
+        document.getElementById('weekStart').value = nextSundayStr;
+        
+        // Clear ID so "Save" creates NEW schedule (not update)
+        currentScheduleId = null;
+        
+        // Regenerate schedule with new date
+        generateSchedule(true);
+        
+        // Update button to show "Save" not "Update"
+        updateSaveButton(false);
+        
+        showToast(`✅ Schedule duplicated to ${nextSunday.toLocaleDateString()} — You can change the week date above before saving!`, 'success');
+    } catch (err) {
+        console.error('Duplication failed', err);
+        showToast('❌ Duplication failed', 'error');
+    }
+}
+
+
+// =================== MANUAL LUNCH/NOODLE TOGGLE ===================
+            function renderCellControls(slotKey, day) {
+                const slot = currentSchedule[slotKey];
+                const roles = slot.roles?.[day] || {};
+                const hasLunch = roles.lunch;
+                const hasNoodle = roles.noodle || roles.noodles;
+
+                return `
+                    <div style="display:flex; gap:3px; justify-content:center; margin-top:4px; font-size:11px;">
+                      <button 
+                        class="btn-tiny ${hasLunch ? 'btn-primary' : 'btn-secondary'}" 
+                        onclick="ScheduleApp.toggleRole('${slotKey}', ${day}, 'lunch')"
+                        title="Toggle LUNCH"
+                      >🍱</button>
+                      <button 
+                        class="btn-tiny ${hasNoodle ? 'btn-primary' : 'btn-secondary'}" 
+                        onclick="ScheduleApp.toggleRole('${slotKey}', ${day}, 'noodle')"
+                        title="Toggle NOODLES"
+                      >🍜</button>
+                    </div>`;
+            }
+
+            function toggleRole(slotKey, day, roleType) {
+                if (!currentSchedule[slotKey].roles) currentSchedule[slotKey].roles = {};
+                if (!currentSchedule[slotKey].roles[day]) currentSchedule[slotKey].roles[day] = {};
+
+                const roles = currentSchedule[slotKey].roles[day];
+                const isActive = roles[roleType];
+
+                // Toggle assignment (use employee name as value, like auto-assign does)
+                roles[roleType] = isActive ? null : currentSchedule[slotKey].employee;
+
+                // Re-render controls for this cell only
+                const cellId = `controls-${slotKey}-${day}`;
+                const cell = document.getElementById(cellId);
+                if (cell) cell.innerHTML = renderCellControls(slotKey, day);
+
+                calculateStats();
+                showToast(`✅ ${roleType.toUpperCase()} ${isActive ? 'removed' : 'assigned'}`, 'info');
+            }
+
+          
+
+
+            // =================== WOK CHEF HOURS REPORT ===================
+            function generateWokChefReport() {
+                const startInput = document.getElementById('report-start-date');
+                const endInput = document.getElementById('report-end-date');
+                
+                const startStr = startInput.value;
+                const endStr = endInput.value;
+                
+                if (!startStr || !endStr) {
+                    return showToast('⚠️ Please select both dates', 'error');
+                }
+
+                const startDate = new Date(startStr);
+                const endDate = new Date(endStr);
+                
+                if (startDate > endDate) {
+                    return showToast('⚠️ Start date must be ≤ end date', 'error');
+                }
+
+                // Find all WOK CHEFS
+                const wokChefs = Object.values(currentSchedule).filter(slot =>
+                    slot.employee &&
+                    (slot.employee.toLowerCase().includes('wok') ||
+                     slot.employee.toLowerCase().includes('chef') ||
+                     (slot.roles && Object.values(slot.roles).some(d => d?.lunch || d?.noodle)))
+                );
+
+                let totalReport = [];
+                let grandTotalHours = 0;
+
+                const parseDuration = (shift) => {
+                    try {
+                        const match = shift.trim().match(/^(\d{1,2}):(\d{2})\s*[-–]\s*(\d{1,2}):(\d{2})$/);
+                        if (!match) return 0;
+                        const [_, sh, sm, eh, em] = match.map(Number);
+                        let start = sh * 60 + sm;
+                        let end = eh * 60 + em;
+                        if (end < start) end += 24 * 60;
+                        return (end - start) / 60;
+                    } catch { return 0; }
+                };
+
+                wokChefs.forEach(slot => {
+                    let hours = 0;
+                    for (let day = 0; day < 7; day++) {
+                        const shifts = slot.shifts?.[day] || [];
+                        shifts.forEach(shift => {
+                            hours += parseDuration(shift);
+                        });
+                    }
+                    totalReport.push({ name: slot.employee, hours });
+                    grandTotalHours += hours;
+                });
+
+                const reportHTML = `
+                    <div id="wok-chef-report" style="background:#fff; padding:16px; border:2px solid #003366; margin:20px 0; border-radius:6px;">
+                      <h3 style="color:#003366; margin:0 0 12px; text-align:center; font-size:18px;">
+                        🍜 WOK CHEF HOURS REPORT<br>
+                        <small>${new Date(startStr).toLocaleDateString()} – ${new Date(endStr).toLocaleDateString()}</small>
+                      </h3>
+                      <table style="width:100%; border-collapse:collapse; font-family:'Inter',sans-serif; font-size:13px;">
+                        <thead>
+                          <tr style="background:#f0f7ff;">
+                            <th style="border:1px solid #6699cc; padding:8px; text-align:left;">Employee</th>
+                            <th style="border:1px solid #6699cc; padding:8px; text-align:right;">Hours</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${totalReport.map(r => `
+                            <tr>
+                              <td style="border:1px solid #ddd; padding:8px;">${r.name}</td>
+                              <td style="border:1px solid #ddd; padding:8px; text-align:right; font-weight:bold;">${r.hours.toFixed(1)}</td>
+                            </tr>
+                          `).join('')}
+                          <tr style="background:#f9f9f9; font-weight:bold;">
+                            <td style="border:1px solid #ddd; padding:8px;">TOTAL</td>
+                            <td style="border:1px solid #ddd; padding:8px; text-align:right;">${grandTotalHours.toFixed(1)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                      <div style="margin-top:12px; text-align:center; font-size:12px; color:#555;">
+                        ⚠️ Report based on current unsaved schedule.
+                      </div>
+                      <div style="text-align:center; margin-top:10px;">
+                        <button class="btn-secondary" onclick="document.getElementById('wok-chef-report').remove()" style="padding:6px 12px;">✕ Close</button>
+                      </div>
+                    </div>
+                `;
+
+                const scheduleContainer = document.getElementById('scheduleContainer');
+                const existingReport = document.getElementById('wok-chef-report');
+                if (existingReport) existingReport.remove();
+
+                const reportDiv = document.createElement('div');
+                reportDiv.innerHTML = reportHTML;
+                scheduleContainer.parentNode.insertBefore(reportDiv, scheduleContainer);
+
+                showToast('✅ Wok Chef Report Generated', 'success');
+            }
+
+
+
+
 
             async function loadSavedSchedules() {
                 if (!dbConnected) {
@@ -860,26 +1135,6 @@ async function generatePDFWithJSPDF() {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             function reassignEmployee(slotKey, newName) {
                 if (!currentSchedule[slotKey]) return;
                 currentSchedule[slotKey].employee = newName;
@@ -887,49 +1142,66 @@ async function generatePDFWithJSPDF() {
                 showToast(`Assigned ${newName}`, 'info');
             }
 
-            async function init() {
-                const today = new Date();
-                const daysBack = today.getDay();
-                const sunday = new Date(today);
-                sunday.setDate(today.getDate() - daysBack);
-                document.getElementById('weekStart').valueAsDate = sunday;
+          async function init() {
+    const today = new Date();
+    const daysBack = today.getDay();
+    const sunday = new Date(today);
+    sunday.setDate(today.getDate() - daysBack);
+    document.getElementById('weekStart').valueAsDate = sunday;
 
-                await testConnection();
-                await loadEmployees();
-                await onWeekChange();
-            }
+    await testConnection();
+    await loadEmployees();
+    await onWeekChange();
+    
+    // Set default payroll period (Dec 28, 2025 → Jan 10, 2026)
+    const reportStart = document.getElementById('report-start-date');
+    const reportEnd = document.getElementById('report-end-date');
+    if (reportStart && reportEnd) {
+        reportStart.value = '2025-12-28';
+        reportEnd.value = '2026-01-10';
+    }
 
-            return {
-                init,
-                switchTab,
-                addEmployee,
-                removeEmployee,
-                onWeekChange,
-                generateSchedule,
-                addShift,
-                updateShift,
-                autoResize,
-                saveSchedule,
-                updateSchedule,
-                loadSavedSchedules,
-                loadScheduleById,
-                deleteSchedule,
-                clearAllRoles,
-                reassignEmployee,
-                assignLunch,
-                assignNoodles,
-                autoAssignWeek,
-                generatePDFWithJSPDF
+    // Load past schedules for duplication dropdown
+    await loadPastSchedulesForDuplication();
+}
 
-            };
-        })();
+return {
+    init,
+    switchTab,
+    addEmployee,
+    removeEmployee,
+    onWeekChange,
+    generateSchedule,
+    addShift,
+    updateShift,
+    autoResize,
+    saveSchedule,
+    updateSchedule,
+    loadSavedSchedules,
+    loadScheduleById,
+    deleteSchedule,
+    clearAllRoles,
+    reassignEmployee,
+    assignLunch,
+    assignNoodles,
+    autoAssignWeek,
+    generatePDFWithJSPDF,
+    loadPastSchedulesForDuplication,
+    duplicateSchedule,
+    toggleRole,
+    generateWokChefReport
+};
+})();
 
-        document.addEventListener('DOMContentLoaded', () => {
-            document.querySelectorAll('.tab').forEach(button => {
-                button.addEventListener('click', () => ScheduleApp.switchTab(button.dataset.tab));
-            });
-            ScheduleApp.init();
-        });
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.tab').forEach(button => {
+        button.addEventListener('click', () => ScheduleApp.switchTab(button.dataset.tab));
+    });
+    ScheduleApp.init();
+});
+
+
+
     </script>
 </body>
 </html>
