@@ -121,7 +121,8 @@
 <!-- STEP 2: Load DataLabels Plugin ONCE (after Chart.js) -->
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 
-
+<!-- SheetJS Library for Excel file reading -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 
 
@@ -1226,8 +1227,28 @@ Terminated
         </button>
       </div>
 
+
+
+        <!-- Import Button -->
+        <input type="file" id="employee-file-input" accept=".xlsx,.xls" class="hidden">
+        <button onclick="document.getElementById('employee-file-input').click()"
+                class="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-green-500 to-green-600 text-white px-5 py-3 text-sm font-black shadow-lg hover:shadow-xl hover:scale-105 transition-all duration-200">
+          <i class="fa-solid fa-file-import"></i>
+          <span>Import New Employees</span>
+        </button>
+
     </div>
   </div>
+
+<!-- Import Results Log -->
+  <div id="import-log" class="hidden bg-white rounded-2xl shadow-xl border border-slate-200 p-6">
+    <div class="flex items-center gap-2 mb-4">
+      <i class="fa-solid fa-list-check text-blue-600 text-xl"></i>
+      <h3 class="text-lg font-bold text-slate-900">Import Results</h3>
+    </div>
+    <div id="import-log-content" class="text-sm space-y-1 max-h-64 overflow-y-auto"></div>
+  </div>
+
 
   <!-- Grid Container -->
   <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden">
@@ -18348,7 +18369,164 @@ document.addEventListener('visibilitychange', () => {
     }
 });
 
+// ============================================================
+// EMPLOYEE IMPORT FUNCTIONALITY
+// ============================================================
 
+// File input handler
+document.getElementById('employee-file-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  showToast('📖 Reading Excel file...', 'info');
+  
+  try {
+    const employeeData = await readEmployeeExcelFile(file);
+    await importNewEmployees(employeeData);
+  } catch (error) {
+    console.error('Import error:', error);
+    showToast('❌ Import failed: ' + error.message, 'error');
+  }
+
+  e.target.value = ''; // Reset file input
+});
+
+// Read Excel file
+async function readEmployeeExcelFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+        
+        console.log('📊 Excel file read:', jsonData.length, 'rows');
+        resolve(jsonData);
+      } catch (error) {
+        reject(new Error('Failed to read Excel file'));
+      }
+    };
+    
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+// Import new employees only (skip duplicates)
+async function importNewEmployees(importedData) {
+  const logContainer = document.getElementById('import-log-content');
+  const logSection = document.getElementById('import-log');
+  logContainer.innerHTML = '';
+  logSection.classList.remove('hidden');
+
+  let newCount = 0;
+  let skippedCount = 0;
+
+  // Get all current employees from database
+  const { data: currentEmployees, error: fetchError } = await window.supabaseClient
+    .from('employees2025')
+    .select('first_name, last_name');
+
+  if (fetchError) {
+    showToast('❌ Failed to load current employees', 'error');
+    return;
+  }
+
+  for (const row of importedData) {
+    const lastName = row.Last_name?.trim();
+    const firstName = row.First_name?.trim();
+    
+    if (!lastName || !firstName) {
+      addImportLog('⚠️ Skipped row with missing name', 'warning');
+      continue;
+    }
+
+    // Check if employee already exists
+    const exists = currentEmployees.some(emp => 
+      emp.first_name?.toLowerCase() === firstName.toLowerCase() && 
+      emp.last_name?.toLowerCase() === lastName.toLowerCase()
+    );
+
+    if (exists) {
+      skippedCount++;
+      addImportLog(`⚠️ Skipped: ${firstName} ${lastName} (already exists)`, 'warning');
+      continue;
+    }
+
+    // Format hire date from Excel
+    let hireDate = '';
+    if (row.original_hire_date) {
+      if (typeof row.original_hire_date === 'number') {
+        const date = XLSX.SSF.parse_date_code(row.original_hire_date);
+        hireDate = `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`;
+      } else if (row.original_hire_date instanceof Date) {
+        hireDate = row.original_hire_date.toISOString().split('T')[0];
+      }
+    }
+
+    // Create new employee object
+    const newEmployee = {
+      first_name: firstName,
+      last_name: lastName,
+      original_hire_date: hireDate,
+      department: row.Department || '',
+      status: 'Active'
+    };
+
+    try {
+      // Save to database
+      const { error } = await window.supabaseClient
+        .from('employees2025')
+        .insert([newEmployee]);
+
+      if (error) throw error;
+
+      newCount++;
+      addImportLog(`✅ Added: ${firstName} ${lastName}`, 'success');
+      
+    } catch (error) {
+      addImportLog(`❌ Failed: ${firstName} ${lastName}`, 'error');
+    }
+  }
+
+  // Show summary
+  logContainer.innerHTML += `
+    <div class="font-bold mt-4 pt-4 border-t border-slate-200 text-slate-900">
+      📊 Summary: <span class="text-green-600">${newCount} added</span>, 
+      <span class="text-yellow-600">${skippedCount} skipped</span>
+    </div>
+  `;
+
+  // Reload employee grid
+  if (newCount > 0) {
+    await loadEmployees();
+    renderEmployeeGrid();
+    showToast(`✅ ${newCount} new employees imported!`, 'success');
+  } else {
+    showToast('ℹ️ No new employees to import', 'info');
+  }
+
+  // Auto-hide log after 10 seconds
+  setTimeout(() => logSection.classList.add('hidden'), 10000);
+}
+
+// Add log entry
+function addImportLog(message, type) {
+  const logContainer = document.getElementById('import-log-content');
+  const entry = document.createElement('div');
+  entry.className = `py-1 ${
+    type === 'error' ? 'text-red-600 font-semibold' : 
+    type === 'warning' ? 'text-yellow-600' : 
+    'text-slate-700'
+  }`;
+  entry.textContent = message;
+  logContainer.appendChild(entry);
+}
+
+console.log('✅ Employee import functionality loaded');
 
 
 
