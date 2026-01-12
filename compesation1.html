@@ -3171,7 +3171,6 @@ function updateEligibilityStatus() {
 // ✅ FIXED VERSION OF approveFromModal() FUNCTION
 // Replace your existing approveFromModal() function with this one
 // ═══════════════════════════════════════════════════════════════
-
 async function approveFromModal() {
   if (!currentUser.isApprover) {
     alert('Unauthorized action.');
@@ -3179,32 +3178,28 @@ async function approveFromModal() {
   }
 
   try {
-    // ✅ FIX 1: DECLARE ALL VARIABLES AT THE TOP
-    const hrNotes = document.getElementById('reviewHRNotes').value || '';  // ✅ Moved to top
+    // Declare all variables at the top
+    const hrNotes = document.getElementById('reviewHRNotes').value || '';
     const approverName = document.getElementById('reviewApproverName').value;
     const approvedAmount =
       parseFloat(document.getElementById('reviewApprovedAmount').value) ||
       parseFloat(document.getElementById('reviewRequestedAmountCalc').textContent.replace(/[$,]/g, ''));
 
-    // Get the entered calculation values
     const hoursWorked = parseFloat(document.getElementById('reviewHoursWorkedInput').value) || 0;
     const tipsEarned = parseFloat(document.getElementById('reviewTipsEarnedInput').value) || 0;
     const hourlyRate = parseFloat(document.getElementById('reviewHourlyRateInput').value) || 0;
     const grossEarned = (hoursWorked * hourlyRate) + tipsEarned;
 
-    // ✅ GET EDITABLE PAY PERIOD DATES
     const periodStart = document.getElementById('reviewPeriodStartInput').value;
     const periodEnd = document.getElementById('reviewPeriodEndInput').value;
 
-    // ✅ GET OUTSTANDING BALANCE DATA
     const hasOutstandingBalance = document.querySelector('input[name="hasOutstandingBalance"]:checked').value === 'true';
     const outstandingBalanceNotes = document.getElementById('outstandingBalanceNotes').value.trim();
 
-    // ✅ GET DISCIPLINARY ACTION DATA
     const hasDisciplinaryAction = document.querySelector('input[name="hasDisciplinaryAction"]:checked').value === 'true';
     const disciplinaryActionNotes = document.getElementById('disciplinaryActionNotes').value.trim();
 
-    // ✅ VALIDATION
+    // Validation
     if (!approverName) {
       alert('Please enter approver name/title');
       return;
@@ -3220,7 +3215,6 @@ async function approveFromModal() {
       return;
     }
 
-    // ✅ VALIDATION: If YES selected, notes are REQUIRED
     if (hasOutstandingBalance && !outstandingBalanceNotes) {
       alert('⚠️ Outstanding Balance is marked "Yes" - Please provide details in the notes field.');
       document.getElementById('outstandingBalanceNotes').focus();
@@ -3233,29 +3227,19 @@ async function approveFromModal() {
       return;
     }
 
-    // ✅ GET HR SIGNATURE AS BASE64
     const hrSignature = reviewHRCanvas.toDataURL('image/png');
-    
-    // ✅ SIGNATURE VALIDATION
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('🖊️ HR SIGNATURE DATA');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('Canvas Width:', reviewHRCanvas.width);
-    console.log('Canvas Height:', reviewHRCanvas.height);
-    console.log('Has Signed Flag:', hasReviewHRSigned);
-    console.log('Signature Length:', hrSignature.length);
-    console.log('Signature Preview (first 100 chars):', hrSignature.substring(0, 100));
     
     const isBlankCanvas = hrSignature.length < 1000;
     if (isBlankCanvas) {
-      console.error('❌ SIGNATURE APPEARS TO BE BLANK!');
       alert('⚠️ Signature appears to be blank. Please sign again.');
       return;
     }
-    console.log('✅ Signature validation passed');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-    // ✅ UPDATE DATABASE WITH ALL FIELDS
+    // ✅ STEP 1: Update database with approval
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📝 UPDATING DATABASE WITH APPROVAL');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
     const { error } = await supabaseClient
       .from('payroll_advances')
       .update({
@@ -3280,21 +3264,52 @@ async function approveFromModal() {
 
     if (error) throw error;
 
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.log('✅ DATABASE UPDATE SUCCESSFUL');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('Advance ID:', currentAdvanceId);
-    console.log('HR Signature saved (length):', hrSignature.length);
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
-    // ✅ FIX 2: NOW hrNotes is properly defined when used here
+    // ✅ STEP 2: Log the action
     await supabaseClient.rpc('log_payroll_advance_action', {
       p_advance_id: currentAdvanceId,
       p_employee_id: selectedEmployeeId,
       p_action: 'approved',
       p_performed_by: 'HR',
-      p_notes: hrNotes  // ✅ Now properly defined
+      p_notes: hrNotes
     });
+
+    // ✅ STEP 3: AUTOMATICALLY GENERATE PDF
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📄 AUTO-GENERATING PDF AFTER APPROVAL');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+    try {
+      const pdfResponse = await fetch(
+        'https://kpldzwlftkvjjntgsqxx.supabase.co/functions/v1/generate-payroll-advance-pdf',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          },
+          body: JSON.stringify({ advanceId: currentAdvanceId })
+        }
+      );
+
+      const pdfResult = await pdfResponse.json();
+
+      if (pdfResult.success) {
+        console.log('✅ PDF GENERATED SUCCESSFULLY');
+        console.log('📧 Email sent to employee');
+        console.log('🔗 PDF URL:', pdfResult.pdfUrl);
+      } else {
+        console.warn('⚠️ PDF generation failed:', pdfResult.error);
+      }
+    } catch (pdfError) {
+      console.error('❌ PDF generation error:', pdfError);
+      // Don't fail the approval if PDF generation fails
+    }
+
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('🎉 APPROVAL PROCESS COMPLETE');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
     // Hide approve/deny buttons, show success actions
     const modalActions = document.querySelector('.modal-actions');
@@ -3305,6 +3320,9 @@ async function approveFromModal() {
       successActions.style.display = 'block';
       successActions.scrollIntoView({ behavior: 'smooth' });
     }
+
+    // ✅ Show success message
+    alert('✅ Advance approved successfully! PDF generated and emailed to employee.');
 
   } catch (err) {
     console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -3317,6 +3335,9 @@ async function approveFromModal() {
     alert('Approval failed: ' + err.message);
   }
 }
+
+
+
 
 
     function saveApprovalData() {
@@ -3592,12 +3613,11 @@ function renderApprovedAdvances(rows) {
       <td style="padding:10px;">${formatDate(approvedDate)}</td>
       <td style="padding:10px;">
         <div style="display:flex; gap:5px;">
-          <button class="btn btn-sm"
-            style="background:#17a2b8; color:white; padding:6px 12px;"
-            onclick="viewAdvanceDetails(${r.id})">
-            <i class="fas fa-eye"></i> View
-          </button>
-
+         <button class="btn btn-sm view-advance-btn"
+  style="background:#17a2b8; color:white; padding:6px 12px;"
+  data-advance-id="${r.id}">
+  <i class="fas fa-eye"></i> View
+</button>
           <button class="btn btn-primary btn-sm"
             onclick="generateApprovedAdvancePDF(${r.id})">
             <i class="fas fa-file-pdf"></i> PDF
@@ -3667,7 +3687,7 @@ function renderDeniedAdvances(rows) {
       <td style="padding:10px;">${formatDate(deniedDate)}</td>
       <td style="padding:10px;">
         <div style="display:flex; gap:5px;">
-          <button class="btn btn-sm" style="background: #17a2b8; color: white; padding: 6px 12px;" onclick="viewAdvanceDetails(${r.id})">
+          <button class="btn btn-sm" style="background: #17a2b8; color: white; padding: 6px 12px;" class="view-advance-btn" data-advance-id="${r.id}">
             <i class="fas fa-eye"></i> View
           </button>
           <button class="btn btn-sm" style="background: #6f42c1; color: white; padding: 6px 12px;" onclick="regeneratePDF(${r.id})">
@@ -3764,13 +3784,14 @@ const { data: urlData } = supabaseClient
 
     // STEP 4: Save PDF URL to database
    console.log('💾 Saving PDF URL to database...');
-const { error: updateError } = await supabaseClient
-  .from('payroll_advances')
+const { error: updateError } = await supabase
+  .from("payroll_advances")
   .update({
-    pdf_url: pdfUrl,
-    pdf_generated_at: new Date().toISOString()
+    pdf_url: pdfUrl,  // ← This MUST be saved
+    pdf_generated_at: new Date().toISOString(),
+    computed_pay_day: computedPayDay,
   })
-  .eq('id', advanceId);
+  .eq("id", advanceId);
 
 if (updateError) {
   console.error('❌ Database update error:', updateError);
@@ -4173,7 +4194,44 @@ function populateCorporatePdfFromAdvance(advance) {
 
 
 }
+async function viewAdvanceDetails(advanceId) {
+  try {
+    const { data: advance, error } = await supabaseClient
+      .from('payroll_advances')
+      .select('*')
+      .eq('id', advanceId)
+      .single();
 
+    if (error || !advance) {
+      alert('Failed to load advance details.');
+      return;
+    }
+
+    // Populate PDF template safely
+    if (typeof populateCorporatePdfFromAdvance === 'function') {
+      populateCorporatePdfFromAdvance(advance);
+    }
+
+    // Open PDF if it exists
+    if (advance.pdf_url) {
+      openPdfViewer(advance.pdf_url, advance.employee_name);
+      return;
+    }
+
+    // Fallback if PDF not generated yet
+    alert(
+      `Payroll Advance Details\n\n` +
+      `Employee: ${advance.employee_name}\n` +
+      `Status: ${advance.status.toUpperCase()}\n` +
+      `Requested: ${formatCurrency(advance.requested_amount)}\n` +
+      `Approved: ${formatCurrency(advance.approved_amount || advance.requested_amount)}`
+    );
+
+  } catch (err) {
+    console.error('❌ viewAdvanceDetails error:', err);
+    alert('Error opening advance details.');
+  }
+}
 
 
 
@@ -4182,13 +4240,15 @@ async function savePdfUrlAndNotify(pdfUrl, advanceId) {
   try {
     console.log('💾 Saving PDF URL to database...');
     
-    const { error } = await supabaseClient
-      .from('payroll_advances')
-      .update({
-        pdf_url: pdfUrl,
-        pdf_generated_at: new Date().toISOString()
-      })
-      .eq('id', advanceId);
+    const { error } = // ✅ Make sure this UPDATE happens AFTER PDF is uploaded
+await supabase
+  .from("payroll_advances")
+  .update({
+    pdf_url: pdfUrl,  // ← This MUST be saved
+    pdf_generated_at: new Date().toISOString(),
+    computed_pay_day: computedPayDay,
+  })
+  .eq("id", advanceId);
 
     if (error) {
       console.error('❌ Database update error:', error);
@@ -4325,55 +4385,31 @@ function drawMultilineText(page, text, options) {
 
 let currentPdfUrl = null;
 
-async function viewAdvanceDetails(advanceId) {
-  try {
-    // Get the advance record with PDF URL
-    const { data: advance, error } = await supabaseClient
-      .from('payroll_advances')
-      .select('*')
-      .eq('id', advanceId)
-      .single();
+function openPdfViewer(pdfUrl, employeeName = 'Payroll Advance') {
+  const modal = document.getElementById('pdfViewerModal');
+  const frame = document.getElementById('pdfViewerFrame');
+  const title = document.getElementById('pdfViewerTitle');
 
-    if (error) throw error;
-
-    // Check if PDF exists
-    if (advance.pdf_url) {
-      // PDF exists - show viewer
-      openPdfViewer(advance.pdf_url, advance.employee_name);
-    } else {
-      // PDF doesn't exist - generate it first
-      if (confirm('PDF not found. Generate it now?')) {
-        await generateApprovedAdvancePDF(advanceId);
-        // Reload to get the new PDF URL
-        const { data: updatedAdvance } = await supabaseClient
-          .from('payroll_advances')
-          .select('pdf_url, employee_name')
-          .eq('id', advanceId)
-          .single();
-        
-        if (updatedAdvance.pdf_url) {
-          openPdfViewer(updatedAdvance.pdf_url, updatedAdvance.employee_name);
-        }
-      }
-    }
-  } catch (error) {
-    console.error('Error viewing advance:', error);
-    alert('Failed to load PDF: ' + error.message);
+  if (!modal || !frame) {
+    console.error('❌ PDF viewer modal elements not found. Missing #pdfViewerModal or #pdfViewerFrame');
+    // Fallback: open in a new tab
+    window.open(pdfUrl, '_blank', 'noopener,noreferrer');
+    return;
   }
+
+  currentPdfUrl = pdfUrl;
+
+  if (title) title.textContent = `Payroll Advance PDF — ${employeeName || ''}`.trim();
+
+  // Force iframe refresh
+  frame.src = '';
+  setTimeout(() => {
+    frame.src = pdfUrl;
+  }, 50);
+
+  modal.classList.add('show');
 }
 
-function openPdfViewer(pdfUrl, employeeName) {
-  currentPdfUrl = pdfUrl;
-  
-  // Set the iframe source
-  document.getElementById('pdfViewerFrame').src = pdfUrl;
-  
-  // Show the modal
-  document.getElementById('pdfViewerModal').classList.add('show');
-  
-  console.log('📄 Opening PDF viewer for:', employeeName);
-  console.log('🔗 PDF URL:', pdfUrl);
-}
 
 function closePdfViewer() {
   document.getElementById('pdfViewerModal').classList.remove('show');
@@ -4429,45 +4465,55 @@ async function regeneratePDF(advanceId) {
 }
 
 
-
+// Event delegation for dynamically created buttons
+document.addEventListener('click', function(e) {
+  // Check if clicked element is a View button
+  if (e.target.closest('.view-advance-btn')) {
+    const btn = e.target.closest('.view-advance-btn');
+    const advanceId = parseInt(btn.getAttribute('data-advance-id'));
+    viewAdvanceDetails(advanceId);
+  }
+});
 
 
   </script>
 
-  
-<!-- PDF VIEWER MODAL -->
-<div class="modal" id="pdfViewerModal">
-  <div class="modal-content" style="max-width: 95%; max-height: 95vh; padding: 20px;">
-    <div class="review-modal-header">
-      <h2><i class="fas fa-file-pdf"></i> Payroll Advance PDF</h2>
-      <button class="close-modal" onclick="closePdfViewer()">
-        <i class="fas fa-times"></i> Close
-      </button>
+<!-- ================= PDF VIEWER MODAL ================= -->
+<div id="pdfViewerModal" class="modal-overlay">
+  <div class="modal-card" style="max-width: 1100px; width: 96vw;">
+    <div class="modal-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+      <div style="display:flex; flex-direction:column; gap:2px;">
+        <div id="pdfViewerTitle" style="font-weight:800; font-size:16px;">Payroll Advance PDF</div>
+        <div style="font-size:12px; color:#64748b;">Viewer</div>
+      </div>
+
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button type="button" onclick="downloadCurrentPdf()" class="btn-secondary">Download</button>
+        <button type="button" onclick="closePdfViewer()" class="btn-primary">Close</button>
+      </div>
     </div>
-    
-    <div style="width: 100%; height: 80vh; margin-top: 20px;">
-      <iframe 
-        id="pdfViewerFrame" 
-        style="width: 100%; height: 100%; border: 1px solid #e0e6ed; border-radius: 8px;"
-        src="">
-      </iframe>
-    </div>
-    
-    <div style="margin-top: 20px; text-align: center;">
-      <button class="btn btn-primary" onclick="downloadCurrentPdf()">
-        <i class="fas fa-download"></i> Download PDF
-      </button>
-      <button class="btn btn-secondary" onclick="closePdfViewer()">
-        <i class="fas fa-times"></i> Close
-      </button>
+
+    <div class="modal-body" style="padding: 0; height: 78vh;">
+      <iframe
+        id="pdfViewerFrame"
+        title="PDF Viewer"
+        style="width:100%; height:100%; border:0; background:#fff;"
+      ></iframe>
     </div>
   </div>
 </div>
+
+<style>
+  /* Minimal modal styles (safe even if you already have modal CSS) */
+  .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:9999; padding:24px; }
+  .modal-overlay.show { display:flex; align-items:center; justify-content:center; }
+  .modal-card { background:#fff; border-radius:14px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,.25); }
+  .modal-header { padding:14px 16px; border-bottom:1px solid #e5e7eb; }
+  .btn-primary { padding:8px 12px; border-radius:10px; border:1px solid #0f172a; background:#0f172a; color:#fff; font-weight:700; cursor:pointer; }
+  .btn-secondary { padding:8px 12px; border-radius:10px; border:1px solid #cbd5e1; background:#fff; color:#0f172a; font-weight:700; cursor:pointer; }
+</style>
 
 
 
 </body>
 </html>
-
-
-
