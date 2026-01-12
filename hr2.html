@@ -163,6 +163,25 @@
 }
 
 
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-slideUp {
+  animation: slideUp 0.3s ease-out;
+}
+
+
+
+
+
 /* Timeline animations */
 @keyframes slideInFromLeft {
   from {
@@ -14469,34 +14488,15 @@ function renderEmployeeRow(emp, tbody, isInactive = false) {
              value="${egSafe(emp.email)}">
     </td>
 
-    <!-- Compensation -->
+      <!-- Edit Employee Button -->
     <td class="px-3 py-3 whitespace-nowrap">
-      <div class="flex flex-col gap-2 w-36">
-        <select class="eg-edit w-full rounded-lg border-2 border-emerald-200 px-2.5 py-1.5 text-xs font-bold bg-emerald-50 hover:border-emerald-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all cursor-pointer"
-                data-id="${emp.id}"
-                data-field="compensation_type">
-          <option value="hourly" ${compType === 'hourly' ? 'selected' : ''}>💵 Hourly</option>
-          <option value="salary" ${compType === 'salary' ? 'selected' : ''}>💰 Salary</option>
-        </select>
-        ${compType === 'salary' ? `
-          <input type="number"
-                 step="0.01"
-                 class="eg-edit w-full rounded-lg border-2 border-slate-200 px-2.5 py-1.5 text-sm font-bold bg-white hover:border-brand-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-200 transition-all"
-                 data-id="${emp.id}"
-                 data-field="annual_salary"
-                 placeholder="Annual"
-                 value="${emp.annual_salary || ''}">
-        ` : `
-          <input type="number"
-                 step="0.01"
-                 class="eg-edit w-full rounded-lg border-2 border-slate-200 px-2.5 py-1.5 text-sm font-bold bg-white hover:border-brand-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-200 transition-all"
-                 data-id="${emp.id}"
-                 data-field="hourly_rate"
-                 placeholder="Hourly"
-                 value="${emp.hourly_rate || ''}">
-        `}
-      </div>
+      <button onclick="openEmployeeEditModal(${emp.id}); event.stopPropagation();"
+              class="w-full px-4 py-2.5 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white text-sm font-black rounded-lg shadow-lg hover:shadow-xl transition-all duration-200 flex items-center justify-center gap-2">
+        <i class="fa-solid fa-pen-to-square"></i>
+        <span>Edit</span>
+      </button>
     </td>
+
   `;
 
   tbody.appendChild(row);
@@ -14738,6 +14738,7 @@ function createPositionCard(slotNumber, positionData = {}) {
           <p class="text-xs text-gray-500 mt-1">During training period</p>
         </div>
         ` : ''}
+
 
         <!-- Meeting Pay -->
         <div>
@@ -18531,10 +18532,573 @@ console.log('✅ Employee import functionality loaded');
 
 
 
+let currentEditEmployeeId = null;
+let employeeAutoSaveTimeout = null;
 
+// Open Employee Edit Modal
+async function openEmployeeEditModal(employeeId) {
+  if (!employeeId) {
+    showToast('❌ Employee ID is required', 'error');
+    return;
+  }
 
+  currentEditEmployeeId = employeeId;
+
+  try {
+    // Fetch employee data
+    const { data: employee, error } = await window.supabaseClient
+      .from('employees2025')
+      .select('*')
+      .eq('id', employeeId)
+      .single();
+
+    if (error) throw error;
+    if (!employee) {
+      showToast('❌ Employee not found', 'error');
+      return;
+    }
+
+    // Populate modal
+    populateEmployeeEditModal(employee);
+
+    // Show modal
+    document.getElementById('employee-edit-modal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+
+    console.log('✅ Opened employee edit modal:', employee.first_name, employee.last_name);
+
+  } catch (error) {
+    console.error('❌ Failed to load employee:', error);
+    showToast('❌ Failed to load employee data', 'error');
+  }
+}
+
+// Populate Modal with Employee Data
+function populateEmployeeEditModal(emp) {
+  // Header
+  document.getElementById('emp-edit-modal-name').textContent = 
+    `${emp.first_name || ''} ${emp.last_name || ''}`;
+
+  // Personal Information
+  document.getElementById('emp-edit-last-name').value = emp.last_name || '';
+  document.getElementById('emp-edit-first-name').value = emp.first_name || '';
+  document.getElementById('emp-edit-username').value = emp.username || '';
+  document.getElementById('emp-edit-pin').value = emp.pin || '';
+  document.getElementById('emp-edit-phone').value = emp.primary_phone || emp.phone || '';
+  document.getElementById('emp-edit-email').value = emp.email || '';
+
+  // Address
+  document.getElementById('emp-edit-address').value = emp.address_line_1 || '';
+  document.getElementById('emp-edit-city').value = emp.city || '';
+  document.getElementById('emp-edit-state').value = emp.state || '';
+  document.getElementById('emp-edit-zip').value = emp.zip_code || '';
+
+  // Employment
+  document.getElementById('emp-edit-hire-date').value = emp.original_hire_date || emp.hire_date || '';
+  document.getElementById('emp-edit-status').value = emp.employment_status || emp.status || 'Active';
+  document.getElementById('emp-edit-job-title').value = emp.job_title || '';
+  document.getElementById('emp-edit-department').value = emp.department || '';
+  document.getElementById('emp-edit-employment-type').value = emp.employment_type || 'FT';
+
+  // Compensation
+  const compType = (emp.compensation_type || 'hourly').toLowerCase();
+  document.getElementById('emp-edit-comp-type').value = compType;
+  
+  const wageInput = document.getElementById('emp-edit-wage');
+  const wageLabel = document.getElementById('emp-edit-wage-label');
+  
+  if (compType === 'salary') {
+    wageLabel.textContent = 'Annual Salary';
+    wageInput.value = emp.annual_salary || '';
+    wageInput.placeholder = '0.00';
+  } else {
+    wageLabel.textContent = 'Hourly Rate';
+    wageInput.value = emp.hourly_rate || '';
+    wageInput.placeholder = '0.00';
+  }
+
+  // Benefits
+  document.getElementById('emp-edit-medical-plan').value = emp.medical_plan_code || emp.medical_plan || '';
+  document.getElementById('emp-edit-dental-plan').value = emp.dental_plan_code || emp.dental_plan || '';
+  document.getElementById('emp-edit-vision-plan').value = emp.vision_plan_code || emp.vision_plan || '';
+
+  // Load PDF
+  loadEmployeePDF(emp.signed_pdf_url || emp.pdf_url);
+
+  // Setup auto-save listeners
+  setupEmployeeAutoSave();
+}
+
+// Load PDF Viewer
+function loadEmployeePDF(pdfUrl) {
+  const pdfViewer = document.getElementById('emp-pdf-viewer');
+  const pdfLoading = document.getElementById('emp-pdf-loading');
+  const downloadBtn = document.getElementById('emp-pdf-download');
+
+  if (pdfUrl && pdfUrl.trim() !== '') {
+    pdfViewer.src = pdfUrl;
+    pdfViewer.classList.remove('hidden');
+    pdfLoading.classList.add('hidden');
+    
+    downloadBtn.onclick = () => window.open(pdfUrl, '_blank');
+    downloadBtn.disabled = false;
+    downloadBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+  } else {
+    pdfViewer.classList.add('hidden');
+    pdfLoading.classList.remove('hidden');
+    downloadBtn.disabled = true;
+    downloadBtn.classList.add('opacity-50', 'cursor-not-allowed');
+  }
+}
+
+// Setup Auto-Save Event Listeners
+function setupEmployeeAutoSave() {
+  const fieldIds = [
+    'emp-edit-last-name', 'emp-edit-first-name', 'emp-edit-username', 'emp-edit-pin',
+    'emp-edit-phone', 'emp-edit-email', 'emp-edit-address', 'emp-edit-city',
+    'emp-edit-state', 'emp-edit-zip', 'emp-edit-hire-date', 'emp-edit-status',
+    'emp-edit-job-title', 'emp-edit-department', 'emp-edit-employment-type',
+    'emp-edit-comp-type', 'emp-edit-wage', 'emp-edit-medical-plan',
+    'emp-edit-dental-plan', 'emp-edit-vision-plan'
+  ];
+
+  fieldIds.forEach(fieldId => {
+    const field = document.getElementById(fieldId);
+    if (!field) return;
+
+    // Remove existing listeners
+    const newField = field.cloneNode(true);
+    field.parentNode.replaceChild(newField, field);
+
+    // Add new listener
+    newField.addEventListener('change', () => debouncedEmployeeSave());
+    newField.addEventListener('input', () => debouncedEmployeeSave());
+  });
+
+  // Compensation type change handler
+  document.getElementById('emp-edit-comp-type').addEventListener('change', (e) => {
+    const wageLabel = document.getElementById('emp-edit-wage-label');
+    if (e.target.value === 'salary') {
+      wageLabel.textContent = 'Annual Salary';
+    } else {
+      wageLabel.textContent = 'Hourly Rate';
+    }
+  });
+}
+
+// Debounced Auto-Save
+function debouncedEmployeeSave() {
+  clearTimeout(employeeAutoSaveTimeout);
+  employeeAutoSaveTimeout = setTimeout(() => {
+    saveEmployeeData();
+  }, 1000);
+}
+
+// Save Employee Data Now (button click)
+function saveEmployeeDataNow() {
+  clearTimeout(employeeAutoSaveTimeout);
+  saveEmployeeData();
+}
+
+// Save Employee Data to Database
+async function saveEmployeeData() {
+  if (!currentEditEmployeeId) return;
+
+  try {
+    const compType = document.getElementById('emp-edit-comp-type').value;
+    const wage = parseFloat(document.getElementById('emp-edit-wage').value) || null;
+
+    const updates = {
+      last_name: document.getElementById('emp-edit-last-name').value.trim(),
+      first_name: document.getElementById('emp-edit-first-name').value.trim(),
+      username: document.getElementById('emp-edit-username').value.trim(),
+      pin: document.getElementById('emp-edit-pin').value.trim(),
+      primary_phone: document.getElementById('emp-edit-phone').value.trim(),
+      email: document.getElementById('emp-edit-email').value.trim(),
+      address_line_1: document.getElementById('emp-edit-address').value.trim(),
+      city: document.getElementById('emp-edit-city').value.trim(),
+      state: document.getElementById('emp-edit-state').value.trim(),
+      zip_code: document.getElementById('emp-edit-zip').value.trim(),
+      original_hire_date: document.getElementById('emp-edit-hire-date').value,
+      employment_status: document.getElementById('emp-edit-status').value,
+      job_title: document.getElementById('emp-edit-job-title').value.trim(),
+      department: document.getElementById('emp-edit-department').value.trim(),
+      employment_type: document.getElementById('emp-edit-employment-type').value,
+      compensation_type: compType,
+      medical_plan_code: document.getElementById('emp-edit-medical-plan').value,
+      dental_plan_code: document.getElementById('emp-edit-dental-plan').value,
+      vision_plan_code: document.getElementById('emp-edit-vision-plan').value
+    };
+
+    // Add wage to appropriate field
+    if (compType === 'salary') {
+      updates.annual_salary = wage;
+      updates.hourly_rate = null;
+    } else {
+      updates.hourly_rate = wage;
+      updates.annual_salary = null;
+    }
+
+    // Update database
+    const { error } = await window.supabaseClient
+      .from('employees2025')
+      .update(updates)
+      .eq('id', currentEditEmployeeId);
+
+    if (error) throw error;
+
+    // Show save indicator
+    showEmployeeSaveIndicator();
+
+    // Update AppState
+    const empIndex = AppState.employees.findIndex(e => e.id === currentEditEmployeeId);
+    if (empIndex !== -1) {
+      AppState.employees[empIndex] = { ...AppState.employees[empIndex], ...updates };
+    }
+
+    // Refresh grid
+    if (typeof renderEmployeeGrid === 'function') {
+      renderEmployeeGrid();
+    }
+
+    console.log('✅ Employee data saved');
+
+  } catch (error) {
+    console.error('❌ Failed to save employee data:', error);
+    showToast('❌ Failed to save changes', 'error');
+  }
+}
+
+// Show Save Indicator
+function showEmployeeSaveIndicator() {
+  const indicator = document.getElementById('emp-save-indicator');
+  indicator.classList.remove('hidden');
+  setTimeout(() => indicator.classList.add('hidden'), 3000);
+}
+
+// Close Modal
+function closeEmployeeEditModal() {
+  document.getElementById('employee-edit-modal').classList.add('hidden');
+  document.body.style.overflow = '';
+  currentEditEmployeeId = null;
+  clearTimeout(employeeAutoSaveTimeout);
+}
+
+// Close on outside click
+document.getElementById('employee-edit-modal')?.addEventListener('click', (e) => {
+  if (e.target.id === 'employee-edit-modal') {
+    closeEmployeeEditModal();
+  }
+});
+
+// Close on ESC key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const modal = document.getElementById('employee-edit-modal');
+    if (modal && !modal.classList.contains('hidden')) {
+      closeEmployeeEditModal();
+    }
+  }
+});
+
+console.log('✅ Employee edit modal functionality loaded');
 
 
 </script>
+<!-- Employee Edit Modal -->
+<div id="employee-edit-modal" class="fixed inset-0 z-50 hidden bg-slate-900/90 backdrop-blur-sm">
+  <div class="flex items-center justify-center min-h-screen p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-7xl max-h-[95vh] overflow-hidden flex flex-col animate-slideUp">
+      
+      <!-- Header -->
+      <div class="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 px-6 py-5">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-4">
+            <div class="w-14 h-14 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center shadow-lg">
+              <i class="fa-solid fa-user-pen text-white text-2xl"></i>
+            </div>
+            <div>
+              <h2 class="text-2xl font-black text-white tracking-tight">Employee Information</h2>
+              <p id="emp-edit-modal-name" class="text-blue-100 text-sm font-semibold mt-0.5"></p>
+            </div>
+          </div>
+          <button onclick="closeEmployeeEditModal()" 
+                  class="w-11 h-11 rounded-lg bg-white/20 hover:bg-white/30 transition-all flex items-center justify-center group">
+            <i class="fa-solid fa-xmark text-white text-2xl group-hover:rotate-90 transition-transform duration-300"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Content -->
+      <div class="flex-1 overflow-y-auto">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-0">
+          
+          <!-- LEFT COLUMN: Employee Details (2/3 width) -->
+          <div class="lg:col-span-2 p-6 space-y-6 border-r border-slate-200">
+            
+            <!-- Personal Information -->
+            <div class="bg-gradient-to-br from-slate-50 to-slate-100 rounded-xl p-5 border-2 border-slate-200">
+              <h3 class="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
+                <i class="fa-solid fa-id-card text-blue-600"></i>
+                Personal Information
+              </h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">Last Name</label>
+                  <input id="emp-edit-last-name" type="text" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-semibold focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">First Name</label>
+                  <input id="emp-edit-first-name" type="text" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-semibold focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">Username</label>
+                  <input id="emp-edit-username" type="text" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-medium focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">PIN</label>
+                  <input id="emp-edit-pin" type="text" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-bold focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">Phone Number</label>
+                  <input id="emp-edit-phone" type="tel" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-medium focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">Email</label>
+                  <input id="emp-edit-email" type="email" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-medium focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+              </div>
+            </div>
+
+            <!-- Address -->
+            <div class="bg-white rounded-xl p-5 border-2 border-slate-200">
+              <h3 class="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
+                <i class="fa-solid fa-location-dot text-red-600"></i>
+                Address
+              </h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div class="col-span-2">
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">Street Address</label>
+                  <input id="emp-edit-address" type="text" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-medium focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">City</label>
+                  <input id="emp-edit-city" type="text" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-medium focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">State</label>
+                  <input id="emp-edit-state" type="text" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-medium focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+                <div class="col-span-2">
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">Zip Code</label>
+                  <input id="emp-edit-zip" type="text" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-medium focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+              </div>
+            </div>
+
+            <!-- Employment Details -->
+            <div class="bg-white rounded-xl p-5 border-2 border-slate-200">
+              <h3 class="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
+                <i class="fa-solid fa-briefcase text-purple-600"></i>
+                Employment Details
+              </h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">Hire Date</label>
+                  <input id="emp-edit-hire-date" type="date" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-semibold focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">Status</label>
+                  <select id="emp-edit-status" 
+                          class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-bold focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                    <option value="Active">✓ Active</option>
+                    <option value="On Leave">⏸ On Leave</option>
+                    <option value="Terminated">⊗ Terminated</option>
+                    <option value="Resigned">→ Resigned</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">Job Title</label>
+                  <input id="emp-edit-job-title" type="text" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-medium focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+                <div>
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">Department</label>
+                  <input id="emp-edit-department" type="text" 
+                         class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-medium focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                </div>
+                <div class="col-span-2">
+                  <label class="block text-xs font-bold text-slate-600 mb-1.5">Employment Type</label>
+                  <select id="emp-edit-employment-type" 
+                          class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-bold focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                    <option value="FT">Full-Time</option>
+                    <option value="PT">Part-Time</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Compensation -->
+            <div class="bg-gradient-to-br from-emerald-50 to-teal-50 rounded-xl p-5 border-2 border-emerald-200">
+              <h3 class="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
+                <i class="fa-solid fa-money-check-dollar text-emerald-600"></i>
+                Compensation
+              </h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-xs font-bold text-slate-700 mb-1.5">Compensation Type</label>
+                  <select id="emp-edit-comp-type" 
+                          class="w-full px-3 py-2.5 rounded-lg border-2 border-emerald-300 bg-white text-sm font-bold focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all">
+                    <option value="hourly">💵 Hourly</option>
+                    <option value="salary">💰 Salary</option>
+                  </select>
+                </div>
+                <div id="emp-edit-wage-container">
+                  <label id="emp-edit-wage-label" class="block text-xs font-bold text-slate-700 mb-1.5">Wage</label>
+                  <div class="relative">
+                    <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 font-bold">$</span>
+                    <input id="emp-edit-wage" type="number" step="0.01" 
+                           class="w-full pl-8 pr-3 py-2.5 rounded-lg border-2 border-emerald-300 bg-white text-sm font-bold focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Benefits -->
+            <div class="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-5 border-2 border-blue-200">
+              <h3 class="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
+                <i class="fa-solid fa-shield-heart text-blue-600"></i>
+                Benefits Package
+              </h3>
+              
+              <!-- Medical -->
+              <div class="mb-4 p-4 bg-white rounded-lg border border-blue-200">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-hospital text-blue-600 text-lg"></i>
+                    <label class="font-bold text-slate-900 text-sm">Medical Insurance</label>
+                  </div>
+                </div>
+                <select id="emp-edit-medical-plan" 
+                        class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-semibold focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all">
+                  <option value="">No Coverage</option>
+                  <option value="WAIVE">Waived</option>
+                  <option value="ATBAP393">ATBAP393</option>
+                  <option value="ATBAB303">ATBAB303</option>
+                </select>
+              </div>
+
+              <!-- Dental -->
+              <div class="mb-4 p-4 bg-white rounded-lg border border-teal-200">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-tooth text-teal-600 text-lg"></i>
+                    <label class="font-bold text-slate-900 text-sm">Dental Insurance</label>
+                  </div>
+                </div>
+                <select id="emp-edit-dental-plan" 
+                        class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-semibold focus:border-teal-500 focus:ring-2 focus:ring-teal-200 transition-all">
+                  <option value="">No Coverage</option>
+                  <option value="F-PLAN">F-PLAN</option>
+                  <option value="F_PLAN_2W">F_PLAN_2W</option>
+                  <option value="F_PLAN_3W">F_PLAN_3W</option>
+                </select>
+              </div>
+
+              <!-- Vision -->
+              <div class="p-4 bg-white rounded-lg border border-purple-200">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-eye text-purple-600 text-lg"></i>
+                    <label class="font-bold text-slate-900 text-sm">Vision Insurance</label>
+                  </div>
+                </div>
+                <select id="emp-edit-vision-plan" 
+                        class="w-full px-3 py-2.5 rounded-lg border-2 border-slate-200 text-sm font-semibold focus:border-purple-500 focus:ring-2 focus:ring-purple-200 transition-all">
+                  <option value="">No Coverage</option>
+                  <option value="UC">UC</option>
+                  <option value="PLAN_1">PLAN_1</option>
+                </select>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- RIGHT COLUMN: PDF Viewer (1/3 width) -->
+          <div class="lg:col-span-1 p-6 bg-slate-50">
+            <div class="sticky top-6">
+              <div class="bg-white rounded-xl border-2 border-slate-200 shadow-xl overflow-hidden">
+                <div class="bg-gradient-to-r from-slate-700 to-slate-800 px-4 py-3 flex items-center justify-between">
+                  <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                    <i class="fa-solid fa-file-pdf text-red-400"></i>
+                    Signed Document
+                  </h3>
+                  <button id="emp-pdf-download" 
+                          class="px-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-lg text-white text-xs font-bold transition-all flex items-center gap-2">
+                    <i class="fa-solid fa-download"></i>
+                    Download
+                  </button>
+                </div>
+                
+                <div id="emp-pdf-container" class="bg-slate-100 flex items-center justify-center" style="height: 500px;">
+                  <div id="emp-pdf-loading" class="text-center p-6">
+                    <i class="fa-solid fa-file-pdf text-slate-400 text-5xl mb-3"></i>
+                    <p class="text-slate-600 font-semibold text-sm">No PDF available</p>
+                  </div>
+                  <iframe id="emp-pdf-viewer" 
+                          class="hidden w-full h-full border-0"
+                          style="height: 500px;">
+                  </iframe>
+                </div>
+              </div>
+
+              <!-- Auto-save Indicator -->
+              <div id="emp-save-indicator" class="hidden mt-4 p-3 bg-green-50 border-2 border-green-200 rounded-lg text-center">
+                <i class="fa-solid fa-check-circle text-green-600 mr-2"></i>
+                <span class="text-sm font-bold text-green-700">Saved automatically</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Footer with Save Button -->
+      <div class="bg-slate-50 px-6 py-4 border-t-2 border-slate-200 flex items-center justify-between">
+        <div class="flex items-center gap-2 text-sm text-slate-600">
+          <i class="fa-solid fa-info-circle text-blue-500"></i>
+          <span class="font-semibold">Changes save automatically after 1 second</span>
+        </div>
+        <div class="flex items-center gap-3">
+          <button onclick="saveEmployeeDataNow()" 
+                  class="px-6 py-2.5 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-black rounded-lg transition-all shadow-lg hover:shadow-xl flex items-center gap-2">
+            <i class="fa-solid fa-floppy-disk"></i>
+            Save Now
+          </button>
+          <button onclick="closeEmployeeEditModal()" 
+                  class="px-6 py-2.5 bg-slate-700 hover:bg-slate-800 text-white font-bold rounded-lg transition-all shadow-lg hover:shadow-xl">
+            Close
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+
+
+
 </body>
 </html>
