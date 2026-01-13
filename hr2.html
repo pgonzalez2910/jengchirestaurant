@@ -1629,10 +1629,10 @@ Terminated
         <label class="block text-xs font-black text-slate-700 uppercase mb-2">
           Employment Type <span class="text-rose-500">*</span>
         </label>
-        <select id="comp-letter-employment-type" required class="w-full rounded-lg border-2 border-slate-300 bg-white px-3 py-2 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-brand-500">
-          <option value="part_time">Part-Time (< 30 hours/week)</option>
-          <option value="full_time" selected>Full Time (30+ hours/week)</option>
-        </select>
+       <select id="comp-letter-employment-type" ...>
+  <option value="PT">Part-Time (< 30 hours/week)</option>
+  <option value="FT" selected>Full-Time (30+ hours/week)</option>
+</select>
       </div>
       
       <!-- Hire Date -->
@@ -10507,8 +10507,8 @@ function loadPositionsIntoForm(employee) {
   document.getElementById('comp-letter-vacation-pay').value = vacationPay;
   
   // EMPLOYMENT INFO
-  const employmentType = employee.employment_type || 'part_time';
-  document.getElementById('comp-letter-employment-type').value = employmentType;
+ const employmentType = employee.employment_type || 'PT';
+document.getElementById('comp-letter-employment-type').value = employmentType;
   
   const hireDate = employee.original_hire_date || employee.hire_date || '';
   document.getElementById('comp-letter-hire-date').value = hireDate;
@@ -13253,11 +13253,7 @@ async function saveCompensationLetter(e) {
     const mgrSigDataUrl = mgrSignaturePad.toDataURL('image/png');
     const hrSigDataUrl = hrSignaturePad.toDataURL('image/png');
     
-    // ✅ LOGGING FOR DEBUG
-    console.log('📝 Signatures captured:');
-    console.log('  Employee:', empSigDataUrl ? empSigDataUrl.substring(0, 50) + '...' : 'MISSING');
-    console.log('  Manager:', mgrSigDataUrl ? mgrSigDataUrl.substring(0, 50) + '...' : 'MISSING');
-    console.log('  HR:', hrSigDataUrl ? hrSigDataUrl.substring(0, 50) + '...' : 'MISSING');
+    console.log('📝 Signatures captured');
     
     const empSigName = document.getElementById('comp-sig-emp-name')?.value || 
                        `${formData.employee.first_name} ${formData.employee.last_name}`;
@@ -13267,7 +13263,6 @@ async function saveCompensationLetter(e) {
     // ✅ PREPARE POSITIONS ARRAY FOR EDGE FUNCTION
     const positions = [];
     
-    // Use positions from formData if available (includes department)
     if (formData.positions && formData.positions.length > 0) {
       formData.positions.forEach(pos => {
         positions.push({
@@ -13276,7 +13271,6 @@ async function saveCompensationLetter(e) {
         });
       });
     } else {
-      // Fallback: build manually
       positions.push({
         title: formData.position,
         rate: parseFloat(formData.hourlyRate)
@@ -13297,36 +13291,51 @@ async function saveCompensationLetter(e) {
       }
     }
 
-    console.log('📦 Positions for Edge Function:', positions);
+    // ✅ CRITICAL FIX: CONVERT DATABASE FORMAT TO EDGE FUNCTION FORMAT
+    // Database uses: PT/FT
+    // Edge Function expects: part_time/full_time
+    const employmentTypeForEdgeFunction = formData.employmentType === 'FT' ? 'full_time' : 'part_time';
+    
+    console.log('📦 Positions:', positions);
+    console.log('📋 Employment Type (Database):', formData.employmentType); // PT or FT
+    console.log('📋 Employment Type (Edge Function):', employmentTypeForEdgeFunction); // part_time or full_time
 
-    // ✅ CALL EDGE FUNCTION
+    // ✅ CALL EDGE FUNCTION WITH CONVERTED VALUE
     console.log('🚀 Calling Edge Function...');
     
     const { data: pdfResult, error: pdfError } = await supabaseClient.functions.invoke(
-      'generate-compensation-letter',
-      {
-        body: {
-          employee_id: parseInt(employeeId),
-          type: 'hourly',
-          effective_date: formData.effectiveDate,
-          positions: positions,
-          staff_meeting_rate: parseFloat(formData.meetingPay) || null,
-          training_rate: parseFloat(formData.trainingPay) || null,
-          vacation_hourly_rate: parseFloat(formData.vacationPay) || null,
-          benefit_notes: formData.changeReason || null,
-          financial_responsibilities: {
-            tip_to_house_pool: formData.isServer && formData.tipToHouse > 0,
-            tip_back_merchant_services: formData.isServer && formData.merchantServices > 0
-          },
-          emp_sig_dataurl: empSigDataUrl,
-          emp_sig_name: empSigName,
-          mgr_sig_dataurl: mgrSigDataUrl,
-          mgr_sig_name: mgrSigName,
-          hr_sig_dataurl: hrSigDataUrl,
-          hr_sig_name: hrSigName
-        }
-      }
-    );
+  'generate-compensation-letter',
+  {
+    body: {
+      employee_id: parseInt(employeeId),
+      type: 'hourly',
+      effective_date: formData.effectiveDate,
+      positions: positions,
+      
+      // ✅ CONVERT PT/FT TO part_time/full_time FOR EDGE FUNCTION
+      employment_type: formData.employmentType === 'FT' ? 'full_time' : 'part_time',
+      change_type: formData.changeType,
+      hire_date: formData.hireDate,
+      
+      staff_meeting_rate: parseFloat(formData.meetingPay) || null,
+      training_rate: parseFloat(formData.trainingPay) || null,
+      vacation_hourly_rate: parseFloat(formData.vacationPay) || null,
+      benefit_notes: formData.changeReason || null,
+      financial_responsibilities: {
+        tip_to_house_pool: formData.isServer && formData.tipToHouse > 0,
+        tip_back_merchant_services: formData.isServer && formData.merchantServices > 0
+      },
+      emp_sig_dataurl: empSigDataUrl,
+      emp_sig_name: empSigName,
+      mgr_sig_dataurl: mgrSigDataUrl,
+      mgr_sig_name: mgrSigName,
+      hr_sig_dataurl: hrSigDataUrl,
+      hr_sig_name: hrSigName
+    }
+  }
+);
+
+    
 
     if (pdfError) {
       console.error('❌ Edge Function Error:', pdfError);
@@ -13339,11 +13348,12 @@ async function saveCompensationLetter(e) {
     }
 
     console.log('✅ PDF Generated:', pdfResult.url);
-    console.log('📊 Signatures Embedded:', pdfResult.signatures_embedded);
+    console.log('📊 Employment Type:', pdfResult.employment_type);
+    console.log('📊 Is Full Time:', pdfResult.is_full_time);
 
     const pdfUrl = pdfResult.url;
 
-    // ✅ SAVE TO WAGE HISTORY - FIX DEPARTMENT ISSUE
+    // ✅ SAVE TO WAGE HISTORY WITH DATABASE FORMAT (PT/FT)
     const wageRecords = [];
     const baseRecord = {
       employee_id: parseInt(employeeId),
@@ -13354,7 +13364,7 @@ async function saveCompensationLetter(e) {
       compensation_type: 'hourly',
       effective_date: formData.effectiveDate,
       hire_date: formData.hireDate,
-      employment_type: formData.employmentType,
+      employment_type: formData.employmentType, // ✅ USE DATABASE FORMAT (PT or FT)
       change_type: formData.changeType,
       change_reason: formData.changeReason || null,
       approved_by: formData.approvedBy,
@@ -13363,31 +13373,29 @@ async function saveCompensationLetter(e) {
       included_in_tip_pool: formData.includedInTipPool || false,
       tip_to_house_pool_percent: formData.isServer ? formData.tipToHouse : null,
       tip_back_merchant_services_percent: formData.isServer ? formData.merchantServices : null,
-      qualifies_for_full_time_benefits: formData.employmentType === 'full_time',
+      qualifies_for_full_time_benefits: formData.employmentType === 'FT', // ✅ CHECK FOR 'FT'
       letter_generated: true,
       letter_generated_at: new Date().toISOString(),
       created_by: 'HR Admin',
       pdf_url: pdfUrl
     };
     
-    // ✅ FIX: Use formData.positions which includes department
     if (formData.positions && formData.positions.length > 0) {
       formData.positions.forEach((pos) => {
         wageRecords.push({
           ...baseRecord,
           position_number: pos.position_number,
           position_title: pos.position_title,
-          department: pos.department, // ✅ THIS WAS MISSING!
+          department: pos.department,
           hourly_rate: pos.hourly_rate
         });
       });
     } else {
-      // Fallback: ensure department is never null
       wageRecords.push({
         ...baseRecord,
         position_number: 1,
         position_title: formData.position,
-        department: formData.department || 'FOH', // ✅ Fallback to FOH
+        department: formData.department || 'FOH',
         hourly_rate: formData.hourlyRate
       });
       
@@ -13412,92 +13420,68 @@ async function saveCompensationLetter(e) {
       }
     }
 
-    console.log('💾 Saving wage records:', wageRecords);
+    console.log('💾 Saving wage history:', wageRecords.length, 'records');
 
-    const { data: savedWages, error: saveError } = await supabaseClient
+    const { error: wageError } = await supabaseClient
       .from('wage_history')
-      .insert(wageRecords)
-      .select();
+      .insert(wageRecords);
 
-    if (saveError) {
-      console.error('❌ Database Error:', saveError);
-      throw saveError;
+    if (wageError) {
+      console.error('❌ Wage History Error:', wageError);
+      throw new Error(`Failed to save wage history: ${wageError.message}`);
     }
 
-    console.log('✅ Wage records saved:', savedWages);
+    console.log('✅ Wage history saved');
 
-    // ✅ Update employees table
+    // ✅ UPDATE employees2025 WITH DATABASE FORMAT (PT/FT)
     const updateData = {
-      job_title: formData.position || (formData.positions && formData.positions[0].position_title),
-      hourly_rate: formData.hourlyRate || (formData.positions && formData.positions[0].hourly_rate),
-      department: formData.department || (formData.positions && formData.positions[0].department),
+      job_title: formData.positions[0].position_title,
+      hourly_rate: formData.positions[0].hourly_rate,
+      department: formData.positions[0].department,
       compensation_type: 'hourly',
-      original_hire_date: formData.hireDate,
-      trainning: formData.trainingPay,
-      meetingpay: { rate: formData.meetingPay },
-      vacation: formData.vacationPay,
-      overtime: formData.overtimePay
+      employment_type: formData.employmentType, // ✅ USE DATABASE FORMAT (PT or FT)
+      original_hire_date: formData.hireDate
     };
-    
-    if (formData.secondaryJobTitle && formData.secondaryWage > 0) {
-      updateData.job_title2 = formData.secondaryJobTitle;
-      updateData.hourly_rate2 = formData.secondaryWage;
-    }
-    
-    if (formData.tertiaryJobTitle && formData.tertiaryWage > 0) {
-      updateData.job_title3 = formData.tertiaryJobTitle;
-      updateData.hourly_rate3 = formData.tertiaryWage;
+
+    if (formData.positions.length > 1) {
+      updateData.job_title2 = formData.positions[1].position_title;
+      updateData.hourly_rate2 = formData.positions[1].hourly_rate;
     }
 
-    const { error: updateError } = await supabaseClient
+    if (formData.positions.length > 2) {
+      updateData.job_title3 = formData.positions[2].position_title;
+      updateData.hourly_rate3 = formData.positions[2].hourly_rate;
+    }
+
+    console.log('📝 Updating employee record with:', updateData);
+
+    const { error: empUpdateError } = await supabaseClient
       .from('employees2025')
       .update(updateData)
       .eq('id', employeeId);
 
-    if (updateError) {
-      console.error('❌ Employee Update Error:', updateError);
-      throw updateError;
+    if (empUpdateError) {
+      console.error('❌ Employee Update Error:', empUpdateError);
+      throw new Error(`Failed to update employee: ${empUpdateError.message}`);
     }
 
-    // ✅ OPEN PDF
-    console.log('🎉 Opening PDF:', pdfUrl);
-    window.open(pdfUrl, '_blank');
+    console.log('✅ Employee record updated');
 
-    showToast('✅ Compensation saved with signatures!', 'success');
+    showToast('✅ Compensation letter generated successfully!', 'success');
     
-    // ✅ Refresh data
-    await loadEmployees();
-    await loadWageHistory(employeeId);
-    
-    // Clear signatures
-    if (empSignaturePad) empSignaturePad.clear();
-    if (mgrSignaturePad) mgrSignaturePad.clear();
-    if (hrSignaturePad) hrSignaturePad.clear();
-    
-    document.getElementById('comp-letter-form').reset();
-    const overtimeDisplay = document.getElementById('comp-letter-overtime-display');
-    if (overtimeDisplay) overtimeDisplay.textContent = '--';
+   window.open(pdfUrl, '_blank');
 
-    if (window.hideStickySaveButton) {
-      window.hideStickySaveButton();
-    }
 
   } catch (error) {
-    console.error('❌ Error saving compensation:', error);
-    console.error('Error details:', {
-      message: error.message,
-      code: error.code,
-      details: error.details
-    });
-    showToast('❌ Failed: ' + error.message, 'error');
+    console.error('❌ Error:', error);
+    showToast(`❌ Error: ${error.message}`, 'error');
   } finally {
     if (saveBtn) {
       saveBtn.disabled = false;
-      saveBtn.innerHTML = '<span style="font-size: 42px;">💾</span><span style="font-size: 18px;">Save & Generate PDF</span>';
+      saveBtn.innerHTML = '<i class="fa-solid fa-check"></i> Generate Letter';
     }
   }
 }
-
 
 // ============================================================================
 // 10. GENERATE PDF FROM FORM DATA
@@ -14956,7 +14940,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // ============================================================================
 function createPositionCard(slotNumber, positionData = {}) {
   const isPosition1 = slotNumber === 1;
-  const employmentType = document.getElementById('comp-letter-employment-type')?.value || 'part_time';
+  const employmentType = document.getElementById('comp-letter-employment-type')?.value || 'PT';
   const showVacationPay = employmentType === 'full_time';
   
   return `
@@ -15264,8 +15248,7 @@ function loadEmployeeCompensationData(employee) {
   
   // ✅ SET EMPLOYMENT TYPE (Salary employees are always full-time)
   if (isSalary) {
-    document.getElementById('comp-letter-employment-type').value = 'full_time';
-  } else {
+document.getElementById('comp-letter-employment-type').value = 'FT';  } else {
     document.getElementById('comp-letter-employment-type').value = employee.employment_type || 'part_time';
   }
   
