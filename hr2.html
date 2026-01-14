@@ -10203,44 +10203,47 @@ function preloadCompSignatureNames(employee) {
 
 async function selectEmployeeForCompLetter(employee) {
   console.log('📝 Loading employee for compensation letter:', employee);
-  
+
   CompensationState.selectedEmployee = employee;
   ensureCompSignaturePadsReady();
- preloadCompSignatureNames(employee);
- // Clear previous signatures when loading a new employee
-document.getElementById('comp-sig-emp-dataurl').value = '';
-document.getElementById('comp-sig-mgr-dataurl').value = '';
-document.getElementById('comp-sig-hr-dataurl').value = '';
+  preloadCompSignatureNames(employee);
 
-CompSigPads?.emp?.clear?.();
-CompSigPads?.mgr?.clear?.();
-CompSigPads?.hr?.clear?.();
-  
+  // Clear previous signatures when loading a new employee
+  document.getElementById('comp-sig-emp-dataurl').value = '';
+  document.getElementById('comp-sig-mgr-dataurl').value = '';
+  document.getElementById('comp-sig-hr-dataurl').value = '';
+
+  CompSigPads?.emp?.clear?.();
+  CompSigPads?.mgr?.clear?.();
+  CompSigPads?.hr?.clear?.();
+
   // Show employee info section
   const infoSection = document.getElementById('comp-letter-employee-info');
   if (infoSection) infoSection.classList.remove('hidden');
-  
+
   // Update employee info display
   const nameEl = document.getElementById('comp-letter-employee-name');
   if (nameEl) nameEl.textContent = `${employee.first_name} ${employee.last_name}`;
-  
+
   const idEl = document.getElementById('comp-letter-employee-id');
   if (idEl) idEl.textContent = employee.employee_id || '--';
-  
+
   const deptEl = document.getElementById('comp-letter-employee-dept');
   if (deptEl) deptEl.textContent = employee.department || '--';
-  
+
   // Set hidden employee ID for form submission
   const hiddenIdEl = document.getElementById('comp-letter-selected-employee-id');
   if (hiddenIdEl) hiddenIdEl.value = employee.id;
-  
+
   // ============================================================================
   // 🆕 CORPORATE TABLE GRID - CURRENT COMPENSATION STATUS
   // ============================================================================
   const positionsContainer = document.getElementById('comp-letter-current-positions');
   if (positionsContainer) {
     positionsContainer.innerHTML = '';
-    
+
+    const norm = (s) => (s || '').toString().toLowerCase().trim();
+
     const getMeetingPay = (meetingPayData) => {
       if (!meetingPayData) return null;
       if (typeof meetingPayData === 'object' && meetingPayData.rate) {
@@ -10251,55 +10254,93 @@ CompSigPads?.hr?.clear?.();
       }
       return null;
     };
-    
 
-    
-    // ✅ DECLARE THESE FIRST (ONLY ONCE!)
+    // ---- Salary hours/week rules (EXACT) ----
+    const getSalaryHoursPerWeek = (fullName, jobTitle) => {
+      const fullNameN = norm(fullName);
+      const jobTitleN = norm(jobTitle);
+
+      // /52/50
+      if (
+        jobTitleN.includes('wok chef') ||
+        fullNameN === 'cesar ramirez' ||
+        fullNameN === 'wilson sanchez'
+      ) return 50;
+
+      // /52/40
+      if (jobTitleN.includes('production manager')) return 40;
+
+      // Logistic Coordinator => /52/40
+      if (jobTitleN.includes('logistic coordinator') || jobTitleN.includes('logistics coordinator')) return 40;
+
+      // /52/48
+      if (fullNameN === 'yu li') return 48;
+
+      // /52/45
+      if (fullNameN === 'xing zheng') return 45;
+
+      // default
+      return 40;
+    };
+
+    const fullName = `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
+    const primaryTitle = employee.job_title || '';
+
+    // ✅ detect salary (do NOT rely on casing)
+    // Your app already has getSalaryConfig(employee); keep it, but we also compute hours by name/title
     const salaryConfig = getSalaryConfig(employee);
-    const isSalary = salaryConfig !== null;
-    
-    let displayRate = null;
+    const isSalary = salaryConfig !== null && !!employee.annual_salary;
+
+    // ---- Base hourly equivalent ----
+    let displayRate = null; // hourly equivalent for salary, hourly_rate for hourly employees
+
     if (isSalary && employee.annual_salary) {
-      displayRate = salaryConfig.calculateRate(employee.annual_salary);
+      const weeklyHours = getSalaryHoursPerWeek(fullName, primaryTitle);
+      const annual = parseFloat(employee.annual_salary);
+      displayRate = weeklyHours > 0 ? (annual / 52 / weeklyHours) : null;
     } else if (employee.hourly_rate) {
       displayRate = parseFloat(employee.hourly_rate);
     }
-    
+
     // ✅ Calculate training, meeting, vacation
-    let trainingPay, meetingPay, vacationPay;
-    
-    if (isSalary && displayRate) {
-      // For salary employees, use config rules
-      trainingPay = (salaryConfig.trainingPay === 0) ? 0 : displayRate;
-      meetingPay = (salaryConfig.meetingPay === 0) ? 0 : displayRate;
+    let trainingPay = null, meetingPay = null, vacationPay = null;
+
+    if (isSalary && displayRate != null) {
+      // Salary: Training/Meeting/Vacation = hourly equivalent
+      trainingPay = displayRate;
+      meetingPay = displayRate;
       vacationPay = displayRate;
     } else {
-      // For hourly employees, use database values
+      // Hourly: use DB values (existing behavior)
       trainingPay = employee.trainning ? parseFloat(employee.trainning) : null;
       meetingPay = getMeetingPay(employee.meetingpay);
       vacationPay = employee.vacation ? parseFloat(employee.vacation) : null;
     }
-    
-      // ✅ Calculate overtime based on salary config
-    let overtimeRate;
-    if (employee.overtime) {
-      // Use database value if exists
-      overtimeRate = parseFloat(employee.overtime).toFixed(2);
-    } else if (isSalary && salaryConfig) {
-      // For salary employees, check hasOvertime rule
-      if (salaryConfig.hasOvertime === false) {
-        overtimeRate = null; // No overtime
-      } else if (salaryConfig.hasOvertime === true) {
-        // Regular rate (NOT 1.5x for salary employees)
-        overtimeRate = displayRate ? displayRate.toFixed(2) : null;
-      }
+
+    // ✅ Calculate overtime (FIXED)
+    // IMPORTANT: Salary employees MUST NOT use employee.overtime from DB
+    let overtimeRate = null;
+
+    if (isSalary && displayRate != null) {
+      const primaryTitleNorm = norm(primaryTitle);
+      const isLogistics =
+        primaryTitleNorm.includes('logistic coordinator') ||
+        primaryTitleNorm.includes('logistics coordinator');
+
+      overtimeRate = isLogistics ? '0.00' : displayRate.toFixed(2);
     } else {
-      // For hourly employees, use 1.5x
-      overtimeRate = displayRate ? (displayRate * 1.5).toFixed(2) : null;
+      // Hourly employees: trust DB overtime if present; else 1.5x
+      if (employee.overtime) {
+        overtimeRate = parseFloat(employee.overtime).toFixed(2);
+      } else if (displayRate != null) {
+        overtimeRate = (displayRate * 1.5).toFixed(2);
+      } else {
+        overtimeRate = null;
+      }
     }
-    
+
     const positions = [];
-    
+
     // ✅ Show position if either hourly_rate OR annual_salary exists
     if (employee.job_title && (employee.hourly_rate || employee.annual_salary)) {
       positions.push({
@@ -10308,10 +10349,10 @@ CompSigPads?.hr?.clear?.();
         title: employee.job_title,
         baseRate: displayRate,
         isSalary: isSalary,
-        annualSalary: employee.annual_salary
+        annualSalary: employee.annual_salary ? parseFloat(employee.annual_salary) : null
       });
     }
-    
+
     if (employee.job_title2 && employee.hourly_rate2) {
       positions.push({
         badge: 'POS 2',
@@ -10320,7 +10361,7 @@ CompSigPads?.hr?.clear?.();
         baseRate: parseFloat(employee.hourly_rate2)
       });
     }
-    
+
     if (employee.job_title3 && employee.hourly_rate3) {
       positions.push({
         badge: 'POS 3',
@@ -10329,13 +10370,13 @@ CompSigPads?.hr?.clear?.();
         baseRate: parseFloat(employee.hourly_rate3)
       });
     }
-    
+
     const hasMultiplePositions = positions.length > 1;
-    
+
     if (positions.length > 0) {
       const table = document.createElement('div');
       table.className = 'bg-white rounded-lg border border-gray-300 overflow-hidden shadow-sm';
-      
+
       table.innerHTML = `
         <div class="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-300">
           <div class="grid grid-cols-7 gap-4 px-4 py-3">
@@ -10348,7 +10389,7 @@ CompSigPads?.hr?.clear?.();
             <div class="col-span-1 text-xs font-bold text-gray-700 uppercase tracking-wide text-right">Vacation</div>
           </div>
         </div>
-        
+
         <div class="divide-y divide-gray-200">
           ${positions.map((pos, index) => `
             <div class="grid grid-cols-7 gap-4 px-4 py-3 hover:bg-gray-50 transition-colors">
@@ -10357,40 +10398,38 @@ CompSigPads?.hr?.clear?.();
                   ${pos.badge}
                 </span>
               </div>
-              
+
               <div class="col-span-1 flex items-center">
                 <span class="font-semibold text-gray-900 text-sm">${pos.title}</span>
               </div>
-              
+
               <div class="col-span-1 flex items-center justify-end">
-                ${pos.isSalary ? 
+                ${pos.isSalary ?
                   `<div class="text-right">
-                    <div class="font-bold text-gray-900 text-sm">$${pos.annualSalary.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                    <div class="font-bold text-gray-900 text-sm">$${(pos.annualSalary ?? 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
                     <div class="text-xs text-gray-500 italic">Annual Salary</div>
                   </div>` :
-                  `<span class="font-bold text-gray-900 text-sm">$${pos.baseRate.toFixed(2)}</span>`
+                  `<span class="font-bold text-gray-900 text-sm">$${(pos.baseRate ?? 0).toFixed(2)}</span>`
                 }
               </div>
-              
+
               <div class="col-span-1 flex items-center justify-end">
-                ${index === 0 && trainingPay !== null ? 
-                  `<span class="font-semibold text-gray-700 text-sm">$${trainingPay.toFixed(2)}</span>` : 
-                  '<span class="text-gray-400 text-xs">N/A</span>'}
-              </div>
-              
-              <div class="col-span-1 flex items-center justify-end">
-                ${meetingPay !== null ? 
-                  `<span class="font-semibold text-gray-700 text-sm">$${meetingPay.toFixed(2)}</span>` : 
+                ${index === 0 && trainingPay !== null ?
+                  `<span class="font-semibold text-gray-700 text-sm">$${trainingPay.toFixed(2)}</span>` :
                   '<span class="text-gray-400 text-xs">N/A</span>'}
               </div>
 
+              <div class="col-span-1 flex items-center justify-end">
+                ${meetingPay !== null ?
+                  `<span class="font-semibold text-gray-700 text-sm">$${meetingPay.toFixed(2)}</span>` :
+                  '<span class="text-gray-400 text-xs">N/A</span>'}
+              </div>
 
-              
-           <div class="col-span-1 flex items-center justify-end">
+              <div class="col-span-1 flex items-center justify-end">
                 ${index === 0 ? (
-                  overtimeRate === null ? 
+                  overtimeRate === null ?
                     '<span class="text-gray-400 text-xs">N/A</span>' :
-                  hasMultiplePositions ? 
+                  hasMultiplePositions ?
                     `<span class="text-xs font-bold text-amber-900 bg-amber-100 px-2.5 py-1.5 rounded border border-amber-300 shadow-sm whitespace-nowrap">
                       Blended: $${overtimeRate}
                     </span>` :
@@ -10398,17 +10437,15 @@ CompSigPads?.hr?.clear?.();
                 ) : '<span class="text-gray-300 text-xs">↑</span>'}
               </div>
 
-
-              
               <div class="col-span-1 flex items-center justify-end">
-                ${vacationPay !== null ? 
-                  `<span class="font-semibold text-gray-700 text-sm">$${vacationPay.toFixed(2)}</span>` : 
+                ${vacationPay !== null ?
+                  `<span class="font-semibold text-gray-700 text-sm">$${vacationPay.toFixed(2)}</span>` :
                   '<span class="text-gray-400 text-xs">N/A</span>'}
               </div>
             </div>
           `).join('')}
         </div>
-        
+
         ${hasMultiplePositions ? `
           <div class="bg-amber-50 border-t border-amber-200 px-4 py-2.5">
             <div class="flex items-center space-x-2 text-xs text-amber-900">
@@ -10418,7 +10455,7 @@ CompSigPads?.hr?.clear?.();
           </div>
         ` : ''}
       `;
-      
+
       positionsContainer.appendChild(table);
     } else {
       positionsContainer.innerHTML = `
@@ -10429,42 +10466,44 @@ CompSigPads?.hr?.clear?.();
       `;
     }
   }
-// 🆕 LOAD ALL POSITIONS INTO EDITABLE FORM
+
+  // 🆕 LOAD ALL POSITIONS INTO EDITABLE FORM
   loadPositionsIntoForm(employee);
-  
+
   // Pre-fill hire date
   const hireDateInput = document.getElementById('comp-letter-hire-date');
   if (hireDateInput && employee.original_hire_date) {
     hireDateInput.value = employee.original_hire_date;
   }
-  
+
   // Set effective date to today
   const today = new Date().toISOString().split('T')[0];
   const dateInput = document.getElementById('comp-letter-effective-date');
   if (dateInput) dateInput.value = today;
-  
+
   // Load wage history from database
   await loadWageHistory(employee.id);
-  
+
   // Scroll to form
   const form = document.getElementById('comp-letter-form');
   if (form) {
     form.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
-  
+
   showToast(`✅ Loaded: ${employee.first_name} ${employee.last_name}`, 'success');
-  
+
   if (window.showStickySaveButton) {
     window.showStickySaveButton();
   }
-  
+
   // ✅ LOAD EMPLOYEE COMPENSATION DATA
   loadEmployeeCompensationData(employee);
-  
+
   setTimeout(() => {
     autoCalculatePayRates();
   }, 500);
 }
+
 
 // ============================================================================
 // 🆕 LOAD ALL POSITIONS INTO EDITABLE FORM
@@ -13113,31 +13152,41 @@ function autoCalculatePayRates() {
     baseHourlyRate = parseFloat(hourlyRateInput.value) || 0;
   } else {
     // SALARY EMPLOYEE - Calculate hourly equivalent
-    const annualSalary = parseFloat(annualSalaryInput.value) || 0;
-    const jobTitle = positionTitleField ? positionTitleField.value : '';
-    const firstName = employee.first_name || '';
-    const lastName = employee.last_name || '';
-    const fullName = `${firstName} ${lastName}`.trim();
-    
-    // Special cases based on job title or employee name
-    let hoursPerWeek = 40; // Default
-    
-    if (jobTitle === 'Production Manager' || jobTitle === 'Logistic Coordinator') {
-      hoursPerWeek = 40;
-    } else if (jobTitle === 'Wok Chef') {
-      hoursPerWeek = 50;
-    } else if (fullName === 'Yu Li') {
-      hoursPerWeek = 48;
-    } else if (fullName === 'Xing Cheng') {
-      hoursPerWeek = 45;
-    } else if (fullName === 'Cesar Ramirez') {
-      hoursPerWeek = 50;
-    }
-    
-    // Calculate: annual_salary / 52 weeks / hours_per_week
-    baseHourlyRate = annualSalary / 52 / hoursPerWeek;
-    
-    console.log(`💰 Salary calculation for ${fullName}: $${annualSalary} / 52 / ${hoursPerWeek} = $${baseHourlyRate.toFixed(2)}/hr`);
+    // helper near the top of your script (once)
+// inside the SALARY EMPLOYEE block:
+// helpers (put near top of file once, or inside this function)
+// helpers (put near top of file once, or inside this function)
+const norm = (s) => (s || '').toString().toLowerCase().trim().replace(/\s+/g, ' ');
+
+// SALARY EMPLOYEE - Calculate hourly equivalent
+const annualSalary = parseFloat(annualSalaryInput.value) || 0;
+const jobTitle = positionTitleField ? positionTitleField.value : '';
+const firstName = employee.first_name || '';
+const lastName = employee.last_name || '';
+const fullName = `${firstName} ${lastName}`.trim();
+
+const fullNameN = norm(fullName);
+const jobTitleN = norm(jobTitle);
+
+let hoursPerWeek = 40;
+
+// Rules (exactly as you specified)
+if (jobTitleN.includes('wok chef') || fullNameN === 'cesar ramirez' || fullNameN === 'wilson sanchez') {
+  hoursPerWeek = 50;
+} else if (jobTitleN.includes('production manager')) {
+  hoursPerWeek = 40;
+} else if (jobTitleN.includes('logistic coordinator') || jobTitleN.includes('logistics coordinator')) {
+  hoursPerWeek = 40;
+} else if (fullNameN === 'yu li') {
+  hoursPerWeek = 48;
+} else if (fullNameN === 'xing zheng') {
+  hoursPerWeek = 45;
+}
+
+baseHourlyRate = annualSalary / 52 / hoursPerWeek;
+
+console.log(`💰 Salary hourly equivalent for ${fullName} (${jobTitle}): ${annualSalary} / 52 / ${hoursPerWeek} = ${baseHourlyRate.toFixed(2)}`);
+
   }
   
   // ✅ Exit if fields don't exist
@@ -13183,6 +13232,11 @@ function autoCalculatePayRates() {
     overtimePayInput.value = '0.00';
     overtimePayInput.placeholder = 'No OT for salary employees';
     vacationPayInput.value = baseHourlyRate.toFixed(2);
+
+    // Overtime: 0 for Logistic Coordinator, otherwise same hourly equivalent
+const isLogistics = jobTitleN.includes('logistic coordinator') || jobTitleN.includes('logistics coordinator');
+overtimePayInput.value = isLogistics ? '0.00' : baseHourlyRate.toFixed(2);
+overtimePayInput.placeholder = '';
     
     // Add label for salary - no OT
     const overtimeLabel = overtimePayInput.closest('.form-group')?.querySelector('label');
@@ -13755,29 +13809,70 @@ window.downloadCompensationPDF = async function(wageHistoryId) {
 // ============================================================================ 
 // CALCULATE OVERTIME RATE (1 position = 1.5x, Multiple = "BLENDED") 
 // ============================================================================ 
-function calculateOvertimeRate() { 
-  const primaryWage = parseFloat(document.getElementById('primary-wage')?.value || 0);
+function calculateOvertimeRate() {
+  const primaryWageRaw = parseFloat(document.getElementById('primary-wage')?.value || 0);
   const secondaryWage = parseFloat(document.getElementById('secondary-wage')?.value || 0);
   const tertiaryWage = parseFloat(document.getElementById('tertiary-wage')?.value || 0);
+
   const primaryJobTitle = (document.getElementById('primary-job-title')?.value || '').trim().toLowerCase();
-  
+
   const overtimeDisplay = document.getElementById('comp-letter-overtime-display');
   const overtimeHidden = document.getElementById('comp-letter-overtime-pay');
   const overtimeNote = document.getElementById('overtime-calculation-note');
-  
+
   if (!overtimeDisplay) return;
-  
+
+  // ✅ SALARY OVERRIDE (must happen BEFORE BLENDED / 1.5x logic)
+  const employee = CompensationState?.selectedEmployee;
+  const salaryConfig = employee ? getSalaryConfig(employee) : null;
+  const isSalary = salaryConfig !== null;
+
+  // normalize helper
+  const norm = (s) => (s || '').toString().toLowerCase().trim();
+
+  if (isSalary && employee?.annual_salary) {
+    const baseHourly = salaryConfig.calculateRate(employee.annual_salary);
+
+    // Logistic Coordinator salary rule: overtime = 0.00
+    const jt = norm(primaryJobTitle);
+    const isLogistics = jt.includes('logistic coordinator') || jt.includes('logistics coordinator');
+
+    const overtime = isLogistics ? 0 : baseHourly;
+
+    overtimeDisplay.textContent = `$${overtime.toFixed(2)}`;
+    if (overtimeHidden) overtimeHidden.value = overtime.toFixed(2);
+
+    if (overtimeNote) {
+      overtimeNote.innerHTML = isLogistics
+        ? '<i class="fa-solid fa-ban text-red-600"></i> Salary rule: Logistic Coordinator overtime = $0.00'
+        : '<i class="fa-solid fa-briefcase text-slate-700"></i> Salary rule: overtime shown at regular hourly equivalent';
+    }
+
+    // training/meeting/vacation = same hourly equivalent for salary
+    autoFillAdditionalCompensation(baseHourly, baseHourly, baseHourly);
+    return;
+  }
+
+  // -------------------------------------------------------------------
+  // HOURLY LOGIC CONTINUES BELOW (your existing BLENDED / server rules)
+  // -------------------------------------------------------------------
+
+  const primaryWage = primaryWageRaw;
+
   // Count positions with wages
   const positions = [];
   if (primaryWage > 0) positions.push(primaryWage);
   if (secondaryWage > 0) positions.push(secondaryWage);
   if (tertiaryWage > 0) positions.push(tertiaryWage);
-  
+
   if (positions.length === 0) {
     overtimeDisplay.textContent = '--';
     if (overtimeNote) overtimeNote.textContent = 'Will show 1.5x or BLENDED';
     return;
   }
+
+
+
   
   // ============================================================================ 
   // MULTIPLE POSITIONS: BLENDED (FLSA DOL TWC weighted average) 
