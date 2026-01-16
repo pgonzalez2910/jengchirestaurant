@@ -1,5 +1,3 @@
-
-
 <!-- FIXED FILE – PART 1/5: DOCTYPE, HEAD, HEADER, NAVIGATION -->
 <!DOCTYPE html>
 <html lang="en" class="h-full">
@@ -11029,791 +11027,457 @@ function setupStickySaveButton() {
 }
 
 // ============================================================================
-// INITIALIZE - Call this in initCompensationLetterTab()
-// ============================================================================
-// Add this line at the END of your initCompensationLetterTab() function:
-// setupStickySaveButton();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// ============================================================================
-// 3. LOAD WAGE HISTORY FROM DATABASE
-// ============================================================================
-// ============================================================================
-// 3. LOAD WAGE HISTORY FROM DATABASE
-// ============================================================================
-// ============================================================================
 // LOAD WAGE HISTORY
-// ============================================================================
-/* ═══════════════════════════════════════════════════════════════════════════
-   REPLACE YOUR EXISTING loadWageHistory FUNCTION WITH THIS VERSION
-   
-   Location: Around line 11011 in your hr2.txt file
-   
-   This version:
-   - Works with your actual table structure (compensation_letters)
-   - Handles the 'hourly' type constraint
-   - Shows PDF links from storage
-   - Works for ANY employee
-   ═══════════════════════════════════════════════════════════════════════════ */
+// =============================================================================
+// WAGE & POSITION HISTORY (SINGLE SOURCE OF TRUTH)
+// Uses: wage_history table + your existing HTML containers:
+// - bulk-controls-bar
+// - select-all-compensation
+// - wage-history-loading
+// - wage-history-empty
+// - wage-history-items
+// =============================================================================
 
-let currentEmployeeId = null; // Store current employee ID
+let currentEmployeeId = null;
+
+// Safe date formatter (does not rely on any other duplicate formatDate in the file)
+function formatDateSafe(dateString) {
+  if (!dateString) return 'N/A';
+  const d = new Date(dateString);
+  if (isNaN(d.getTime())) return 'N/A';
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+// Extract Supabase storage filename from a public URL
+function extractCompLetterFilename(pdfUrl) {
+  if (!pdfUrl) return null;
+
+  // Typical format:
+  // https://.../storage/v1/object/public/COMPENSATION_LETTERS/<filename>.pdf
+  let name = null;
+
+  if (pdfUrl.includes('/COMPENSATION_LETTERS/')) {
+    name = pdfUrl.split('/COMPENSATION_LETTERS/').pop();
+  } else {
+    const parts = pdfUrl.split('/');
+    name = parts[parts.length - 1];
+  }
+
+  if (!name) return null;
+  if (name.includes('?')) name = name.split('?')[0];
+  return name || null;
+}
 
 /**
- * Load wage & position history for any employee
- * @param {number} employeeId - The employee's ID from employees2025 table
+ * Load wage & position history for employee
+ * Shows ALL letters for the employee (even if effective_date repeats) by grouping on:
+ *   pdf_url (best) -> letter_generated_at -> created_at -> effective_date
  */
-// ============================================================================
-// FIXED: loadWageHistory Function
-// Replace your existing function (around line 11076) with this version
-// ============================================================================
-
 async function loadWageHistory(employeeId) {
   console.log('🔍 Loading wage history for employee ID:', employeeId);
-  
-  // ✅ Store employeeId for later use
+
   currentEmployeeId = employeeId;
-  
+
   const loadingDiv = document.getElementById('wage-history-loading');
   const emptyDiv = document.getElementById('wage-history-empty');
   const itemsDiv = document.getElementById('wage-history-items');
   const bulkControlsBar = document.getElementById('bulk-controls-bar');
-  
+  const selectAllCheckbox = document.getElementById('select-all-compensation');
+
   if (!loadingDiv || !emptyDiv || !itemsDiv) {
-    console.error('❌ Wage history container elements not found');
+    console.error('❌ Wage history container elements not found (wage-history-loading/empty/items)');
     return;
   }
-  
-  // Show loading state
+
+  // Reset UI states
   loadingDiv.classList.remove('hidden');
   emptyDiv.classList.add('hidden');
   itemsDiv.innerHTML = '';
   if (bulkControlsBar) bulkControlsBar.classList.add('hidden');
-  
+  if (selectAllCheckbox) selectAllCheckbox.checked = false;
+  updateBulkDeleteButton?.();
+
   try {
-    // ✅ Query wage_history table and group by effective_date
     const { data, error } = await window.supabaseClient
       .from('wage_history')
       .select('*')
       .eq('employee_id', employeeId)
-      .order('effective_date', { ascending: false });
-    
-    if (error) {
-      console.error('❌ Database error:', error);
-      throw error;
-    }
-    
-    console.log(`✅ Found ${data?.length || 0} wage history records`);
-    
-    // ✅ Group records by effective_date (since each letter has multiple position records)
-    const groupedByDate = {};
-    if (data) {
-      data.forEach(record => {
-        const dateKey = record.effective_date;
-        if (!groupedByDate[dateKey]) {
-          groupedByDate[dateKey] = {
-            employee_id: record.employee_id, // ✅ Store employee_id from record
-            effective_date: record.effective_date,
-            created_at: record.created_at || record.letter_generated_at,
-            pdf_url: record.pdf_url,
-            change_type: record.change_type,
-            employment_type: record.employment_type,
-            positions: []
-          };
-        }
-        groupedByDate[dateKey].positions.push({
-          position_number: record.position_number,
-          position_title: record.position_title,
-          hourly_rate: record.hourly_rate,
-          department: record.department
-        });
+      .order('effective_date', { ascending: false })
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    console.log(`✅ Found ${data?.length || 0} wage_history records`);
+
+    // Group into "letters"
+    const grouped = {};
+    (data || []).forEach((r) => {
+      const createdStamp = r.letter_generated_at || r.created_at || null;
+      const groupKey = r.pdf_url || createdStamp || r.effective_date || `${r.employee_id}-${Math.random()}`;
+
+      if (!grouped[groupKey]) {
+        grouped[groupKey] = {
+          employee_id: r.employee_id,
+          effective_date: r.effective_date,
+          created_at: createdStamp,
+          approved_by: r.approved_by || null,
+          created_by: r.created_by || null,
+          change_type: r.change_type || 'Compensation Letter',
+          pdf_url: r.pdf_url || null,
+          positions: []
+        };
+      }
+
+      grouped[groupKey].positions.push({
+        position_number: r.position_number,
+        position_title: r.position_title,
+        hourly_rate: r.hourly_rate,
+        department: r.department
       });
-    }
-    
-    // Convert to array and sort by date
-    const groupedData = Object.values(groupedByDate).sort((a, b) => 
-      new Date(b.effective_date) - new Date(a.effective_date)
-    );
-    
-    console.log(`✅ Grouped into ${groupedData.length} compensation letters`);
-    
+    });
+
+    // Sort letters (latest effective_date, then created_at)
+    const letters = Object.values(grouped).sort((a, b) => {
+      const d1 = new Date(b.effective_date || 0).getTime() - new Date(a.effective_date || 0).getTime();
+      if (d1 !== 0) return d1;
+      return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+    });
+
     // Hide loading
     loadingDiv.classList.add('hidden');
-    
-    // Check if empty
-    if (!groupedData || groupedData.length === 0) {
+
+    if (!letters.length) {
       emptyDiv.classList.remove('hidden');
       if (bulkControlsBar) bulkControlsBar.classList.add('hidden');
       return;
     }
-    
-    // ✅ SHOW BULK CONTROLS BAR
+
+    // Show bulk controls
     if (bulkControlsBar) bulkControlsBar.classList.remove('hidden');
-    
-    // Render history items
-    itemsDiv.innerHTML = groupedData.map((item, index) => {
+
+    // Render
+    itemsDiv.innerHTML = letters.map((item, index) => {
       const isCurrent = index === 0;
-      const typeIcon = 'fa-solid fa-file-contract';
-      const typeColor = 'blue';
-      
-      // Build positions display
-      const positionsHtml = item.positions
-        .sort((a, b) => a.position_number - b.position_number)
+
+      const positionsHtml = (item.positions || [])
+        .sort((a, b) => (a.position_number || 0) - (b.position_number || 0))
         .map((pos, idx) => {
-          const posLabel = idx === 0 ? 'Primary' : idx === 1 ? 'Secondary' : 'Tertiary';
-          const posColor = idx === 0 ? 'green' : idx === 1 ? 'blue' : 'purple';
+          const badgeClass =
+            idx === 0 ? 'bg-emerald-100 text-emerald-800' :
+            idx === 1 ? 'bg-sky-100 text-sky-800' :
+                        'bg-violet-100 text-violet-800';
+
+          const label = idx === 0 ? 'Primary' : idx === 1 ? 'Secondary' : 'Tertiary';
+          const rate = (pos.hourly_rate != null && !isNaN(parseFloat(pos.hourly_rate)))
+            ? `$${parseFloat(pos.hourly_rate).toFixed(2)}/hr`
+            : 'N/A';
+
           return `
             <div class="flex items-center gap-2 text-xs">
-              <span class="bg-${posColor}-100 text-${posColor}-800 px-2 py-1 rounded font-bold">${posLabel}</span>
-              <span class="font-bold">${pos.position_title}</span>
-              <span class="text-slate-600">$${parseFloat(pos.hourly_rate).toFixed(2)}/hr</span>
+              <span class="${badgeClass} px-2 py-1 rounded font-black">${label}</span>
+              <span class="font-bold text-slate-900">${pos.position_title || '—'}</span>
+              <span class="text-slate-600">${rate}</span>
             </div>
           `;
         })
         .join('');
-      
+
+      const approvedByDisplay = item.approved_by ? item.approved_by : 'Pending';
+
       return `
         <div class="bg-slate-50 rounded-lg border-2 border-slate-200 p-5 hover:border-blue-400 hover:shadow-md transition-all">
           <div class="flex items-center gap-4">
-            
-            <!-- ✅ CHECKBOX -->
+
+            <!-- Checkbox -->
             <div class="flex-shrink-0 pl-2">
-              <input type="checkbox" 
-                     class="compensation-checkbox w-6 h-6 text-blue-600 rounded-lg cursor-pointer border-2 border-slate-400"
-                     data-employee-id="${item.employee_id}"
-                     data-date="${item.effective_date}"
-                     data-url="${item.pdf_url || ''}"
-                     onchange="updateBulkDeleteButton()">
+              <input
+                type="checkbox"
+                class="compensation-checkbox w-6 h-6 text-blue-600 rounded-lg cursor-pointer border-2 border-slate-400"
+                data-employee-id="${item.employee_id}"
+                data-effective-date="${item.effective_date || ''}"
+                data-pdf-url="${item.pdf_url || ''}"
+                onchange="updateBulkDeleteButton()"
+              />
             </div>
-            
+
             <div class="flex-1">
-              <!-- Type Badge -->
               <div class="flex items-center gap-3 mb-2">
-                <span class="bg-${typeColor}-600 text-white px-3 py-1 rounded-full text-xs font-black uppercase flex items-center gap-2">
-                  <i class="${typeIcon}"></i>
+                <span class="bg-blue-600 text-white px-3 py-1 rounded-full text-xs font-black uppercase flex items-center gap-2">
+                  <i class="fa-solid fa-file-contract"></i>
                   ${item.change_type || 'Compensation Letter'}
                 </span>
                 ${isCurrent ? '<span class="bg-green-100 text-green-800 px-3 py-1 rounded-full text-xs font-black">CURRENT</span>' : ''}
               </div>
-              
-              <!-- Positions -->
+
               <div class="mb-3 space-y-1">
                 ${positionsHtml}
               </div>
-              
-              <!-- Date Information -->
-              <div class="grid grid-cols-2 gap-4 mt-3">
+
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-3">
                 <div>
                   <p class="text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">
                     <i class="fa-solid fa-calendar-days mr-1"></i>
                     Effective Date
                   </p>
-                  <p class="text-sm font-black text-slate-800">${formatDate(item.effective_date)}</p>
+                  <p class="text-sm font-black text-slate-800">${formatDateSafe(item.effective_date)}</p>
                 </div>
+
                 <div>
                   <p class="text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">
                     <i class="fa-solid fa-clock mr-1"></i>
                     Created
                   </p>
-                  <p class="text-sm font-bold text-slate-700">${formatDate(item.created_at)}</p>
+                  <p class="text-sm font-bold text-slate-700">${formatDateSafe(item.created_at)}</p>
+                </div>
+
+                <div>
+                  <p class="text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">
+                    <i class="fa-solid fa-user-check mr-1"></i>
+                    Approved By
+                  </p>
+                  <p class="text-sm font-bold text-slate-700">${approvedByDisplay}</p>
                 </div>
               </div>
             </div>
-            
-            <!-- Action Buttons -->
+
             <div class="flex items-center gap-3">
-              ${item.pdf_url ? `
-                <a href="${item.pdf_url}" target="_blank" 
-                   class="px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-lg transition-all shadow-lg hover:shadow-xl flex items-center gap-2">
-                  <i class="fa-solid fa-file-pdf"></i>
-                  View PDF
-                </a>
-              ` : `
-                <button disabled 
-                        class="px-5 py-3 bg-slate-400 text-white font-black rounded-lg cursor-not-allowed flex items-center gap-2">
-                  <i class="fa-solid fa-file-pdf"></i>
-                  No PDF
-                </button>
-              `}
-              <button onclick="deleteCompensationLetter(${item.employee_id}, '${item.effective_date}')" 
-                      class="px-4 py-3 bg-red-600 hover:bg-red-700 text-white font-black rounded-lg transition-all shadow-lg hover:shadow-xl">
+              ${
+                item.pdf_url
+                  ? `
+                    <a href="${item.pdf_url}" target="_blank"
+                      class="px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white font-black rounded-lg transition-all shadow-lg hover:shadow-xl flex items-center gap-2">
+                      <i class="fa-solid fa-file-pdf"></i>
+                      View PDF
+                    </a>
+                  `
+                  : `
+                    <button disabled
+                      class="px-5 py-3 bg-slate-400 text-white font-black rounded-lg cursor-not-allowed flex items-center gap-2">
+                      <i class="fa-solid fa-file-pdf"></i>
+                      No PDF
+                    </button>
+                  `
+              }
+
+              <button
+                onclick="deleteCompensationLetter(${item.employee_id}, '${item.effective_date || ''}', '${(item.pdf_url || '').replace(/'/g, "\\'")}')"
+                class="px-4 py-3 bg-red-600 hover:bg-red-700 text-white font-black rounded-lg transition-all shadow-lg hover:shadow-xl"
+                title="Delete this compensation letter"
+              >
                 <i class="fa-solid fa-trash"></i>
               </button>
             </div>
+
           </div>
         </div>
       `;
     }).join('');
-    
+
   } catch (err) {
     console.error('❌ Error loading wage history:', err);
     loadingDiv.classList.add('hidden');
     emptyDiv.classList.remove('hidden');
     if (bulkControlsBar) bulkControlsBar.classList.add('hidden');
-    
-    const errorMessage = document.createElement('div');
-    errorMessage.className = 'bg-red-50 border-2 border-red-200 rounded-lg p-4 text-center';
-    errorMessage.innerHTML = `
-      <i class="fa-solid fa-exclamation-triangle text-red-600 text-3xl mb-2"></i>
-      <p class="text-red-800 font-bold">Error loading compensation history</p>
-      <p class="text-red-600 text-sm mt-1">${err.message}</p>
+
+    itemsDiv.innerHTML = `
+      <div class="bg-red-50 border-2 border-red-200 rounded-lg p-4 text-center">
+        <i class="fa-solid fa-exclamation-triangle text-red-600 text-3xl mb-2"></i>
+        <p class="text-red-800 font-bold">Error loading compensation history</p>
+        <p class="text-red-600 text-sm mt-1">${(err && err.message) ? err.message : 'Unknown error'}</p>
+      </div>
     `;
-    itemsDiv.innerHTML = '';
-    itemsDiv.appendChild(errorMessage);
   }
 }
 
-// Make sure function is globally accessible
-window.loadWageHistory = loadWageHistory;
-console.log('✅ loadWageHistory function loaded (FIXED VERSION)');
-// ============================================================================
-// STEP 2: ADD BULK DELETE FUNCTIONS
-// ============================================================================
-// Add these new functions after your existing functions
-
-/**
- * Toggle all checkboxes
- */
 function toggleSelectAll() {
-  const selectAllCheckbox = document.getElementById('select-all-compensation');
+  const selectAll = document.getElementById('select-all-compensation');
   const checkboxes = document.querySelectorAll('.compensation-checkbox');
-  
-  console.log(`${selectAllCheckbox.checked ? '✅ Selecting' : '⬜ Deselecting'} all ${checkboxes.length} items`);
-  
-  checkboxes.forEach(checkbox => {
-    checkbox.checked = selectAllCheckbox.checked;
-  });
-  
+
+  if (!selectAll) return;
+
+  checkboxes.forEach(cb => { cb.checked = selectAll.checked; });
   updateBulkDeleteButton();
 }
 
-/**
- * Update the bulk delete button state
- */
 function updateBulkDeleteButton() {
-  const checkboxes = document.querySelectorAll('.compensation-checkbox:checked');
+  const selected = document.querySelectorAll('.compensation-checkbox:checked');
   const bulkDeleteBtn = document.getElementById('bulk-delete-btn');
   const selectedCount = document.getElementById('selected-count');
-  
-  console.log(`📊 ${checkboxes.length} items selected`);
-  
-  if (bulkDeleteBtn) {
-    if (checkboxes.length > 0) {
-      // ENABLE button
-      bulkDeleteBtn.disabled = false;
-      bulkDeleteBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-      bulkDeleteBtn.classList.add('hover:bg-red-700', 'hover:scale-105');
-      
-      if (selectedCount) {
-        selectedCount.textContent = `Delete Selected (${checkboxes.length})`;
-      }
-    } else {
-      // DISABLE button
-      bulkDeleteBtn.disabled = true;
-      bulkDeleteBtn.classList.add('opacity-50', 'cursor-not-allowed');
-      bulkDeleteBtn.classList.remove('hover:bg-red-700', 'hover:scale-105');
-      
-      if (selectedCount) {
-        selectedCount.textContent = 'Delete Selected';
-      }
-    }
+
+  if (!bulkDeleteBtn) return;
+
+  if (selected.length > 0) {
+    bulkDeleteBtn.disabled = false;
+    bulkDeleteBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+    bulkDeleteBtn.classList.add('hover:bg-red-700', 'hover:scale-105');
+    if (selectedCount) selectedCount.textContent = `Delete Selected (${selected.length})`;
+  } else {
+    bulkDeleteBtn.disabled = true;
+    bulkDeleteBtn.classList.add('opacity-50', 'cursor-not-allowed');
+    bulkDeleteBtn.classList.remove('hover:bg-red-700', 'hover:scale-105');
+    if (selectedCount) selectedCount.textContent = 'Delete Selected';
   }
 }
-/**
- * Bulk delete selected compensation letters
- */
+
 async function bulkDeleteSelected() {
-  const checkboxes = document.querySelectorAll('.compensation-checkbox:checked');
-  
-  if (checkboxes.length === 0) {
-    alert('⚠️ Please select at least one compensation letter to delete');
+  const selected = Array.from(document.querySelectorAll('.compensation-checkbox:checked'));
+  if (!selected.length) {
+    alert('⚠️ Please select at least one compensation letter to delete.');
     return;
   }
-  
-  // Confirm deletion
-  const confirmMessage = 
-    `⚠️ DELETE ${checkboxes.length} COMPENSATION LETTER${checkboxes.length > 1 ? 'S' : ''}\n\n` +
+
+  const ok = confirm(
+    `⚠️ DELETE ${selected.length} COMPENSATION LETTER${selected.length > 1 ? 'S' : ''}\n\n` +
     `This will permanently delete:\n` +
-    `• ${checkboxes.length} database record${checkboxes.length > 1 ? 's' : ''}\n` +
-    `• ${checkboxes.length} PDF file${checkboxes.length > 1 ? 's' : ''} from storage\n\n` +
-    `⚠️ THIS ACTION CANNOT BE UNDONE! ⚠️\n\n` +
-    `Are you absolutely sure you want to continue?`;
-  
-  if (!confirm(confirmMessage)) {
-    return;
-  }
-  
-  console.log(`🗑️ Starting bulk deletion of ${checkboxes.length} items...`);
-  
-  // Show progress on button
+    `• wage_history records for each selected letter\n` +
+    `• the PDF file(s) from the COMPENSATION_LETTERS bucket\n\n` +
+    `THIS ACTION CANNOT BE UNDONE.\n\nContinue?`
+  );
+  if (!ok) return;
+
   const bulkDeleteBtn = document.getElementById('bulk-delete-btn');
   const originalHTML = bulkDeleteBtn ? bulkDeleteBtn.innerHTML : '';
+
   if (bulkDeleteBtn) {
     bulkDeleteBtn.disabled = true;
     bulkDeleteBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Deleting...';
   }
-  
-  let successCount = 0;
-  let failCount = 0;
-  const errors = [];
-  
-  // Process each selected item
-  for (const checkbox of checkboxes) {
-    const id = parseInt(checkbox.dataset.id);
-    const pdfUrl = checkbox.dataset.url;
-    
+
+  let success = 0;
+  const failures = [];
+
+  for (const cb of selected) {
+    const empId = parseInt(cb.dataset.employeeId);
+    const effectiveDate = cb.dataset.effectiveDate || '';
+    const pdfUrl = cb.dataset.pdfUrl || '';
+
     try {
-      // Extract filename from URL
-      let filename = null;
-      if (pdfUrl) {
-        if (pdfUrl.includes('/COMPENSATION_LETTERS/')) {
-          filename = pdfUrl.split('/COMPENSATION_LETTERS/')[1];
-        } else {
-          const parts = pdfUrl.split('/');
-          filename = parts[parts.length - 1];
-        }
-        
-        if (filename && filename.includes('?')) {
-          filename = filename.split('?')[0];
-        }
-      }
-      
-      // Delete from storage
+      await deleteCompensationLetter(empId, effectiveDate, pdfUrl, true); // silent per-item
+      success++;
+    } catch (e) {
+      failures.push(e?.message || 'Unknown error');
+    }
+  }
+
+  if (bulkDeleteBtn) {
+    bulkDeleteBtn.innerHTML = originalHTML;
+  }
+
+  // Refresh and reset
+  const selectAll = document.getElementById('select-all-compensation');
+  if (selectAll) selectAll.checked = false;
+
+  await refreshWageHistory();
+  updateBulkDeleteButton();
+
+  if (failures.length) {
+    alert(`✅ Deleted ${success}/${selected.length}\n\n❌ Failures:\n${failures.slice(0, 5).join('\n')}${failures.length > 5 ? '\n...more' : ''}`);
+  } else {
+    alert(`✅ Deleted ${success} compensation letter${success > 1 ? 's' : ''}.`);
+  }
+}
+
+async function refreshWageHistory() {
+  if (!currentEmployeeId) {
+    console.warn('⚠️ No employee selected for refresh');
+    return;
+  }
+  console.log('🔄 Refreshing wage history for employee:', currentEmployeeId);
+  await loadWageHistory(currentEmployeeId);
+}
+
+/**
+ * Delete ONE compensation letter (all positions for that letter) + its PDF.
+ * If pdfUrl exists, delete by (employee_id + pdf_url) so multiple letters with the SAME effective_date still work.
+ */
+async function deleteCompensationLetter(employeeId, effectiveDate, pdfUrl, skipConfirm = false) {
+  if (!skipConfirm) {
+    const ok = confirm(
+      '⚠️ Delete this compensation letter?\n\n' +
+      'This deletes ALL positions for that letter AND the PDF file from storage.\n\n' +
+      'This action cannot be undone.'
+    );
+    if (!ok) return;
+  }
+
+  try {
+    console.log('🗑️ Deleting compensation letter...');
+    console.log('employeeId:', employeeId, 'effectiveDate:', effectiveDate, 'pdfUrl:', pdfUrl);
+
+    // Build filter
+    let query = window.supabaseClient.from('wage_history').select('pdf_url');
+
+    query = query.eq('employee_id', employeeId);
+
+    if (pdfUrl && pdfUrl.trim()) {
+      query = query.eq('pdf_url', pdfUrl.trim());
+    } else if (effectiveDate) {
+      query = query.eq('effective_date', effectiveDate);
+    }
+
+    // Fetch one record so we know the pdf_url (if not provided)
+    const { data: records, error: fetchError } = await query;
+    if (fetchError) throw fetchError;
+
+    const resolvedPdfUrl = (pdfUrl && pdfUrl.trim()) ? pdfUrl.trim() : (records && records[0] ? records[0].pdf_url : null);
+
+    // Delete file from storage (best-effort)
+    if (resolvedPdfUrl) {
+      const filename = extractCompLetterFilename(resolvedPdfUrl);
       if (filename) {
         const { error: storageError } = await window.supabaseClient
           .storage
           .from('COMPENSATION_LETTERS')
           .remove([filename]);
-        
+
         if (storageError) {
-          console.warn(`⚠️ Storage deletion warning for ${filename}:`, storageError);
+          console.warn('⚠️ Storage deletion warning:', storageError);
         } else {
-          console.log(`✅ Deleted file: ${filename}`);
-        }
-      }
-      
-      // Delete from database
-      const { error: dbError } = await window.supabaseClient
-        .from('compensation_letters')
-        .delete()
-        .eq('id', id);
-      
-      if (dbError) {
-        throw dbError;
-      }
-      
-      successCount++;
-      console.log(`✅ Deleted record ID: ${id}`);
-      
-    } catch (error) {
-      failCount++;
-      errors.push(`ID ${id}: ${error.message}`);
-      console.error(`❌ Failed to delete ID ${id}:`, error);
-    }
-  }
-  
-  // Restore button
-  if (bulkDeleteBtn) {
-    bulkDeleteBtn.innerHTML = originalHTML;
-  }
-  
-  // Show results
-  console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-  console.log(`📊 BULK DELETE COMPLETE`);
-  console.log(`   ✅ Success: ${successCount}`);
-  console.log(`   ❌ Failed: ${failCount}`);
-  console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-  
-  let message = '';
-  if (successCount > 0) {
-    message += `✅ Successfully deleted ${successCount} compensation letter${successCount > 1 ? 's' : ''}!\n\n`;
-  }
-  if (failCount > 0) {
-    message += `❌ Failed to delete ${failCount} letter${failCount > 1 ? 's' : ''}\n\n`;
-    message += `Errors:\n${errors.slice(0, 5).join('\n')}`;
-    if (errors.length > 5) {
-      message += `\n... and ${errors.length - 5} more`;
-    }
-  }
-  
-  alert(message || '✅ Deletion complete!');
-  
-  // Refresh the list
-  console.log('🔄 Refreshing wage history...');
-  refreshWageHistory();
-}
-
-// Make functions globally accessible
-if (typeof window !== 'undefined') {
-  window.toggleSelectAll = toggleSelectAll;
-  window.updateBulkDeleteButton = updateBulkDeleteButton;
-  window.bulkDeleteSelected = bulkDeleteSelected;
-}
-
-console.log('✅ Improved bulk delete functions loaded');
-
-
-
-
-/**
- * Refresh wage history for current employee
- */
-function refreshWageHistory() {
-  if (currentEmployeeId) {
-    console.log('🔄 Refreshing wage history for employee:', currentEmployeeId);
-    loadWageHistory(currentEmployeeId);
-  } else {
-    console.warn('⚠️ No employee ID set for refresh');
-  }
-}
-
-/**
- * View compensation PDF
- * @param {number} compensationId - The ID of the compensation letter
- */
-async function viewCompensationPDF(compensationId) {
-  console.log('📄 Opening PDF for compensation ID:', compensationId);
-  
-  try {
-    // Fetch the PDF URL from database
-    const { data, error } = await window.supabaseClient
-      .from('compensation_letters')
-      .select('pdf_url')
-      .eq('id', compensationId)
-      .single();
-    
-    if (error) throw error;
-    
-    if (data && data.pdf_url) {
-      console.log('✅ Opening PDF:', data.pdf_url);
-      // Open PDF in new tab
-      window.open(data.pdf_url, '_blank');
-    } else {
-      alert('❌ PDF not found for this compensation letter');
-    }
-  } catch (error) {
-    console.error('❌ Error viewing PDF:', error);
-    alert('Error loading PDF: ' + error.message);
-  }
-}
-
-/**
- * Delete compensation history entry
- * @param {number} compensationId - The ID of the compensation letter to delete
- */
-async function deleteCompensationHistory(compensationId) {
-  // Confirm deletion
-  if (!confirm(
-    '⚠️ DELETE COMPENSATION LETTER\n\n' +
-    'This will permanently delete:\n' +
-    '• The database record\n' +
-    '• The PDF file from storage\n\n' +
-    'This action CANNOT be undone!\n\n' +
-    'Are you sure you want to continue?'
-  )) {
-    return;
-  }
-  
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🗑️ Starting deletion process for ID:', compensationId);
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  
-  let deletedFromStorage = false;
-  let deletedFromDatabase = false;
-  
-  try {
-    // ========== STEP 1: FETCH RECORD ==========
-    console.log('📋 Step 1: Fetching record from database...');
-    const { data: record, error: fetchError } = await window.supabaseClient
-      .from('compensation_letters')
-      .select('*')
-      .eq('id', compensationId)
-      .single();
-    
-    if (fetchError) throw new Error('Failed to fetch record: ' + fetchError.message);
-    if (!record) throw new Error('Record not found in database');
-    
-    console.log('✅ Record found:', record);
-    
-    // ========== STEP 2: EXTRACT FILENAME ==========
-    console.log('📁 Step 2: Extracting filename from URL...');
-    const pdfUrl = record.pdf_url;
-    
-    if (!pdfUrl) {
-      console.warn('⚠️ No PDF URL in record - skipping storage deletion');
-    } else {
-      // Extract filename from URL
-      let filename = null;
-      
-      // Try different URL formats
-      if (pdfUrl.includes('/object/public/COMPENSATION_LETTERS/')) {
-        // Format: https://.../storage/v1/object/public/COMPENSATION_LETTERS/filename.pdf
-        filename = pdfUrl.split('/COMPENSATION_LETTERS/')[1];
-      } else if (pdfUrl.includes('COMPENSATION_LETTERS/')) {
-        // Simpler format
-        filename = pdfUrl.split('COMPENSATION_LETTERS/')[1];
-      } else {
-        // Fallback: just get last part of URL
-        const parts = pdfUrl.split('/');
-        filename = parts[parts.length - 1];
-      }
-      
-      // Remove any query parameters
-      if (filename && filename.includes('?')) {
-        filename = filename.split('?')[0];
-      }
-      
-      console.log('📄 Extracted filename:', filename);
-      
-      if (!filename) {
-        console.warn('⚠️ Could not extract filename - skipping storage deletion');
-      } else {
-        // ========== STEP 3: DELETE FROM STORAGE ==========
-        console.log('🗑️ Step 3: Deleting file from storage bucket...');
-        const { data: storageData, error: storageError } = await window.supabaseClient
-          .storage
-          .from('COMPENSATION_LETTERS')
-          .remove([filename]);
-        
-        if (storageError) {
-          console.error('❌ Storage deletion error:', storageError);
-          console.warn('⚠️ Will continue with database deletion anyway');
-        } else {
-          console.log('✅ File deleted from storage:', storageData);
-          deletedFromStorage = true;
+          console.log('✅ Deleted PDF from storage:', filename);
         }
       }
     }
-    
-    // ========== STEP 4: DELETE FROM DATABASE ==========
-    console.log('🗑️ Step 4: Deleting record from database...');
-    const { error: dbError } = await window.supabaseClient
-      .from('compensation_letters')
-      .delete()
-      .eq('id', compensationId);
-    
-    if (dbError) throw new Error('Failed to delete from database: ' + dbError.message);
-    
-    console.log('✅ Record deleted from database');
-    deletedFromDatabase = true;
-    
-    // ========== STEP 5: SUCCESS MESSAGE ==========
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('✅ DELETION COMPLETE');
-    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    
-    let successMessage = '✅ Deletion Complete!\n\n';
-    if (deletedFromStorage) {
-      successMessage += '✓ PDF file removed from storage\n';
+
+    // Delete wage_history rows (all positions for this letter)
+    let del = window.supabaseClient.from('wage_history').delete().eq('employee_id', employeeId);
+
+    if (resolvedPdfUrl) {
+      del = del.eq('pdf_url', resolvedPdfUrl);
+    } else if (effectiveDate) {
+      del = del.eq('effective_date', effectiveDate);
     }
-    if (deletedFromDatabase) {
-      successMessage += '✓ Database record removed\n';
+
+    const { error: delError } = await del;
+    if (delError) throw delError;
+
+    console.log('✅ Deleted wage_history rows successfully');
+
+    if (typeof showToast === 'function') {
+      showToast('✅ Compensation letter deleted', 'success');
     }
-    
-    alert(successMessage);
-    
-    // Refresh the list
-    refreshWageHistory();
-    
-  } catch (error) {
-    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.error('❌ DELETION FAILED');
-    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.error('Error:', error);
-    
-    let errorMessage = '❌ Error during deletion:\n\n' + error.message + '\n\n';
-    if (deletedFromStorage && !deletedFromDatabase) {
-      errorMessage += '⚠️ WARNING: PDF was deleted from storage but database record still exists!';
-    } else if (!deletedFromStorage && deletedFromDatabase) {
-      errorMessage += '⚠️ WARNING: Database record was deleted but PDF file may still exist in storage!';
-    }
-    errorMessage += '\n\nCheck browser console (F12) for details.';
-    
-    alert(errorMessage);
-  }
-}
 
+    // Refresh UI
+    await refreshWageHistory();
 
-
-/**
- * Helper: Get icon for compensation type
- * @param {string} type - The compensation type
- * @returns {string} Font Awesome icon class
- */
-function getTypeIcon(type) {
-  const typeStr = (type || '').toLowerCase();
-  
-  // Check for specific types
-  if (typeStr.includes('hire')) return 'fa-solid fa-user-plus';
-  if (typeStr.includes('promotion')) return 'fa-solid fa-arrow-trend-up';
-  if (typeStr.includes('raise')) return 'fa-solid fa-money-bill-trend-up';
-  if (typeStr.includes('merit')) return 'fa-solid fa-star';
-  if (typeStr.includes('adjustment')) return 'fa-solid fa-sliders';
-  if (typeStr.includes('transfer')) return 'fa-solid fa-arrows-turn-right';
-  if (typeStr.includes('hourly')) return 'fa-solid fa-clock';
-  if (typeStr.includes('salary')) return 'fa-solid fa-money-bill';
-  
-  // Default icon
-  return 'fa-solid fa-file-lines';
-}
-
-/**
- * Helper: Get color for compensation type
- * @param {string} type - The compensation type
- * @returns {string} Tailwind color name
- */
-function getTypeColor(type) {
-  const typeStr = (type || '').toLowerCase();
-  
-  // Check for specific types
-  if (typeStr.includes('hire')) return 'blue';
-  if (typeStr.includes('promotion')) return 'purple';
-  if (typeStr.includes('raise')) return 'green';
-  if (typeStr.includes('merit')) return 'yellow';
-  if (typeStr.includes('adjustment')) return 'orange';
-  if (typeStr.includes('transfer')) return 'indigo';
-  if (typeStr.includes('hourly')) return 'cyan';
-  if (typeStr.includes('salary')) return 'emerald';
-  
-  // Default color
-  return 'slate';
-}
-
-/**
- * Helper: Format date
- * @param {string} dateString - ISO date string
- * @returns {string} Formatted date
- */
-function formatDate(dateString) {
-  if (!dateString) return 'N/A';
-  
-  try {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { 
-      year: 'numeric', 
-      month: 'short', 
-      day: 'numeric' 
-    });
-  } catch (error) {
-    console.error('Error formatting date:', error);
-    return 'Invalid Date';
-  }
-}
-
-// Export for use in other functions
-window.loadWageHistory = loadWageHistory;
-window.refreshWageHistory = refreshWageHistory;
-window.viewCompensationPDF = viewCompensationPDF;
-window.deleteCompensationHistory = deleteCompensationHistory;
-
-console.log('✅ Wage history functions loaded');
-
-
-// ============================================================================
-// DELETE ENTIRE COMPENSATION LETTER (ALL POSITIONS)
-// ============================================================================
-// ============================================================================
-// DELETE ENTIRE COMPENSATION LETTER (ALL POSITIONS)
-// ============================================================================
-// ============================================================================
-// DELETE ENTIRE COMPENSATION LETTER (ALL POSITIONS)
-// ============================================================================
-async function deleteCompensationLetter(employeeId, effectiveDate) {
-  if (!confirm('⚠️ Are you sure you want to delete this entire compensation letter?\n\nThis will delete ALL positions (Primary, Secondary, Tertiary) for this effective date AND the PDF file from storage.')) {
-    return;
-  }
-  
-  try {
-    console.log('🗑️ Starting deletion process...');
-    console.log('Employee ID:', employeeId);
-    console.log('Effective Date:', effectiveDate);
-    
-    // STEP 1: Get all wage_history records to find PDF URLs
-    const { data: records, error: fetchError } = await supabaseClient
-      .from('wage_history')
-      .select('pdf_url')
-      .eq('employee_id', employeeId)
-      .eq('effective_date', effectiveDate);
-    
-    if (fetchError) {
-      console.error('❌ Fetch error:', fetchError);
-      throw fetchError;
-    }
-    
-    console.log('📋 Found records:', records?.length || 0);
-    
-    // STEP 2: Delete PDF files from Storage (if they exist)
-    if (records && records.length > 0) {
-      const pdfUrl = records[0].pdf_url; // All records share the same PDF
-      
-      if (pdfUrl) {
-        // Extract filename from URL
-        const fileName = pdfUrl.split('/COMPENSATION_LETTERS/').pop();
-        
-        console.log('🗑️ Deleting file from storage:', fileName);
-        
-        const { error: storageError } = await supabaseClient
-          .storage
-          .from('COMPENSATION_LETTERS')
-          .remove([fileName]);
-        
-        if (storageError) {
-          console.error('⚠️ Storage deletion error:', storageError);
-          // Continue even if storage deletion fails
-        } else {
-          console.log('✅ File deleted from storage');
-        }
-      }
-    }
-    
-    // STEP 3: Delete ALL wage_history records with this employee_id and effective_date
-    console.log('🗑️ Deleting database records...');
-    const { error: deleteError } = await supabaseClient
-      .from('wage_history')
-      .delete()
-      .eq('employee_id', employeeId)
-      .eq('effective_date', effectiveDate);
-    
-    if (deleteError) {
-      console.error('❌ Delete error:', deleteError);
-      throw deleteError;
-    }
-    
-    console.log('✅ Database records deleted');
-    
-    showToast('✅ Compensation letter deleted successfully (from database AND storage)', 'success');
-    
-    // STEP 4: Reload wage history to refresh the UI
-    console.log('🔄 Refreshing wage history...');
-    if (typeof loadWageHistory === 'function') {
-      await loadWageHistory(employeeId);
-      console.log('✅ Wage history refreshed');
-    } else {
-      console.warn('⚠️ loadWageHistory function not found');
-    }
-    
   } catch (err) {
     console.error('❌ Error deleting compensation letter:', err);
-    console.error('Error stack:', err.stack);
-    showToast('❌ Failed to delete compensation letter: ' + err.message, 'error');
+    if (!skipConfirm) {
+      alert('❌ Failed to delete compensation letter: ' + (err?.message || 'Unknown error'));
+    }
+    throw err;
   }
 }
 
-// Make the function globally accessible
+// Expose globals used by inline onclick handlers
+window.loadWageHistory = loadWageHistory;
+window.refreshWageHistory = refreshWageHistory;
+window.toggleSelectAll = toggleSelectAll;
+window.updateBulkDeleteButton = updateBulkDeleteButton;
+window.bulkDeleteSelected = bulkDeleteSelected;
 window.deleteCompensationLetter = deleteCompensationLetter;
-console.log('✅ deleteCompensationLetter function loaded');
+
+console.log('✅ Wage & Position History functions loaded (clean version)');
+
 // ============================================================================
 // GROUP WAGE HISTORY BY COMPENSATION LETTER (DATE + EMPLOYEE)
 // ============================================================================
@@ -11884,18 +11548,6 @@ window.toggleLetterExpansion = function(letterIndex) {
   }
 };
 
-
-
-
-
-
-
-
-// RENDER GROUPED WAGE HISTORY
-// ============================================================================
-// ============================================================================
-// RENDER GROUPED WAGE HISTORY
-// ============================================================================
 function renderWageHistory() {
   const container = document.getElementById('comp-letter-history-body');
   
