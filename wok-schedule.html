@@ -892,6 +892,190 @@
                 min-width: 100%;
             }
         }
+
+
+/* DUPLICATE SCHEDULE MODAL */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-overlay.show {
+    display: flex;
+    animation: fadeIn 0.2s ease;
+}
+
+.modal-dialog {
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    max-width: 800px;
+    width: 90%;
+    max-height: 85vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    animation: slideUp 0.3s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes slideUp {
+    from {
+        transform: translateY(50px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+.modal-header {
+    padding: 24px 32px;
+    border-bottom: 2px solid #edebe9;
+    background: linear-gradient(180deg, #fafafa 0%, #f5f5f5 100%);
+}
+
+.modal-header h3 {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 600;
+    color: #323130;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.modal-body {
+    padding: 24px 32px;
+    overflow-y: auto;
+    flex: 1;
+    background: #faf9f8;
+}
+
+.modal-footer {
+    padding: 16px 32px;
+    border-top: 1px solid #edebe9;
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+    background: #f3f2f1;
+}
+
+.schedule-select-item {
+    background: white;
+    border: 2px solid #d2d0ce;
+    border-radius: 6px;
+    padding: 20px;
+    margin-bottom: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.schedule-select-item:hover {
+    border-color: #0078d4;
+    box-shadow: 0 4px 12px rgba(0, 120, 212, 0.15);
+    transform: translateY(-2px);
+}
+
+.schedule-select-item.selected {
+    border-color: #0078d4;
+    background: #e3f2fd;
+    box-shadow: 0 0 0 3px rgba(0, 120, 212, 0.1);
+}
+
+.schedule-select-item h4 {
+    margin: 0 0 8px 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: #323130;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.schedule-select-item p {
+    margin: 4px 0 0 0;
+    font-size: 13px;
+    color: #605e5c;
+}
+
+.schedule-select-item.selected h4 {
+    color: #0078d4;
+}
+
+.duplicate-info {
+    background: #fff8e1;
+    border-left: 4px solid #ff8c00;
+    padding: 16px;
+    margin-bottom: 20px;
+    border-radius: 4px;
+}
+
+.duplicate-info h4 {
+    margin: 0 0 8px 0;
+    color: #e65100;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.duplicate-info p {
+    margin: 4px 0;
+    color: #856404;
+    font-size: 13px;
+}
+
+.target-week-selector {
+    background: white;
+    border: 2px solid #0078d4;
+    border-radius: 6px;
+    padding: 20px;
+    margin-top: 20px;
+}
+
+.target-week-selector label {
+    display: block;
+    font-weight: 600;
+    font-size: 14px;
+    color: #323130;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.target-week-selector input[type="date"] {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #d2d0ce;
+    border-radius: 4px;
+    font-size: 16px;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: #8a8886;
+}
+
+.empty-state i {
+    font-size: 48px;
+    margin-bottom: 16px;
+    color: #d2d0ce;
+}
+
+
     </style>
 </head>
 <body>
@@ -1129,6 +1313,7 @@
             let employees = ['FEI', 'DAMIAN', 'CHANG LI', 'PEDRO', 'YUXI YE'];
             let currentSchedule = {};
             let currentScheduleId = null;
+            let selectedScheduleForDuplicate = null;
 
             const daysOfWeek = [
                 { chinese: '禮拜天', english: 'Sunday' },
@@ -1186,11 +1371,189 @@
                 else if (viewName === 'employees') renderEmployeeList();
             }
 
-            function showDuplicateDialog() {
-                showView('schedule');
-                showToast('Select a schedule from saved schedules, then use Schedule > Duplicate', 'info');
-                setTimeout(() => showView('saved'), 1000);
-            }
+            async function showDuplicateDialog() {
+    closeAllMenus();
+    
+    if (!dbConnected) {
+        showToast('⚠️ Database connection required', 'error');
+        return;
+    }
+
+    document.getElementById('duplicateModal').classList.add('show');
+    document.getElementById('confirmDuplicateBtn').disabled = true;
+    document.getElementById('targetWeekSelector').style.display = 'none';
+    selectedScheduleForDuplicate = null;
+
+    // Load saved schedules
+    try {
+        const { data, error } = await supabaseClient
+            .from('schedules')
+            .select('*')
+            .order('week_start_date', { ascending: false });
+
+        if (error) throw error;
+
+        const listContainer = document.getElementById('duplicateSchedulesList');
+
+        if (!data || data.length === 0) {
+            listContainer.innerHTML = `
+                <div class="empty-state">
+                    <i class="fas fa-inbox"></i>
+                    <p style="margin-top: 12px;">No saved schedules found.</p>
+                    <p style="font-size: 12px;">Create and save a schedule first.</p>
+                </div>
+            `;
+            return;
+        }
+
+        listContainer.innerHTML = data.map(schedule => {
+            const date = new Date(schedule.week_start_date + 'T00:00:00');
+            const dateStr = date.toLocaleDateString('en-US', {
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+            const savedDate = new Date(schedule.created_at).toLocaleDateString('en-US', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+
+            return `
+                <div 
+                    class="schedule-select-item" 
+                    data-schedule-id="${schedule.id}"
+                    data-week-start="${schedule.week_start_date}"
+                    onclick="ScheduleApp.selectScheduleForDuplicate('${schedule.id}', '${schedule.week_start_date}')"
+                >
+                    <h4>
+                        <i class="fas fa-calendar-week"></i>
+                        ${dateStr}
+                    </h4>
+                    <p><i class="fas fa-save"></i> Saved: ${savedDate}</p>
+                </div>
+            `;
+        }).join('');
+
+    } catch (err) {
+        console.error('Failed to load schedules:', err);
+        document.getElementById('duplicateSchedulesList').innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-exclamation-triangle" style="color: #d13438;"></i>
+                <p style="color: #d13438; margin-top: 12px;">Failed to load schedules</p>
+            </div>
+        `;
+    }
+}
+
+function selectScheduleForDuplicate(scheduleId, weekStart) {
+    selectedScheduleForDuplicate = { id: scheduleId, weekStart: weekStart };
+
+    // Update UI
+    document.querySelectorAll('.schedule-select-item').forEach(item => {
+        item.classList.remove('selected');
+    });
+    event.currentTarget.classList.add('selected');
+
+    // Show target date selector
+    document.getElementById('targetWeekSelector').style.display = 'block';
+    
+    // Set minimum date to next Sunday after selected schedule
+    const selectedDate = new Date(weekStart + 'T00:00:00');
+    const nextSunday = new Date(selectedDate);
+    nextSunday.setDate(selectedDate.getDate() + 7);
+    document.getElementById('duplicateTargetDate').value = nextSunday.toISOString().split('T')[0];
+    
+    document.getElementById('confirmDuplicateBtn').disabled = false;
+}
+
+function closeDuplicateDialog() {
+    document.getElementById('duplicateModal').classList.remove('show');
+    selectedScheduleForDuplicate = null;
+}
+
+async function confirmDuplicate() {
+    if (!selectedScheduleForDuplicate) {
+        showToast('⚠️ Please select a schedule to duplicate', 'error');
+        return;
+    }
+
+    const targetDate = document.getElementById('duplicateTargetDate').value;
+    if (!targetDate) {
+        showToast('⚠️ Please select a target Sunday', 'error');
+        return;
+    }
+
+    const targetDateObj = new Date(targetDate + 'T00:00:00');
+    if (targetDateObj.getDay() !== 0) {
+        showToast('❌ Target date must be a SUNDAY!', 'error');
+        return;
+    }
+
+    try {
+        // Check if target date already has a schedule
+        const { data: existing } = await supabaseClient
+            .from('schedules')
+            .select('id')
+            .eq('week_start_date', targetDate)
+            .maybeSingle();
+
+        if (existing) {
+            showToast('⚠️ Schedule already exists for this date', 'error');
+            return;
+        }
+
+        // Load the source schedule
+        const { data: sourceSchedule, error } = await supabaseClient
+            .from('schedules')
+            .select('*')
+            .eq('id', selectedScheduleForDuplicate.id)
+            .single();
+
+        if (error) throw error;
+
+        // Create the duplicate
+        const { error: insertError } = await supabaseClient
+            .from('schedules')
+            .insert({
+                week_start: targetDate,
+                week_start_date: targetDate,
+                schedule_data: sourceSchedule.schedule_data,
+                employees: sourceSchedule.employees || employees
+            });
+
+        if (insertError) throw insertError;
+
+        showToast('✅ Schedule duplicated successfully!', 'success');
+        closeDuplicateDialog();
+        
+        // Load the new schedule
+        document.getElementById('weekStart').value = targetDate;
+        await onWeekChange();
+        showView('schedule');
+
+    } catch (err) {
+        console.error('Duplicate failed:', err);
+        showToast('❌ Failed to duplicate schedule', 'error');
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
             function showAddEmployeeDialog() {
                 showView('employees');
@@ -2174,13 +2537,88 @@
                 toggleRole,
                 autoAssignWeek,
                 generatePDFWithJSPDF,
+                selectScheduleForDuplicate,  // <- ADD THIS
+    closeDuplicateDialog,        // <- ADD THIS
+    confirmDuplicate,            // <- ADD THIS
+    showAddEmployeeDialog,
                 generateWokChefReport
+                
             };
         })();
 
         document.addEventListener('DOMContentLoaded', () => {
             ScheduleApp.init();
         });
+
+
+        // Close duplicate modal when clicking overlay
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('duplicateModal')?.addEventListener('click', function(e) {
+        if (e.target === this) {
+            ScheduleApp.closeDuplicateDialog();
+        }
+    });
+});
+
+
+
     </script>
+<!-- DUPLICATE SCHEDULE MODAL -->
+    <div class="modal-overlay" id="duplicateModal">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3>
+                    <i class="fas fa-copy"></i>
+                    Duplicate Schedule
+                </h3>
+            </div>
+            <div class="modal-body">
+                <div class="duplicate-info">
+                    <h4>📋 How It Works</h4>
+                    <p><strong>Step 1:</strong> Select a saved schedule below to use as template</p>
+                    <p><strong>Step 2:</strong> Choose the target Sunday for the new copy</p>
+                    <p><strong>Step 3:</strong> Click "Duplicate Schedule" to create the copy</p>
+                </div>
+
+                <h4 style="margin-bottom: 16px; color: #323130; font-size: 16px; font-weight: 600;">
+                    Select Source Schedule:
+                </h4>
+                
+                <div id="duplicateSchedulesList">
+                    <div class="empty-state">
+                        <i class="fas fa-spinner fa-spin"></i>
+                        <p>Loading saved schedules...</p>
+                    </div>
+                </div>
+
+                <div class="target-week-selector" id="targetWeekSelector" style="display: none;">
+                    <label for="duplicateTargetDate">
+                        <i class="fas fa-calendar-plus"></i>
+                        Target Sunday (New Schedule Week):
+                    </label>
+                    <input type="date" id="duplicateTargetDate" />
+                    <small style="display: block; margin-top: 8px; color: #856404;">
+                        ⚠️ Must be a Sunday. Cannot overwrite existing schedules.
+                    </small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="ScheduleApp.closeDuplicateDialog()">
+                    <i class="fas fa-times"></i> Cancel
+                </button>
+                <button 
+                    class="btn-success" 
+                    id="confirmDuplicateBtn" 
+                    onclick="ScheduleApp.confirmDuplicate()"
+                    disabled
+                >
+                    <i class="fas fa-copy"></i> Duplicate Schedule
+                </button>
+            </div>
+        </div>
+    </div>
+
 </body>
+
+
 </html>
