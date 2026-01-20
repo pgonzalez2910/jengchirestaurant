@@ -809,14 +809,11 @@
                         <option value="">All Vendors</option>
                     </select>
                 </div>
-                <div class="filter-group">
-                    <label>Status Filter</label>
-                    <select id="statusFilter" class="search-input" onchange="applyFilters()">
-                        <option value="">All Status</option>
-                        <option value="active">Active</option>
-                        <option value="inactive">Inactive</option>
-                    </select>
-                </div>
+              
+
+
+
+
                 <div style="display: flex; gap: 0.5rem; align-items: flex-end;">
                     <button class="btn btn-primary" onclick="exportToCSV()">📥 Export CSV</button>
                     <button class="btn btn-success" onclick="openAddItemModal()">+ Add Item</button>
@@ -832,19 +829,18 @@
                     </div>
                 </div>
                 <table class="data-table" id="inventoryTable">
-                    <thead>
-                        <tr>
-                            <th>Image</th>
-                            <th class="sortable" onclick="sortTable('vendor')">Vendor</th>
-                            <th class="sortable" onclick="sortTable('item_number')">Item No.</th>
-                            <th class="sortable" onclick="sortTable('description')">Description</th>
-                            <th class="sortable" onclick="sortTable('category')">Category</th>
-                            <th class="sortable" onclick="sortTable('price')">Price</th>
-                            <th class="sortable" onclick="sortTable('effective_date')">Effective Date</th>
-                            <th>Status</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
+                  <thead>
+    <tr>
+        <th>Image</th>
+        <th class="sortable" onclick="sortTable('vendor')">Vendor</th>
+        <th class="sortable" onclick="sortTable('item_number')">Item No.</th>
+        <th class="sortable" onclick="sortTable('description')">Description</th>
+        <th class="sortable" onclick="sortTable('category')">Category</th>
+        <th class="sortable" onclick="sortTable('price')">Price</th>
+        <th class="sortable" onclick="sortTable('effective_date')">Purchase Date</th>
+        <th>Actions</th>
+    </tr>
+</thead>
                     <tbody id="inventoryTableBody">
                         <!-- Dynamic content -->
                     </tbody>
@@ -1173,28 +1169,15 @@
 
         async function loadInventoryData() {
     try {
-        // Load ALL vendor items with canonical product and vendor data
+        // Load directly from purchase_history
         const { data, error } = await supabaseClient
-            .from('vendor_items')
-            .select(`
-                *,
-                canonical_product:canonical_products!vendor_items_canonical_product_id_fkey(*),
-                vendor:vendors!vendor_items_vendor_id_fkey(*)
-            `)
-            .order('effective_date', { ascending: false });
+            .from('purchase_history')
+            .select('*')
+            .order('purchase_date', { ascending: false });
 
         if (error) throw error;
 
-        // Group by vendor + item_number and keep only the most recent
-        const latestItems = {};
-        (data || []).forEach(item => {
-            const key = `${item.vendor_id}-${item.item_number}`;
-            if (!latestItems[key] || new Date(item.effective_date) > new Date(latestItems[key].effective_date)) {
-                latestItems[key] = item;
-            }
-        });
-
-        inventoryData = Object.values(latestItems);
+        inventoryData = data || [];
         filteredData = [...inventoryData];
         renderInventoryTable();
         updateRecordCount();
@@ -1205,20 +1188,20 @@
 }
 
         async function loadVendors() {
-            try {
-                const { data, error } = await supabaseClient
-                    .from('vendors')
-                    .select('*')
-                    .order('name');
+    try {
+        // Get unique vendors from purchase_history
+        const { data, error } = await supabaseClient
+            .from('purchase_history')
+            .select('vendor');
 
-                if (error) throw error;
+        if (error) throw error;
 
-                populateVendorSelects(data || []);
-                renderVendorsTable(data || []);
-            } catch (error) {
-                console.error('Error loading vendors:', error);
-            }
-        }
+        const uniqueVendors = [...new Set((data || []).map(item => item.vendor).filter(v => v))].sort();
+        populateVendorFilter(uniqueVendors);
+    } catch (error) {
+        console.error('Error loading vendors:', error);
+    }
+}
 
         async function loadProducts() {
             try {
@@ -1316,7 +1299,7 @@
     if (filteredData.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="9">
+                <td colspan="8">
                     <div class="empty-state">
                         <div class="empty-state-icon">📦</div>
                         <h3>No Items Found</h3>
@@ -1328,23 +1311,19 @@
         return;
     }
 
-    tbody.innerHTML = filteredData.map(item => {
-        // Add cache-busting timestamp to force image reload
-        const timestamp = new Date().getTime();
-        const imageUrl = item.canonical_product?.image_path 
-            ? `${SUPABASE_URL}/storage/v1/object/public/jengchi/${item.canonical_product.image_path}?t=${timestamp}`
-            : 'https://via.placeholder.com/60';
+    tbody.innerHTML = filteredData.map((item, index) => {
+        const timestamp = new Date().getTime() + index;
+        const imageUrl = 'https://via.placeholder.com/60';
 
         return `
             <tr>
-                <td><img src="${imageUrl}" alt="${item.canonical_product?.name || 'Product'}" class="product-image"></td>
-                <td><span class="vendor-badge">${item.vendor?.name || 'Unknown'}</span></td>
-                <td><span class="item-number">${item.item_number}</span></td>
-                <td>${item.canonical_product?.name || 'N/A'}</td>
-                <td>${item.canonical_product?.category || 'N/A'}</td>
-                <td><span class="price-cell">$${parseFloat(item.price).toFixed(2)}</span></td>
-                <td>${formatDate(item.effective_date)}</td>
-                <td><span class="status-badge ${item.status}">${item.status}</span></td>
+                <td><img src="${imageUrl}" alt="${item.product_name || 'Product'}" class="product-image"></td>
+                <td><span class="vendor-badge">${item.vendor || 'Unknown'}</span></td>
+                <td><span class="item-number">${item.item_code || 'N/A'}</span></td>
+                <td>${item.product_name || 'N/A'}</td>
+                <td>General</td>
+                <td><span class="price-cell">$${parseFloat(item.unit_price || 0).toFixed(2)}</span></td>
+                <td>${formatDate(item.purchase_date)}</td>
                 <td>
                     <button class="btn btn-icon btn-secondary" onclick="editItem('${item.id}')" title="Edit">✏️</button>
                 </td>
@@ -1454,24 +1433,36 @@
             applyFilters();
         }
 
-        function applyFilters() {
-            const vendorFilter = document.getElementById('vendorFilter').value;
-            const statusFilter = document.getElementById('statusFilter').value;
+      function applyFilters() {
+    const vendorFilter = document.getElementById('vendorFilter').value;
+    const searchTerm = document.getElementById('searchInput').value.toLowerCase();
 
-            let data = [...filteredData];
+    let data = [...inventoryData];
 
-            if (vendorFilter) {
-                data = data.filter(item => item.vendor_id === vendorFilter);
-            }
+    // Apply search first
+    if (searchTerm) {
+        data = data.filter(item => {
+            const productName = item.product_name?.toLowerCase() || '';
+            const description = item.description?.toLowerCase() || '';
+            const itemCode = item.item_code?.toLowerCase() || '';
+            const vendor = item.vendor?.toLowerCase() || '';
+            
+            return productName.includes(searchTerm) ||
+                   description.includes(searchTerm) ||
+                   itemCode.includes(searchTerm) ||
+                   vendor.includes(searchTerm);
+        });
+    }
 
-            if (statusFilter) {
-                data = data.filter(item => item.status === statusFilter);
-            }
+    // Then apply vendor filter
+    if (vendorFilter) {
+        data = data.filter(item => item.vendor === vendorFilter);
+    }
 
-            filteredData = data;
-            renderInventoryTable();
-            updateRecordCount();
-        }
+    filteredData = data;
+    renderInventoryTable();
+    updateRecordCount();
+}
 
         function searchProducts() {
             const searchTerm = document.getElementById('productSearchInput').value.toLowerCase();
@@ -1999,6 +1990,23 @@
             });
         }
 
+
+
+
+function populateVendorFilter(vendors) {
+    const vendorFilter = document.getElementById('vendorFilter');
+    vendorFilter.innerHTML = '<option value="">All Vendors</option>';
+    
+    vendors.forEach(vendor => {
+        const option = document.createElement('option');
+        option.value = vendor;
+        option.textContent = vendor;
+        vendorFilter.appendChild(option);
+    });
+}
+
+
+
         function populateProductSelects(products) {
             const selects = [
                 document.getElementById('itemCanonicalProduct'),
@@ -2103,28 +2111,17 @@
     showLoading(true);
     try {
         const { data, error } = await supabaseClient
-            .from('vendor_items')
-            .select(`
-                *,
-                canonical_product:canonical_products!vendor_items_canonical_product_id_fkey(*),
-                vendor:vendors!vendor_items_vendor_id_fkey(*)
-            `)
+            .from('purchase_history')
+            .select('*')
             .eq('id', id)
             .single();
 
         if (error) throw error;
 
-        document.getElementById('itemModalTitle').textContent = 'Edit Vendor Item';
-        document.getElementById('itemCanonicalProduct').value = data.canonical_product_id;
-        document.getElementById('itemVendor').value = data.vendor_id;
-        document.getElementById('itemNumber').value = data.item_number;
-        document.getElementById('itemPrice').value = data.price;
-        document.getElementById('itemEffectiveDate').value = data.effective_date;
-        document.getElementById('itemStatus').value = data.status;
-        document.getElementById('itemProductImage').value = data.canonical_product?.image_path || ''; // ADD THIS LINE
+        // For now, just show the details in an alert
+        // We'll implement full editing later
+        showAlert(`Item: ${data.product_name}\nVendor: ${data.vendor}\nPrice: $${data.unit_price}\nDate: ${data.purchase_date}`, 'info');
 
-        document.getElementById('itemForm').dataset.editId = id;
-        openModal('itemModal');
     } catch (error) {
         console.error('Error loading item:', error);
         showAlert('Error loading item: ' + error.message, 'error');
@@ -2132,7 +2129,6 @@
         showLoading(false);
     }
 }
-      
       
       
       
