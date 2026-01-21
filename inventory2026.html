@@ -836,12 +836,17 @@
                 <div class="table-header">
                     <h2>Product Inventory</h2>
                     <div class="table-actions">
+                        <button class="btn btn-icon" onclick="toggleDeleteMode()" id="deleteToggleBtn" title="Delete Mode" style="background: var(--warning-600); color: white; margin-right: 1rem;">🗑️</button>
+                        <button class="btn btn-primary" onclick="deleteSelected()" id="deleteSelectedBtn" style="display: none;">Delete Selected</button>
                         <span id="recordCount" style="color: var(--neutral-600); font-size: 0.875rem;">Loading...</span>
                     </div>
                 </div>
                 <table class="data-table" id="inventoryTable">
                   <thead>
     <tr>
+        <th id="checkboxHeader" style="display: none; width: 50px;">
+            <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll()" style="cursor: pointer; width: 18px; height: 18px;">
+        </th>
         <th>Image</th>
         <th class="sortable" onclick="sortTable('vendor')">Vendor</th>
         <th class="sortable" onclick="sortTable('item_number')">Item No.</th>
@@ -1139,6 +1144,13 @@
         let sortDirection = 'asc';
         let priceComparisonChart = null;
         let marketAnalysisChart = null;
+        let deleteMode = false;
+        let selectedItems = new Set();
+        let currentFilters = {
+            search: '',
+            vendor: '',
+            year: ''
+        };
 
         // Initialize Application
         async function initializeApp() {
@@ -1312,11 +1324,12 @@
        
 function renderInventoryTable() {
     const tbody = document.getElementById('inventoryTableBody');
+    const checkboxHeader = document.getElementById('checkboxHeader');
     
     if (filteredData.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="8">
+                <td colspan="${deleteMode ? 9 : 8}">
                     <div class="empty-state">
                         <div class="empty-state-icon">📦</div>
                         <h3>No Items Found</h3>
@@ -1330,13 +1343,24 @@ function renderInventoryTable() {
 
     tbody.innerHTML = filteredData.map((item, index) => {
         const timestamp = new Date().getTime() + index;
-        // Use actual image from database if available
         const imageUrl = item.image_path 
             ? `${SUPABASE_URL}/storage/v1/object/public/jengchi/${item.image_path}?t=${timestamp}`
             : 'https://via.placeholder.com/60';
 
+        const checkboxCell = deleteMode ? `
+            <td>
+                <input type="checkbox" 
+                       class="item-checkbox" 
+                       data-item-id="${item.id}" 
+                       ${selectedItems.has(item.id) ? 'checked' : ''}
+                       onchange="toggleItemSelection('${item.id}')" 
+                       style="cursor: pointer; width: 18px; height: 18px;">
+            </td>
+        ` : '';
+
         return `
             <tr>
+                ${checkboxCell}
                 <td><img src="${imageUrl}" alt="${item.product_name || 'Product'}" class="product-image"></td>
                 <td><span class="vendor-badge">${item.vendor || 'Unknown'}</span></td>
                 <td><span class="item-number">${item.item_code || 'N/A'}</span></td>
@@ -1466,6 +1490,13 @@ function renderInventoryTable() {
     const yearFilter = document.getElementById('yearFilter').value;
     const searchTerm = document.getElementById('searchInput').value.toLowerCase();
 
+    // Save current filters
+    currentFilters = {
+        search: searchTerm,
+        vendor: vendorFilter,
+        year: yearFilter
+    };
+
     let data = [...inventoryData];
 
     // Apply search first
@@ -1500,6 +1531,13 @@ function renderInventoryTable() {
     renderInventoryTable();
     updateRecordCount();
 }
+
+        function restoreFilters() {
+            document.getElementById('searchInput').value = currentFilters.search;
+            document.getElementById('vendorFilter').value = currentFilters.vendor;
+            document.getElementById('yearFilter').value = currentFilters.year;
+            applyFilters();
+        }
 
         function searchProducts() {
             const searchTerm = document.getElementById('productSearchInput').value.toLowerCase();
@@ -1688,8 +1726,9 @@ function renderInventoryTable() {
         document.getElementById('itemForm').removeAttribute('data-original-item-code');
         document.getElementById('itemForm').removeAttribute('data-original-product-name');
         
-        // Reload data
-        await loadAllData();
+        // Reload data and restore filters
+        await loadInventoryData();
+        restoreFilters();
 
     } catch (error) {
         console.error('Error saving item:', error);
@@ -2190,6 +2229,114 @@ function populateProductSelects(products) {
 
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', initializeApp);
+
+// Delete Mode Functions
+function toggleDeleteMode() {
+    deleteMode = !deleteMode;
+    selectedItems.clear();
+    
+    const deleteToggleBtn = document.getElementById('deleteToggleBtn');
+    const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+    const checkboxHeader = document.getElementById('checkboxHeader');
+    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+    
+    if (deleteMode) {
+        deleteToggleBtn.style.background = 'var(--accent-500)';
+        deleteToggleBtn.textContent = '✖️';
+        deleteToggleBtn.title = 'Exit Delete Mode';
+        deleteSelectedBtn.style.display = 'inline-flex';
+        checkboxHeader.style.display = 'table-cell';
+        selectAllCheckbox.checked = false;
+    } else {
+        deleteToggleBtn.style.background = 'var(--warning-600)';
+        deleteToggleBtn.textContent = '🗑️';
+        deleteToggleBtn.title = 'Delete Mode';
+        deleteSelectedBtn.style.display = 'none';
+        checkboxHeader.style.display = 'none';
+    }
+    
+    renderInventoryTable();
+}
+
+function toggleItemSelection(itemId) {
+    if (selectedItems.has(itemId)) {
+        selectedItems.delete(itemId);
+    } else {
+        selectedItems.add(itemId);
+    }
+    
+    updateSelectAllCheckbox();
+    updateDeleteButtonText();
+}
+
+function toggleSelectAll() {
+    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+    
+    if (selectAllCheckbox.checked) {
+        filteredData.forEach(item => selectedItems.add(item.id));
+    } else {
+        selectedItems.clear();
+    }
+    
+    renderInventoryTable();
+    updateDeleteButtonText();
+}
+
+function updateSelectAllCheckbox() {
+    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+    const visibleItemIds = filteredData.map(item => item.id);
+    const allVisibleSelected = visibleItemIds.length > 0 && 
+                               visibleItemIds.every(id => selectedItems.has(id));
+    
+    selectAllCheckbox.checked = allVisibleSelected;
+}
+
+function updateDeleteButtonText() {
+    const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+    const count = selectedItems.size;
+    deleteSelectedBtn.textContent = count > 0 ? `Delete Selected (${count})` : 'Delete Selected';
+}
+
+async function deleteSelected() {
+    if (selectedItems.size === 0) {
+        showAlert('Please select at least one item to delete', 'error');
+        return;
+    }
+    
+    const count = selectedItems.size;
+    if (!confirm(`Are you sure you want to delete ${count} item${count > 1 ? 's' : ''}? This action cannot be undone.`)) {
+        return;
+    }
+    
+    showLoading(true);
+    
+    try {
+        const itemsToDelete = Array.from(selectedItems);
+        
+        const { error } = await supabaseClient
+            .from('purchase_history')
+            .delete()
+            .in('id', itemsToDelete);
+        
+        if (error) throw error;
+        
+        selectedItems.clear();
+        showAlert(`Successfully deleted ${count} item${count > 1 ? 's' : ''}`, 'success');
+        
+        // Reload data and restore filters
+        await loadInventoryData();
+        restoreFilters();
+        
+        // Exit delete mode
+        toggleDeleteMode();
+        
+    } catch (error) {
+        console.error('Error deleting items:', error);
+        showAlert('Error deleting items: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
 
 // Update product image field when canonical product changes
 // Update product image field when canonical product changes
