@@ -716,6 +716,53 @@
             margin-bottom: 1rem;
             opacity: 0.3;
         }
+
+
+        .assignment-badge {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    background: var(--primary-200);
+    color: var(--primary-800);
+    border-radius: 6px;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    margin-right: 0.25rem;
+    position: relative;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.assignment-badge:hover {
+    background: var(--primary-300);
+    padding-right: 1.75rem;
+}
+
+.assignment-badge:hover::after {
+    content: '×';
+    position: absolute;
+    right: 0.5rem;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--primary-800);
+}
+
+.assignment-select {
+    padding: 0.5rem;
+    border: 2px solid var(--neutral-300);
+    border-radius: 6px;
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: all var(--transition-base);
+}
+
+.assignment-select:hover {
+    border-color: var(--primary-500);
+}
+
+
+
     </style>
 </head>
 <body>
@@ -1231,7 +1278,7 @@
             </td>
         ` : '';
 
-        // Build the assignment badges
+        // Build the assignment badges ONLY — no "Not assigned", no dropdown if assigned
         const assignmentBadges = assignedArray.length > 0 
             ? assignedArray.map(person => `
                 <span class="assignment-badge" 
@@ -1240,25 +1287,18 @@
                     ${person.charAt(0).toUpperCase() + person.slice(1)}
                 </span>`
               ).join(' ')
-            : `<span style="color: var(--neutral-400); font-size: 0.875rem; font-style: italic;">Not assigned</span>`;
+            : ''; // Empty string if no assignment
 
-        // Build the assignment dropdown
-        const assignmentOptions = [
-            { value: '', text: '+ Assign' },
-            { value: 'rony', text: 'Rony', disabled: assignedArray.includes('rony') },
-            { value: 'julio', text: 'Julio', disabled: assignedArray.includes('julio') }
-        ];
-
-        const assignmentSelect = `
+        // Build the assignment dropdown — ONLY shown if NOT assigned
+        const assignmentSelect = assignedArray.length === 0 ? `
             <select class="assignment-select" 
                     onchange="quickAssign('${item.item_code}', this.value); this.value='';"
                     style="margin-left: 0.5rem; width: auto; min-width: 100px;">
-                ${assignmentOptions.map(opt => `
-                    <option value="${opt.value}" ${opt.disabled ? 'disabled' : ''}>
-                        ${opt.text}
-                    </option>`
-                ).join('')}
-            </select>`;
+                <option value="">+ Assign</option>
+                <option value="rony" ${assignedArray.includes('rony') ? 'disabled' : ''}>Rony</option>
+                <option value="julio" ${assignedArray.includes('julio') ? 'disabled' : ''}>Julio</option>
+            </select>`
+        : '';
 
         return `
             <tr>
@@ -1285,6 +1325,8 @@
         `;
     }).join('');
 }
+
+
 
 
 
@@ -2183,28 +2225,101 @@ async function quickAssign(itemCode, person) {
         }
 
         function openBulkAssignModal() {
-            const uniqueProducts = {};
-            inventoryData.forEach(item => {
-                if (item.product_name && !uniqueProducts[item.product_name]) {
-                    uniqueProducts[item.product_name] = { name: item.product_name, count: 0 };
-                }
-                if (item.product_name) uniqueProducts[item.product_name].count++;
-            });
-            
-            const products = Object.values(uniqueProducts).sort((a,b) => a.name.localeCompare(b.name));
-            
-            document.getElementById('productCheckboxList').innerHTML = products.map(p => `
-                <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; cursor: pointer;">
-                    <input type="checkbox" class="product-checkbox" value="${p.name}" style="width: 18px; height: 18px;">
-                    <span>${p.name}</span>
-                    <span style="margin-left: auto; color: var(--neutral-500);">(${p.count})</span>
-                </label>
-            `).join('');
-            
-            document.getElementById('selectAllProducts').checked = false;
-            openModal('bulkAssignModal');
+    // Get unique products by item_code (not product_name) for accurate grouping
+    const uniqueItems = {};
+    inventoryData.forEach(item => {
+        if (item.item_code && !uniqueItems[item.item_code]) {
+            uniqueItems[item.item_code] = {
+                code: item.item_code,
+                name: item.product_name || 'Unnamed',
+                count: 0,
+                assignedTo: new Set()
+            };
         }
-        
+        if (item.item_code) {
+            uniqueItems[item.item_code].count++;
+            if (Array.isArray(item.assigned_to)) {
+                item.assigned_to.forEach(p => uniqueItems[item.item_code].assignedTo.add(p));
+            }
+        }
+    });
+
+    const allProducts = Object.values(uniqueItems).sort((a, b) => a.name.localeCompare(b.name));
+
+    // We'll fill these after user selects a person
+    document.getElementById('productCheckboxList').innerHTML = `
+        <p style="color: var(--neutral-600); padding: 0.5rem 0;">
+            👤 First, select an employee from the "Assign To" dropdown above.
+        </p>
+    `;
+
+    // Listen for change in "Assign To" dropdown
+    const assignToSelect = document.getElementById('bulkAssignTo');
+    const originalHandler = assignToSelect.onchange;
+    assignToSelect.onchange = function() {
+        const person = this.value;
+        if (!person) {
+            document.getElementById('productCheckboxList').innerHTML = `
+                <p style="color: var(--neutral-600); padding: 0.5rem 0;">
+                    👤 Please select an employee to see assignment status.
+                </p>
+            `;
+            return;
+        }
+
+        const assigned = [];
+        const notAssigned = [];
+
+        allProducts.forEach(p => {
+            if (p.assignedTo.has(person)) {
+                assigned.push(p);
+            } else {
+                notAssigned.push(p);
+            }
+        });
+
+        let html = '';
+
+        if (notAssigned.length > 0) {
+            html += `<h4 style="margin: 1rem 0; color: var(--primary-700);">➕ Not Assigned to ${person.charAt(0).toUpperCase() + person.slice(1)}</h4>`;
+            notAssigned.forEach(p => {
+                html += `
+                    <label style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; cursor: pointer; background: white; border-radius: 4px; margin-bottom: 0.25rem;">
+                        <input type="checkbox" class="product-checkbox" value="${p.code}" style="width: 18px; height: 18px;">
+                        <span><strong>${p.name}</strong> (${p.code})</span>
+                        <span style="margin-left: auto; color: var(--neutral-500); font-size: 0.875rem;">${p.count} items</span>
+                    </label>
+                `;
+            });
+        }
+
+        if (assigned.length > 0) {
+            html += `<h4 style="margin: 1.5rem 0 0.5rem 0; color: var(--success-600);">✅ Already Assigned to ${person.charAt(0).toUpperCase() + person.slice(1)}</h4>`;
+            assigned.forEach(p => {
+                html += `
+                    <div style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; background: var(--neutral-100); border-radius: 4px; margin-bottom: 0.25rem; color: var(--neutral-600);">
+                        <i class="fa-solid fa-check" style="color: var(--success-600);"></i>
+                        <span><strong>${p.name}</strong> (${p.code})</span>
+                        <span style="margin-left: auto; color: var(--neutral-500); font-size: 0.875rem;">${p.count} items</span>
+                    </div>
+                `;
+            });
+        }
+
+        if (notAssigned.length === 0 && assigned.length === 0) {
+            html = `<p>No products found.</p>`;
+        }
+
+        document.getElementById('productCheckboxList').innerHTML = html;
+    };
+
+    // Reset handler when modal closes (optional cleanup)
+    openModal('bulkAssignModal');
+}
+
+
+
+
         function toggleAllProducts() {
             const selectAll = document.getElementById('selectAllProducts').checked;
             document.querySelectorAll('.product-checkbox').forEach(cb => {
@@ -2293,6 +2408,8 @@ async function quickAssign(itemCode, person) {
         showLoading(false);
     }
 }
+
+
         document.addEventListener('DOMContentLoaded', initializeApp);
     </script>
 </body>
