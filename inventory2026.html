@@ -1073,11 +1073,11 @@
                 </div>
                 <div class="form-group">
                     <label>Assign To</label>
-                    <select id="bulkAssignTo" class="search-input" multiple style="height: 120px;">
+                    <select id="bulkAssignTo" class="search-input">
+                        <option value="">-- Select Person --</option>
                         <option value="rony">Rony</option>
                         <option value="julio">Julio</option>
                     </select>
-                    <small style="color: var(--neutral-500); font-size: 0.8125rem;">Hold Ctrl/Cmd to select multiple</small>
                 </div>
                 <div class="form-group">
                     <label>Mode</label>
@@ -1088,7 +1088,9 @@
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeModal('bulkAssignModal')">Cancel</button>
-                    <button type="button" class="btn btn-primary" onclick="saveBulkAssignment()">Save</button>
+                    <button type="button" class="btn btn-primary" onclick="saveBulkAssignment()">
+                        <i class="fas fa-save"></i> Save Assignments
+                    </button>
                 </div>
             </div>
         </div>
@@ -2104,51 +2106,75 @@
             const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked')).map(cb => cb.value);
             
             if (selectedProducts.length === 0) {
-                showAlert('Select products', 'error');
+                showAlert('Please select at least one product', 'error');
                 return;
             }
             
-            const assignedToSelect = document.getElementById('bulkAssignTo');
-            const assignedTo = Array.from(assignedToSelect.selectedOptions).map(o => o.value);
+            const person = document.getElementById('bulkAssignTo').value;
             
-            if (assignedTo.length === 0) {
-                showAlert('Select person', 'error');
+            if (!person) {
+                showAlert('Please select a person to assign', 'error');
                 return;
             }
             
             const mode = document.getElementById('assignmentMode').value;
             
-            if (!confirm(`Assign ${selectedProducts.length} product(s) to ${assignedTo.join(', ')}?`)) return;
+            if (!confirm(`Assign ${selectedProducts.length} product(s) to ${person}? This will update all items with these product names.`)) return;
             
             showLoading(true);
             
             try {
                 const itemsToUpdate = inventoryData.filter(item => selectedProducts.includes(item.product_name));
                 
+                console.log('Products to assign:', selectedProducts);
+                console.log('Assigning to:', person);
+                console.log('Items found:', itemsToUpdate.length);
+                console.log('Mode:', mode);
+                
+                let successCount = 0;
+                
                 for (const item of itemsToUpdate) {
                     let newAssignment;
+                    
                     if (mode === 'replace') {
-                        newAssignment = assignedTo;
+                        // Replace mode - just assign to this person
+                        newAssignment = [person];
                     } else {
+                        // Add mode - merge with existing
                         const existing = item.assigned_to || [];
-                        newAssignment = [...new Set([...existing, ...assignedTo])];
+                        // Make sure it's an array
+                        const existingArray = Array.isArray(existing) ? existing : [];
+                        newAssignment = [...new Set([...existingArray, person])];
                     }
+                    
+                    console.log(`Updating item ${item.id} (${item.product_name}) with assignment:`, newAssignment);
                     
                     const { error } = await supabaseClient
                         .from('purchase_history')
                         .update({ assigned_to: newAssignment })
                         .eq('id', item.id);
                     
-                    if (error) throw error;
+                    if (error) {
+                        console.error('Error updating item:', item.id, error);
+                        throw error;
+                    }
+                    
+                    successCount++;
                 }
                 
-                showAlert(`Assigned ${itemsToUpdate.length} items`, 'success');
+                showAlert(`Successfully assigned ${successCount} items to ${person}!`, 'success');
                 closeModal('bulkAssignModal');
+                
+                // Reset the form
+                document.getElementById('bulkAssignTo').value = '';
+                document.querySelectorAll('.product-checkbox').forEach(cb => cb.checked = false);
+                document.getElementById('selectAllProducts').checked = false;
+                
                 await loadInventoryData();
                 applyFilters();
             } catch (error) {
                 console.error('Bulk assign error:', error);
-                showAlert('Error assigning', 'error');
+                showAlert('Error assigning products: ' + error.message, 'error');
             } finally {
                 showLoading(false);
             }
