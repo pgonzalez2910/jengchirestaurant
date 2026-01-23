@@ -1203,6 +1203,8 @@
             renderVendorsTable();
         }
 
+      
+
       function renderInventoryTable() {
     const tbody = document.getElementById('inventoryTableBody');
     if (filteredData.length === 0) {
@@ -1229,6 +1231,35 @@
             </td>
         ` : '';
 
+        // Build the assignment badges
+        const assignmentBadges = assignedArray.length > 0 
+            ? assignedArray.map(person => `
+                <span class="assignment-badge" 
+                      onclick="removeSingleAssignment('${item.id}', '${person}')"
+                      title="Click to remove ${person}">
+                    ${person.charAt(0).toUpperCase() + person.slice(1)}
+                </span>`
+              ).join(' ')
+            : `<span style="color: var(--neutral-400); font-size: 0.875rem; font-style: italic;">Not assigned</span>`;
+
+        // Build the assignment dropdown
+        const assignmentOptions = [
+            { value: '', text: '+ Assign' },
+            { value: 'rony', text: 'Rony', disabled: assignedArray.includes('rony') },
+            { value: 'julio', text: 'Julio', disabled: assignedArray.includes('julio') }
+        ];
+
+        const assignmentSelect = `
+            <select class="assignment-select" 
+                    onchange="quickAssign('${item.item_code}', this.value); this.value='';"
+                    style="margin-left: 0.5rem; width: auto; min-width: 100px;">
+                ${assignmentOptions.map(opt => `
+                    <option value="${opt.value}" ${opt.disabled ? 'disabled' : ''}>
+                        ${opt.text}
+                    </option>`
+                ).join('')}
+            </select>`;
+
         return `
             <tr>
                 ${checkboxCell}
@@ -1239,23 +1270,8 @@
                 <td><span class="price-cell">$${parseFloat(item.unit_price || 0).toFixed(2)}</span></td>
                 <td>${formatDate(item.purchase_date)}</td>
                 <td>
-                    ${assignedArray.length > 0 
-                        ? assignedArray.map(person => 
-                            `<span class="assignment-badge" 
-                                  onclick="removeSingleAssignment('${item.id}', '${person}')" 
-                                  title="Click to remove ${person}">
-                                ${person.charAt(0).toUpperCase() + person.slice(1)}
-                            </span>`
-                          ).join(' ')
-                        : `<span style="color: var(--neutral-400); font-size: 0.875rem; font-style: italic;">Not assigned</span>`
-                    }
-                    <select class="assignment-select" 
-                            onchange="quickAssign('${item.item_code}', this.value); this.value='';" 
-                            style="margin-left: 0.5rem; width: auto; min-width: 100px;">
-                        <option value="">+ Assign</option>
-                        <option value="rony" ${assignedArray.includes('rony') ? 'disabled' : ''}>Rony</option>
-                        <option value="julio" ${assignedArray.includes('julio') ? 'disabled' : ''}>Julio</option>
-                    </select>
+                    ${assignmentBadges}
+                    ${assignmentSelect}
                 </td>
                 <td>
                     <button class="btn btn-icon btn-secondary" onclick="editItem('${item.id}')" title="Edit">
@@ -1271,6 +1287,9 @@
 }
 
 
+
+
+
 async function quickAssign(itemCode, person) {
     if (!person || !itemCode) return;
 
@@ -1278,7 +1297,10 @@ async function quickAssign(itemCode, person) {
     try {
         // Find all rows with this item_code
         const itemsToUpdate = inventoryData.filter(item => item.item_code === itemCode);
-        if (itemsToUpdate.length === 0) return;
+        if (itemsToUpdate.length === 0) {
+            showAlert('No items found with this item code', 'error');
+            return;
+        }
 
         for (const item of itemsToUpdate) {
             const currentAssigned = Array.isArray(item.assigned_to) ? item.assigned_to : [];
@@ -1288,19 +1310,26 @@ async function quickAssign(itemCode, person) {
                     .from('purchase_history')
                     .update({ assigned_to: newAssigned })
                     .eq('id', item.id);
+
                 if (error) throw error;
             }
         }
 
+        showAlert(`${person.charAt(0).toUpperCase() + person.slice(1)} assigned to all items with code: ${itemCode}`, 'success');
+        
+        // Reload data to reflect changes
         await loadInventoryData();
         applyFilters();
+
     } catch (error) {
-        console.error('Assign error:', error);
-        showAlert('Failed to assign employee', 'error');
+        console.error('Quick assign error:', error);
+        showAlert('Error updating assignment', 'error');
     } finally {
         showLoading(false);
     }
 }
+
+
 
 
 
@@ -2183,99 +2212,87 @@ async function quickAssign(itemCode, person) {
             });
         }
         
-        async function saveBulkAssignment() {
-            const selectedProducts = Array.from(document.querySelectorAll('.product-checkbox:checked')).map(cb => cb.value);
-            
-            if (selectedProducts.length === 0) {
-                showAlert('Please select at least one product', 'error');
-                return;
+     async function saveBulkAssignment() {
+    const selectedCodes = Array.from(document.querySelectorAll('.product-checkbox:checked')).map(cb => cb.value);
+    if (selectedCodes.length === 0) {
+        showAlert('Please select at least one product', 'error');
+        return;
+    }
+
+    const person = document.getElementById('bulkAssignTo').value;
+    if (!person) {
+        showAlert('Please select a person to assign', 'error');
+        return;
+    }
+
+    const mode = document.getElementById('assignmentMode').value;
+
+    if (!confirm(`Assign ${selectedCodes.length} product(s) to ${person}? This will update all items with these item codes.`)) return;
+
+    showLoading(true);
+    try {
+        // ✅ NOW FILTERING BY item_code (consistent with quickAssign)
+        const itemsToUpdate = inventoryData.filter(item => selectedCodes.includes(item.item_code));
+
+        let successCount = 0;
+        let errorCount = 0;
+        let alreadyAssignedCount = 0;
+
+        for (const item of itemsToUpdate) {
+            let newAssignment;
+            if (mode === 'replace') {
+                newAssignment = [person];
+            } else {
+                const existingArray = Array.isArray(item.assigned_to) ? item.assigned_to : [];
+                if (existingArray.includes(person)) {
+                    alreadyAssignedCount++;
+                    continue;
+                }
+                newAssignment = [...new Set([...existingArray, person])];
             }
-            
-            const person = document.getElementById('bulkAssignTo').value;
-            
-            if (!person) {
-                showAlert('Please select a person to assign', 'error');
-                return;
-            }
-            
-            const mode = document.getElementById('assignmentMode').value;
-            
-            if (!confirm(`Assign ${selectedProducts.length} product(s) to ${person}? This will update all items with these product names.`)) return;
-            
-            showLoading(true);
-            
-            try {
-                const itemsToUpdate = inventoryData.filter(item => selectedProducts.includes(item.product_name));
-                
-                console.log('🔍 BULK ASSIGN DEBUG:');
-                console.log('Products to assign:', selectedProducts);
-                console.log('Assigning to:', person);
-                console.log('Items found:', itemsToUpdate.length);
-                console.log('Mode:', mode);
-                
-                let successCount = 0;
-                let errorCount = 0;
-                
-                for (const item of itemsToUpdate) {
-                    let newAssignment;
-                    
-                    if (mode === 'replace') {
-                        newAssignment = [person];
-                    } else {
-                        const existing = item.assigned_to || [];
-                        const existingArray = Array.isArray(existing) ? existing : [];
-                        newAssignment = [...new Set([...existingArray, person])];
-                    }
-                    
-                    console.log(`📝 Updating item ${item.id} (${item.product_name})`);
-                    console.log('   Old assignment:', item.assigned_to);
-                    console.log('   New assignment:', newAssignment);
-                    
-                    const { data, error } = await supabaseClient
-                        .from('purchase_history')
-                        .update({ assigned_to: newAssignment })
-                        .eq('id', item.id)
-                        .select();
-                    
-                    if (error) {
-                        console.error('❌ Error updating item:', item.id, error);
-                        errorCount++;
-                    } else {
-                        console.log('✅ Successfully updated:', data);
-                        successCount++;
-                    }
-                }
-                
-                console.log(`\n📊 FINAL RESULTS:`);
-                console.log(`   Success: ${successCount}`);
-                console.log(`   Errors: ${errorCount}`);
-                
-                if (successCount > 0) {
-                    showAlert(`Successfully assigned ${successCount} items to ${person}!`, 'success');
-                }
-                
-                if (errorCount > 0) {
-                    showAlert(`${errorCount} items failed to update`, 'error');
-                }
-                
-                closeModal('bulkAssignModal');
-                
-                // Reset the form
-                document.getElementById('bulkAssignTo').value = '';
-                document.querySelectorAll('.product-checkbox').forEach(cb => cb.checked = false);
-                document.getElementById('selectAllProducts').checked = false;
-                
-                // CRITICAL FIX: Reload data from database to see the changes
-                await loadInventoryData();
-                applyFilters();
-            } catch (error) {
-                console.error('💥 Bulk assign error:', error);
-                showAlert('Error assigning products: ' + error.message, 'error');
-            } finally {
-                showLoading(false);
+
+            const { error } = await supabaseClient
+                .from('purchase_history')
+                .update({ assigned_to: newAssignment })
+                .eq('id', item.id);
+
+            if (error) {
+                console.error('Error updating item:', item.id, error);
+                errorCount++;
+            } else {
+                successCount++;
             }
         }
 
+        // Show results
+        if (successCount > 0) {
+            showAlert(`Successfully assigned ${successCount} items to ${person}!`, 'success');
+        }
+        if (alreadyAssignedCount > 0) {
+            showAlert(`${alreadyAssignedCount} items were already assigned to ${person}`, 'info');
+        }
+        if (errorCount > 0) {
+            showAlert(`${errorCount} items failed to update`, 'error');
+        }
+
+        closeModal('bulkAssignModal');
+        
+        // Reset form
+        document.getElementById('bulkAssignTo').value = '';
+        document.querySelectorAll('.product-checkbox').forEach(cb => cb.checked = false);
+        document.getElementById('selectAllProducts').checked = false;
+
+        // Reload data
+        await loadInventoryData();
+        applyFilters();
+
+    } catch (error) {
+        console.error('Bulk assign error:', error);
+        showAlert('Error assigning products: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
         document.addEventListener('DOMContentLoaded', initializeApp);
     </script>
 </body>
