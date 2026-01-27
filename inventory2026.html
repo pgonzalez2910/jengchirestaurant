@@ -1337,15 +1337,10 @@ input[type="number"].editable-field::-webkit-inner-spin-button {
                     </div>
                 </div>
                 
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                     <div class="form-group">
                         <label>Invoice Date *</label>
                         <input type="date" id="invoiceDate" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Total Amount *</label>
-                        <input type="number" id="invoiceAmount" step="0.01" required readonly style="background: var(--neutral-100); font-weight: 700; font-size: 1.125rem; color: var(--primary-700);">
-                        <small style="color: var(--neutral-500); font-size: 0.8125rem;">Auto-calculated from products</small>
                     </div>
                     <div class="form-group">
                         <label>Products Count</label>
@@ -1384,7 +1379,21 @@ input[type="number"].editable-field::-webkit-inner-spin-button {
                     </div>
 
                     <!-- Selected Products Display -->
-                    <div id="selectedInvoiceProducts" style="display: grid; gap: 1rem;"></div>
+                    <div id="selectedInvoiceProducts" style="display: grid; gap: 1rem; margin-bottom: 2rem;"></div>
+                    
+                    <!-- Invoice Totals -->
+                    <div id="invoiceTotalsSection" style="background: var(--neutral-50); padding: 2rem; border-radius: 12px; border: 2px solid var(--neutral-300);">
+                        <div style="display: grid; grid-template-columns: 1fr auto; gap: 1rem; max-width: 400px; margin-left: auto;">
+                            <div style="text-align: right; font-weight: 600; color: var(--neutral-700);">Subtotal:</div>
+                            <div style="font-family: var(--font-mono); font-weight: 700; font-size: 1.125rem; color: var(--neutral-900);" id="invoiceSubtotal">$0.00</div>
+                            
+                            <div style="text-align: right; font-weight: 600; color: var(--neutral-700);">Tax (8.25%):</div>
+                            <div style="font-family: var(--font-mono); font-weight: 700; font-size: 1.125rem; color: var(--neutral-900);" id="invoiceTax">$0.00</div>
+                            
+                            <div style="text-align: right; font-weight: 700; font-size: 1.25rem; color: var(--primary-900); padding-top: 1rem; border-top: 2px solid var(--neutral-400);">TOTAL:</div>
+                            <div style="font-family: var(--font-mono); font-weight: 700; font-size: 1.5rem; color: var(--primary-700); padding-top: 1rem; border-top: 2px solid var(--neutral-400);" id="invoiceTotal">$0.00</div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="form-actions" style="position: sticky; bottom: 0; background: white; padding-top: 1.5rem; margin-top: 2rem; border-top: 2px solid var(--neutral-200); z-index: 100;">
@@ -1399,6 +1408,7 @@ input[type="number"].editable-field::-webkit-inner-spin-button {
         </div>
     </div>
 </div>
+
 
 
 
@@ -2345,19 +2355,21 @@ function toggleProductSearch() {
             <td><span class="item-number">${inv.invoice_number}</span></td>
             <td><span class="item-number">${inv.check_number || '-'}</span></td>
             <td>${formatDate(inv.invoice_date)}</td>
-            <td><span class="price-cell">$${parseFloat(inv.amount).toFixed(2)}</span></td>
+            <td><span class="price-cell">$${parseFloat(inv.total || inv.amount || 0).toFixed(2)}</span></td>
             <td>${inv.notes || '-'}</td>
             <td>
-                <button class="btn btn-icon btn-secondary" onclick="editInvoice('${inv.id}')">
+                <button class="btn btn-icon btn-secondary" onclick="editInvoice('${inv.id}')" title="Edit Invoice">
                     <i class="fas fa-edit"></i>
                 </button>
-                <button class="btn btn-icon btn-danger" onclick="deleteInvoice('${inv.id}')">
+                <button class="btn btn-icon btn-danger" onclick="deleteInvoice('${inv.id}')" title="Delete Invoice">
                     <i class="fas fa-trash"></i>
                 </button>
             </td>
         </tr>
     `).join('');
 }
+
+
 
 
 
@@ -2577,7 +2589,6 @@ function openAddInvoiceModal() {
 
 
 
-
         function openModal(modalId) {
             document.getElementById(modalId).classList.add('active');
         }
@@ -2627,10 +2638,11 @@ function openAddInvoiceModal() {
         }
 
         
-
-
-        async function saveInvoice(event) {
+async function saveInvoice(event) {
     event.preventDefault();
+    
+    console.log('🔵 saveInvoice started');
+    console.log('🔵 selectedInvoiceProducts:', selectedInvoiceProducts);
     
     if (selectedInvoiceProducts.length === 0) {
         showAlert('Please add at least one product to the invoice', 'error');
@@ -2642,28 +2654,81 @@ function openAddInvoiceModal() {
     try {
         const editId = document.getElementById('invoiceForm').dataset.editId;
         const vendor = document.getElementById('invoiceVendorDropdown').value;
+        const totals = calculateInvoiceTotals();
+
+        console.log('🔵 Invoice totals:', totals);
 
         const invoiceData = {
             vendor: vendor,
             invoice_number: document.getElementById('invoiceNumber').value,
             invoice_date: document.getElementById('invoiceDate').value,
-            amount: parseFloat(document.getElementById('invoiceAmount').value),
             check_number: document.getElementById('invoiceCheckNumber').value || null,
-            notes: document.getElementById('invoiceNotes').value || null
+            notes: document.getElementById('invoiceNotes').value || null,
+            subtotal: totals.subtotal,
+            tax_rate: TAX_RATE,
+            tax_amount: totals.taxAmount,
+            total: totals.total,
+            amount: totals.total // Keep for backwards compatibility
         };
+
+        console.log('🔵 Invoice data to save:', invoiceData);
+
+        let invoiceId = editId;
 
         // Save or update invoice
         if (editId) {
+            console.log('🟡 Updating existing invoice:', editId);
             const { error } = await supabaseClient.from('invoices').update(invoiceData).eq('id', editId);
             if (error) throw error;
+            
+            // Delete existing invoice items
+            console.log('🟡 Deleting old invoice items for invoice:', editId);
+            await supabaseClient.from('invoice_items').delete().eq('invoice_id', editId);
+            
             showAlert('✅ Invoice updated successfully!', 'success');
         } else {
-            const { error } = await supabaseClient.from('invoices').insert([invoiceData]);
-            if (error) throw error;
+            console.log('🟢 Creating new invoice');
+            const { data, error } = await supabaseClient.from('invoices').insert([invoiceData]).select();
+            if (error) {
+                console.error('❌ Error creating invoice:', error);
+                throw error;
+            }
+            invoiceId = data[0].id;
+            console.log('✅ New invoice created with ID:', invoiceId);
             showAlert('✅ Invoice saved successfully!', 'success');
         }
 
-        // Update any modified product names or item codes across ALL matching items
+        // 🔴 CRITICAL: Save invoice items to invoice_items table
+        console.log('🔴 Preparing to save invoice items...');
+        console.log('🔴 Invoice ID:', invoiceId);
+        console.log('🔴 Number of products to save:', selectedInvoiceProducts.length);
+        
+        const invoiceItems = selectedInvoiceProducts.map(product => ({
+            invoice_id: invoiceId,
+            item_code: product.item_code,
+            product_name: product.product_name,
+            vendor: product.vendor,
+            quantity: parseInt(product.quantity),
+            unit_price: parseFloat(product.invoice_price),
+            line_total: parseFloat(product.quantity) * parseFloat(product.invoice_price)
+        }));
+
+        console.log('🔴 Invoice items array:', invoiceItems);
+
+        const { data: insertedItems, error: itemsError } = await supabaseClient
+            .from('invoice_items')
+            .insert(invoiceItems)
+            .select(); // ← ADD .select() to see what was inserted
+
+        if (itemsError) {
+            console.error('❌ ERROR saving invoice items:', itemsError);
+            throw itemsError;
+        }
+
+        console.log('✅✅✅ SUCCESS! Invoice items saved:', insertedItems);
+        console.log('✅ Number of items saved:', insertedItems?.length || 0);
+
+        // Update product names/codes in inventory if changed
         for (const product of selectedInvoiceProducts) {
             const updates = {};
             let needsUpdate = false;
@@ -2686,12 +2751,10 @@ function openAddInvoiceModal() {
 
                 if (error) {
                     console.error('Error updating products:', error);
-                    showAlert(`Warning: Could not update product ${product.originalItemCode}`, 'error');
                 }
             }
         }
 
-        // Reset and reload
         selectedInvoiceProducts = [];
         closeModal('invoiceModal');
         await loadInvoices();
@@ -2703,7 +2766,7 @@ function openAddInvoiceModal() {
         renderQuickEditTable();
 
     } catch (error) {
-        console.error('Save error:', error);
+        console.error('💥 CRITICAL ERROR in saveInvoice:', error);
         showAlert('Error: ' + error.message, 'error');
     } finally {
         showLoading(false);
@@ -2712,64 +2775,117 @@ function openAddInvoiceModal() {
 
 
 
-        async function editItem(id) {
-            showLoading(true);
-            try {
-                const { data, error } = await supabaseClient.from('purchase_history').select('*').eq('id', id).single();
-                if (error) throw error;
 
-                document.getElementById('itemModalTitle').textContent = 'Edit Item';
-                document.getElementById('itemProductName').value = data.product_name || '';
-                document.getElementById('itemNumber').value = data.item_code || '';
-                document.getElementById('itemVendor').value = data.vendor || '';
-                document.getElementById('itemPrice').value = data.unit_price || '';
-                document.getElementById('itemEffectiveDate').value = data.purchase_date || '';
-                document.getElementById('itemProductImage').value = data.image_path || '';
-                
-                const assignedSelect = document.getElementById('itemAssignedTo');
-                const assignedArray = data.assigned_to || [];
-                Array.from(assignedSelect.options).forEach(option => {
-                    option.selected = assignedArray.includes(option.value);
-                });
-                
-                document.getElementById('itemForm').dataset.editId = id;
-                openModal('itemModal');
-            } catch (error) {
-                console.error('Edit error:', error);
-                showAlert('Error loading item', 'error');
-            } finally {
-                showLoading(false);
-            }
-        }
-async function editInvoice(id) {
+        async function editInvoice(id) {
     showLoading(true);
     try {
-        const { data, error } = await supabaseClient.from('invoices').select('*').eq('id', id).single();
-        if (error) throw error;
+        // Load invoice header
+        const { data: invoice, error: invoiceError } = await supabaseClient
+            .from('invoices')
+            .select('*')
+            .eq('id', id)
+            .single();
+        
+        if (invoiceError) throw invoiceError;
 
-        document.getElementById('invoiceModalTitle').textContent = 'Edit Invoice';
-        document.getElementById('invoiceVendorDropdown').value = data.vendor || '';
-        document.getElementById('invoiceNumber').value = data.invoice_number || '';
-        document.getElementById('invoiceDate').value = data.invoice_date || '';
-        document.getElementById('invoiceAmount').value = data.amount || '';
-        document.getElementById('invoiceCheckNumber').value = data.check_number || '';
-        document.getElementById('invoiceNotes').value = data.notes || '';
-        document.getElementById('invoiceForm').dataset.editId = id;
+        // Load invoice items from invoice_items table
+        const { data: items, error: itemsError } = await supabaseClient
+            .from('invoice_items')
+            .select('*')
+            .eq('invoice_id', id);
         
-        selectedInvoiceProducts = [];
-        renderSelectedInvoiceProducts();
-        document.getElementById('productSearchSection').style.display = 'none';
-        document.getElementById('invoiceProductResults').style.display = 'none';
-        
+        if (itemsError) throw itemsError;
+
+        console.log('Loaded invoice items:', items); // Debug log
+
+        // Open modal first
         openModal('invoiceModal');
+        
+        // Populate vendor dropdown BEFORE setting value
+        populateInvoiceVendorDropdown();
+        
+        // Set form values with delay to ensure DOM is ready
+        setTimeout(() => {
+            document.getElementById('invoiceModalTitle').textContent = 'Edit Invoice';
+            
+            const vendorDropdown = document.getElementById('invoiceVendorDropdown');
+            const invoiceNumberField = document.getElementById('invoiceNumber');
+            const invoiceDateField = document.getElementById('invoiceDate');
+            const checkNumberField = document.getElementById('invoiceCheckNumber');
+            const notesField = document.getElementById('invoiceNotes');
+            const itemsCountField = document.getElementById('invoiceItemsCount');
+            
+            // Set all header fields
+            if (vendorDropdown) vendorDropdown.value = invoice.vendor || '';
+            if (invoiceNumberField) invoiceNumberField.value = invoice.invoice_number || '';
+            if (invoiceDateField) invoiceDateField.value = invoice.invoice_date || '';
+            if (checkNumberField) checkNumberField.value = invoice.check_number || '';
+            if (notesField) notesField.value = invoice.notes || '';
+            
+            document.getElementById('invoiceForm').dataset.editId = id;
+            
+            // Load invoice items into selectedInvoiceProducts array
+            selectedInvoiceProducts = (items || []).map(item => ({
+                item_code: item.item_code,
+                product_name: item.product_name,
+                vendor: item.vendor,
+                unit_price: item.unit_price,
+                invoice_price: item.unit_price,
+                quantity: item.quantity,
+                image_path: null,
+                originalItemCode: item.item_code,
+                originalProductName: item.product_name
+            }));
+
+            console.log('selectedInvoiceProducts:', selectedInvoiceProducts); // Debug log
+
+            // Try to load product images from inventory
+            selectedInvoiceProducts.forEach(product => {
+                const inventoryItem = inventoryData.find(i => i.item_code === product.item_code);
+                if (inventoryItem) {
+                    product.image_path = inventoryItem.image_path;
+                }
+            });
+
+            // Render the products
+            renderSelectedInvoiceProducts();
+            
+            // Update items count
+            if (itemsCountField) {
+                itemsCountField.value = `${selectedInvoiceProducts.length} item${selectedInvoiceProducts.length !== 1 ? 's' : ''}`;
+            }
+            
+            // Hide search section
+            document.getElementById('productSearchSection').style.display = 'none';
+            document.getElementById('invoiceProductResults').style.display = 'none';
+        }, 100);
+        
     } catch (error) {
-        console.error('Edit error:', error);
-        showAlert('Error loading invoice', 'error');
+        console.error('Edit invoice error:', error);
+        showAlert('Error loading invoice: ' + error.message, 'error');
+        closeModal('invoiceModal');
     } finally {
         showLoading(false);
     }
 }
-        async function deleteSingleItem(id) {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+       async function deleteSingleItem(id) {
             if (!confirm('Delete this item?')) return;
             showLoading(true);
             try {
@@ -2987,7 +3103,27 @@ async function editInvoice(id) {
 
 
 
-        let selectedInvoiceProducts = [];
+     let selectedInvoiceProducts = [];
+const TAX_RATE = 0.0825; // 8.25%
+
+
+function calculateInvoiceTotals() {
+    const subtotal = selectedInvoiceProducts.reduce((sum, p) => {
+        return sum + (parseFloat(p.quantity || 0) * parseFloat(p.invoice_price || 0));
+    }, 0);
+    
+    const taxAmount = subtotal * TAX_RATE;
+    const total = subtotal + taxAmount;
+    
+    document.getElementById('invoiceSubtotal').textContent = '$' + subtotal.toFixed(2);
+    document.getElementById('invoiceTax').textContent = '$' + taxAmount.toFixed(2);
+    document.getElementById('invoiceTotal').textContent = '$' + total.toFixed(2);
+    
+    return { subtotal, taxAmount, total };
+}
+
+
+
 
 function updateInvoiceVendorField() {
     const vendor = document.getElementById('invoiceVendorDropdown').value;
@@ -3105,15 +3241,9 @@ function renderSelectedInvoiceProducts() {
                 <p style="color: var(--neutral-500);">Click "Add Item" to search and add products to this invoice</p>
             </div>
         `;
-        document.getElementById('invoiceAmount').value = '0.00';
+        calculateInvoiceTotals();
         return;
     }
-
-    // Calculate total: sum of (quantity × invoice_price)
-    const totalAmount = selectedInvoiceProducts.reduce((sum, p) => {
-        return sum + (parseFloat(p.quantity || 0) * parseFloat(p.invoice_price || 0));
-    }, 0);
-    document.getElementById('invoiceAmount').value = totalAmount.toFixed(2);
 
     container.innerHTML = selectedInvoiceProducts.map((product, idx) => {
         const imageUrl = product.image_path 
@@ -3216,6 +3346,8 @@ function renderSelectedInvoiceProducts() {
         `;
     }).join('');
     
+    calculateInvoiceTotals();
+    
     // Auto-hide search section after adding item
     document.getElementById('productSearchSection').style.display = 'none';
     document.getElementById('invoiceProductSearch').value = '';
@@ -3234,18 +3366,14 @@ function updateInvoiceProductField(index, field, value) {
         selectedInvoiceProducts[index][field] = value;
     }
     
-    // Track what changed for database updates
     if (field === 'item_code') {
         selectedInvoiceProducts[index].itemCodeChanged = true;
     } else if (field === 'product_name') {
         selectedInvoiceProducts[index].productNameChanged = true;
     }
     
-    // Re-render to update totals
     renderSelectedInvoiceProducts();
 }
-
-
 
 
 
