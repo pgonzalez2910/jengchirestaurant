@@ -1128,19 +1128,19 @@
 
     <div class="container">
         <div id="alertContainer"></div>
-
-        <div class="nav-tabs">
-            <button class="nav-tab active" onclick="switchTab('inventory')">📦 Inventory View</button>
-            <button class="nav-tab" onclick="switchTab('quickEdit')">✏️ Quick Edit</button>
-            <button class="nav-tab" onclick="switchTab('analytics')">📊 Analytics & Insights</button>
-            <button class="nav-tab" onclick="switchTab('vendorSpending')">💰 Vendor Spending Analysis</button>
-            <button class="nav-tab" onclick="switchTab('invoices')">📄 Invoice Tracking</button>
-            <button class="nav-tab" onclick="switchTab('vendors')">🏢 Vendor Management</button>
-            <button class="nav-tab" onclick="switchTab('julioOrders')">🛒 Julio's Orders</button>
-            <button class="nav-tab" onclick="switchTab('ronyOrders')">🍳 Rony's Orders</button>
-            <button class="nav-tab" onclick="switchTab('placeOrder')">📋 Place Order</button>
-            <button class="nav-tab" onclick="switchTab('inventorySettings')">⚙️ Inventory Settings</button>
-        </div>
+<div class="nav-tabs">
+    <button class="nav-tab active" onclick="switchTab('inventory', event)">📦 Inventory View</button>
+    <button class="nav-tab" onclick="switchTab('quickEdit', event)">✏️ Quick Edit</button>
+    <button class="nav-tab" onclick="switchTab('analytics', event)">📊 Analytics & Insights</button>
+    <button class="nav-tab" onclick="switchTab('vendorSpending', event)">💰 Vendor Spending Analysis</button>
+    <button class="nav-tab" onclick="switchTab('invoices', event)">📄 Invoice Tracking</button>
+    <button class="nav-tab" onclick="switchTab('vendors', event)">🏢 Vendor Management</button>
+    <button class="nav-tab" onclick="switchTab('julioOrders', event)">🛒 Julio's Orders</button>
+    <button class="nav-tab" onclick="switchTab('ronyOrders', event)">🍳 Rony's Orders</button>
+    <button class="nav-tab" onclick="switchTab('placeOrder', event)">📋 Place Order</button>
+    <button class="nav-tab" onclick="switchTab('inventorySettings', event)">⚙️ Inventory Settings</button>
+    <button class="nav-tab" onclick="switchTab('submissionHistory', event)">📅 Submission History</button>
+</div>
 
         <!-- Inventory View -->
         <div id="inventory" class="content-section active">
@@ -1499,7 +1499,51 @@
 </div>
 
 
+<!-- Submission History Section -->
+<div id="submissionHistory" class="content-section">
+    <div class="search-filter-bar">
+        <div class="filter-group">
+            <label>Submitted By</label>
+            <select id="historyUserFilter" class="search-input" onchange="filterSubmissionHistory()">
+                <option value="">All Users</option>
+                <option value="julio">Julio</option>
+                <option value="rony">Rony</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>Date From</label>
+            <input type="date" id="historyDateFrom" class="search-input" onchange="filterSubmissionHistory()">
+        </div>
+        <div class="filter-group">
+            <label>Date To</label>
+            <input type="date" id="historyDateTo" class="search-input" onchange="filterSubmissionHistory()">
+        </div>
+        <div class="search-group">
+            <label>Search Product</label>
+            <input type="text" id="historySearchInput" class="search-input" placeholder="Search by product name..." oninput="filterSubmissionHistory()">
+        </div>
+    </div>
 
+    <div class="data-table-container">
+        <div class="table-header">
+            <h2>📅 Order Submission History</h2>
+            <span id="historyCount">Loading...</span>
+        </div>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Submission Date</th>
+                    <th>Submitted By</th>
+                    <th>Product Name</th>
+                    <th>Quantity</th>
+                    <th>Type</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody id="historyTableBody"></tbody>
+        </table>
+    </div>
+</div>
 
 <!-- REPLACE THE ENTIRE PLACE ORDER SECTION WITH THIS ENHANCED VERSION -->
 
@@ -1632,476 +1676,14 @@
 <!-- ENHANCED JAVASCRIPT FOR PLACE ORDER -->
 <script>
 // Enhanced data structure
-let enhancedOrderData = new Map();
 
-// Load enhanced create order with full vendor comparison
-async function loadEnhancedCreateOrder() {
-    const dateISO = document.getElementById('createOrderDate').value || todayYMD();
-    const vendorFilter = document.getElementById('createVendorFilter').value;
-    
-    showLoading(true);
-    try {
-        // 1. Get current inventory check data
-        const { data: currentData, error: currentError } = await supabaseClient
-            .from('inventory_check')
-            .select('*')
-            .eq('order_date', dateISO);
-        
-        if (currentError) throw currentError;
-        
-        // 2. Get previous inventory check (most recent before current date)
-        const { data: previousData, error: prevError } = await supabaseClient
-            .from('inventory_check')
-            .select('*')
-            .lt('order_date', dateISO)
-            .order('order_date', { ascending: false })
-            .limit(100);
-        
-        // 3. Get all historical purchases for price comparison
-        const { data: purchaseHistory, error: histError } = await supabaseClient
-            .from('purchase_history')
-            .select('product_name, vendor, unit_price, purchase_date, item_code')
-            .order('purchase_date', { ascending: false });
-        
-        if (histError) throw histError;
-        
-        // 4. Get product enrichment data
-        const { data: enrichData, error: enrichError } = await supabaseClient
-            .from('inventory_management')
-            .select('product_name, image_url, par, avg_daily_usage, conversion_factor, vendors');
-        
-        if (enrichError) throw enrichError;
-        
-        // Build enrichment map
-        const enrichmentMap = new Map();
-        (enrichData || []).forEach(r => {
-            enrichmentMap.set((r.product_name || '').trim(), r);
-        });
-        
-        // Build previous inventory map
-        const previousMap = new Map();
-        (previousData || []).forEach(r => {
-            const key = `${r.product_name}_${r.user}`;
-            if (!previousMap.has(key)) {
-                previousMap.set(key, r);
-            }
-        });
-        
-        // Build vendor price history map
-        const vendorPriceMap = new Map();
-        (purchaseHistory || []).forEach(r => {
-            const pn = (r.product_name || '').trim();
-            if (!vendorPriceMap.has(pn)) {
-                vendorPriceMap.set(pn, []);
-            }
-            vendorPriceMap.get(pn).push({
-                vendor: canonicalizeVendor(r.vendor),
-                price: parseFloat(r.unit_price || 0),
-                date: r.purchase_date,
-                item_code: r.item_code
-            });
-        });
-        
-        // Process current data with all enrichments
-        const processedData = (currentData || []).map(row => {
-            const pn = (row.product_name || '').trim();
-            const enrichment = enrichmentMap.get(pn) || {};
-            const prevKey = `${row.product_name}_${row.user}`;
-            const previous = previousMap.get(prevKey);
-            const priceHistory = vendorPriceMap.get(pn) || [];
-            
-            // Calculate stock delta
-            const currentStock = parseFloat(row.on_hand || 0);
-            const previousStock = previous ? parseFloat(previous.on_hand || 0) : 0;
-            const stockDelta = currentStock - previousStock;
-            
-            // Get last order info
-            const lastOrder = previous ? {
-                quantity: parseFloat(previous.tentative || 0),
-                vendor: previous.vendor,
-                date: previous.order_date
-            } : null;
-            
-            // Get vendor options with prices
-            const vendorOptions = {};
-            priceHistory.forEach(entry => {
-                if (!vendorOptions[entry.vendor]) {
-                    vendorOptions[entry.vendor] = {
-                        price: entry.price,
-                        lastDate: entry.date,
-                        itemCode: entry.item_code
-                    };
-                } else if (new Date(entry.date) > new Date(vendorOptions[entry.vendor].lastDate)) {
-                    vendorOptions[entry.vendor] = {
-                        price: entry.price,
-                        lastDate: entry.date,
-                        itemCode: entry.item_code
-                    };
-                }
-            });
-            
-            // Find best price
-            let bestVendor = null;
-            let bestPrice = Infinity;
-            Object.entries(vendorOptions).forEach(([vendor, info]) => {
-                if (info.price < bestPrice && info.price > 0) {
-                    bestPrice = info.price;
-                    bestVendor = vendor;
-                }
-            });
-            
-            // Calculate recommended order quantity
-            const par = parseFloat(enrichment.par || 0);
-            const needed = Math.max(0, par - currentStock);
-            const conversionFactor = parseFloat(enrichment.conversion_factor || 1);
-            const recommendedCases = Math.ceil(needed / conversionFactor);
-            
-            return {
-                ...row,
-                image_url: enrichment.image_url,
-                par: par,
-                avgDailyUsage: parseFloat(enrichment.avg_daily_usage || 0),
-                conversionFactor: conversionFactor,
-                previousStock: previousStock,
-                currentStock: currentStock,
-                stockDelta: stockDelta,
-                lastOrder: lastOrder,
-                vendorOptions: vendorOptions,
-                bestVendor: bestVendor,
-                bestPrice: bestPrice,
-                recommendedCases: recommendedCases,
-                allVendors: enrichment.vendors
-            };
-        });
-        
-        // Apply vendor filter if set
-        let filteredData = processedData;
-        if (vendorFilter) {
-            filteredData = processedData.filter(r => 
-                canonicalizeVendor(r.vendor) === canonicalizeVendor(vendorFilter)
-            );
-        }
-        
-        // Separate by user
-        const ronyData = filteredData.filter(r => (r.user || '').toLowerCase() === 'rony');
-        const julioData = filteredData.filter(r => (r.user || '').toLowerCase() === 'julio');
-        
-        // Render
-        renderEnhancedOrderCards(ronyData, julioData);
-        
-    } catch (error) {
-        console.error('Load enhanced order error:', error);
-        showAlert('Error loading order data: ' + error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
-}
 
-// Render enhanced order cards with full vendor comparison
-function renderEnhancedOrderCards(ronyData, julioData) {
-    const container = document.getElementById('enhancedOrderContainer');
-    
-    let html = '';
-    
-    // RONY SECTION
-    if (ronyData.length > 0) {
-        html += `
-            <div style="margin-bottom: 3rem;">
-                <h2 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem; color: var(--neutral-900); border-bottom: 3px solid var(--primary-600); padding-bottom: 0.5rem;">
-                    🍳 Rony's Order
-                </h2>
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 2rem;">
-                    ${ronyData.map(row => renderEnhancedCard(row, 'rony')).join('')}
-                </div>
-            </div>
-        `;
-    }
-    
-    // JULIO SECTION
-    if (julioData.length > 0) {
-        html += `
-            <div>
-                <h2 style="font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem; color: var(--neutral-900); border-bottom: 3px solid var(--accent-500); padding-bottom: 0.5rem;">
-                    📦 Julio's Order
-                </h2>
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 2rem;">
-                    ${julioData.map(row => renderEnhancedCard(row, 'julio')).join('')}
-                </div>
-            </div>
-        `;
-    }
-    
-    if (ronyData.length === 0 && julioData.length === 0) {
-        html = `
-            <div class="empty-state">
-                <div class="empty-state-icon">📦</div>
-                <h3>No Orders for This Date</h3>
-                <p>No inventory check data found for the selected date.</p>
-            </div>
-        `;
-    }
-    
-    container.innerHTML = html;
-}
 
-// Render individual enhanced card
-function renderEnhancedCard(row, userType) {
-    const imageUrl = resolveImage(row.image_url);
-    const productName = row.product_name || 'Unknown Product';
-    const productId = productName.replace(/[^a-zA-Z0-9]/g, '_');
-    
-    // Stock comparison
-    const stockDeltaClass = row.stockDelta > 0 ? 'stock-delta-positive' : 'stock-delta-negative';
-    const stockDeltaIcon = row.stockDelta > 0 ? '📈' : '📉';
-    
-    // Vendor comparison table
-    let vendorComparisonHTML = '';
-    if (Object.keys(row.vendorOptions).length > 0) {
-        const sortedVendors = Object.entries(row.vendorOptions).sort((a, b) => a[1].price - b[1].price);
-        
-        vendorComparisonHTML = `
-            <div style="margin-top: 1rem; background: var(--neutral-50); padding: 1rem; border-radius: 8px;">
-                <div style="font-weight: 700; font-size: 0.875rem; margin-bottom: 0.75rem; color: var(--neutral-700);">
-                    💰 Vendor Price Comparison
-                </div>
-                <table class="price-comparison-table">
-                    <thead>
-                        <tr>
-                            <th>Vendor</th>
-                            <th>Price</th>
-                            <th>Item Code</th>
-                            <th>Last Used</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${sortedVendors.map(([vendor, info], idx) => `
-                            <tr class="vendor-option-row ${vendor === row.bestVendor ? 'best-price' : ''}" 
-                                onclick="selectVendorForProduct('${productId}', '${vendor}', '${info.itemCode}')"
-                                style="cursor: pointer;">
-                                <td>
-                                    ${idx === 0 ? '⭐ ' : ''}${vendor}
-                                </td>
-                                <td style="font-family: var(--font-mono); font-weight: 700;">
-                                    $${info.price.toFixed(2)}
-                                </td>
-                                <td style="font-family: var(--font-mono); font-size: 0.8125rem;">
-                                    ${info.itemCode || '---'}
-                                </td>
-                                <td style="font-size: 0.8125rem; color: var(--neutral-600);">
-                                    ${formatDate(info.lastDate)}
-                                </td>
-                            </tr>
-                        `).join('')}
-                    </tbody>
-                </table>
-            </div>
-        `;
-    }
-    
-    // Last order info
-    let lastOrderHTML = '';
-    if (row.lastOrder && row.lastOrder.quantity > 0) {
-        lastOrderHTML = `
-            <div style="background: rgba(245, 158, 11, 0.1); padding: 0.75rem; border-radius: 8px; border-left: 4px solid var(--accent-500); margin-top: 1rem;">
-                <div style="font-size: 0.8125rem; font-weight: 700; color: var(--accent-600); margin-bottom: 0.25rem;">
-                    📋 Last Order: ${formatDate(row.lastOrder.date)}
-                </div>
-                <div style="font-size: 0.875rem; color: var(--neutral-700);">
-                    Qty: <strong>${row.lastOrder.quantity}</strong> | 
-                    Vendor: <strong>${row.lastOrder.vendor || 'Unknown'}</strong>
-                </div>
-            </div>
-        `;
-    }
-    
-    // Recommendation
-    let recommendationHTML = '';
-    if (row.par && row.recommendedCases > 0) {
-        recommendationHTML = `
-            <div style="background: linear-gradient(135deg, var(--success-600), var(--success-500)); color: white; padding: 1rem; border-radius: 8px; margin-top: 1rem; text-align: center;">
-                <div style="font-size: 0.875rem; margin-bottom: 0.25rem; opacity: 0.9;">
-                    💡 Recommended Order
-                </div>
-                <div style="font-size: 1.75rem; font-weight: 700; font-family: var(--font-mono);">
-                    ${row.recommendedCases} cases
-                </div>
-                <div style="font-size: 0.75rem; opacity: 0.8; margin-top: 0.25rem;">
-                    To reach PAR: ${row.par}
-                </div>
-            </div>
-        `;
-    }
-    
-    return `
-        <div class="enhanced-order-card" data-product="${productName}" data-user="${userType}">
-            <!-- Product Image & Name -->
-            <div style="text-align: center; margin-bottom: 1rem;">
-                <img src="${imageUrl}" 
-                     onerror="this.src='${PLACEHOLDER_IMAGE}'" 
-                     style="width: 100%; max-width: 150px; height: 150px; object-fit: contain; border-radius: 12px; margin-bottom: 0.75rem; box-shadow: var(--shadow-md);">
-                <div style="font-weight: 700; font-size: 1.125rem; color: var(--neutral-900);">
-                    ${productName}
-                </div>
-                <div style="font-family: var(--font-mono); font-size: 0.875rem; color: var(--neutral-600); margin-top: 0.25rem;" id="itemcode-${productId}">
-                    ${row.vendorOptions[row.bestVendor]?.itemCode || '-------'}
-                </div>
-            </div>
-            
-            <!-- Stock Comparison Grid -->
-            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1rem;">
-                <div style="background: var(--neutral-100); padding: 0.75rem; border-radius: 8px; text-align: center;">
-                    <div style="font-size: 0.7rem; font-weight: 700; color: var(--neutral-600); margin-bottom: 0.25rem;">
-                        PREVIOUS
-                    </div>
-                    <div style="font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); color: var(--neutral-700);">
-                        ${row.previousStock.toFixed(1)}
-                    </div>
-                </div>
-                
-                <div style="background: var(--primary-100); padding: 0.75rem; border-radius: 8px; text-align: center;">
-                    <div style="font-size: 0.7rem; font-weight: 700; color: var(--primary-700); margin-bottom: 0.25rem;">
-                        CURRENT
-                    </div>
-                    <div style="font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); color: var(--primary-900);">
-                        ${row.currentStock.toFixed(1)}
-                    </div>
-                </div>
-                
-                <div style="background: ${row.stockDelta >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(220, 38, 38, 0.1)'}; padding: 0.75rem; border-radius: 8px; text-align: center;">
-                    <div style="font-size: 0.7rem; font-weight: 700; color: var(--neutral-600); margin-bottom: 0.25rem;">
-                        DELTA ${stockDeltaIcon}
-                    </div>
-                    <div style="font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono);" class="${stockDeltaClass}">
-                        ${row.stockDelta >= 0 ? '+' : ''}${row.stockDelta.toFixed(1)}
-                    </div>
-                </div>
-            </div>
-            
-            ${vendorComparisonHTML}
-            ${lastOrderHTML}
-            
-            <!-- Order Quantity Input -->
-            <div style="margin-top: 1.5rem;">
-                <label style="display: block; font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
-                    📝 Order Quantity (cases)
-                </label>
-                <input type="number" 
-                       step="0.01" 
-                       min="0" 
-                       class="order-qty-input search-input" 
-                       id="qty-${productId}"
-                       placeholder="0.00"
-                       style="width: 100%; font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); text-align: center; padding: 1rem;">
-            </div>
-            
-            ${recommendationHTML}
-            
-            <!-- Selected Vendor Display -->
-            <input type="hidden" id="vendor-${productId}" value="${row.bestVendor || ''}">
-        </div>
-    `;
-}
 
-// Select vendor for product
-function selectVendorForProduct(productId, vendor, itemCode) {
-    document.getElementById(`vendor-${productId}`).value = vendor;
-    document.getElementById(`itemcode-${productId}`).textContent = itemCode || '-------';
-    
-    // Highlight selected row
-    const card = document.querySelector(`[data-product]`);
-    if (card) {
-        card.querySelectorAll('.vendor-option-row').forEach(row => {
-            row.classList.remove('selected');
-        });
-        event.currentTarget.classList.add('selected');
-    }
-    
-    showAlert(`✅ Selected ${vendor} for ordering`, 'success');
-}
 
-// Submit enhanced order
-async function submitEnhancedOrder() {
-    const dateISO = document.getElementById('createOrderDate').value || todayYMD();
-    const cards = document.querySelectorAll('.enhanced-order-card');
-    
-    if (cards.length === 0) {
-        showAlert('No products to order', 'error');
-        return;
-    }
-    
-    showLoading(true);
-    try {
-        const updates = [];
-        
-        for (const card of cards) {
-            const productName = card.dataset.product;
-            const user = card.dataset.user;
-            const productId = productName.replace(/[^a-zA-Z0-9]/g, '_');
-            
-            const qtyInput = document.getElementById(`qty-${productId}`);
-            const vendorInput = document.getElementById(`vendor-${productId}`);
-            
-            if (!qtyInput || !vendorInput) continue;
-            
-            const quantity = parseFloat(qtyInput.value || 0);
-            const vendor = vendorInput.value || null;
-            
-            if (quantity > 0 || vendor) {
-                updates.push(
-                    supabaseClient
-                        .from('inventory_check')
-                        .update({
-                            tentative: quantity,
-                            vendor: vendor
-                        })
-                        .eq('order_date', dateISO)
-                        .eq('product_name', productName)
-                        .eq('user', user)
-                );
-            }
-        }
-        
-        if (updates.length === 0) {
-            showAlert('No changes to save', 'error');
-            return;
-        }
-        
-        await Promise.all(updates);
-        
-        showAlert(`✅ Order saved successfully! ${updates.length} products updated`, 'success');
-        
-        // Reload
-        await loadEnhancedCreateOrder();
-        
-    } catch (error) {
-        console.error('Submit order error:', error);
-        showAlert('Error saving order: ' + error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
-}
 
-// Initialize enhanced order when tab loads
-async function initializeEnhancedPlaceOrder() {
-    loadJsPDF();
-    
-    const today = todayYMD();
-    document.getElementById('createOrderDate').value = today;
-    
-    // Populate vendor filter
-    const vendorOptions = ALLOWED_VENDORS.map(v => `<option value="${v}">${v}</option>`).join('');
-    document.getElementById('createVendorFilter').innerHTML = '<option value="">— All Vendors —</option>' + vendorOptions;
-    
-    await buildVendorCodeMap();
-    await loadEnhancedCreateOrder();
-}
 
-// Update date change listener
-document.addEventListener('change', (e) => {
-    if (e.target && e.target.id === 'createOrderDate') {
-        loadEnhancedCreateOrder();
-    }
-});
+
 </script>
 
     <!-- MODALS START HERE -->
@@ -3474,10 +3056,15 @@ function renderQuickEditTable() {
         }
 
     
-function switchTab(tabName) {
+function switchTab(tabName, evt) {
     document.querySelectorAll('.nav-tab').forEach(tab => tab.classList.remove('active'));
     document.querySelectorAll('.content-section').forEach(sec => sec.classList.remove('active'));
-    event.target.classList.add('active');
+    
+    // Add active class to the clicked button
+    if (evt && evt.target) {
+        evt.target.classList.add('active');
+    }
+    
     document.getElementById(tabName).classList.add('active');
     
     if (tabName === 'quickEdit') {
@@ -3488,14 +3075,14 @@ function switchTab(tabName) {
         renderJulioProducts();
     } else if (tabName === 'ronyOrders') {
         renderRonyProducts();
-} else if (tabName === 'placeOrder') {
-    initializeEnhancedPlaceOrder();
-    } else if (tabName === 'inventorySettings') { // ← ADD THIS
+    } else if (tabName === 'placeOrder') {
+        initializeEnhancedPlaceOrder();
+    } else if (tabName === 'inventorySettings') {
         loadInventorySettings();
+    } else if (tabName === 'submissionHistory') {
+        loadSubmissionHistory();
     }
-}
-
-    
+}   
            function exportToCSV() {
             const headers = ['Vendor','Item No.','Description','Price','Date','Assigned To'];
             const rows = filteredData.map(item => [
@@ -4703,12 +4290,14 @@ function filterJulioProducts() {
 async function saveJulioOrders() {
     showLoading(true);
     try {
+        const submissionDate = new Date().toISOString();
+        
         const targets = Array.from(julioTargetsMap.values())
             .filter(p => p.target_quantity != null && p.target_quantity > 0)
             .map(p => ({
                 product_name: p.product_name,
                 target_quantity: p.target_quantity,
-                last_updated: new Date().toISOString()
+                last_updated: submissionDate
             }));
         
         if (targets.length === 0) {
@@ -4716,14 +4305,33 @@ async function saveJulioOrders() {
             return;
         }
         
-        // Upsert to target_inventory table
-        const { error } = await supabaseClient
+        // 1. Save to target_inventory table (existing)
+        const { error: targetError } = await supabaseClient
             .from('target_inventory')
             .upsert(targets, { onConflict: 'product_name' });
         
-        if (error) throw error;
+        if (targetError) throw targetError;
         
-        showAlert(`✅ Saved ${targets.length} target inventory levels!`, 'success');
+        // 2. NEW: Save to historical submissions table
+        const submissions = targets.map(t => ({
+            submission_date: submissionDate,
+            submitted_by: 'julio',
+            product_name: t.product_name,
+            quantity: t.target_quantity,
+            submission_type: 'target_inventory',
+            notes: `Target inventory submission`
+        }));
+        
+        const { error: historyError } = await supabaseClient
+            .from('inventory_submissions')
+            .insert(submissions);
+        
+        if (historyError) {
+            console.error('Error saving submission history:', historyError);
+            // Don't throw - main save succeeded
+        }
+        
+        showAlert(`✅ Saved ${targets.length} target inventory levels! Submission recorded.`, 'success');
         
     } catch (error) {
         console.error('Save Julio targets error:', error);
@@ -4732,6 +4340,8 @@ async function saveJulioOrders() {
         showLoading(false);
     }
 }
+
+
 
 async function clearJulioOrders() {
     if (!confirm('Clear all target quantities?')) return;
@@ -4948,6 +4558,8 @@ function filterRonyProducts() {
 async function saveRonyOrders() {
     showLoading(true);
     try {
+        const submissionDate = new Date().toISOString();
+        
         let allProducts = [];
         ronyProductsByPosition.forEach(products => {
             allProducts = allProducts.concat(products);
@@ -4958,7 +4570,7 @@ async function saveRonyOrders() {
             .map(p => ({
                 product_name: p.product_name,
                 quantity_in_stock: p.current_stock,
-                last_updated: new Date().toISOString()
+                last_updated: submissionDate
             }));
         
         if (stockUpdates.length === 0) {
@@ -4966,13 +4578,33 @@ async function saveRonyOrders() {
             return;
         }
         
-        const { error } = await supabaseClient
+        // 1. Save to current_stock table (existing)
+        const { error: stockError } = await supabaseClient
             .from('current_stock')
             .upsert(stockUpdates, { onConflict: 'product_name' });
         
-        if (error) throw error;
+        if (stockError) throw stockError;
         
-        showAlert(`✅ Saved ${stockUpdates.length} stock levels for Rony!`, 'success');
+        // 2. NEW: Save to historical submissions table
+        const submissions = stockUpdates.map(s => ({
+            submission_date: submissionDate,
+            submitted_by: 'rony',
+            product_name: s.product_name,
+            quantity: s.quantity_in_stock,
+            submission_type: 'current_stock',
+            notes: `Current stock count submission`
+        }));
+        
+        const { error: historyError } = await supabaseClient
+            .from('inventory_submissions')
+            .insert(submissions);
+        
+        if (historyError) {
+            console.error('Error saving submission history:', historyError);
+            // Don't throw - main save succeeded
+        }
+        
+        showAlert(`✅ Saved ${stockUpdates.length} stock levels for Rony! Submission recorded.`, 'success');
         
     } catch (error) {
         console.error('Save Rony stock error:', error);
@@ -4981,6 +4613,8 @@ async function saveRonyOrders() {
         showLoading(false);
     }
 }
+
+
 
 async function clearRonyOrders() {
     if (!confirm('Clear all stock levels?')) return;
@@ -4998,9 +4632,11 @@ async function clearRonyOrders() {
 
 // ========== ENHANCED PLACE ORDER FUNCTIONS ==========
 
-
+let enhancedOrderData = new Map();
 
 // Load enhanced create order with full vendor comparison
+// ========== FIXED LOAD ENHANCED CREATE ORDER FUNCTION ==========
+
 async function loadEnhancedCreateOrder() {
     const dateISO = document.getElementById('createOrderDate').value || todayYMD();
     const vendorFilter = document.getElementById('createVendorFilter').value;
@@ -5013,7 +4649,10 @@ async function loadEnhancedCreateOrder() {
             .select('*')
             .eq('order_date', dateISO);
         
-        if (currentError) throw currentError;
+        if (currentError) {
+            console.error('Current data error:', currentError);
+            // Don't throw - continue with empty data
+        }
         
         // 2. Get previous inventory check (most recent before current date)
         const { data: previousData, error: prevError } = await supabaseClient
@@ -5023,20 +4662,37 @@ async function loadEnhancedCreateOrder() {
             .order('order_date', { ascending: false })
             .limit(100);
         
+        if (prevError) {
+            console.error('Previous data error:', prevError);
+            // Don't throw - continue with empty data
+        }
+        
         // 3. Get all historical purchases for price comparison
         const { data: purchaseHistory, error: histError } = await supabaseClient
             .from('purchase_history')
             .select('product_name, vendor, unit_price, purchase_date, item_code')
             .order('purchase_date', { ascending: false });
         
-        if (histError) throw histError;
+        if (histError) {
+            console.error('Purchase history error:', histError);
+            throw histError;
+        }
         
         // 4. Get product enrichment data
         const { data: enrichData, error: enrichError } = await supabaseClient
             .from('inventory_management')
             .select('product_name, image_url, par, avg_daily_usage, conversion_factor, vendors');
         
-        if (enrichError) throw enrichError;
+        if (enrichError) {
+            console.error('Enrichment error:', enrichError);
+            throw enrichError;
+        }
+        
+        console.log('📊 Data loaded:');
+        console.log('- Current inventory check:', (currentData || []).length, 'records');
+        console.log('- Previous inventory check:', (previousData || []).length, 'records');
+        console.log('- Purchase history:', (purchaseHistory || []).length, 'records');
+        console.log('- Enrichment data:', (enrichData || []).length, 'records');
         
         // Build enrichment map
         const enrichmentMap = new Map();
@@ -5068,100 +4724,185 @@ async function loadEnhancedCreateOrder() {
             });
         });
         
-        // Process current data with all enrichments
-        const processedData = (currentData || []).map(row => {
-            const pn = (row.product_name || '').trim();
-            const enrichment = enrichmentMap.get(pn) || {};
-            const prevKey = `${row.product_name}_${row.user}`;
-            const previous = previousMap.get(prevKey);
-            const priceHistory = vendorPriceMap.get(pn) || [];
+        // ========== HANDLE EMPTY INVENTORY_CHECK TABLE ==========
+        let processedData = [];
+        
+        if (!currentData || currentData.length === 0) {
+            console.log('⚠️ No inventory_check data found. Building from enrichment data...');
             
-            // Calculate stock delta
-            const currentStock = parseFloat(row.on_hand || 0);
-            const previousStock = previous ? parseFloat(previous.on_hand || 0) : 0;
-            const stockDelta = currentStock - previousStock;
-            
-            // Get last order info
-            const lastOrder = previous ? {
-                quantity: parseFloat(previous.tentative || 0),
-                vendor: previous.vendor,
-                date: previous.order_date
-            } : null;
-            
-            // Get vendor options with prices
-            const vendorOptions = {};
-            priceHistory.forEach(entry => {
-                if (!vendorOptions[entry.vendor]) {
-                    vendorOptions[entry.vendor] = {
-                        price: entry.price,
-                        lastDate: entry.date,
-                        itemCode: entry.item_code
-                    };
-                } else if (new Date(entry.date) > new Date(vendorOptions[entry.vendor].lastDate)) {
-                    vendorOptions[entry.vendor] = {
-                        price: entry.price,
-                        lastDate: entry.date,
-                        itemCode: entry.item_code
-                    };
-                }
+            // Build order data from inventory_management (enrichment) instead
+            enrichData.forEach(enrichment => {
+                const pn = (enrichment.product_name || '').trim();
+                const priceHistory = vendorPriceMap.get(pn) || [];
+                
+                // Get vendor options with prices
+                const vendorOptions = {};
+                priceHistory.forEach(entry => {
+                    if (!vendorOptions[entry.vendor]) {
+                        vendorOptions[entry.vendor] = {
+                            price: entry.price,
+                            lastDate: entry.date,
+                            itemCode: entry.item_code
+                        };
+                    } else if (new Date(entry.date) > new Date(vendorOptions[entry.vendor].lastDate)) {
+                        vendorOptions[entry.vendor] = {
+                            price: entry.price,
+                            lastDate: entry.date,
+                            itemCode: entry.item_code
+                        };
+                    }
+                });
+                
+                // Find best price
+                let bestVendor = null;
+                let bestPrice = Infinity;
+                Object.entries(vendorOptions).forEach(([vendor, info]) => {
+                    if (info.price < bestPrice && info.price > 0) {
+                        bestPrice = info.price;
+                        bestVendor = vendor;
+                    }
+                });
+                
+                // Calculate recommended order quantity
+                const par = parseFloat(enrichment.par || 0);
+                const currentStock = 0; // Starting from zero
+                const needed = Math.max(0, par - currentStock);
+                const conversionFactor = parseFloat(enrichment.conversion_factor || 1);
+                const recommendedCases = Math.ceil(needed / conversionFactor);
+                
+                // Determine user from enrichment data
+                const user = (enrichment.user || 'julio').toLowerCase();
+                
+                processedData.push({
+                    product_name: pn,
+                    user: user,
+                    order_date: dateISO,
+                    image_url: enrichment.image_url,
+                    par: par,
+                    avgDailyUsage: parseFloat(enrichment.avg_daily_usage || 0),
+                    conversionFactor: conversionFactor,
+                    previousStock: 0,
+                    currentStock: 0,
+                    stockDelta: 0,
+                    lastOrder: null,
+                    vendorOptions: vendorOptions,
+                    bestVendor: bestVendor,
+                    bestPrice: bestPrice,
+                    recommendedCases: recommendedCases,
+                    allVendors: enrichment.vendors,
+                    on_hand: 0,
+                    tentative: 0,
+                    vendor: bestVendor
+                });
             });
-            
-            // Find best price
-            let bestVendor = null;
-            let bestPrice = Infinity;
-            Object.entries(vendorOptions).forEach(([vendor, info]) => {
-                if (info.price < bestPrice && info.price > 0) {
-                    bestPrice = info.price;
-                    bestVendor = vendor;
-                }
+        } else {
+            // Process existing inventory_check data
+            processedData = (currentData || []).map(row => {
+                const pn = (row.product_name || '').trim();
+                const enrichment = enrichmentMap.get(pn) || {};
+                const prevKey = `${row.product_name}_${row.user}`;
+                const previous = previousMap.get(prevKey);
+                const priceHistory = vendorPriceMap.get(pn) || [];
+                
+                // Calculate stock delta
+                const currentStock = parseFloat(row.on_hand || 0);
+                const previousStock = previous ? parseFloat(previous.on_hand || 0) : 0;
+                const stockDelta = currentStock - previousStock;
+                
+                // Get last order info
+                const lastOrder = previous ? {
+                    quantity: parseFloat(previous.tentative || 0),
+                    vendor: previous.vendor,
+                    date: previous.order_date
+                } : null;
+                
+                // Get vendor options with prices
+                const vendorOptions = {};
+                priceHistory.forEach(entry => {
+                    if (!vendorOptions[entry.vendor]) {
+                        vendorOptions[entry.vendor] = {
+                            price: entry.price,
+                            lastDate: entry.date,
+                            itemCode: entry.item_code
+                        };
+                    } else if (new Date(entry.date) > new Date(vendorOptions[entry.vendor].lastDate)) {
+                        vendorOptions[entry.vendor] = {
+                            price: entry.price,
+                            lastDate: entry.date,
+                            itemCode: entry.item_code
+                        };
+                    }
+                });
+                
+                // Find best price
+                let bestVendor = null;
+                let bestPrice = Infinity;
+                Object.entries(vendorOptions).forEach(([vendor, info]) => {
+                    if (info.price < bestPrice && info.price > 0) {
+                        bestPrice = info.price;
+                        bestVendor = vendor;
+                    }
+                });
+                
+                // Calculate recommended order quantity
+                const par = parseFloat(enrichment.par || 0);
+                const needed = Math.max(0, par - currentStock);
+                const conversionFactor = parseFloat(enrichment.conversion_factor || 1);
+                const recommendedCases = Math.ceil(needed / conversionFactor);
+                
+                return {
+                    ...row,
+                    image_url: enrichment.image_url,
+                    par: par,
+                    avgDailyUsage: parseFloat(enrichment.avg_daily_usage || 0),
+                    conversionFactor: conversionFactor,
+                    previousStock: previousStock,
+                    currentStock: currentStock,
+                    stockDelta: stockDelta,
+                    lastOrder: lastOrder,
+                    vendorOptions: vendorOptions,
+                    bestVendor: bestVendor,
+                    bestPrice: bestPrice,
+                    recommendedCases: recommendedCases,
+                    allVendors: enrichment.vendors
+                };
             });
-            
-            // Calculate recommended order quantity
-            const par = parseFloat(enrichment.par || 0);
-            const needed = Math.max(0, par - currentStock);
-            const conversionFactor = parseFloat(enrichment.conversion_factor || 1);
-            const recommendedCases = Math.ceil(needed / conversionFactor);
-            
-            return {
-                ...row,
-                image_url: enrichment.image_url,
-                par: par,
-                avgDailyUsage: parseFloat(enrichment.avg_daily_usage || 0),
-                conversionFactor: conversionFactor,
-                previousStock: previousStock,
-                currentStock: currentStock,
-                stockDelta: stockDelta,
-                lastOrder: lastOrder,
-                vendorOptions: vendorOptions,
-                bestVendor: bestVendor,
-                bestPrice: bestPrice,
-                recommendedCases: recommendedCases,
-                allVendors: enrichment.vendors
-            };
-        });
+        }
+        
+        console.log('✅ Processed data:', processedData.length, 'products');
         
         // Apply vendor filter if set
         let filteredData = processedData;
         if (vendorFilter) {
-            filteredData = processedData.filter(r => 
-                canonicalizeVendor(r.vendor) === canonicalizeVendor(vendorFilter)
-            );
+            filteredData = processedData.filter(r => {
+                // Check if any vendor option matches the filter
+                const hasVendor = Object.keys(r.vendorOptions || {}).some(v => 
+                    canonicalizeVendor(v) === canonicalizeVendor(vendorFilter)
+                );
+                return hasVendor;
+            });
         }
+        
+        console.log('🔍 After vendor filter:', filteredData.length, 'products');
         
         // Separate by user
         const ronyData = filteredData.filter(r => (r.user || '').toLowerCase() === 'rony');
         const julioData = filteredData.filter(r => (r.user || '').toLowerCase() === 'julio');
         
+        console.log('👨‍🍳 Rony products:', ronyData.length);
+        console.log('📦 Julio products:', julioData.length);
+        
         // Render
         renderEnhancedOrderCards(ronyData, julioData);
         
     } catch (error) {
-        console.error('Load enhanced order error:', error);
+        console.error('❌ Load enhanced order error:', error);
         showAlert('Error loading order data: ' + error.message, 'error');
     } finally {
         showLoading(false);
     }
 }
+
 
 // Render enhanced order cards with full vendor comparison
 function renderEnhancedOrderCards(ronyData, julioData) {
@@ -5211,14 +4952,26 @@ function renderEnhancedOrderCards(ronyData, julioData) {
 }
 
 // Render individual enhanced card
+// ========== ENHANCED PLACE ORDER CARD WITH PROMINENT PAR ==========
+
 function renderEnhancedCard(row, userType) {
     const imageUrl = resolveImage(row.image_url);
     const productName = row.product_name || 'Unknown Product';
     const productId = productName.replace(/[^a-zA-Z0-9]/g, '_');
     
+    // PAR INFORMATION - NOW PROMINENT
+    const par = row.par || 0;
+    const hasPar = par > 0;
+    
     // Stock comparison
     const stockDeltaClass = row.stockDelta > 0 ? 'stock-delta-positive' : 'stock-delta-negative';
     const stockDeltaIcon = row.stockDelta > 0 ? '📈' : '📉';
+    
+    // Calculate how much needed to reach PAR
+    const currentStock = row.currentStock || 0;
+    const neededToReachPar = Math.max(0, par - currentStock);
+    const conversionFactor = row.conversionFactor || 1;
+    const casesNeeded = Math.ceil(neededToReachPar / conversionFactor);
     
     // Vendor comparison table
     let vendorComparisonHTML = '';
@@ -5280,24 +5033,6 @@ function renderEnhancedCard(row, userType) {
         `;
     }
     
-    // Recommendation
-    let recommendationHTML = '';
-    if (row.par && row.recommendedCases > 0) {
-        recommendationHTML = `
-            <div style="background: linear-gradient(135deg, var(--success-600), var(--success-500)); color: white; padding: 1rem; border-radius: 8px; margin-top: 1rem; text-align: center;">
-                <div style="font-size: 0.875rem; margin-bottom: 0.25rem; opacity: 0.9;">
-                    💡 Recommended Order
-                </div>
-                <div style="font-size: 1.75rem; font-weight: 700; font-family: var(--font-mono);">
-                    ${row.recommendedCases} cases
-                </div>
-                <div style="font-size: 0.75rem; opacity: 0.8; margin-top: 0.25rem;">
-                    To reach PAR: ${row.par}
-                </div>
-            </div>
-        `;
-    }
-    
     return `
         <div class="enhanced-order-card" data-product="${productName}" data-user="${userType}">
             <!-- Product Image & Name -->
@@ -5313,35 +5048,92 @@ function renderEnhancedCard(row, userType) {
                 </div>
             </div>
             
-            <!-- Stock Comparison Grid -->
-            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1rem;">
+            <!-- ✅ NEW: PAR & STOCK COMPARISON (4 COLUMNS) -->
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-bottom: 1rem;">
+                <!-- PAR LEVEL -->
+                <div style="background: linear-gradient(135deg, var(--accent-500), var(--accent-400)); padding: 0.75rem; border-radius: 8px; text-align: center; color: white;">
+                    <div style="font-size: 0.7rem; font-weight: 700; margin-bottom: 0.25rem; opacity: 0.9;">
+                        🎯 PAR
+                    </div>
+                    <div style="font-size: 1.5rem; font-weight: 700; font-family: var(--font-mono);">
+                        ${hasPar ? par.toFixed(1) : 'N/A'}
+                    </div>
+                </div>
+                
+                <!-- PREVIOUS STOCK -->
                 <div style="background: var(--neutral-100); padding: 0.75rem; border-radius: 8px; text-align: center;">
                     <div style="font-size: 0.7rem; font-weight: 700; color: var(--neutral-600); margin-bottom: 0.25rem;">
                         PREVIOUS
                     </div>
                     <div style="font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); color: var(--neutral-700);">
-                        ${row.previousStock.toFixed(1)}
+                        ${row.previousStock ? row.previousStock.toFixed(1) : '0.0'}
                     </div>
                 </div>
                 
+                <!-- CURRENT STOCK -->
                 <div style="background: var(--primary-100); padding: 0.75rem; border-radius: 8px; text-align: center;">
                     <div style="font-size: 0.7rem; font-weight: 700; color: var(--primary-700); margin-bottom: 0.25rem;">
                         CURRENT
                     </div>
                     <div style="font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); color: var(--primary-900);">
-                        ${row.currentStock.toFixed(1)}
+                        ${row.currentStock ? row.currentStock.toFixed(1) : '0.0'}
                     </div>
                 </div>
                 
+                <!-- DELTA -->
                 <div style="background: ${row.stockDelta >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(220, 38, 38, 0.1)'}; padding: 0.75rem; border-radius: 8px; text-align: center;">
                     <div style="font-size: 0.7rem; font-weight: 700; color: var(--neutral-600); margin-bottom: 0.25rem;">
                         DELTA ${stockDeltaIcon}
                     </div>
                     <div style="font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono);" class="${stockDeltaClass}">
-                        ${row.stockDelta >= 0 ? '+' : ''}${row.stockDelta.toFixed(1)}
+                        ${row.stockDelta >= 0 ? '+' : ''}${row.stockDelta ? row.stockDelta.toFixed(1) : '0.0'}
                     </div>
                 </div>
             </div>
+            
+            <!-- ✅ NEW: PAR CALCULATION BOX -->
+            ${hasPar ? `
+                <div style="background: linear-gradient(135deg, rgba(245, 158, 11, 0.15), rgba(251, 191, 36, 0.1)); padding: 1rem; border-radius: 8px; border: 2px solid var(--accent-400); margin-bottom: 1rem;">
+                    <div style="display: grid; grid-template-columns: 1fr auto 1fr; gap: 1rem; align-items: center;">
+                        <div style="text-align: center;">
+                            <div style="font-size: 0.75rem; font-weight: 700; color: var(--neutral-600); margin-bottom: 0.25rem;">
+                                CURRENT
+                            </div>
+                            <div style="font-size: 1.75rem; font-weight: 700; font-family: var(--font-mono); color: var(--primary-700);">
+                                ${currentStock.toFixed(1)}
+                            </div>
+                        </div>
+                        
+                        <div style="font-size: 2rem; color: var(--accent-600);">
+                            →
+                        </div>
+                        
+                        <div style="text-align: center;">
+                            <div style="font-size: 0.75rem; font-weight: 700; color: var(--neutral-600); margin-bottom: 0.25rem;">
+                                NEED
+                            </div>
+                            <div style="font-size: 1.75rem; font-weight: 700; font-family: var(--font-mono); color: var(--accent-600);">
+                                ${neededToReachPar.toFixed(1)}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    ${casesNeeded > 0 ? `
+                        <div style="text-align: center; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 2px solid var(--accent-300);">
+                            <div style="font-size: 0.875rem; color: var(--neutral-700);">
+                                📦 Suggested Order: <strong style="font-size: 1.25rem; color: var(--accent-600);">${casesNeeded} cases</strong>
+                            </div>
+                            <div style="font-size: 0.75rem; color: var(--neutral-500); margin-top: 0.25rem;">
+                                (${conversionFactor} units per case)
+                            </div>
+                        </div>
+                    ` : `
+                        <div style="text-align: center; margin-top: 0.75rem; padding-top: 0.75rem; border-top: 2px solid var(--success-300); color: var(--success-600); font-weight: 700;">
+                            ✅ Stock at or above PAR
+                        </div>
+                    `}
+                </div>
+            ` : ''}
             
             ${vendorComparisonHTML}
             ${lastOrderHTML}
@@ -5357,10 +5149,9 @@ function renderEnhancedCard(row, userType) {
                        class="order-qty-input search-input" 
                        id="qty-${productId}"
                        placeholder="0.00"
+                       value="${casesNeeded > 0 ? casesNeeded : ''}"
                        style="width: 100%; font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); text-align: center; padding: 1rem;">
             </div>
-            
-            ${recommendationHTML}
             
             <!-- Selected Vendor Display -->
             <input type="hidden" id="vendor-${productId}" value="${row.bestVendor || ''}">
@@ -5522,8 +5313,7 @@ function loadJsPDF() {
     console.log('PDF generation ready (placeholder)');
 }
 
-// Switch between Place Order sub-tabs
-function switchOrderTab(tabName) {
+function switchOrderTab(tabName, evt) {
     // Remove active class from all sub-tabs
     document.querySelectorAll('.order-sub-tab').forEach(tab => {
         tab.classList.remove('active');
@@ -5537,14 +5327,15 @@ function switchOrderTab(tabName) {
     });
     
     // Add active class to clicked tab
-    event.target.classList.add('active');
-    event.target.style.background = 'linear-gradient(135deg, var(--primary-700) 0%, var(--primary-600) 100%)';
-    event.target.style.color = 'white';
+    if (evt && evt.target) {
+        evt.target.classList.add('active');
+        evt.target.style.background = 'linear-gradient(135deg, var(--primary-700) 0%, var(--primary-600) 100%)';
+        evt.target.style.color = 'white';
+    }
     
     // Show corresponding content section
     document.getElementById(tabName).classList.add('active');
 }
-
 
 // Initialize enhanced order when tab loads
 async function initializeEnhancedPlaceOrder() {
@@ -5707,7 +5498,79 @@ async function saveAllConversions() {
         showLoading(false);
     }
 }
+let submissionHistoryData = [];
+let filteredHistory = [];
 
+async function loadSubmissionHistory() {
+    showLoading(true);
+    try {
+        const { data, error } = await supabaseClient
+            .from('inventory_submissions')
+            .select('*')
+            .order('submission_date', { ascending: false });
+        
+        if (error) throw error;
+        
+        submissionHistoryData = data || [];
+        filteredHistory = [...submissionHistoryData];
+        renderSubmissionHistory();
+        
+    } catch (error) {
+        console.error('Load submission history error:', error);
+        showAlert('Error loading history', 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+function filterSubmissionHistory() {
+    const userFilter = document.getElementById('historyUserFilter')?.value || '';
+    const dateFrom = document.getElementById('historyDateFrom')?.value || '';
+    const dateTo = document.getElementById('historyDateTo')?.value || '';
+    const searchTerm = document.getElementById('historySearchInput')?.value.toLowerCase() || '';
+    
+    filteredHistory = submissionHistoryData.filter(item => {
+        const matchesUser = !userFilter || item.submitted_by === userFilter;
+        const matchesDateFrom = !dateFrom || new Date(item.submission_date) >= new Date(dateFrom);
+        const matchesDateTo = !dateTo || new Date(item.submission_date) <= new Date(dateTo + 'T23:59:59');
+        const matchesSearch = !searchTerm || (item.product_name || '').toLowerCase().includes(searchTerm);
+        
+        return matchesUser && matchesDateFrom && matchesDateTo && matchesSearch;
+    });
+    
+    renderSubmissionHistory();
+}
+
+function renderSubmissionHistory() {
+    const tbody = document.getElementById('historyTableBody');
+    document.getElementById('historyCount').textContent = `${filteredHistory.length} submissions`;
+    
+    if (filteredHistory.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><div class="empty-state-icon">📅</div><h3>No Submissions Found</h3></div></td></tr>';
+        return;
+    }
+    
+    tbody.innerHTML = filteredHistory.map(item => {
+        const userBadge = item.submitted_by === 'julio' 
+            ? '<span class="vendor-badge" style="background: var(--accent-200); color: var(--accent-800);">Julio</span>'
+            : '<span class="vendor-badge" style="background: var(--primary-200); color: var(--primary-800);">Rony</span>';
+        
+        const typeBadge = item.submission_type === 'target_inventory'
+            ? '<span class="vendor-badge" style="background: var(--accent-100); color: var(--accent-700);">Target</span>'
+            : '<span class="vendor-badge" style="background: var(--success-100); color: var(--success-700);">Stock</span>';
+        
+        return `
+            <tr>
+                <td>${formatDate(item.submission_date)}</td>
+                <td>${userBadge}</td>
+                <td style="font-weight: 600;">${item.product_name}</td>
+                <td><span class="price-cell" style="font-family: var(--font-mono); font-weight: 700; color: var(--neutral-900);">${parseFloat(item.quantity).toFixed(2)}</span></td>
+                <td>${typeBadge}</td>
+                <td style="font-size: 0.875rem; color: var(--neutral-600);">${item.notes || '-'}</td>
+            </tr>
+        `;
+    }).join('');
+}
     </script>
 </body>
 </html>
