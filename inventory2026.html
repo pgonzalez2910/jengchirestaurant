@@ -4637,6 +4637,63 @@ let enhancedOrderData = new Map();
 // Load enhanced create order with full vendor comparison
 // ========== FIXED LOAD ENHANCED CREATE ORDER FUNCTION ==========
 
+
+// ADD THIS NEW FUNCTION (copy from COMPLETE_FIXED_PLACE_ORDER.js)
+// ========== COMPLETE FIXED PLACE ORDER CODE ==========
+// Replace the entire Place Order section with this code
+
+// ========== RENDER EMPTY STATE ==========
+function renderEmptyOrderState(dateISO) {
+    const container = document.getElementById('enhancedOrderContainer');
+    
+    container.innerHTML = `
+        <div style="text-align: center; padding: 4rem 2rem; background: white; border-radius: 16px; box-shadow: var(--shadow-lg); margin: 2rem auto; max-width: 800px;">
+            <div style="font-size: 5rem; margin-bottom: 1.5rem; opacity: 0.3;">📦</div>
+            <h2 style="font-size: 1.75rem; font-weight: 700; color: var(--neutral-900); margin-bottom: 1rem;">
+                No Inventory Data for ${formatDate(dateISO)}
+            </h2>
+            <p style="font-size: 1.125rem; color: var(--neutral-600); margin-bottom: 2rem; line-height: 1.6;">
+                Julio and Rony need to submit their inventory counts first before you can create orders.
+            </p>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; max-width: 600px; margin: 0 auto;">
+                <div style="background: var(--accent-50); padding: 1.5rem; border-radius: 12px; border: 2px solid var(--accent-300);">
+                    <div style="font-size: 2rem; margin-bottom: 0.5rem;">📦</div>
+                    <div style="font-weight: 700; font-size: 1.125rem; color: var(--neutral-900); margin-bottom: 0.5rem;">
+                        Julio's Target Inventory
+                    </div>
+                    <div style="font-size: 0.875rem; color: var(--neutral-600);">
+                        Go to "🛒 Julio's Orders" tab to submit target quantities
+                    </div>
+                </div>
+                
+                <div style="background: var(--primary-50); padding: 1.5rem; border-radius: 12px; border: 2px solid var(--primary-300);">
+                    <div style="font-size: 2rem; margin-bottom: 0.5rem;">🍳</div>
+                    <div style="font-weight: 700; font-size: 1.125rem; color: var(--neutral-900); margin-bottom: 0.5rem;">
+                        Rony's Stock Count
+                    </div>
+                    <div style="font-size: 0.875rem; color: var(--neutral-600);">
+                        Go to "🍳 Rony's Orders" tab to submit current stock
+                    </div>
+                </div>
+            </div>
+            
+            <div style="margin-top: 2rem; padding: 1.5rem; background: var(--neutral-50); border-radius: 12px; border: 2px solid var(--neutral-300);">
+                <div style="font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
+                    💡 How it works:
+                </div>
+                <ol style="text-align: left; color: var(--neutral-600); line-height: 1.8; padding-left: 1.5rem; max-width: 500px; margin: 0 auto;">
+                    <li>Julio submits target quantities</li>
+                    <li>Rony submits current stock counts</li>
+                    <li>System calculates what needs to be ordered</li>
+                    <li>Place Order tab shows recommendations with vendor prices</li>
+                </ol>
+            </div>
+        </div>
+    `;
+}
+
+// ========== LOAD ENHANCED CREATE ORDER (COMPLETE VERSION) ==========
 async function loadEnhancedCreateOrder() {
     const dateISO = document.getElementById('createOrderDate').value || todayYMD();
     const vendorFilter = document.getElementById('createVendorFilter').value;
@@ -4650,11 +4707,21 @@ async function loadEnhancedCreateOrder() {
             .eq('order_date', dateISO);
         
         if (currentError) {
-            console.error('Current data error:', currentError);
-            // Don't throw - continue with empty data
+            console.error('❌ Current data error:', currentError);
+            throw currentError;
         }
         
-        // 2. Get previous inventory check (most recent before current date)
+        // ✅ CHECK IF EMPTY - SHOW EMPTY STATE
+        if (!currentData || currentData.length === 0) {
+            console.log('⚠️ No inventory_check data for', dateISO);
+            console.log('💡 Julio and Rony need to submit their counts first');
+            renderEmptyOrderState(dateISO);
+            return;
+        }
+        
+        console.log('✅ Found', currentData.length, 'inventory records for', dateISO);
+        
+        // 2. Get previous inventory check
         const { data: previousData, error: prevError } = await supabaseClient
             .from('inventory_check')
             .select('*')
@@ -4663,44 +4730,36 @@ async function loadEnhancedCreateOrder() {
             .limit(100);
         
         if (prevError) {
-            console.error('Previous data error:', prevError);
-            // Don't throw - continue with empty data
+            console.error('⚠️ Previous data error:', prevError);
         }
         
-        // 3. Get all historical purchases for price comparison
+        // 3. Get purchase history for price comparison
         const { data: purchaseHistory, error: histError } = await supabaseClient
             .from('purchase_history')
             .select('product_name, vendor, unit_price, purchase_date, item_code')
             .order('purchase_date', { ascending: false });
         
         if (histError) {
-            console.error('Purchase history error:', histError);
+            console.error('❌ Purchase history error:', histError);
             throw histError;
         }
         
-        // 4. Get product enrichment data
+        // 4. Get enrichment data
         const { data: enrichData, error: enrichError } = await supabaseClient
             .from('inventory_management')
             .select('product_name, image_url, par, avg_daily_usage, conversion_factor, vendors');
         
         if (enrichError) {
-            console.error('Enrichment error:', enrichError);
+            console.error('❌ Enrichment error:', enrichError);
             throw enrichError;
         }
         
-        console.log('📊 Data loaded:');
-        console.log('- Current inventory check:', (currentData || []).length, 'records');
-        console.log('- Previous inventory check:', (previousData || []).length, 'records');
-        console.log('- Purchase history:', (purchaseHistory || []).length, 'records');
-        console.log('- Enrichment data:', (enrichData || []).length, 'records');
-        
-        // Build enrichment map
+        // Build maps
         const enrichmentMap = new Map();
         (enrichData || []).forEach(r => {
             enrichmentMap.set((r.product_name || '').trim(), r);
         });
         
-        // Build previous inventory map
         const previousMap = new Map();
         (previousData || []).forEach(r => {
             const key = `${r.product_name}_${r.user}`;
@@ -4709,7 +4768,6 @@ async function loadEnhancedCreateOrder() {
             }
         });
         
-        // Build vendor price history map
         const vendorPriceMap = new Map();
         (purchaseHistory || []).forEach(r => {
             const pn = (r.product_name || '').trim();
@@ -4724,158 +4782,77 @@ async function loadEnhancedCreateOrder() {
             });
         });
         
-        // ========== HANDLE EMPTY INVENTORY_CHECK TABLE ==========
-        let processedData = [];
-        
-        if (!currentData || currentData.length === 0) {
-            console.log('⚠️ No inventory_check data found. Building from enrichment data...');
+        // Process data
+        const processedData = (currentData || []).map(row => {
+            const pn = (row.product_name || '').trim();
+            const enrichment = enrichmentMap.get(pn) || {};
+            const prevKey = `${row.product_name}_${row.user}`;
+            const previous = previousMap.get(prevKey);
+            const priceHistory = vendorPriceMap.get(pn) || [];
             
-            // Build order data from inventory_management (enrichment) instead
-            enrichData.forEach(enrichment => {
-                const pn = (enrichment.product_name || '').trim();
-                const priceHistory = vendorPriceMap.get(pn) || [];
-                
-                // Get vendor options with prices
-                const vendorOptions = {};
-                priceHistory.forEach(entry => {
-                    if (!vendorOptions[entry.vendor]) {
-                        vendorOptions[entry.vendor] = {
-                            price: entry.price,
-                            lastDate: entry.date,
-                            itemCode: entry.item_code
-                        };
-                    } else if (new Date(entry.date) > new Date(vendorOptions[entry.vendor].lastDate)) {
-                        vendorOptions[entry.vendor] = {
-                            price: entry.price,
-                            lastDate: entry.date,
-                            itemCode: entry.item_code
-                        };
-                    }
-                });
-                
-                // Find best price
-                let bestVendor = null;
-                let bestPrice = Infinity;
-                Object.entries(vendorOptions).forEach(([vendor, info]) => {
-                    if (info.price < bestPrice && info.price > 0) {
-                        bestPrice = info.price;
-                        bestVendor = vendor;
-                    }
-                });
-                
-                // Calculate recommended order quantity
-                const par = parseFloat(enrichment.par || 0);
-                const currentStock = 0; // Starting from zero
-                const needed = Math.max(0, par - currentStock);
-                const conversionFactor = parseFloat(enrichment.conversion_factor || 1);
-                const recommendedCases = Math.ceil(needed / conversionFactor);
-                
-                // Determine user from enrichment data
-                const user = (enrichment.user || 'julio').toLowerCase();
-                
-                processedData.push({
-                    product_name: pn,
-                    user: user,
-                    order_date: dateISO,
-                    image_url: enrichment.image_url,
-                    par: par,
-                    avgDailyUsage: parseFloat(enrichment.avg_daily_usage || 0),
-                    conversionFactor: conversionFactor,
-                    previousStock: 0,
-                    currentStock: 0,
-                    stockDelta: 0,
-                    lastOrder: null,
-                    vendorOptions: vendorOptions,
-                    bestVendor: bestVendor,
-                    bestPrice: bestPrice,
-                    recommendedCases: recommendedCases,
-                    allVendors: enrichment.vendors,
-                    on_hand: 0,
-                    tentative: 0,
-                    vendor: bestVendor
-                });
+            const currentStock = parseFloat(row.on_hand || 0);
+            const previousStock = previous ? parseFloat(previous.on_hand || 0) : 0;
+            const stockDelta = currentStock - previousStock;
+            
+            const lastOrder = previous ? {
+                quantity: parseFloat(previous.tentative || 0),
+                vendor: previous.vendor,
+                date: previous.order_date
+            } : null;
+            
+            const vendorOptions = {};
+            priceHistory.forEach(entry => {
+                if (!vendorOptions[entry.vendor]) {
+                    vendorOptions[entry.vendor] = {
+                        price: entry.price,
+                        lastDate: entry.date,
+                        itemCode: entry.item_code
+                    };
+                } else if (new Date(entry.date) > new Date(vendorOptions[entry.vendor].lastDate)) {
+                    vendorOptions[entry.vendor] = {
+                        price: entry.price,
+                        lastDate: entry.date,
+                        itemCode: entry.item_code
+                    };
+                }
             });
-        } else {
-            // Process existing inventory_check data
-            processedData = (currentData || []).map(row => {
-                const pn = (row.product_name || '').trim();
-                const enrichment = enrichmentMap.get(pn) || {};
-                const prevKey = `${row.product_name}_${row.user}`;
-                const previous = previousMap.get(prevKey);
-                const priceHistory = vendorPriceMap.get(pn) || [];
-                
-                // Calculate stock delta
-                const currentStock = parseFloat(row.on_hand || 0);
-                const previousStock = previous ? parseFloat(previous.on_hand || 0) : 0;
-                const stockDelta = currentStock - previousStock;
-                
-                // Get last order info
-                const lastOrder = previous ? {
-                    quantity: parseFloat(previous.tentative || 0),
-                    vendor: previous.vendor,
-                    date: previous.order_date
-                } : null;
-                
-                // Get vendor options with prices
-                const vendorOptions = {};
-                priceHistory.forEach(entry => {
-                    if (!vendorOptions[entry.vendor]) {
-                        vendorOptions[entry.vendor] = {
-                            price: entry.price,
-                            lastDate: entry.date,
-                            itemCode: entry.item_code
-                        };
-                    } else if (new Date(entry.date) > new Date(vendorOptions[entry.vendor].lastDate)) {
-                        vendorOptions[entry.vendor] = {
-                            price: entry.price,
-                            lastDate: entry.date,
-                            itemCode: entry.item_code
-                        };
-                    }
-                });
-                
-                // Find best price
-                let bestVendor = null;
-                let bestPrice = Infinity;
-                Object.entries(vendorOptions).forEach(([vendor, info]) => {
-                    if (info.price < bestPrice && info.price > 0) {
-                        bestPrice = info.price;
-                        bestVendor = vendor;
-                    }
-                });
-                
-                // Calculate recommended order quantity
-                const par = parseFloat(enrichment.par || 0);
-                const needed = Math.max(0, par - currentStock);
-                const conversionFactor = parseFloat(enrichment.conversion_factor || 1);
-                const recommendedCases = Math.ceil(needed / conversionFactor);
-                
-                return {
-                    ...row,
-                    image_url: enrichment.image_url,
-                    par: par,
-                    avgDailyUsage: parseFloat(enrichment.avg_daily_usage || 0),
-                    conversionFactor: conversionFactor,
-                    previousStock: previousStock,
-                    currentStock: currentStock,
-                    stockDelta: stockDelta,
-                    lastOrder: lastOrder,
-                    vendorOptions: vendorOptions,
-                    bestVendor: bestVendor,
-                    bestPrice: bestPrice,
-                    recommendedCases: recommendedCases,
-                    allVendors: enrichment.vendors
-                };
+            
+            let bestVendor = null;
+            let bestPrice = Infinity;
+            Object.entries(vendorOptions).forEach(([vendor, info]) => {
+                if (info.price < bestPrice && info.price > 0) {
+                    bestPrice = info.price;
+                    bestVendor = vendor;
+                }
             });
-        }
+            
+            const par = parseFloat(enrichment.par || 0);
+            const needed = Math.max(0, par - currentStock);
+            const conversionFactor = parseFloat(enrichment.conversion_factor || 1);
+            const recommendedCases = Math.ceil(needed / conversionFactor);
+            
+            return {
+                ...row,
+                image_url: enrichment.image_url,
+                par: par,
+                avgDailyUsage: parseFloat(enrichment.avg_daily_usage || 0),
+                conversionFactor: conversionFactor,
+                previousStock: previousStock,
+                currentStock: currentStock,
+                stockDelta: stockDelta,
+                lastOrder: lastOrder,
+                vendorOptions: vendorOptions,
+                bestVendor: bestVendor,
+                bestPrice: bestPrice,
+                recommendedCases: recommendedCases,
+                allVendors: enrichment.vendors
+            };
+        });
         
-        console.log('✅ Processed data:', processedData.length, 'products');
-        
-        // Apply vendor filter if set
+        // Apply vendor filter
         let filteredData = processedData;
         if (vendorFilter) {
             filteredData = processedData.filter(r => {
-                // Check if any vendor option matches the filter
                 const hasVendor = Object.keys(r.vendorOptions || {}).some(v => 
                     canonicalizeVendor(v) === canonicalizeVendor(vendorFilter)
                 );
@@ -4883,11 +4860,16 @@ async function loadEnhancedCreateOrder() {
             });
         }
         
-        console.log('🔍 After vendor filter:', filteredData.length, 'products');
-        
         // Separate by user
-        const ronyData = filteredData.filter(r => (r.user || '').toLowerCase() === 'rony');
-        const julioData = filteredData.filter(r => (r.user || '').toLowerCase() === 'julio');
+        const ronyData = filteredData.filter(r => {
+            const user = (r.user || '').toLowerCase().trim();
+            return user === 'rony';
+        });
+        
+        const julioData = filteredData.filter(r => {
+            const user = (r.user || '').toLowerCase().trim();
+            return user === 'julio';
+        });
         
         console.log('👨‍🍳 Rony products:', ronyData.length);
         console.log('📦 Julio products:', julioData.length);
@@ -4902,6 +4884,7 @@ async function loadEnhancedCreateOrder() {
         showLoading(false);
     }
 }
+
 
 
 // Render enhanced order cards with full vendor comparison
@@ -4952,6 +4935,8 @@ function renderEnhancedOrderCards(ronyData, julioData) {
 }
 
 // Render individual enhanced card
+// ========== ENHANCED PLACE ORDER CARD WITH PROMINENT PAR ==========
+
 // ========== ENHANCED PLACE ORDER CARD WITH PROMINENT PAR ==========
 
 function renderEnhancedCard(row, userType) {
