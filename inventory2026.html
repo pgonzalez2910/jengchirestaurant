@@ -4745,42 +4745,66 @@ function renderEmptyOrderState(dateISO) {
 }
 
 // ========== LOAD ENHANCED CREATE ORDER (COMPLETE VERSION) ==========
+// ========== FIXED: Load Enhanced Create Order WITH IMAGES ==========
 async function loadEnhancedCreateOrder() {
     const dateISO = document.getElementById('createOrderDate').value || todayYMD();
-    const vendorFilter = document.getElementById('createVendorFilter').value;
     
     showLoading(true);
     try {
-        // ✅ ONLY QUERY inventory_check TABLE
-        const { data: inventoryData, error } = await supabaseClient
+        // 1. Load inventory_check data
+        const { data: inventoryData, error: checkError } = await supabaseClient
             .from('inventory_check')
             .select('*')
             .eq('order_date', dateISO)
             .order('product_name');
         
-        if (error) throw error;
+        if (checkError) throw checkError;
         
-        // ✅ CHECK IF EMPTY
         if (!inventoryData || inventoryData.length === 0) {
             renderEmptyOrderState(dateISO);
             return;
         }
         
-        console.log('✅ Found', inventoryData.length, 'records in inventory_check for', dateISO);
+        // 2. Load inventory_management data for images
+        const { data: mgmtData, error: mgmtError } = await supabaseClient
+            .from('inventory_management')
+            .select('product_name, image_url, par, position');
         
-        // ✅ SEPARATE BY USER (rony vs julio)
-        const ronyData = inventoryData.filter(row => 
+        if (mgmtError) throw mgmtError;
+        
+        // 3. Create lookup map
+        const imageMap = new Map();
+        (mgmtData || []).forEach(item => {
+            imageMap.set(item.product_name, {
+                image_url: item.image_url,
+                par: item.par,
+                position: item.position
+            });
+        });
+        
+        // 4. Merge data
+        const enrichedData = inventoryData.map(row => {
+            const mgmt = imageMap.get(row.product_name);
+            return {
+                ...row,
+                image_url: mgmt?.image_url || null,
+                par: mgmt?.par || 0,
+                position: mgmt?.position || null
+            };
+        });
+        
+        // 5. Separate by user
+        const ronyData = enrichedData.filter(row => 
             (row.user || '').toLowerCase().trim() === 'rony'
         );
         
-        const julioData = inventoryData.filter(row => 
+        const julioData = enrichedData.filter(row => 
             (row.user || '').toLowerCase().trim() === 'julio'
         );
         
-        console.log('👨‍🍳 Rony products:', ronyData.length);
-        console.log('📦 Julio products:', julioData.length);
+        console.log('✅ Loaded with images:', enrichedData.length);
+        console.log('🖼️ Sample image_url:', enrichedData[0]?.image_url);
         
-        // ✅ RENDER CARDS
         renderEnhancedOrderCards(ronyData, julioData);
         
     } catch (error) {
@@ -5681,4 +5705,5 @@ async function transferAllAssignments() {
     </script>
 </body>
 </html>
+
 
