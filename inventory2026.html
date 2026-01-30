@@ -4746,12 +4746,16 @@ function renderEmptyOrderState(dateISO) {
 
 // ========== LOAD ENHANCED CREATE ORDER (COMPLETE VERSION) ==========
 // ========== FIXED: Load Enhanced Create Order WITH IMAGES ==========
+// ========== COMPLETE ENHANCED loadEnhancedCreateOrder ==========
 async function loadEnhancedCreateOrder() {
     const dateISO = document.getElementById('createOrderDate').value || todayYMD();
     
     showLoading(true);
     try {
-        // 1. Load inventory_check data
+        // ✅ STEP 1: Load supporting data FIRST (conversions, last orders)
+        await loadSupportingData();
+        
+        // ✅ STEP 2: Load inventory_check data
         const { data: inventoryData, error: checkError } = await supabaseClient
             .from('inventory_check')
             .select('*')
@@ -4765,14 +4769,14 @@ async function loadEnhancedCreateOrder() {
             return;
         }
         
-        // 2. Load inventory_management data for images
+        // ✅ STEP 3: Load inventory_management data for images and PAR
         const { data: mgmtData, error: mgmtError } = await supabaseClient
             .from('inventory_management')
             .select('product_name, image_url, par, position');
         
         if (mgmtError) throw mgmtError;
         
-        // 3. Create lookup map
+        // ✅ STEP 4: Create lookup map
         const imageMap = new Map();
         (mgmtData || []).forEach(item => {
             imageMap.set(item.product_name, {
@@ -4782,7 +4786,7 @@ async function loadEnhancedCreateOrder() {
             });
         });
         
-        // 4. Merge data
+        // ✅ STEP 5: Merge data
         const enrichedData = inventoryData.map(row => {
             const mgmt = imageMap.get(row.product_name);
             return {
@@ -4793,7 +4797,7 @@ async function loadEnhancedCreateOrder() {
             };
         });
         
-        // 5. Separate by user
+        // ✅ STEP 6: Separate by user
         const ronyData = enrichedData.filter(row => 
             (row.user || '').toLowerCase().trim() === 'rony'
         );
@@ -4804,8 +4808,18 @@ async function loadEnhancedCreateOrder() {
         
         console.log('✅ Loaded with images:', enrichedData.length);
         console.log('🖼️ Sample image_url:', enrichedData[0]?.image_url);
+        console.log('📊 Sample PAR:', enrichedData[0]?.par);
         
+        // ✅ STEP 7: Render cards
         renderEnhancedOrderCards(ronyData, julioData);
+        
+        // ✅ STEP 8: Load vendor prices for each product (after DOM renders)
+        setTimeout(() => {
+            enrichedData.forEach(row => {
+                const productId = (row.product_name || '').replace(/[^a-zA-Z0-9]/g, '_');
+                loadVendorPricesForProduct(row.product_name, productId);
+            });
+        }, 500);
         
     } catch (error) {
         console.error('❌ Load order error:', error);
@@ -4814,6 +4828,8 @@ async function loadEnhancedCreateOrder() {
         showLoading(false);
     }
 }
+
+
 
 // ========== FIXED VERSION: ALWAYS SHOWS BOTH RONY AND JULIO SECTIONS ==========
 // Find this function in your code and REPLACE it with this version
@@ -4909,16 +4925,28 @@ function renderEnhancedOrderCards(ronyData, julioData) {
 // ========== ENHANCED PLACE ORDER CARD WITH PROMINENT PAR ==========
 
 // ========== ENHANCED PLACE ORDER CARD WITH PROMINENT PAR ==========
+// ========== COMPLETE ENHANCED PLACE ORDER CARD ==========
 function renderEnhancedCard(row, userType) {
     const imageUrl = resolveImage(row.image_url);
     const productName = row.product_name || 'Unknown Product';
     const productId = productName.replace(/[^a-zA-Z0-9]/g, '_');
     
-    // ✅ CALCULATE NEEDED QUANTITY
+    // ✅ CALCULATE VALUES
     const onHand = parseFloat(row.on_hand || 0);
     const target = parseFloat(row.target || 0);
+    const par = parseFloat(row.par || 0); // From inventory_management
     const tentative = parseFloat(row.tentative || 0);
     const needed = Math.max(0, target - onHand);
+    
+    // ✅ FIX: Rony products should have EMPTY qty field
+    const isRony = userType === 'rony';
+    const defaultQty = isRony ? '' : (tentative > 0 ? tentative : (needed > 0 ? needed : ''));
+    
+    // ✅ GET CONVERSION FACTOR (from product_conversions table)
+    const conversion = window.conversionMap?.get(productName) || { units_per_case: 1, unit_type: 'unit' };
+    
+    // ✅ GET LAST ORDER INFO
+    const lastOrder = window.lastOrderMap?.get(productName) || null;
     
     // ✅ CURRENT ASSIGNMENT
     const currentUser = (row.user || '').toLowerCase();
@@ -4933,12 +4961,12 @@ function renderEnhancedCard(row, userType) {
             <div style="display: flex; gap: 0.5rem; align-items: center;">
                 <span style="font-size: 0.75rem; font-weight: 700; color: var(--neutral-600); margin-right: 0.5rem;">ASSIGNED TO:</span>
                 <button onclick="toggleAssignment('${row.id}', 'rony')"
-                    class="btn ${isAssignedToRony ? 'btn-primary' : 'btn-secondary'}"
+                    class="btn assignment-btn ${isAssignedToRony ? 'btn-primary' : 'btn-secondary'}"
                     style="padding: 0.5rem 1rem; font-size: 0.875rem;">
                     🍳 Rony
                 </button>
                 <button onclick="toggleAssignment('${row.id}', 'julio')"
-                    class="btn ${isAssignedToJulio ? 'btn-primary' : 'btn-secondary'}"
+                    class="btn assignment-btn ${isAssignedToJulio ? 'btn-primary' : 'btn-secondary'}"
                     style="padding: 0.5rem 1rem; font-size: 0.875rem;">
                     📦 Julio
                 </button>
@@ -4960,14 +4988,43 @@ function renderEnhancedCard(row, userType) {
             <div style="font-weight: 700; font-size: 1.125rem; color: var(--neutral-900);">
                 ${productName}
             </div>
-            <div style="font-family: var(--font-mono); font-size: 0.875rem; color: var(--neutral-600); margin-top: 0.25rem;" id="itemcode-${productId}">
+            <div style="font-family: var(--font-mono); font-size: 0.875rem; color: var(--neutral-600); margin-top: 0.25rem;" id="itemcode-display-${productId}">
                 ${row.item_code || '-------'}
+            </div>
+        </div>
+        
+        <!-- ⭐ PAR & CONVERSION INFO BANNER ⭐ -->
+        <div style="background: linear-gradient(135deg, var(--accent-100), var(--accent-50)); padding: 1rem; border-radius: 12px; margin-bottom: 1rem; border: 2px solid var(--accent-300);">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <!-- PAR VALUE -->
+                <div style="text-align: center;">
+                    <div style="font-size: 0.7rem; font-weight: 700; color: var(--accent-700); margin-bottom: 0.25rem;">
+                        📊 PAR LEVEL
+                    </div>
+                    <input type="number"
+                           id="par-input-${productId}"
+                           value="${par}"
+                           min="0"
+                           step="0.1"
+                           onblur="updateParValue('${productName}', this.value)"
+                           style="width: 80px; text-align: center; padding: 0.5rem; border: 2px solid var(--accent-400); border-radius: 8px; font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); background: white;">
+                </div>
+                
+                <!-- CONVERSION FACTOR -->
+                <div style="text-align: center; background: white; padding: 0.5rem; border-radius: 8px; border: 2px solid var(--neutral-300);">
+                    <div style="font-size: 0.7rem; font-weight: 700; color: var(--neutral-600); margin-bottom: 0.25rem;">
+                        📦 CONVERSION
+                    </div>
+                    <div style="font-size: 1rem; font-weight: 700; color: var(--neutral-900); font-family: var(--font-mono);">
+                        1 case = ${conversion.units_per_case} ${conversion.unit_type}
+                    </div>
+                </div>
             </div>
         </div>
         
         <!-- STOCK INFORMATION GRID -->
         <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1rem;">
-            <!-- ON HAND (Current Stock) -->
+            <!-- ON HAND -->
             <div style="background: var(--primary-100); padding: 0.75rem; border-radius: 8px; text-align: center;">
                 <div style="font-size: 0.7rem; font-weight: 700; color: var(--primary-700); margin-bottom: 0.25rem;">
                     📊 ON HAND
@@ -4977,7 +5034,7 @@ function renderEnhancedCard(row, userType) {
                 </div>
             </div>
             
-            <!-- TARGET (Desired Stock) -->
+            <!-- TARGET -->
             <div style="background: var(--accent-100); padding: 0.75rem; border-radius: 8px; text-align: center;">
                 <div style="font-size: 0.7rem; font-weight: 700; color: var(--accent-700); margin-bottom: 0.25rem;">
                     🎯 TARGET
@@ -4987,7 +5044,7 @@ function renderEnhancedCard(row, userType) {
                 </div>
             </div>
             
-            <!-- NEEDED (Difference) -->
+            <!-- NEEDED -->
             <div style="background: ${needed > 0 ? 'rgba(220, 38, 38, 0.1)' : 'rgba(16, 185, 129, 0.1)'}; padding: 0.75rem; border-radius: 8px; text-align: center;">
                 <div style="font-size: 0.7rem; font-weight: 700; color: var(--neutral-600); margin-bottom: 0.25rem;">
                     ➖ NEEDED
@@ -4998,13 +5055,46 @@ function renderEnhancedCard(row, userType) {
             </div>
         </div>
         
+        <!-- ⭐ LAST ORDER INFORMATION ⭐ -->
+        ${lastOrder ? `
+        <div style="background: var(--success-50); padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 2px solid var(--success-300);">
+            <div style="font-size: 0.75rem; font-weight: 700; color: var(--success-700); margin-bottom: 0.5rem;">
+                📅 LAST ORDER
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5rem; font-size: 0.875rem;">
+                <div>
+                    <span style="color: var(--neutral-600);">Vendor:</span>
+                    <div style="font-weight: 700; color: var(--neutral-900);">${lastOrder.vendor}</div>
+                </div>
+                <div>
+                    <span style="color: var(--neutral-600);">Qty:</span>
+                    <div style="font-weight: 700; color: var(--neutral-900); font-family: var(--font-mono);">${lastOrder.quantity}</div>
+                </div>
+                <div>
+                    <span style="color: var(--neutral-600);">Date:</span>
+                    <div style="font-weight: 700; color: var(--neutral-900);">${formatDate(lastOrder.date)}</div>
+                </div>
+            </div>
+        </div>
+        ` : ''}
+        
+        <!-- ⭐ VENDOR PRICE COMPARISON TABLE ⭐ -->
+        <div id="vendor-prices-${productId}" style="margin-bottom: 1rem;">
+            <div style="font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
+                💰 VENDOR PRICES
+            </div>
+            <div style="font-size: 0.75rem; color: var(--neutral-500); text-align: center; padding: 1rem; background: var(--neutral-50); border-radius: 8px;">
+                Loading prices...
+            </div>
+        </div>
+        
         <!-- VENDOR SELECTION -->
         <div style="margin-bottom: 1rem;">
             <label style="display: block; font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
                 🏢 Vendor
             </label>
             <select id="vendor-${productId}" 
-                onchange="updateVendorItemCode('${row.id}', this.value)"
+                onchange="selectVendorAndUpdateItemCode('${row.id}', '${productName}', this.value)"
                 class="search-input"
                 style="width: 100%;">
                 <option value="">-- Select Vendor --</option>
@@ -5017,7 +5107,7 @@ function renderEnhancedCard(row, userType) {
             </select>
         </div>
         
-        <!-- ITEM CODE -->
+        <!-- ITEM CODE (Auto-populated) -->
         <div style="margin-bottom: 1rem;">
             <label style="display: block; font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
                 🔢 Item Code
@@ -5026,24 +5116,24 @@ function renderEnhancedCard(row, userType) {
                 id="itemcode-input-${productId}"
                 value="${row.item_code || ''}"
                 onblur="updateItemCode('${row.id}', this.value)"
-                placeholder="Enter vendor item code"
+                placeholder="Auto-fills when vendor selected"
                 class="search-input"
                 style="width: 100%;">
         </div>
         
-        <!-- ORDER QUANTITY (TENTATIVE) -->
+        <!-- ORDER QUANTITY -->
         <div style="margin-bottom: 1rem;">
             <label style="display: block; font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
                 📝 Order Quantity
-                ${needed > 0 ? `<span style="color: var(--warning-600); font-size: 0.875rem; margin-left: 0.5rem;">(Recommended: ${needed.toFixed(2)})</span>` : ''}
+                ${!isRony && needed > 0 ? `<span style="color: var(--warning-600); font-size: 0.875rem; margin-left: 0.5rem;">(Recommended: ${needed.toFixed(2)})</span>` : ''}
             </label>
             <input type="number"
                 id="qty-${productId}"
-                value="${tentative > 0 ? tentative : (needed > 0 ? needed : '')}"
+                value="${defaultQty}"
                 step="0.01"
                 min="0"
                 onblur="updateTentative('${row.id}', this.value)"
-                placeholder="0.00"
+                placeholder="${isRony ? 'Enter quantity' : '0.00'}"
                 class="search-input"
                 style="width: 100%; font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); text-align: center; padding: 1rem;">
         </div>
@@ -5054,6 +5144,198 @@ function renderEnhancedCard(row, userType) {
     `;
 }
 // ========== NEW MANAGEMENT FUNCTIONS ==========
+// ========== LOAD CONVERSION MAP & LAST ORDER DATA ==========
+async function loadSupportingData() {
+    try {
+        // Load product conversions from product_conversions table
+        const { data: conversions, error: convError } = await supabaseClient
+            .from('product_conversions')
+            .select('*');
+        
+        if (!convError && conversions) {
+            window.conversionMap = new Map();
+            conversions.forEach(c => {
+                window.conversionMap.set(c.product_name, {
+                    units_per_case: c.units_per_case || 1,
+                    unit_type: c.unit_type || 'unit'
+                });
+            });
+            console.log('✅ Loaded', conversions.length, 'product conversions');
+        }
+        
+        // Load last order information from inventory_submissions
+        const { data: lastOrders, error: orderError } = await supabaseClient
+            .from('inventory_submissions')
+            .select('*')
+            .order('submission_date', { ascending: false });
+        
+        if (!orderError && lastOrders) {
+            window.lastOrderMap = new Map();
+            lastOrders.forEach(order => {
+                if (!window.lastOrderMap.has(order.product_name)) {
+                    window.lastOrderMap.set(order.product_name, {
+                        vendor: order.submitted_by === 'julio' ? 'Julio (Target)' : 'Rony (Stock)',
+                        quantity: order.quantity,
+                        date: order.submission_date
+                    });
+                }
+            });
+            console.log('✅ Loaded last orders for', window.lastOrderMap.size, 'products');
+        }
+    } catch (error) {
+        console.error('⚠️ Error loading supporting data:', error);
+    }
+}
+
+
+// ========== SELECT VENDOR AND AUTO-FILL ITEM CODE ==========
+async function selectVendorAndUpdateItemCode(rowId, productName, vendor) {
+    if (!vendor) return;
+    
+    const productId = productName.replace(/[^a-zA-Z0-9]/g, '_');
+    const itemCodeInput = document.getElementById(`itemcode-input-${productId}`);
+    const itemCodeDisplay = document.getElementById(`itemcode-display-${productId}`);
+    const statusEl = document.getElementById(`save-status-${productId}`);
+    
+    try {
+        // Look up item code from purchase_history
+        const { data, error } = await supabaseClient
+            .from('purchase_history')
+            .select('item_code, unit_price')
+            .eq('product_name', productName)
+            .eq('vendor', vendor)
+            .order('purchase_date', { ascending: false })
+            .limit(1);
+        
+        if (error) throw error;
+        
+        const itemCode = data && data.length > 0 ? data[0].item_code : '';
+        const price = data && data.length > 0 ? data[0].unit_price : null;
+        
+        // Update UI
+        if (itemCodeInput) itemCodeInput.value = itemCode || '';
+        if (itemCodeDisplay) itemCodeDisplay.textContent = itemCode || '-------';
+        
+        // Save to database
+        const { error: updateError } = await supabaseClient
+            .from('inventory_check')
+            .update({ 
+                vendor: vendor,
+                item_code: itemCode || null
+            })
+            .eq('id', rowId);
+        
+        if (updateError) throw updateError;
+        
+        if (statusEl) {
+            statusEl.innerHTML = `<span style="color: var(--success-600);">✅ ${vendor} selected${itemCode ? ` (${itemCode})` : ''}${price ? ` - $${parseFloat(price).toFixed(2)}` : ''}</span>`;
+            setTimeout(() => { statusEl.innerHTML = ''; }, 3000);
+        }
+        
+    } catch (error) {
+        console.error('Select vendor error:', error);
+        if (statusEl) {
+            statusEl.innerHTML = '<span style="color: var(--warning-600);">❌ Error</span>';
+        }
+    }
+}
+
+
+
+// ========== LOAD VENDOR PRICES FOR A SPECIFIC PRODUCT ==========
+
+
+
+
+
+async function loadVendorPricesForProduct(productName, productId) {
+    try {
+        const { data, error } = await supabaseClient
+            .from('purchase_history')
+            .select('vendor, item_code, unit_price, purchase_date')
+            .eq('product_name', productName)
+            .order('purchase_date', { ascending: false });
+        
+        if (error) throw error;
+        
+        // Get latest price from each vendor
+        const vendorMap = new Map();
+        (data || []).forEach(row => {
+            if (!vendorMap.has(row.vendor)) {
+                vendorMap.set(row.vendor, {
+                    item_code: row.item_code,
+                    price: parseFloat(row.unit_price || 0),
+                    date: row.purchase_date
+                });
+            }
+        });
+        
+        // Render price comparison table
+        const container = document.getElementById(`vendor-prices-${productId}`);
+        if (!container) return;
+        
+        if (vendorMap.size === 0) {
+            container.innerHTML = `
+                <div style="font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
+                    💰 VENDOR PRICES
+                </div>
+                <div style="font-size: 0.75rem; color: var(--neutral-500); text-align: center; padding: 1rem; background: var(--neutral-50); border-radius: 8px; border: 2px dashed var(--neutral-300);">
+                    No pricing history available
+                </div>
+            `;
+            return;
+        }
+        
+        const vendors = Array.from(vendorMap.entries());
+        const minPrice = Math.min(...vendors.map(([v, d]) => d.price));
+        
+        container.innerHTML = `
+            <div style="font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
+                💰 VENDOR PRICES
+            </div>
+            <table class="price-comparison-table">
+                <thead>
+                    <tr>
+                        <th>Vendor</th>
+                        <th>Item Code</th>
+                        <th>Price</th>
+                        <th>Last Purchase</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${vendors.map(([vendor, data]) => `
+                        <tr class="vendor-option-row ${data.price === minPrice ? 'best-price' : ''}" 
+                            style="cursor: pointer; transition: all 0.2s;">
+                            <td><strong>${vendor}</strong></td>
+                            <td style="font-family: var(--font-mono); font-size: 0.875rem;">${data.item_code || 'N/A'}</td>
+                            <td style="font-family: var(--font-mono); font-weight: 700; font-size: 1rem;">
+                                $${data.price.toFixed(2)}
+                                ${data.price === minPrice ? ' 🏆' : ''}
+                            </td>
+                            <td style="font-size: 0.75rem; color: var(--neutral-600);">${formatDate(data.date)}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+        
+    } catch (error) {
+        console.error('⚠️ Load vendor prices error for', productName, ':', error);
+        const container = document.getElementById(`vendor-prices-${productId}`);
+        if (container) {
+            container.innerHTML = `
+                <div style="font-size: 0.75rem; color: var(--warning-600); text-align: center; padding: 1rem;">
+                    ⚠️ Error loading prices
+                </div>
+            `;
+        }
+    }
+}
+
+
+
+
+
 
 // Update PAR value with auto-save
 async function updateParValue(productName, newPar) {
