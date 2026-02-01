@@ -1936,7 +1936,12 @@ input[id^="par-input-"]:focus {
                         </div>
                         <div class="form-group">
                             <label>Invoice Number *</label>
-                            <input type="text" id="invoiceNumber" required>
+                           <input type="text" 
+       id="invoiceNumber" 
+       required 
+       oninput="validateInvoiceNumber(this.value)"
+       autocomplete="off">
+<div id="invoiceNumberValidation" style="margin-top: 0.5rem; font-size: 0.875rem;"></div>
                         </div>
                         <div class="form-group">
                             <label>Check Number</label>
@@ -3341,20 +3346,27 @@ function populateVendorDropdownInModal() {
 
 
 
-        function openAddInvoiceModal() {
-            document.getElementById('invoiceModalTitle').textContent = 'Add Invoice';
-            document.getElementById('invoiceForm').reset();
-            document.getElementById('invoiceForm').removeAttribute('data-edit-id');
-            document.getElementById('invoiceDate').valueAsDate = new Date();
-            document.getElementById('invoiceItemsCount').value = '0 items';
-            document.getElementById('invoiceTaxEnabled').checked = true;
-            selectedInvoiceProducts = [];
-            renderSelectedInvoiceProducts();
-            populateInvoiceVendorDropdown();
-            document.getElementById('productSearchSection').style.display = 'none';
-            document.getElementById('invoiceProductResults').style.display = 'none';
-            openModal('invoiceModal');
-        }
+      function openAddInvoiceModal() {
+    document.getElementById('invoiceModalTitle').textContent = 'Add Invoice';
+    document.getElementById('invoiceForm').reset();
+    document.getElementById('invoiceForm').removeAttribute('data-edit-id');
+    document.getElementById('invoiceDate').valueAsDate = new Date();
+    document.getElementById('invoiceItemsCount').value = '0 items';
+    document.getElementById('invoiceTaxEnabled').checked = true;
+    
+    // ✅ RESET VALIDATION
+    document.getElementById('invoiceNumberValidation').innerHTML = '';
+    document.getElementById('invoiceNumber').style.borderColor = '';
+    document.getElementById('invoiceNumber').style.background = '';
+    isInvoiceNumberValid = false;
+    
+    selectedInvoiceProducts = [];
+    renderSelectedInvoiceProducts();
+    populateInvoiceVendorDropdown();
+    document.getElementById('productSearchSection').style.display = 'none';
+    document.getElementById('invoiceProductResults').style.display = 'none';
+    openModal('invoiceModal');
+}
 
         function openModal(modalId) {
             document.getElementById(modalId).classList.add('active');
@@ -3750,7 +3762,17 @@ function populateVendorDropdownInModal() {
 
         async function saveInvoice(event) {
             event.preventDefault();
-            
+              // ✅ CHECK INVOICE NUMBER VALIDATION BEFORE SAVING
+    const editId = document.getElementById('invoiceForm').dataset.editId;
+    if (!editId && !isInvoiceNumberValid) {
+        showAlert('⚠️ Please fix the invoice number before saving', 'error');
+        return;
+    }
+    
+    if (selectedInvoiceProducts.length === 0) {
+        showAlert('Please add at least one product to the invoice', 'error');
+        return;
+    }
             console.log('🔵 saveInvoice started');
             console.log('🔵 selectedInvoiceProducts:', selectedInvoiceProducts);
             
@@ -6349,7 +6371,105 @@ async function deleteProductFromRony(productName) {
         showLoading(false);
     }
 }
+// ========== INVOICE NUMBER VALIDATION ==========
+let invoiceNumberTimeout;
+let isInvoiceNumberValid = false;
 
+async function validateInvoiceNumber(invoiceNumber) {
+    const validationDiv = document.getElementById('invoiceNumberValidation');
+    const inputField = document.getElementById('invoiceNumber');
+    const submitButton = document.querySelector('#invoiceForm button[type="submit"]');
+    
+    // Clear previous timeout
+    clearTimeout(invoiceNumberTimeout);
+    
+    // Reset if empty
+    if (!invoiceNumber || invoiceNumber.trim() === '') {
+        validationDiv.innerHTML = '';
+        inputField.style.borderColor = '';
+        isInvoiceNumberValid = false;
+        if (submitButton) submitButton.disabled = false;
+        return;
+    }
+    
+    // Show "checking..." message
+    validationDiv.innerHTML = '<span style="color: var(--neutral-500);"><i class="fas fa-spinner fa-spin"></i> Checking...</span>';
+    inputField.style.borderColor = 'var(--neutral-400)';
+    
+    // Debounce: wait 500ms after user stops typing
+    invoiceNumberTimeout = setTimeout(async () => {
+        try {
+            // Check if we're editing an existing invoice
+            const editId = document.getElementById('invoiceForm').dataset.editId;
+            
+            // Query database for existing invoice number
+            let query = supabaseClient
+                .from('invoices')
+                .select('id, vendor, invoice_date')
+                .eq('invoice_number', invoiceNumber.trim());
+            
+            // If editing, exclude the current invoice from the check
+            if (editId) {
+                query = query.neq('id', editId);
+            }
+            
+            const { data, error } = await query;
+            
+            if (error) throw error;
+            
+            if (data && data.length > 0) {
+                // ❌ DUPLICATE FOUND
+                const existing = data[0];
+                isInvoiceNumberValid = false;
+                inputField.style.borderColor = 'var(--warning-600)';
+                inputField.style.background = 'rgba(220, 38, 38, 0.05)';
+                validationDiv.innerHTML = `
+                    <div style="color: var(--warning-600); font-weight: 600;">
+                        <i class="fas fa-exclamation-triangle"></i> 
+                        Invoice #${invoiceNumber} already exists!
+                    </div>
+                    <div style="color: var(--neutral-600); font-size: 0.8125rem; margin-top: 0.25rem;">
+                        Vendor: ${existing.vendor} • Date: ${formatDate(existing.invoice_date)}
+                    </div>
+                `;
+                
+                // Disable submit button
+                if (submitButton) {
+                    submitButton.disabled = true;
+                    submitButton.style.opacity = '0.5';
+                    submitButton.style.cursor = 'not-allowed';
+                }
+                
+            } else {
+                // ✅ UNIQUE - OK TO PROCEED
+                isInvoiceNumberValid = true;
+                inputField.style.borderColor = 'var(--success-600)';
+                inputField.style.background = 'rgba(16, 185, 129, 0.05)';
+                validationDiv.innerHTML = `
+                    <span style="color: var(--success-600); font-weight: 600;">
+                        <i class="fas fa-check-circle"></i> Invoice number available
+                    </span>
+                `;
+                
+                // Enable submit button
+                if (submitButton) {
+                    submitButton.disabled = false;
+                    submitButton.style.opacity = '1';
+                    submitButton.style.cursor = 'pointer';
+                }
+            }
+            
+        } catch (error) {
+            console.error('Validation error:', error);
+            validationDiv.innerHTML = `
+                <span style="color: var(--warning-600);">
+                    <i class="fas fa-exclamation-circle"></i> Error checking invoice number
+                </span>
+            `;
+            isInvoiceNumberValid = false;
+        }
+    }, 500); // Wait 500ms after user stops typing
+}
 
     </script>
 
