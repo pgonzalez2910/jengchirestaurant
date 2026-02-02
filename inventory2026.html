@@ -3346,7 +3346,7 @@ function populateVendorDropdownInModal() {
 
 
 
-      function openAddInvoiceModal() {
+function openAddInvoiceModal() {
     document.getElementById('invoiceModalTitle').textContent = 'Add Invoice';
     document.getElementById('invoiceForm').reset();
     document.getElementById('invoiceForm').removeAttribute('data-edit-id');
@@ -3365,9 +3365,12 @@ function populateVendorDropdownInModal() {
     populateInvoiceVendorDropdown();
     document.getElementById('productSearchSection').style.display = 'none';
     document.getElementById('invoiceProductResults').style.display = 'none';
+    
+    // ✅ PRELOAD LAST PRICES
+    preloadLastPrices();
+    
     openModal('invoiceModal');
 }
-
         function openModal(modalId) {
             document.getElementById(modalId).classList.add('active');
         }
@@ -3518,39 +3521,61 @@ function populateVendorDropdownInModal() {
 }
 
 
-        function toggleInvoiceProduct(itemCode) {
-            const existingIndex = selectedInvoiceProducts.findIndex(p => p.item_code === itemCode);
+    function toggleInvoiceProduct(itemCode) {
+    const existingIndex = selectedInvoiceProducts.findIndex(p => p.item_code === itemCode);
+    
+    if (existingIndex > -1) {
+        selectedInvoiceProducts.splice(existingIndex, 1);
+    } else {
+        const product = inventoryData.find(item => item.item_code === itemCode);
+        if (product) {
+            // ✅ GET LAST UNIT PRICE
+            const lastPrice = getLastPriceForProduct(itemCode, product.vendor);
             
-            if (existingIndex > -1) {
-                selectedInvoiceProducts.splice(existingIndex, 1);
-            } else {
-                const product = inventoryData.find(item => item.item_code === itemCode);
-                if (product) {
-                    selectedInvoiceProducts.push({
-                        item_code: product.item_code,
-                        product_name: product.product_name,
-                        vendor: product.vendor,
-                        unit_price: product.unit_price,
-                        invoice_price: product.unit_price,
-                        quantity: 1,
-                        weight: null,
-                        price_per_unit: null,
-                        has_weight: false,
-                        image_path: product.image_path,
-                        originalItemCode: product.item_code,
-                        originalProductName: product.product_name
-                    });
-                }
-            }
-            
-            renderSelectedInvoiceProducts();
-            searchInvoiceProducts();
+            // ✅ Store as NUMBERS, not strings
+            selectedInvoiceProducts.push({
+                item_code: product.item_code,
+                product_name: product.product_name,
+                vendor: product.vendor,
+                unit_price: parseFloat(product.unit_price) || 0,
+                invoice_price: parseFloat(lastPrice) || parseFloat(product.unit_price) || 0,
+                quantity: 1,
+                weight: null,
+                price_per_unit: parseFloat(lastPrice) || parseFloat(product.unit_price) || 0,
+                has_weight: false,
+                image_path: product.image_path,
+                originalItemCode: product.item_code,
+                originalProductName: product.product_name
+            });
         }
+    }
+    
+    renderSelectedInvoiceProducts();
+    searchInvoiceProducts();
+    
+    // ✅ AUTO-SCROLL TO THE NEWLY ADDED ITEM
+    setTimeout(() => {
+        const container = document.getElementById('selectedInvoiceProducts');
+        if (container) {
+            const lastItem = container.lastElementChild;
+            if (lastItem) {
+                lastItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+    }, 100);
+}
 
-      function renderSelectedInvoiceProducts() {
+
+
+ function renderSelectedInvoiceProducts() {
     const container = document.getElementById('selectedInvoiceProducts');
     const countLabel = document.getElementById('invoiceProductCount');
     const itemsCountField = document.getElementById('invoiceItemsCount');
+    
+    // ✅ MAKE CONTAINER SCROLLABLE WITH FIXED HEIGHT
+    container.style.maxHeight = '600px';
+    container.style.overflowY = 'auto';
+    container.style.paddingRight = '10px'; // Space for scrollbar
     
     const itemCount = selectedInvoiceProducts.length;
     countLabel.textContent = `${itemCount} item${itemCount !== 1 ? 's' : ''} selected`;
@@ -3571,12 +3596,19 @@ function populateVendorDropdownInModal() {
     container.innerHTML = selectedInvoiceProducts.map((product, idx) => {
         const imageUrl = resolveImage(product.image_path);
         const hasWeight = product.has_weight && product.weight && product.weight > 0;
+        
+        // ✅ FIX: Parse to number first, then calculate
+        const weightNum = parseFloat(product.weight) || 0;
+        const pricePerUnitNum = parseFloat(product.price_per_unit) || 0;
+        const quantityNum = parseInt(product.quantity) || 1;
+        const invoicePriceNum = parseFloat(product.invoice_price) || 0;
+        
         const lineTotal = hasWeight 
-            ? (parseFloat(product.weight || 0) * parseFloat(product.price_per_unit || 0)).toFixed(2)
-            : (parseFloat(product.quantity || 0) * parseFloat(product.invoice_price || 0)).toFixed(2);
+            ? (weightNum * pricePerUnitNum).toFixed(2)
+            : (quantityNum * invoicePriceNum).toFixed(2);
 
         return `
-            <div class="selected-product-card" style="display: grid; grid-template-columns: 60px 1fr auto; gap: 1rem; align-items: start; background: white; border: 2px solid var(--success-600); border-radius: 12px; padding: 1.25rem;">
+            <div class="selected-product-card" style="display: grid; grid-template-columns: 60px 1fr auto; gap: 1rem; align-items: start; background: white; border: 2px solid var(--success-600); border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem;">
                 <img src="${imageUrl}" onerror="this.src='${PLACEHOLDER_IMAGE}'" style="width: 60px; height: 60px; border-radius: 8px; object-fit: cover; box-shadow: var(--shadow-sm);">
                 
                 <div style="display: grid; gap: 0.75rem;">
@@ -3645,12 +3677,15 @@ function populateVendorDropdownInModal() {
                                            placeholder="3.20"
                                            onchange="updateInvoiceProductField(${idx}, 'price_per_unit', this.value)"
                                            style="width: 100%; font-size: 1.125rem; font-weight: 700; font-family: var(--font-mono);">
+                                    <small style="color: var(--primary-600); font-size: 0.7rem; display: block; margin-top: 0.25rem;">
+                                        Last: $${product.unit_price ? parseFloat(product.unit_price).toFixed(2) : 'N/A'}
+                                    </small>
                                 </div>
                                 
                                 <div>
                                     <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Calculation</label>
                                     <div style="padding: 0.75rem; background: white; border-radius: 6px; font-size: 0.875rem; color: var(--neutral-700); border: 2px solid var(--neutral-300); font-family: var(--font-mono);">
-                                        ${product.weight || 0} × $${(product.price_per_unit || 0).toFixed(2)}
+                                        ${weightNum.toFixed(2)} × $${pricePerUnitNum.toFixed(2)}
                                     </div>
                                 </div>
                             </div>
@@ -3676,6 +3711,9 @@ function populateVendorDropdownInModal() {
                                            step="0.01"
                                            onchange="updateInvoiceProductField(${idx}, 'invoice_price', this.value)"
                                            style="width: 100%; font-size: 1.125rem; font-weight: 700; font-family: var(--font-mono);">
+                                    <small style="color: var(--primary-600); font-size: 0.7rem; display: block; margin-top: 0.25rem;">
+                                        Last: $${product.unit_price ? parseFloat(product.unit_price).toFixed(2) : 'N/A'}
+                                    </small>
                                 </div>
                             </div>
                         `}
@@ -3707,40 +3745,144 @@ function populateVendorDropdownInModal() {
     document.getElementById('productSearchSection').style.display = 'none';
     document.getElementById('invoiceProductSearch').value = '';
     document.getElementById('invoiceProductResults').style.display = 'none';
+    
+    // ✅ AUTO-SCROLL TO THE NEWLY ADDED ITEM
+    setTimeout(() => {
+        const lastItem = container.lastElementChild;
+        if (lastItem) {
+            lastItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }, 100);
+    
+    // ✅ ADD "SCROLL TO TOP" BUTTON AT THE BOTTOM
+    const scrollButton = document.createElement('div');
+    scrollButton.innerHTML = `
+        <div style="text-align: center; padding: 1rem; margin-top: 1rem;">
+            <button type="button" 
+                    class="btn btn-primary" 
+                    onclick="document.getElementById('productSearchSection').scrollIntoView({behavior: 'smooth'})"
+                    style="padding: 0.75rem 2rem; font-size: 1rem; box-shadow: var(--shadow-md);">
+                <i class="fas fa-arrow-up"></i> Back to Search
+            </button>
+        </div>
+    `;
+    container.appendChild(scrollButton);
 }
 
 
 
-        function toggleWeightMode(index, enabled) {
-            selectedInvoiceProducts[index].has_weight = enabled;
-            
-            if (enabled) {
-                selectedInvoiceProducts[index].weight = selectedInvoiceProducts[index].weight || 1;
-                selectedInvoiceProducts[index].price_per_unit = selectedInvoiceProducts[index].invoice_price || 0;
-            } else {
-                selectedInvoiceProducts[index].quantity = 1;
-            }
-            
-            renderSelectedInvoiceProducts();
-        }
+// Get last price for a product from purchase history
+async function getLastPriceForProduct(itemCode, vendor) {
+    try {
+        // Create cache key
+        const cacheKey = `${itemCode}_${vendor}`;
+        
+        // Fetch from database
+        const { data, error } = await supabaseClient
+            .from('purchase_history')
+            .select('unit_price, purchase_date')
+            .eq('item_code', itemCode)
+            .eq('vendor', vendor)
+            .order('purchase_date', { ascending: false })
+            .limit(1);
+        
+        if (error || !data || data.length === 0) return null;
+        
+        const price = parseFloat(data[0].unit_price);
+        return price;
+    } catch (error) {
+        console.error('Error getting last price:', error);
+        return null;
+    }
+}
 
-        function updateInvoiceProductField(index, field, value) {
-            if (field === 'quantity') {
-                selectedInvoiceProducts[index][field] = parseInt(value) || 1;
-            } else if (field === 'invoice_price' || field === 'weight' || field === 'price_per_unit') {
-                selectedInvoiceProducts[index][field] = parseFloat(value) || 0;
-            } else {
-                selectedInvoiceProducts[index][field] = value;
+// Preload last prices when modal opens
+async function preloadLastPrices() {
+    try {
+        console.log('🔄 Preloading last prices...');
+        
+        // Get all unique product-vendor combinations
+        const uniqueCombinations = new Set();
+        inventoryData.forEach(item => {
+            if (item.item_code && item.vendor) {
+                uniqueCombinations.add(`${item.item_code}_${item.vendor}`);
             }
-            
-            if (field === 'item_code') {
-                selectedInvoiceProducts[index].itemCodeChanged = true;
-            } else if (field === 'product_name') {
-                selectedInvoiceProducts[index].productNameChanged = true;
-            }
-            
-            renderSelectedInvoiceProducts();
+        });
+        
+        // Fetch last prices in batches
+        let count = 0;
+        for (const combo of uniqueCombinations) {
+            const [itemCode, vendor] = combo.split('_');
+            await getLastPriceForProduct(itemCode, vendor);
+            count++;
         }
+        
+        console.log('✅ Preloaded last prices for', count, 'products');
+    } catch (error) {
+        console.error('Error preloading prices:', error);
+    }
+}
+
+function toggleWeightMode(index, isEnabled) {
+    if (index >= 0 && index < selectedInvoiceProducts.length) {
+        const product = selectedInvoiceProducts[index];
+        
+        product.has_weight = isEnabled;
+        
+        if (isEnabled) {
+            // Switching TO weight mode
+            if (!product.weight) {
+                product.weight = 1.0;
+            }
+            if (!product.price_per_unit) {
+                // ✅ Convert to NUMBER, not string
+                product.price_per_unit = parseFloat(product.invoice_price) || 0;
+            }
+        } else {
+            // Switching FROM weight mode
+            if (product.weight && product.price_per_unit) {
+                // ✅ Convert to NUMBER, not string
+                product.invoice_price = parseFloat(product.weight) * parseFloat(product.price_per_unit);
+            }
+            product.weight = null;
+            product.price_per_unit = null;
+        }
+        
+        renderSelectedInvoiceProducts();
+    }
+}
+
+
+
+function updateInvoiceProductField(index, field, value) {
+    if (index >= 0 && index < selectedInvoiceProducts.length) {
+        const product = selectedInvoiceProducts[index];
+        
+        // Update the field - ALWAYS STORE AS NUMBER
+        if (field === 'quantity') {
+            product.quantity = Math.max(1, parseInt(value) || 1);
+        } else if (field === 'weight') {
+            product.weight = Math.max(0, parseFloat(value) || 0);
+        } else if (field === 'invoice_price') {
+            // ✅ Store as NUMBER, not string
+            const price = parseFloat(value);
+            product.invoice_price = isNaN(price) ? 0 : price;
+        } else if (field === 'price_per_unit') {
+            // ✅ Store as NUMBER, not string
+            const price = parseFloat(value);
+            product.price_per_unit = isNaN(price) ? 0 : price;
+        } else if (field === 'product_name') {
+            product.product_name = value;
+        } else if (field === 'item_code') {
+            product.item_code = value;
+        }
+        
+        // ✅ REMOVE THE WRONG CALCULATION
+        // Don't set invoice_price to total - keep it as UNIT PRICE
+        
+        renderSelectedInvoiceProducts();
+    }
+}
 
         function removeInvoiceProduct(index) {
             selectedInvoiceProducts.splice(index, 1);
@@ -6542,3 +6684,4 @@ async function validateInvoiceNumber(invoiceNumber) {
 </body>
 
 </html>
+
