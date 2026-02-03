@@ -567,25 +567,25 @@
             background: rgba(0, 0, 0, 0.5);
             backdrop-filter: blur(4px);
             z-index: 2000;
-                 }
+            align-items: center;
+            justify-content: center;
+        }
         
         .modal-overlay.active {
             display: flex;
         }
         
-.modal {
-    position: fixed;        /* ✅ Position absolutely */
-    top: 0;                 /* ✅ Stick to top */
-    left: 0;                /* ✅ Stick to left */
-    width: 100vw;           /* ✅ 100% viewport width */
-    height: 100vh;          /* ✅ 100% viewport height */
-    background: white;
-    border-radius: 0;       /* ✅ No rounded corners */
-    box-shadow: none;       /* ✅ No shadow */
-    overflow-y: auto;       /* ✅ Scrollable */
-    margin: 0;              /* ✅ No margin */
-    padding: 0;             /* ✅ No padding */
-}   .modal-header {
+        .modal {
+            background: white;
+            border-radius: 16px;
+            box-shadow: var(--shadow-xl);
+            max-width: 800px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+        
+        .modal-header {
             padding: 2rem;
             background: linear-gradient(135deg, var(--primary-900) 0%, var(--primary-800) 100%);
             color: white;
@@ -3460,7 +3460,7 @@ function openAddInvoiceModal() {
             }
         }
 
-      async function searchInvoiceProducts() {
+       function searchInvoiceProducts() {
     const searchTerm = document.getElementById('invoiceProductSearch').value.toLowerCase();
     const selectedVendor = document.getElementById('invoiceVendorDropdown').value;
     const resultsDiv = document.getElementById('invoiceProductResults');
@@ -3496,49 +3496,7 @@ function openAddInvoiceModal() {
     }
 
     resultsDiv.style.display = 'block';
-    
-    // ✅ NEW: Load 2026+ prices for each product
-    const productsWithPrices = await Promise.all(uniqueProducts.map(async (item) => {
-        let displayPrice = parseFloat(item.unit_price || 0);
-        let priceSource = '2025 data';
-        let priceColor = 'var(--warning-600)';
-        
-        try {
-            // Query 2026+ invoice_items for correct price
-            const { data: invoiceData, error } = await supabaseClient
-                .from('invoice_items')
-                .select('unit_price, price_per_unit, quantity, weight, has_weight, line_total, created_at')
-                .eq('item_code', item.item_code)
-                .eq('vendor', item.vendor)
-                .gte('created_at', '2026-01-01')
-                .order('created_at', { ascending: false })
-                .limit(1);
-            
-            if (!error && invoiceData && invoiceData.length > 0) {
-                const row = invoiceData[0];
-                
-                if (row.has_weight && row.price_per_unit) {
-                    displayPrice = parseFloat(row.price_per_unit);
-                    priceSource = '2026 (per lb)';
-                    priceColor = 'var(--success-600)';
-                } else if (row.unit_price && row.quantity) {
-                    displayPrice = parseFloat(row.unit_price);
-                    priceSource = '2026 (per case)';
-                    priceColor = 'var(--success-600)';
-                } else if (row.line_total && row.quantity && row.quantity > 0) {
-                    displayPrice = parseFloat(row.line_total) / parseFloat(row.quantity);
-                    priceSource = '2026 (calculated)';
-                    priceColor = 'var(--success-600)';
-                }
-            }
-        } catch (e) {
-            console.error('Error loading 2026 price for', item.item_code, ':', e);
-        }
-        
-        return { ...item, displayPrice, priceSource, priceColor };
-    }));
-    
-    resultsDiv.innerHTML = productsWithPrices.map(item => {
+    resultsDiv.innerHTML = uniqueProducts.map(item => {
         const imageUrl = resolveImage(item.image_path);
         const isSelected = selectedInvoiceProducts.some(p => p.item_code === item.item_code);
         
@@ -3554,12 +3512,7 @@ function openAddInvoiceModal() {
                     </div>
                 </div>
                 <div style="text-align: right;">
-                    <div style="font-size: 0.7rem; color: ${item.priceSource === '2025 data' ? 'var(--warning-600)' : 'var(--success-600)'}; margin-bottom: 0.25rem; font-weight: 600;">
-                        ${item.priceSource === '2025 data' ? '⚠️ 2025 DATA' : '✅ ' + item.priceSource.toUpperCase()}
-                    </div>
-                    <div class="price-cell" style="font-size: 1.125rem; color: ${item.priceColor};">
-                        $${item.displayPrice.toFixed(2)}
-                    </div>
+                    <div class="price-cell" style="font-size: 1.125rem;">$${parseFloat(item.unit_price || 0).toFixed(2)}</div>
                     ${isSelected ? '<i class="fas fa-check-circle" style="color: var(--success-600); font-size: 1.25rem;"></i>' : ''}
                 </div>
             </div>
@@ -3567,237 +3520,63 @@ function openAddInvoiceModal() {
     }).join('');
 }
 
-
-
-// ========== AUTO-DETECT WEIGHT-BASED PRODUCTS ==========
-function detectWeightBasedProduct(product) {
-    const productName = (product.product_name || '').toLowerCase();
-    const itemCode = (product.item_code || '').toLowerCase();
-    const category = (product.category || '').toLowerCase();
-    
-    // Check 1: Item code patterns (GM, KG, LB in the code)
-    if (itemCode.includes('gm') || itemCode.includes('kg') || itemCode.includes('lb')) {
-        console.log(`✅ Weight detected from item code: ${product.item_code}`);
-        return true;
-    }
-    
-    // Check 2: Category-based detection
-    if (category.includes('meat') || category.includes('seafood') || category.includes('produce')) {
-        console.log(`✅ Weight detected from category: ${product.category}`);
-        return true;
-    }
-    
-    // Check 3: Product name keywords
-    const weightKeywords = [
-        'lamb', 'beef', 'pork', 'chicken', 'turkey', 'duck', 'veal',
-        'salmon', 'tuna', 'cod', 'shrimp', 'crab', 'lobster', 'fish',
-        'ribeye', 'steak', 'brisket', 'tenderloin', 'loin',
-        'produce', 'vegetable', 'fruit'
-    ];
-    
-    for (const keyword of weightKeywords) {
-        if (productName.includes(keyword)) {
-            console.log(`✅ Weight detected from product name keyword: ${keyword}`);
-            return true;
-        }
-    }
-    
-    return false;
-}
 async function toggleInvoiceProduct(itemCode) {
     const existingIndex = selectedInvoiceProducts.findIndex(p => p.item_code === itemCode);
     
     if (existingIndex > -1) {
-        const product = selectedInvoiceProducts[existingIndex];
-        
-        if (!confirm(`⚠️ "${product.product_name}" (${itemCode}) is already in this invoice!\n\nClick OK to REMOVE it, or Cancel to keep it.`)) {
-            return;
-        }
-        
         selectedInvoiceProducts.splice(existingIndex, 1);
-        showAlert(`Removed ${product.product_name} from invoice`, 'info');
     } else {
         const product = inventoryData.find(i => i.item_code === itemCode);
         if (!product) return;
 
-        // ✅ ONLY SEARCH 2026+ DATA (ignore 2025 completely)
-        const cutoffDate2026 = '2026-01-01';
-        
-        let unitPrice = null;
-        let priceSource = '';
-        
-        // ONLY METHOD: invoice_items table for 2026+
+        // ✅ Fetch last unit price from purchase_history
+        let lastPrice = null;
         try {
-            const { data: invoiceData, error: invoiceError } = await supabaseClient
-                .from('invoice_items')
-                .select('unit_price, price_per_unit, quantity, weight, has_weight, line_total, created_at')
+            const { data, error } = await supabaseClient
+                .from('purchase_history')
+                .select('unit_price')
                 .eq('item_code', itemCode)
                 .eq('vendor', product.vendor)
-                .gte('created_at', cutoffDate2026) // ✅ 2026+ ONLY
-                .order('created_at', { ascending: false })
-                .limit(5);
+                .order('purchase_date', { ascending: false })
+                .limit(1);
             
-            if (!invoiceError && invoiceData && invoiceData.length > 0) {
-                console.log('📊 2026+ invoice data found:', invoiceData);
-                
-                const prices = invoiceData
-                    .map(row => {
-                        // Weight-based pricing
-                        if (row.has_weight && row.price_per_unit) {
-                            return parseFloat(row.price_per_unit);
-                        }
-                        // Quantity-based pricing
-                        if (row.unit_price && row.quantity) {
-                            return parseFloat(row.unit_price);
-                        }
-                        // Calculate from line_total if needed
-                        if (row.line_total && row.quantity && row.quantity > 0) {
-                            return parseFloat(row.line_total) / parseFloat(row.quantity);
-                        }
-                        if (row.line_total && row.weight && row.weight > 0) {
-                            return parseFloat(row.line_total) / parseFloat(row.weight);
-                        }
-                        return null;
-                    })
-                    .filter(p => p !== null && p > 0);
-                
-                if (prices.length > 0) {
-                    // Use most recent price (already sorted by created_at DESC)
-                    unitPrice = prices[0];
-                    priceSource = `2026 invoice (${invoiceData[0].has_weight ? 'weight-based' : 'qty-based'})`;
-                    console.log(`✅ Found 2026 unit price: $${unitPrice.toFixed(2)} from ${priceSource}`);
-                }
+            if (!error && data && data.length > 0) {
+                lastPrice = parseFloat(data[0].unit_price);
             }
         } catch (e) {
-            console.error('❌ Error fetching 2026 invoice data:', e);
+            console.warn('Failed to fetch last price:', e);
         }
 
-        // ⚠️ If no 2026 data found, show warning
-        if (unitPrice === null) {
-            console.warn('⚠️ NO 2026 DATA FOUND for', product.product_name);
-            
-            // Use inventory fallback but warn user
-            unitPrice = parseFloat(product.unit_price) || 0;
-            priceSource = 'inventory fallback (NO 2026 HISTORY)';
-            
-            showAlert(`⚠️ No 2026 pricing data found for ${product.product_name}. Using inventory price: $${unitPrice.toFixed(2)}. Please verify!`, 'error');
-        }
-        
-        console.log(`🔵 Final price for ${product.product_name}: $${unitPrice.toFixed(2)} (source: ${priceSource})`);
-
-        const isWeightBased = detectWeightBasedProduct(product);
+        // ✅ Use lastPrice if available, otherwise inventory price
+        const unitPrice = lastPrice !== null ? lastPrice : (parseFloat(product.unit_price) || 0);
 
         selectedInvoiceProducts.push({
             item_code: product.item_code,
             product_name: product.product_name,
             vendor: product.vendor,
             unit_price: unitPrice,
-            invoice_price: isWeightBased ? 0 : unitPrice,
-            quantity: isWeightBased ? 0 : 1,
-            weight: isWeightBased ? 1.0 : null,
-            price_per_unit: isWeightBased ? unitPrice : null,
-            has_weight: isWeightBased,
+            invoice_price: unitPrice,        // ← THIS IS THE KEY: set unit price
+            quantity: 1,
+            weight: null,
+            price_per_unit: unitPrice,
+            has_weight: false,
             image_path: product.image_path,
             originalItemCode: product.item_code,
             originalProductName: product.product_name
         });
-
-        const successMessage = priceSource.includes('fallback')
-            ? `⚠️ Added ${product.product_name} - $${unitPrice.toFixed(2)} (NO 2026 DATA)`
-            : `✅ Added ${product.product_name} - $${unitPrice.toFixed(2)} (from ${priceSource})`;
-        
-        showAlert(successMessage, priceSource.includes('fallback') ? 'error' : 'success');
     }
 
     renderSelectedInvoiceProducts();
     searchInvoiceProducts();
 
+    // ✅ Auto-scroll to new item
     setTimeout(() => {
         const container = document.getElementById('selectedInvoiceProducts');
-        if (!container) return;
-        
-        const productCards = container.querySelectorAll('.selected-product-card');
-        if (productCards.length > 0) {
-            const lastCard = productCards[productCards.length - 1];
-            lastCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            
-            const qtyInput = lastCard.querySelector('input[type="number"]');
-            if (qtyInput) {
-                qtyInput.focus();
-            }
+        if (container && container.lastElementChild) {
+            container.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
-    }, 150);
+    }, 100);
 }
-
-
-
-// ========== KEYBOARD NAVIGATION FOR INVOICE INPUTS ==========
-function handleInvoiceTabKey(event, productIndex, fieldType) {
-    // Handle TAB key
-    if (event.key === 'Tab' && !event.shiftKey) {
-        if (fieldType === 'weight' || fieldType === 'quantity') {
-            // TAB from weight/qty → move to price field
-            event.preventDefault();
-            const priceInput = document.querySelector(`input[tabindex="${productIndex * 10 + 2}"]`);
-            if (priceInput) {
-                priceInput.focus();
-                priceInput.select();
-            }
-        } else if (fieldType === 'price') {
-            // TAB from price → move to next product's weight/qty field
-            event.preventDefault();
-            const nextInput = document.querySelector(`input[tabindex="${(productIndex + 1) * 10 + 1}"]`);
-            if (nextInput) {
-                nextInput.focus();
-                nextInput.select();
-            } else {
-                // No more products, focus on "Add Item" button or something else
-                const addButton = document.querySelector('button[onclick*="toggleProductSearch"]');
-                if (addButton) addButton.focus();
-            }
-        }
-    }
-    
-    // Handle SHIFT+TAB (reverse)
-    if (event.key === 'Tab' && event.shiftKey) {
-        if (fieldType === 'price') {
-            // SHIFT+TAB from price → go back to weight/qty
-            event.preventDefault();
-            const weightInput = document.querySelector(`input[tabindex="${productIndex * 10 + 1}"]`);
-            if (weightInput) {
-                weightInput.focus();
-                weightInput.select();
-            }
-        } else if (fieldType === 'weight' || fieldType === 'quantity') {
-            // SHIFT+TAB from weight/qty → go to previous product's price
-            event.preventDefault();
-            const prevInput = document.querySelector(`input[tabindex="${(productIndex - 1) * 10 + 2}"]`);
-            if (prevInput) {
-                prevInput.focus();
-                prevInput.select();
-            }
-        }
-    }
-    
-    // ✅ BONUS: ENTER key also moves to price field (like TAB)
-    if (event.key === 'Enter') {
-        event.preventDefault();
-        if (fieldType === 'weight' || fieldType === 'quantity') {
-            const priceInput = document.querySelector(`input[tabindex="${productIndex * 10 + 2}"]`);
-            if (priceInput) {
-                priceInput.focus();
-                priceInput.select();
-            }
-        } else if (fieldType === 'price') {
-            const nextInput = document.querySelector(`input[tabindex="${(productIndex + 1) * 10 + 1}"]`);
-            if (nextInput) {
-                nextInput.focus();
-                nextInput.select();
-            }
-        }
-    }
-}
-
 
 function renderSelectedInvoiceProducts() {
     const container = document.getElementById('selectedInvoiceProducts');
@@ -3883,81 +3662,70 @@ function renderSelectedInvoiceProducts() {
                             </span>
                         </label>
                         
-                       
-${hasWeight ? `
-    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; margin-top: 0.75rem;">
-        <div>
-            <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Weight (lbs) ⚖️</label>
-            <input type="number" 
-                   class="editable-field" 
-                   value="${product.weight || ''}"
-                   min="0"
-                   step="0.01"
-                   placeholder="25.5"
-                   tabindex="${idx * 10 + 1}"
-                   onchange="updateInvoiceProductField(${idx}, 'weight', this.value)"
-                   onkeydown="handleInvoiceTabKey(event, ${idx}, 'weight')"
-                   style="width: 100%; font-size: 1.125rem; font-weight: 700; text-align: center;">
-        </div>
-        
-        <div>
-            <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Price per lb 💵</label>
-            <input type="number" 
-                   class="editable-field" 
-                   value="${product.price_per_unit || ''}"
-                   min="0"
-                   step="0.01"
-                   placeholder="3.20"
-                   tabindex="${idx * 10 + 2}"
-                   onchange="updateInvoiceProductField(${idx}, 'price_per_unit', this.value)"
-                   onkeydown="handleInvoiceTabKey(event, ${idx}, 'price')"
-                   style="width: 100%; font-size: 1.125rem; font-weight: 700; font-family: var(--font-mono);">
-            <small style="color: var(--primary-600); font-size: 0.7rem; display: block; margin-top: 0.25rem;">
-                ${product.unit_price && product.unit_price > 0 
-                    ? `Last: $${parseFloat(product.unit_price).toFixed(2)} ✓` 
-                    : 'No previous price found'}
-            </small>
-        </div>
-        
-        <div>
-            <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Calculation</label>
-            <div style="padding: 0.75rem; background: white; border-radius: 6px; font-size: 0.875rem; color: var(--neutral-700); border: 2px solid var(--neutral-300); font-family: var(--font-mono);">
-                ${weightNum.toFixed(2)} × $${pricePerUnitNum.toFixed(2)}
-            </div>
-        </div>
-    </div>
-` : `
-    <div style="display: grid; grid-template-columns: 100px 1fr; gap: 0.75rem; margin-top: 0.75rem;">
-        <div>
-            <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Quantity</label>
-            <input type="number" 
-                   class="editable-field" 
-                   value="${product.quantity || 1}"
-                   min="1"
-                   step="1"
-                   tabindex="${idx * 10 + 1}"
-                   onchange="updateInvoiceProductField(${idx}, 'quantity', this.value)"
-                   onkeydown="handleInvoiceTabKey(event, ${idx}, 'quantity')"
-                   style="width: 100%; font-size: 1.125rem; font-weight: 700; text-align: center;">
-        </div>
-        
-        <div>
-            <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Price Each 💰</label>
-            <input type="number" 
-                   class="editable-field" 
-                   value="${product.invoice_price || 0}"
-                   min="0"
-                   step="0.01"
-                   tabindex="${idx * 10 + 2}"
-                   onchange="updateInvoiceProductField(${idx}, 'invoice_price', this.value)"
-                   onkeydown="handleInvoiceTabKey(event, ${idx}, 'price')"
-                   style="width: 100%; font-size: 1.125rem; font-weight: 700; font-family: var(--font-mono);">
-            <small style="color: var(--primary-600); font-size: 0.7rem; display: block; margin-top: 0.25rem;">
-                Last: $${product.unit_price ? parseFloat(product.unit_price).toFixed(2) : 'N/A'}
-            </small>
-        </div>
-    </div>
-`}
+                        ${hasWeight ? `
+                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem; margin-top: 0.75rem;">
+                                <div>
+                                    <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Weight (lbs) ⚖️</label>
+                                    <input type="number" 
+                                           class="editable-field" 
+                                           value="${product.weight || ''}"
+                                           min="0"
+                                           step="0.01"
+                                           placeholder="25.5"
+                                           onchange="updateInvoiceProductField(${idx}, 'weight', this.value)"
+                                           style="width: 100%; font-size: 1.125rem; font-weight: 700; text-align: center;">
+                                </div>
+                                
+                                <div>
+                                    <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Price per lb 💵</label>
+                                    <input type="number" 
+                                           class="editable-field" 
+                                           value="${product.price_per_unit || ''}"
+                                           min="0"
+                                           step="0.01"
+                                           placeholder="3.20"
+                                           onchange="updateInvoiceProductField(${idx}, 'price_per_unit', this.value)"
+                                           style="width: 100%; font-size: 1.125rem; font-weight: 700; font-family: var(--font-mono);">
+                                    <small style="color: var(--primary-600); font-size: 0.7rem; display: block; margin-top: 0.25rem;">
+                                        Last: $${product.unit_price ? parseFloat(product.unit_price).toFixed(2) : 'N/A'}
+                                    </small>
+                                </div>
+                                
+                                <div>
+                                    <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Calculation</label>
+                                    <div style="padding: 0.75rem; background: white; border-radius: 6px; font-size: 0.875rem; color: var(--neutral-700); border: 2px solid var(--neutral-300); font-family: var(--font-mono);">
+                                        ${weightNum.toFixed(2)} × $${pricePerUnitNum.toFixed(2)}
+                                    </div>
+                                </div>
+                            </div>
+                        ` : `
+                            <div style="display: grid; grid-template-columns: 100px 1fr; gap: 0.75rem; margin-top: 0.75rem;">
+                                <div>
+                                    <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Quantity</label>
+                                    <input type="number" 
+                                           class="editable-field" 
+                                           value="${product.quantity || 1}"
+                                           min="1"
+                                           step="1"
+                                           onchange="updateInvoiceProductField(${idx}, 'quantity', this.value)"
+                                           style="width: 100%; font-size: 1.125rem; font-weight: 700; text-align: center;">
+                                </div>
+                                
+                                <div>
+                                    <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Price Each 💰</label>
+                                    <input type="number" 
+                                           class="editable-field" 
+                                           value="${product.invoice_price || 0}"
+                                           min="0"
+                                           step="0.01"
+                                           onchange="updateInvoiceProductField(${idx}, 'invoice_price', this.value)"
+                                           style="width: 100%; font-size: 1.125rem; font-weight: 700; font-family: var(--font-mono);">
+                                    <small style="color: var(--primary-600); font-size: 0.7rem; display: block; margin-top: 0.25rem;">
+                                        Last: $${product.unit_price ? parseFloat(product.unit_price).toFixed(2) : 'N/A'}
+                                    </small>
+                                </div>
+                            </div>
+                        `}
                     </div>
                     
                     <!-- LINE TOTAL -->
