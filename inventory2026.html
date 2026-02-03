@@ -3354,7 +3354,6 @@ function openAddInvoiceModal() {
     document.getElementById('invoiceItemsCount').value = '0 items';
     document.getElementById('invoiceTaxEnabled').checked = true;
     
-    // ✅ RESET VALIDATION
     document.getElementById('invoiceNumberValidation').innerHTML = '';
     document.getElementById('invoiceNumber').style.borderColor = '';
     document.getElementById('invoiceNumber').style.background = '';
@@ -3366,11 +3365,12 @@ function openAddInvoiceModal() {
     document.getElementById('productSearchSection').style.display = 'none';
     document.getElementById('invoiceProductResults').style.display = 'none';
     
-    // ✅ PRELOAD LAST PRICES
     preloadLastPrices();
     
     openModal('invoiceModal');
 }
+
+
         function openModal(modalId) {
             document.getElementById(modalId).classList.add('active');
         }
@@ -3520,62 +3520,85 @@ function openAddInvoiceModal() {
     }).join('');
 }
 
-
-    function toggleInvoiceProduct(itemCode) {
+async function toggleInvoiceProduct(itemCode) {
     const existingIndex = selectedInvoiceProducts.findIndex(p => p.item_code === itemCode);
     
     if (existingIndex > -1) {
         selectedInvoiceProducts.splice(existingIndex, 1);
     } else {
-        const product = inventoryData.find(item => item.item_code === itemCode);
-        if (product) {
-            // ✅ GET LAST UNIT PRICE
-            const lastPrice = getLastPriceForProduct(itemCode, product.vendor);
+        const product = inventoryData.find(i => i.item_code === itemCode);
+        if (!product) return;
+
+        // ✅ Fetch last unit price from purchase_history
+        let lastPrice = null;
+        try {
+            const { data, error } = await supabaseClient
+                .from('purchase_history')
+                .select('unit_price')
+                .eq('item_code', itemCode)
+                .eq('vendor', product.vendor)
+                .order('purchase_date', { ascending: false })
+                .limit(1);
             
-            // ✅ Store as NUMBERS, not strings
-            selectedInvoiceProducts.push({
-                item_code: product.item_code,
-                product_name: product.product_name,
-                vendor: product.vendor,
-                unit_price: parseFloat(product.unit_price) || 0,
-                invoice_price: parseFloat(lastPrice) || parseFloat(product.unit_price) || 0,
-                quantity: 1,
-                weight: null,
-                price_per_unit: parseFloat(lastPrice) || parseFloat(product.unit_price) || 0,
-                has_weight: false,
-                image_path: product.image_path,
-                originalItemCode: product.item_code,
-                originalProductName: product.product_name
-            });
+            if (!error && data && data.length > 0) {
+                lastPrice = parseFloat(data[0].unit_price);
+            }
+        } catch (e) {
+            console.warn('Failed to fetch last price:', e);
         }
+
+        // ✅ Use lastPrice if available, otherwise inventory price
+        const unitPrice = lastPrice !== null ? lastPrice : (parseFloat(product.unit_price) || 0);
+
+        selectedInvoiceProducts.push({
+            item_code: product.item_code,
+            product_name: product.product_name,
+            vendor: product.vendor,
+            unit_price: unitPrice,
+            invoice_price: unitPrice,        // ← THIS IS THE KEY: set unit price
+            quantity: 1,
+            weight: null,
+            price_per_unit: unitPrice,
+            has_weight: false,
+            image_path: product.image_path,
+            originalItemCode: product.item_code,
+            originalProductName: product.product_name
+        });
     }
-    
+
     renderSelectedInvoiceProducts();
     searchInvoiceProducts();
+
+    // ✅ AUTO-SCROLL TO THE NEWLY ADDED PRODUCT CARD
+setTimeout(() => {
+    const container = document.getElementById('selectedInvoiceProducts');
+    if (!container) return;
     
-    // ✅ AUTO-SCROLL TO THE NEWLY ADDED ITEM
-    setTimeout(() => {
-        const container = document.getElementById('selectedInvoiceProducts');
-        if (container) {
-            const lastItem = container.lastElementChild;
-            if (lastItem) {
-                lastItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            }
+    // Find the LAST .selected-product-card (not the "Back to Search" button)
+    const productCards = container.querySelectorAll('.selected-product-card');
+    if (productCards.length > 0) {
+        const lastCard = productCards[productCards.length - 1];
+        lastCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        
+        // Optional: Focus the quantity field for instant editing
+        const qtyInput = lastCard.querySelector('input[type="number"]');
+        if (qtyInput) {
+            qtyInput.focus();
         }
-    }, 100);
+    }
+}, 150);
 }
 
 
 
- function renderSelectedInvoiceProducts() {
+function renderSelectedInvoiceProducts() {
     const container = document.getElementById('selectedInvoiceProducts');
     const countLabel = document.getElementById('invoiceProductCount');
     const itemsCountField = document.getElementById('invoiceItemsCount');
     
-    // ✅ MAKE CONTAINER SCROLLABLE WITH FIXED HEIGHT
     container.style.maxHeight = '600px';
     container.style.overflowY = 'auto';
-    container.style.paddingRight = '10px'; // Space for scrollbar
+    container.style.paddingRight = '10px';
     
     const itemCount = selectedInvoiceProducts.length;
     countLabel.textContent = `${itemCount} item${itemCount !== 1 ? 's' : ''} selected`;
@@ -3597,7 +3620,6 @@ function openAddInvoiceModal() {
         const imageUrl = resolveImage(product.image_path);
         const hasWeight = product.has_weight && product.weight && product.weight > 0;
         
-        // ✅ FIX: Parse to number first, then calculate
         const weightNum = parseFloat(product.weight) || 0;
         const pricePerUnitNum = parseFloat(product.price_per_unit) || 0;
         const quantityNum = parseInt(product.quantity) || 1;
@@ -3746,7 +3768,7 @@ function openAddInvoiceModal() {
     document.getElementById('invoiceProductSearch').value = '';
     document.getElementById('invoiceProductResults').style.display = 'none';
     
-    // ✅ AUTO-SCROLL TO THE NEWLY ADDED ITEM
+    // ✅ AUTO-SCROLL TO NEW ITEM
     setTimeout(() => {
         const lastItem = container.lastElementChild;
         if (lastItem) {
@@ -3754,7 +3776,7 @@ function openAddInvoiceModal() {
         }
     }, 100);
     
-    // ✅ ADD "SCROLL TO TOP" BUTTON AT THE BOTTOM
+    // ✅ ADD "BACK TO SEARCH" BUTTON
     const scrollButton = document.createElement('div');
     scrollButton.innerHTML = `
         <div style="text-align: center; padding: 1rem; margin-top: 1rem;">
@@ -3771,13 +3793,11 @@ function openAddInvoiceModal() {
 
 
 
+
+
 // Get last price for a product from purchase history
 async function getLastPriceForProduct(itemCode, vendor) {
     try {
-        // Create cache key
-        const cacheKey = `${itemCode}_${vendor}`;
-        
-        // Fetch from database
         const { data, error } = await supabaseClient
             .from('purchase_history')
             .select('unit_price, purchase_date')
@@ -3787,14 +3807,13 @@ async function getLastPriceForProduct(itemCode, vendor) {
             .limit(1);
         
         if (error || !data || data.length === 0) return null;
-        
-        const price = parseFloat(data[0].unit_price);
-        return price;
+        return parseFloat(data[0].unit_price);
     } catch (error) {
         console.error('Error getting last price:', error);
         return null;
     }
 }
+
 
 // Preload last prices when modal opens
 async function preloadLastPrices() {
@@ -3858,17 +3877,14 @@ function updateInvoiceProductField(index, field, value) {
     if (index >= 0 && index < selectedInvoiceProducts.length) {
         const product = selectedInvoiceProducts[index];
         
-        // Update the field - ALWAYS STORE AS NUMBER
         if (field === 'quantity') {
             product.quantity = Math.max(1, parseInt(value) || 1);
         } else if (field === 'weight') {
             product.weight = Math.max(0, parseFloat(value) || 0);
         } else if (field === 'invoice_price') {
-            // ✅ Store as NUMBER, not string
             const price = parseFloat(value);
             product.invoice_price = isNaN(price) ? 0 : price;
         } else if (field === 'price_per_unit') {
-            // ✅ Store as NUMBER, not string
             const price = parseFloat(value);
             product.price_per_unit = isNaN(price) ? 0 : price;
         } else if (field === 'product_name') {
@@ -3877,12 +3893,10 @@ function updateInvoiceProductField(index, field, value) {
             product.item_code = value;
         }
         
-        // ✅ REMOVE THE WRONG CALCULATION
-        // Don't set invoice_price to total - keep it as UNIT PRICE
-        
         renderSelectedInvoiceProducts();
     }
 }
+
 
         function removeInvoiceProduct(index) {
             selectedInvoiceProducts.splice(index, 1);
@@ -4101,20 +4115,38 @@ function updateInvoiceProductField(index, field, value) {
                     
                     document.getElementById('invoiceForm').dataset.editId = id;
                     
-                    selectedInvoiceProducts = (items || []).map(item => ({
-                        item_code: item.item_code,
-                        product_name: item.product_name,
-                        vendor: item.vendor,
-                        unit_price: item.unit_price || item.price_per_unit || 0,
-                        invoice_price: item.unit_price || 0,
-                        quantity: item.quantity || 1,
-                        weight: item.weight || null,
-                        price_per_unit: item.price_per_unit || null,
-                        has_weight: item.has_weight || false,
-                        image_path: null,
-                        originalItemCode: item.item_code,
-                        originalProductName: item.product_name
-                    }));
+                  selectedInvoiceProducts = (items || []).map(item => {
+    const hasWeight = item.has_weight || false;
+    
+    // ✅ CORRECTLY DETERMINE UNIT PRICE BASED ON MODE
+    let invoice_price = 0;
+    let price_per_unit = null;
+
+    if (hasWeight) {
+        // Weight-based: unit price = price_per_unit
+        price_per_unit = parseFloat(item.price_per_unit) || 0;
+        invoice_price = price_per_unit; // for UI consistency in non-weight fields
+    } else {
+        // Regular: unit price = unit_price
+        invoice_price = parseFloat(item.unit_price) || 0;
+        price_per_unit = null;
+    }
+
+    return {
+        item_code: item.item_code,
+        product_name: item.product_name,
+        vendor: item.vendor,
+        unit_price: item.unit_price || item.price_per_unit || 0, // reference only
+        invoice_price: invoice_price,        // ✅ CORRECT UNIT PRICE
+        quantity: item.quantity || 1,
+        weight: item.weight || null,
+        price_per_unit: price_per_unit,     // ✅ CORRECT PER-LB PRICE
+        has_weight: hasWeight,              // ✅ MUST BE SET BEFORE RENDER
+        image_path: null,
+        originalItemCode: item.item_code,
+        originalProductName: item.product_name
+    };
+});
 
                     console.log('selectedInvoiceProducts:', selectedInvoiceProducts);
 
