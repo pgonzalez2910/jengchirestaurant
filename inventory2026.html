@@ -5486,61 +5486,243 @@ function renderEnhancedCard(row, userType) {
     const productName = row.product_name || 'Unknown Product';
     const productId = productName.replace(/[^a-zA-Z0-9]/g, '_');
     
-    // ✅ CALCULATE VALUES
-  
- 
-  // ✅ FIXED:
-const onHand = parseFloat(row.on_hand || 0);
-const par = parseFloat(row.par || 0);
-
-// For Rony products, TARGET = PAR
-// For Julio products, TARGET = target_inventory value
-const target = (userType === 'rony') ? par : parseFloat(row.target || 0);
-
-const needed = Math.max(0, target - onHand);
+    // Calculate values
+    const onHand = parseFloat(row.on_hand || 0);
+    const par = parseFloat(row.par || 0);
+    const target = (userType === 'rony') ? par : parseFloat(row.target || 0);
+    const needed = Math.max(0, target - onHand);
     const tentative = parseFloat(row.tentative || 0);
     
-    
-    // ✅ FIX: Rony products should have EMPTY qty field
+    // FIX: Rony products should have EMPTY qty field
     const isRony = userType === 'rony';
+    const isJulio = userType === 'julio';
     const defaultQty = isRony ? '' : (tentative > 0 ? tentative : (needed > 0 ? needed : ''));
     
-    // ✅ GET CONVERSION FACTOR (from product_conversions table)
+    // GET CONVERSION FACTOR
     const conversion = window.conversionMap?.get(productName) || { units_per_case: 1, unit_type: 'unit' };
     
-    // ✅ GET LAST ORDER INFO
+    // GET LAST ORDER INFO
     const lastOrder = window.lastOrderMap?.get(productName) || null;
     
-    // ✅ CURRENT ASSIGNMENT
-  // ✅ CURRENT ASSIGNMENT (NOW WITH 3 OPTIONS)
-const currentUser = (row.user || '').toLowerCase();
-const isAssignedToRony = currentUser === 'rony';
-const isAssignedToJulio = currentUser === 'julio';
-const isAssignedToOffice = currentUser === 'office';
+    // CURRENT ASSIGNMENT
+    const currentUser = (row.user || '').toLowerCase();
+    const isAssignedToRony = currentUser === 'rony';
+    const isAssignedToJulio = currentUser === 'julio';
+    const isAssignedToOffice = currentUser === 'office';
     
+    // Get price data from purchase_history
+    const productPrices = inventoryData.filter(i => i.product_name === productName);
+    const prices = productPrices.map(i => parseFloat(i.unit_price || 0));
+    
+    let bestPrice = { price: 0, vendor: 'N/A', date: 'N/A' };
+    let highestPrice = { price: 0, vendor: 'N/A', date: 'N/A' };
+    
+    if (prices.length > 0) {
+        const minPrice = Math.min(...prices);
+        const maxPrice = Math.max(...prices);
+        const minItem = productPrices.find(i => parseFloat(i.unit_price) === minPrice);
+        const maxItem = productPrices.find(i => parseFloat(i.unit_price) === maxPrice);
+        
+        bestPrice = {
+            price: minPrice,
+            vendor: minItem?.vendor || 'N/A',
+            date: minItem?.purchase_date || 'N/A'
+        };
+        
+        highestPrice = {
+            price: maxPrice,
+            vendor: maxItem?.vendor || 'N/A',
+            date: maxItem?.purchase_date || 'N/A'
+        };
+    }
+    
+    // ========== JULIO COMPACT LAYOUT ==========
+    if (isJulio) {
+        return `
+        <div class="enhanced-order-card" data-product="${productName}" data-user="${userType}" data-id="${row.id}">
+            <!-- TOP ACTION BAR -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 2px solid var(--neutral-200);">
+                <!-- Assignment Toggle -->
+                <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                    <span style="font-size: 0.75rem; font-weight: 700; color: var(--neutral-600); margin-right: 0.5rem;">ASSIGNED TO:</span>
+                    <button onclick="toggleAssignment('${row.id}', 'Rony')"
+                        class="btn assignment-btn ${isAssignedToRony ? 'btn-primary' : 'btn-secondary'}"
+                        style="padding: 0.5rem 1rem; font-size: 0.875rem;">
+                        🍳 Rony
+                    </button>
+                    <button onclick="toggleAssignment('${row.id}', 'Julio')"
+                        class="btn assignment-btn ${isAssignedToJulio ? 'btn-primary' : 'btn-secondary'}"
+                        style="padding: 0.5rem 1rem; font-size: 0.875rem;">
+                        📦 Julio
+                    </button>
+                    <button onclick="toggleAssignment('${row.id}', 'Office')"
+                        class="btn assignment-btn ${isAssignedToOffice ? 'btn-primary' : 'btn-secondary'}"
+                        style="padding: 0.5rem 1rem; font-size: 0.875rem; background: ${isAssignedToOffice ? 'linear-gradient(135deg, var(--success-600), var(--success-500))' : ''};">
+                        🏢 Office
+                    </button>
+                </div>
+                <!-- Delete Button -->
+                <button onclick="deleteProductFromPlaceOrder('${row.id}')"
+                    class="btn btn-danger btn-icon"
+                    title="Delete Product"
+                    style="width: 40px; height: 40px; padding: 0;">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </div>
+            
+            <!-- COMPACT 3-COLUMN TABLE LAYOUT -->
+            <div style="display: grid; grid-template-columns: 140px 1fr 1fr; gap: 1.5rem; align-items: center; margin-bottom: 1.5rem; padding: 1.5rem; background: var(--neutral-50); border-radius: 12px; border: 2px solid var(--neutral-200);">
+                <!-- LEFT: Image -->
+                <div style="text-align: center;">
+                    <img src="${imageUrl}"
+                         onerror="this.src='${PLACEHOLDER_IMAGE}'"
+                         style="width: 100%; max-width: 120px; height: 120px; object-fit: contain; border-radius: 12px; margin-bottom: 0.75rem; box-shadow: var(--shadow-md);">
+                    <div style="font-weight: 700; font-size: 0.95rem; color: var(--neutral-900);">
+                        ${productName}
+                    </div>
+                    <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--neutral-600); margin-top: 0.25rem;" id="itemcode-display-${productId}">
+                        ${row.item_code || '-------'}
+                    </div>
+                </div>
+                
+                <!-- MIDDLE: On Hand -->
+                <div style="text-align: center; background: var(--primary-100); padding: 1.5rem; border-radius: 12px; border: 2px solid var(--primary-300);">
+                    <div style="font-size: 0.75rem; font-weight: 700; color: var(--primary-700); margin-bottom: 0.5rem;">
+                        📊 ON HAND
+                    </div>
+                    <div style="font-size: 2.5rem; font-weight: 700; font-family: var(--font-mono); color: var(--primary-900);">
+                        ${onHand.toFixed(2)}
+                    </div>
+                </div>
+                
+                <!-- RIGHT: Price Comparison -->
+                <div style="display: grid; grid-template-rows: 1fr 1fr; gap: 1rem;">
+                    <!-- BEST PRICE -->
+                    <div style="background: var(--success-50); padding: 1rem; border-radius: 8px; border: 2px solid var(--success-300);">
+                        <div style="font-size: 0.7rem; font-weight: 700; color: var(--success-700); margin-bottom: 0.5rem;">
+                            💰 BEST PRICE
+                        </div>
+                        <div style="font-size: 1.5rem; font-weight: 700; font-family: var(--font-mono); color: var(--success-600);">
+                            $${bestPrice.price.toFixed(2)}
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--neutral-700); margin-top: 0.25rem;">
+                            ${bestPrice.vendor}
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--neutral-500);">
+                            ${bestPrice.date !== 'N/A' ? formatDate(bestPrice.date) : 'N/A'}
+                        </div>
+                    </div>
+                    
+                    <!-- HIGHEST PRICE -->
+                    <div style="background: var(--warning-50); padding: 1rem; border-radius: 8px; border: 2px solid var(--warning-300);">
+                        <div style="font-size: 0.7rem; font-weight: 700; color: var(--warning-700); margin-bottom: 0.5rem;">
+                            📈 HIGHEST
+                        </div>
+                        <div style="font-size: 1.5rem; font-weight: 700; font-family: var(--font-mono); color: var(--warning-600);">
+                            $${highestPrice.price.toFixed(2)}
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--neutral-700); margin-top: 0.25rem;">
+                            ${highestPrice.vendor}
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--neutral-500);">
+                            ${highestPrice.date !== 'N/A' ? formatDate(highestPrice.date) : 'N/A'}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- VENDOR PRICE COMPARISON TABLE -->
+            <div id="vendor-prices-${productId}" style="margin-bottom: 1.5rem;">
+                <div style="font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
+                    💰 VENDOR PRICES
+                </div>
+                <div style="font-size: 0.75rem; color: var(--neutral-500); text-align: center; padding: 1rem; background: var(--neutral-50); border-radius: 8px;">
+                    Loading prices...
+                </div>
+            </div>
+            
+            <!-- BOTTOM FORM FIELDS -->
+            <div style="background: white; padding: 1.5rem; border-radius: 12px; border: 2px solid var(--primary-200);">
+                <!-- VENDOR SELECTION -->
+                <div style="margin-bottom: 1rem;">
+                    <label style="display: block; font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
+                        🏢 Vendor
+                    </label>
+                    <select id="vendor-${productId}" 
+                        onchange="selectVendorAndUpdateItemCode('${row.id}', '${productName}', this.value)"
+                        class="search-input"
+                        style="width: 100%;">
+                        <option value="">-- Select Vendor --</option>
+                        <option value="Pacific Plus" ${row.vendor === 'Pacific Plus' ? 'selected' : ''}>Pacific Plus</option>
+                        <option value="Formosa Foods" ${row.vendor === 'Formosa Foods' ? 'selected' : ''}>Formosa Foods</option>
+                        <option value="North Food Group" ${row.vendor === 'North Food Group' ? 'selected' : ''}>North Food Group</option>
+                        <option value="BakeMark" ${row.vendor === 'BakeMark' ? 'selected' : ''}>BakeMark</option>
+                        <option value="Autochlor" ${row.vendor === 'Autochlor' ? 'selected' : ''}>Autochlor</option>
+                        <option value="Delta Office Products" ${row.vendor === 'Delta Office Products' ? 'selected' : ''}>Delta Office Products</option>
+                    </select>
+                </div>
+                
+                <!-- ITEM CODE -->
+                <div style="margin-bottom: 1rem;">
+                    <label style="display: block; font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
+                        🔢 Item Code
+                    </label>
+                    <input type="text"
+                        id="itemcode-input-${productId}"
+                        value="${row.item_code || ''}"
+                        onblur="updateItemCode('${row.id}', this.value)"
+                        placeholder="Auto-fills when vendor selected"
+                        class="search-input"
+                        style="width: 100%;">
+                </div>
+                
+                <!-- ORDER QUANTITY -->
+                <div style="margin-bottom: 1rem;">
+                    <label style="display: block; font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
+                        📝 Order Quantity
+                    </label>
+                    <input type="number"
+                        id="qty-${productId}"
+                        value="${defaultQty}"
+                        step="0.01"
+                        min="0"
+                        onblur="updateTentative('${row.id}', this.value)"
+                        placeholder="0.00"
+                        class="search-input"
+                        style="width: 100%; font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); text-align: center; padding: 1rem;">
+                </div>
+                
+                <!-- SAVE STATUS -->
+                <div id="save-status-${productId}" style="text-align: center; font-size: 0.875rem; color: var(--neutral-500);"></div>
+            </div>
+        </div>
+        `;
+    }
+    
+    // ========== RONY/OFFICE FULL LAYOUT (UNCHANGED) ==========
     return `
     <div class="enhanced-order-card" data-product="${productName}" data-user="${userType}" data-id="${row.id}">
         <!-- TOP ACTION BAR -->
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 2px solid var(--neutral-200);">
-            <!-- Assignment Toggle - NOW WITH 3 BUTTONS -->
-<div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
-    <span style="font-size: 0.75rem; font-weight: 700; color: var(--neutral-600); margin-right: 0.5rem;">ASSIGNED TO:</span>
-    <button onclick="toggleAssignment('${row.id}', 'Rony')"
-        class="btn assignment-btn ${isAssignedToRony ? 'btn-primary' : 'btn-secondary'}"
-        style="padding: 0.5rem 1rem; font-size: 0.875rem;">
-        🍳 Rony
-    </button>
-    <button onclick="toggleAssignment('${row.id}', 'Julio')"
-        class="btn assignment-btn ${isAssignedToJulio ? 'btn-primary' : 'btn-secondary'}"
-        style="padding: 0.5rem 1rem; font-size: 0.875rem;">
-        📦 Julio
-    </button>
-    <button onclick="toggleAssignment('${row.id}', 'Office')"
-        class="btn assignment-btn ${isAssignedToOffice ? 'btn-primary' : 'btn-secondary'}"
-        style="padding: 0.5rem 1rem; font-size: 0.875rem; background: ${isAssignedToOffice ? 'linear-gradient(135deg, var(--success-600), var(--success-500))' : ''};">
-        🏢 Office
-    </button>
-</div>
+            <!-- Assignment Toggle -->
+            <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+                <span style="font-size: 0.75rem; font-weight: 700; color: var(--neutral-600); margin-right: 0.5rem;">ASSIGNED TO:</span>
+                <button onclick="toggleAssignment('${row.id}', 'Rony')"
+                    class="btn assignment-btn ${isAssignedToRony ? 'btn-primary' : 'btn-secondary'}"
+                    style="padding: 0.5rem 1rem; font-size: 0.875rem;">
+                    🍳 Rony
+                </button>
+                <button onclick="toggleAssignment('${row.id}', 'Julio')"
+                    class="btn assignment-btn ${isAssignedToJulio ? 'btn-primary' : 'btn-secondary'}"
+                    style="padding: 0.5rem 1rem; font-size: 0.875rem;">
+                    📦 Julio
+                </button>
+                <button onclick="toggleAssignment('${row.id}', 'Office')"
+                    class="btn assignment-btn ${isAssignedToOffice ? 'btn-primary' : 'btn-secondary'}"
+                    style="padding: 0.5rem 1rem; font-size: 0.875rem; background: ${isAssignedToOffice ? 'linear-gradient(135deg, var(--success-600), var(--success-500))' : ''};">
+                    🏢 Office
+                </button>
+            </div>
             <!-- Delete Button -->
             <button onclick="deleteProductFromPlaceOrder('${row.id}')"
                 class="btn btn-danger btn-icon"
@@ -5554,7 +5736,7 @@ const isAssignedToOffice = currentUser === 'office';
         <div style="text-align: center; margin-bottom: 1rem;">
             <img src="${imageUrl}"
                 onerror="this.src='${PLACEHOLDER_IMAGE}'"
-style="width: 75%; max-width: 120px; height: 120px; object-fit: contain; border-radius: 12px; margin-bottom: 0.75rem; box-shadow: var(--shadow-md);">
+                style="width: 75%; max-width: 120px; height: 120px; object-fit: contain; border-radius: 12px; margin-bottom: 0.75rem; box-shadow: var(--shadow-md);">
             <div style="font-weight: 700; font-size: 1.125rem; color: var(--neutral-900);">
                 ${productName}
             </div>
@@ -5563,7 +5745,7 @@ style="width: 75%; max-width: 120px; height: 120px; object-fit: contain; border-
             </div>
         </div>
         
-        <!-- ⭐ PAR & CONVERSION INFO BANNER ⭐ -->
+        <!-- PAR & CONVERSION INFO BANNER -->
         <div style="background: linear-gradient(135deg, var(--accent-100), var(--accent-50)); padding: 1rem; border-radius: 12px; margin-bottom: 1rem; border: 2px solid var(--accent-300);">
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
                 <!-- PAR VALUE -->
@@ -5593,7 +5775,7 @@ style="width: 75%; max-width: 120px; height: 120px; object-fit: contain; border-
         </div>
         
         <!-- STOCK INFORMATION GRID -->
-<div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-bottom: 0.75rem;">
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin-bottom: 0.75rem;">
             <!-- ON HAND -->
             <div style="background: var(--primary-100); padding: 0.75rem; border-radius: 8px; text-align: center;">
                 <div style="font-size: 0.7rem; font-weight: 700; color: var(--primary-700); margin-bottom: 0.25rem;">
@@ -5604,35 +5786,35 @@ style="width: 75%; max-width: 120px; height: 120px; object-fit: contain; border-
                 </div>
             </div>
             
-           <!-- TARGET -->
-<div style="background: var(--accent-100); padding: 0.5rem; border-radius: 8px; text-align: center;">
-    <div style="font-size: 0.7rem; font-weight: 700; color: var(--accent-700); margin-bottom: 0.25rem;">
-        🎯 ${userType === 'rony' ? 'PAR' : 'TARGET'}
-    </div>
-    <div style="font-size: 1.5rem; font-weight: 700; font-family: var(--font-mono); color: var(--accent-900);">
-        ${target.toFixed(2)}
-    </div>
-</div>
+            <!-- TARGET -->
+            <div style="background: var(--accent-100); padding: 0.5rem; border-radius: 8px; text-align: center;">
+                <div style="font-size: 0.7rem; font-weight: 700; color: var(--accent-700); margin-bottom: 0.25rem;">
+                    🎯 ${userType === 'rony' ? 'PAR' : 'TARGET'}
+                </div>
+                <div style="font-size: 1.5rem; font-weight: 700; font-family: var(--font-mono); color: var(--accent-900);">
+                    ${target.toFixed(2)}
+                </div>
+            </div>
             
-           <!-- NEEDED -->
-<div style="background: ${needed > 0 ? 'rgba(220, 38, 38, 0.1)' : 'rgba(16, 185, 129, 0.1)'}; padding: 0.5rem; border-radius: 8px; text-align: center;">
-    <div style="font-size: 0.7rem; font-weight: 700; color: var(--neutral-600); margin-bottom: 0.25rem;">
-        ${needed > 0 ? '📦 ORDER' : '✅ STOCKED'}
-    </div>
-    ${needed > 0 ? `
-        <div style="font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); color: var(--warning-600);">
-            ${Math.ceil(needed / conversion.units_per_case)}
-        </div>
-        <div style="font-size: 0.7rem; color: var(--warning-700); font-weight: 600;">
-            ${Math.ceil(needed / conversion.units_per_case) === 1 ? 'case' : 'cases'}
-        </div>
-    ` : `
-        <div style="font-size: 1.5rem; color: var(--success-600);">✓</div>
-    `}
-</div>
+            <!-- NEEDED -->
+            <div style="background: ${needed > 0 ? 'rgba(220, 38, 38, 0.1)' : 'rgba(16, 185, 129, 0.1)'}; padding: 0.5rem; border-radius: 8px; text-align: center;">
+                <div style="font-size: 0.7rem; font-weight: 700; color: var(--neutral-600); margin-bottom: 0.25rem;">
+                    ${needed > 0 ? '📦 ORDER' : '✅ STOCKED'}
+                </div>
+                ${needed > 0 ? `
+                    <div style="font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); color: var(--warning-600);">
+                        ${Math.ceil(needed / conversion.units_per_case)}
+                    </div>
+                    <div style="font-size: 0.7rem; color: var(--warning-700); font-weight: 600;">
+                        ${Math.ceil(needed / conversion.units_per_case) === 1 ? 'case' : 'cases'}
+                    </div>
+                ` : `
+                    <div style="font-size: 1.5rem; color: var(--success-600);">✓</div>
+                `}
+            </div>
         </div>
         
-        <!-- ⭐ LAST ORDER INFORMATION ⭐ -->
+        <!-- LAST ORDER INFORMATION -->
         ${lastOrder ? `
         <div style="background: var(--success-50); padding: 1rem; border-radius: 8px; margin-bottom: 1rem; border: 2px solid var(--success-300);">
             <div style="font-size: 0.75rem; font-weight: 700; color: var(--success-700); margin-bottom: 0.5rem;">
@@ -5655,7 +5837,7 @@ style="width: 75%; max-width: 120px; height: 120px; object-fit: contain; border-
         </div>
         ` : ''}
         
-        <!-- ⭐ VENDOR PRICE COMPARISON TABLE ⭐ -->
+        <!-- VENDOR PRICE COMPARISON TABLE -->
         <div id="vendor-prices-${productId}" style="margin-bottom: 1rem;">
             <div style="font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
                 💰 VENDOR PRICES
@@ -5684,7 +5866,7 @@ style="width: 75%; max-width: 120px; height: 120px; object-fit: contain; border-
             </select>
         </div>
         
-        <!-- ITEM CODE (Auto-populated) -->
+        <!-- ITEM CODE -->
         <div style="margin-bottom: 1rem;">
             <label style="display: block; font-size: 0.875rem; font-weight: 700; color: var(--neutral-700); margin-bottom: 0.5rem;">
                 🔢 Item Code
@@ -5720,6 +5902,7 @@ style="width: 75%; max-width: 120px; height: 120px; object-fit: contain; border-
     </div>
     `;
 }
+
 // ========== NEW MANAGEMENT FUNCTIONS ==========
 // ========== LOAD CONVERSION MAP & LAST ORDER DATA ==========
 async function loadSupportingData() {
@@ -7044,6 +7227,7 @@ async function validateInvoiceNumber(invoiceNumber) {
 </body>
 
 </html>
+
 
 
 
