@@ -8055,8 +8055,8 @@ function renderYoYGrid() {
                 <!-- 2025 MEDICAL -->
                 <td class="px-4 py-3 border-l-2 border-blue-100">
                     ${enrollment2025Id ? `
-                        <select class="plan-select w-full text-xs rounded-md border border-slate-300 px-2 py-1 focus:ring-2 focus:ring-blue-500" data-year="2025" data-field="medical_plan" disabled>
-                            <option value="WAIVE" ${medical2025 === "WAIVE" ? "selected" : ""}>Waived</option>
+<select class="plan-select w-full text-xs rounded-md border border-slate-300 px-2 py-1 focus:ring-2 focus:ring-blue-500" data-year="2025" data-field="medical_plan">      
+<option value="WAIVE" ${medical2025 === "WAIVE" ? "selected" : ""}>Waived</option>
                             <option value="ATBAB303" ${medical2025 === "ATBAB303" ? "selected" : ""}>HMO (ATBAB303)</option>
                             <option value="ATBAP393" ${medical2025 === "ATBAP393" ? "selected" : ""}>HMO HSA (ATBAP393)</option>
                             <option value="ATBCB402" ${medical2025 === "ATBCB402" ? "selected" : ""}>PPO (ATBCB402)</option>
@@ -8479,6 +8479,7 @@ async function updateEmployeeStatus(username, action) {
 // ======================== ATTACH INLINE EDIT LISTENERS ========================
 // ======================== ATTACH INLINE EDIT LISTENERS ========================
 function attachInlineEditListeners() {
+    // ====== 1. Termination Checkbox Handlers (existing) ======
     document.querySelectorAll('.terminate-checkbox').forEach(checkbox => {
         checkbox.addEventListener('change', async function(e) {
             const row = e.target.closest('tr');
@@ -8496,7 +8497,6 @@ function attachInlineEditListeners() {
                     return;
                 }
 
-                // INSTANT UI UPDATE
                 row.classList.add('terminated-row');
                 statusCell.innerHTML = '<span class="status-terminated">TERMINATED</span>';
                 row.querySelectorAll('select').forEach(s => s.disabled = true);
@@ -8504,7 +8504,7 @@ function attachInlineEditListeners() {
                 try {
                     await terminateEmployee(employeeId, username, enrollment2025Id, enrollment2026Id);
                     showToast({ title: "Success", message: `${name} terminated`, type: "success" });
-                    calculateYoYStatsGrid(); // UPDATE KPI IMMEDIATELY
+                    calculateYoYStatsGrid();
                 } catch (err) {
                     alert("Failed to terminate!");
                     e.target.checked = false;
@@ -8523,7 +8523,6 @@ function attachInlineEditListeners() {
                 row.querySelectorAll('select').forEach(s => s.disabled = false);
 
                 try {
-                    // You need a rehire function — add this if you want
                     await supabase.from("employees2025")
                         .update({ employment_status: 'ACTIVE', terminated_date: null })
                         .eq("id", employeeId);
@@ -8539,22 +8538,56 @@ function attachInlineEditListeners() {
         });
     });
 
-    // Apply style on load
+    // ====== 2. INLINE EDITING FOR PLAN SELECTIONS (NEW — includes 2025!) ======
+    document.querySelectorAll('#yoyGridBody .plan-select').forEach(select => {
+        // Skip if already handled (optional safety)
+        if (select.hasAttribute('data-inline-edit')) return;
+        select.setAttribute('data-inline-edit', 'true');
+
+        select.addEventListener('change', async function() {
+            const row = this.closest('tr');
+            const year = this.dataset.year; // "2025" or "2026"
+            const field = this.dataset.field; // e.g., "medical_plan"
+            const newValue = this.value;
+            const username = row.dataset.username;
+
+            const enrollmentId = year === '2025'
+                ? row.dataset.enrollment2025Id
+                : row.dataset.enrollment2026Id;
+
+            if (!enrollmentId || enrollmentId === 'null') {
+                showToast({
+                    title: "Not Saved",
+                    message: `No ${year} enrollment record found for ${username}.`,
+                    type: "error"
+                });
+                // Revert to original value if available
+                const original = this.getAttribute('data-original-value') || 'WAIVE';
+                this.value = original;
+                return;
+            }
+
+            // Save the change
+            await saveInlineEdit(enrollmentId, username, field, newValue, row, year);
+
+            // Optional: update original value for future reverts
+            this.setAttribute('data-original-value', newValue);
+        });
+    });
+
+    // ====== 3. Apply disabled state on load for terminated rows ======
     document.querySelectorAll('tr').forEach(row => {
         const cb = row.querySelector('.terminate-checkbox');
         if (cb?.checked) {
             row.classList.add('terminated-row');
             row.querySelector('.status-cell').innerHTML = '<span class="status-terminated">TERMINATED</span>';
             row.querySelectorAll('select').forEach(s => s.disabled = true);
+        } else {
+            // Ensure non-terminated rows have editable selects
+            row.querySelectorAll('.plan-select').forEach(s => s.disabled = false);
         }
     });
 }
-
-// Call it after grid loads
-document.addEventListener('DOMContentLoaded', () => {
-    setTimeout(attachInlineEditListeners, 1000);
-});
-
 
 
 // ======================== SAVE INLINE EDIT ========================
@@ -9581,5 +9614,6 @@ function maskSSN(input) {
 
 </body>
 </html>
+
 
 
