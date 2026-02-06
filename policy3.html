@@ -355,93 +355,130 @@
     // LOAD EMPLOYEES
     // ============================================
     async function loadEmployees() {
-      console.log('🔍 Loading employees...');
-      
-      let employeeQuery = client
-        .from('employees')
-        .select('id, initials, full_name, position, department, email, phone, report_to, status')
-        .ilike('status', 'active')
-        .order('full_name');
-      
-      if (!currentManager.can_see_all_employees) {
-        employeeQuery = employeeQuery.not('position', 'is', null)
-                                     .in('position', currentManager.allowed_positions);
-      }
-      
-      const { data: allEmps, error: empError } = await employeeQuery;
-      
-      if (empError) {
-        console.error('❌ Error loading employees:', empError);
-        alert('Failed to load employees: ' + empError.message);
-        return;
-      }
-      
-      allEmployees = allEmps || [];
-      console.log('📋 All employees loaded:', allEmployees.length);
-      
-      const { data: statuses, error: statusError } = await client
-        .from('hb_acknowledgment_status')
-        .select('*');
-      
-      const { data: signatures, error: sigError } = await client
-        .from('hb_employee_signatures')
-        .select('employee_initials, pdf_url, signed_at, created_at')
-        .order('created_at', { ascending: false });
-      
-      if (statusError) console.error('❌ Error loading statuses:', statusError);
-      if (sigError) console.error('❌ Error loading signatures:', sigError);
-      
-      console.log('📊 Statuses:', statuses?.length || 0);
-      console.log('✍️ Signatures:', signatures?.length || 0);
-      
-      const submittedMap = new Map();
-      
-      (statuses || [])
-        .filter(s => s.employee_signed)
-        .forEach(s => {
-          const existing = submittedMap.get(s.employee_initials);
-          if (!existing || new Date(s.employee_signed_at) > new Date(existing.employee_signed_at)) {
-            submittedMap.set(s.employee_initials, s);
-          }
-        });
-      
-      (signatures || []).forEach(sig => {
-        if (sig.pdf_url) {
-          const status = submittedMap.get(sig.employee_initials);
-          if (status) {
-            if (!status.pdf_url || new Date(sig.created_at) > new Date(status.employee_signed_at)) {
-              status.pdf_url = sig.pdf_url;
-            }
-          } else {
-            submittedMap.set(sig.employee_initials, {
-              employee_initials: sig.employee_initials,
-              employee_signed: true,
-              employee_signed_at: sig.signed_at || sig.created_at,
-              manager_approved: false,
-              pdf_url: sig.pdf_url
-            });
-          }
-        }
-      });
-      
-      console.log('✅ Submitted employees:', submittedMap.size);
-      
-      pendingEmployees = allEmployees.filter(e => !submittedMap.has(e.initials));
-      submittedEmployees = allEmployees.filter(e => submittedMap.has(e.initials));
-      
-      submittedEmployees = submittedEmployees.map(emp => {
-        const status = submittedMap.get(emp.initials);
-        return { ...emp, status };
-      });
-      
-      console.log('⏳ Pending:', pendingEmployees.length);
-      console.log('✅ Submitted:', submittedEmployees.length);
-      
-      renderPendingList();
-      renderSubmittedList();
-      updateApprovalCount();
+  console.log('🔍 Loading employees...');
+  
+  // Query employees2025
+  const employeeQuery = client
+    .from('employees2025')
+    .select('employee_id, first_name, last_name, job_title, department, email, phone, report_to, status')
+    .eq('status', 'Active')
+    .order('first_name', { ascending: true });
+
+  const { data: rawEmployees, error: empError } = await employeeQuery;
+
+  if (empError) {
+    console.error('❌ Error loading employees:', empError);
+    alert('Failed to load employees: ' + empError.message);
+    return;
+  }
+
+  // Transform employees2025 data to match expected format
+  let allEmps = (rawEmployees || []).map(emp => ({
+    id: emp.employee_id,
+    initials: (emp.first_name?.charAt(0) + emp.last_name?.charAt(0) || '??').toUpperCase(),
+    full_name: `${emp.first_name || ''} ${emp.last_name || ''}`.trim(),
+    position: emp.job_title,
+    department: emp.department,
+    email: emp.email,
+    phone: emp.phone,
+    report_to: emp.report_to,
+    status: emp.status
+  }));
+
+  // Apply manager-specific filtering
+  let filteredEmps = allEmps;
+
+  if (!currentManager.can_see_all_employees) {
+    // Check if manager has specific employee filtering (whitelist by initials)
+    if (currentManager.allowed_employee_initials && currentManager.allowed_employee_initials.length > 0) {
+      filteredEmps = filteredEmps.filter(emp => 
+        currentManager.allowed_employee_initials.includes(emp.initials)
+      );
+    } 
+    // Otherwise filter by job titles (positions)
+    else if (currentManager.allowed_positions && currentManager.allowed_positions.length > 0) {
+      filteredEmps = filteredEmps.filter(emp => 
+        emp.position && currentManager.allowed_positions.includes(emp.position)
+      );
     }
-    
+  }
+
+  // Apply blocked employees filter (for managers who see all but exclude some)
+  if (currentManager.can_see_all_employees && 
+      currentManager.blocked_employee_initials && 
+      currentManager.blocked_employee_initials.length > 0) {
+    filteredEmps = filteredEmps.filter(emp => 
+      !currentManager.blocked_employee_initials.includes(emp.initials)
+    );
+    console.log(`🚫 Blocked ${currentManager.blocked_employee_initials.length} employees for ${currentManager.username}`);
+  }
+
+  allEmployees = filteredEmps;
+  console.log('📋 All employees loaded:', allEmployees.length);
+  
+  // Load statuses and signatures
+  const { data: statuses, error: statusError } = await client
+    .from('hb_acknowledgment_status')
+    .select('*');
+  
+  const { data: signatures, error: sigError } = await client
+    .from('hb_employee_signatures')
+    .select('employee_initials, pdf_url, signed_at, created_at')
+    .order('created_at', { ascending: false });
+  
+  if (statusError) console.error('❌ Error loading statuses:', statusError);
+  if (sigError) console.error('❌ Error loading signatures:', sigError);
+  
+  console.log('📊 Statuses:', statuses?.length || 0);
+  console.log('✍️ Signatures:', signatures?.length || 0);
+  
+  const submittedMap = new Map();
+  
+  (statuses || [])
+    .filter(s => s.employee_signed)
+    .forEach(s => {
+      const existing = submittedMap.get(s.employee_initials);
+      if (!existing || new Date(s.employee_signed_at) > new Date(existing.employee_signed_at)) {
+        submittedMap.set(s.employee_initials, s);
+      }
+    });
+  
+  (signatures || []).forEach(sig => {
+    if (sig.pdf_url) {
+      const status = submittedMap.get(sig.employee_initials);
+      if (status) {
+        if (!status.pdf_url || new Date(sig.created_at) > new Date(status.employee_signed_at)) {
+          status.pdf_url = sig.pdf_url;
+        }
+      } else {
+        submittedMap.set(sig.employee_initials, {
+          employee_initials: sig.employee_initials,
+          employee_signed: true,
+          employee_signed_at: sig.signed_at || sig.created_at,
+          manager_approved: false,
+          pdf_url: sig.pdf_url
+        });
+      }
+    }
+  });
+  
+  console.log('✅ Submitted employees:', submittedMap.size);
+  
+  pendingEmployees = allEmployees.filter(e => !submittedMap.has(e.initials));
+  submittedEmployees = allEmployees.filter(e => submittedMap.has(e.initials));
+  
+  submittedEmployees = submittedEmployees.map(emp => {
+    const status = submittedMap.get(emp.initials);
+    return { ...emp, status };
+  });
+  
+  console.log('⏳ Pending:', pendingEmployees.length);
+  console.log('✅ Submitted:', submittedEmployees.length);
+  
+  renderPendingList();
+  renderSubmittedList();
+  updateApprovalCount();
+}   
     // ============================================
     // RENDER PENDING LIST
     // ============================================
