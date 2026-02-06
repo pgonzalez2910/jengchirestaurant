@@ -149,12 +149,15 @@
         <div id="submittedContent" class="p-6 hidden">
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-xl font-bold">Submitted Handbooks</h2>
-            <div class="flex gap-2">
-              <button id="btnPrintAll" class="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 font-semibold">
-                🖨️ Print All
-              </button>
-              <span id="submittedCount" class="text-sm text-gray-600 self-center"></span>
-            </div>
+           <div class="flex gap-2">
+  <button id="btnRegenerateAll" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold">
+    🔄 Regenerate All Approved
+  </button>
+  <button id="btnPrintAll" class="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 font-semibold">
+    🖨️ Print All
+  </button>
+  <span id="submittedCount" class="text-sm text-gray-600 self-center"></span>
+</div>
           </div>
           <div id="submittedList" class="space-y-2"></div>
         </div>
@@ -508,19 +511,25 @@
                 ${!hasPDF ? '<div class="text-xs text-red-600 mt-1">⚠️ PDF not available</div>' : ''}
               </div>
             </div>
-            <div class="flex items-center gap-3">
-              ${approvalStatus}
-              ${hasPDF ? `
-                <button onclick="printSinglePDF('${emp.initials}')" 
-                        class="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 text-sm font-medium">
-                  🖨️ Print
-                </button>
-              ` : `
-                <button disabled class="px-4 py-2 bg-gray-300 text-gray-500 rounded-lg text-sm font-medium cursor-not-allowed">
-                  🖨️ No PDF
-                </button>
-              `}
-            </div>
+         <div class="flex items-center gap-3">
+  ${approvalStatus}
+  ${hasPDF ? `
+    <button onclick="printSinglePDF('${emp.initials}')" 
+            class="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 text-sm font-medium">
+      🖨️ Print
+    </button>
+  ` : `
+    <button disabled class="px-4 py-2 bg-gray-300 text-gray-500 rounded-lg text-sm font-medium cursor-not-allowed">
+      🖨️ No PDF
+    </button>
+  `}
+  ${status.manager_approved ? `
+    <button onclick="regenerateSinglePDF('${emp.initials}', '${emp.full_name}')" 
+            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">
+      🔄 Regenerate
+    </button>
+  ` : ''}
+</div>
           </div>
         `;
       }).join('');
@@ -549,6 +558,70 @@
       document.getElementById('tabPending').classList.add('border-transparent', 'text-gray-500');
     });
     
+
+
+    // ============================================
+// REGENERATE ALL APPROVED PDFs
+// ============================================
+document.getElementById('btnRegenerateAll').addEventListener('click', async () => {
+  const approvedEmployees = submittedEmployees.filter(e => e.status?.manager_approved);
+  
+  if (approvedEmployees.length === 0) {
+    alert('No approved employees to regenerate PDFs for');
+    return;
+  }
+  
+  if (!confirm(`Regenerate PDFs for ${approvedEmployees.length} approved employees?\n\nThis will create new PDFs with all current signatures.`)) {
+    return;
+  }
+  
+  const progressDiv = document.createElement('div');
+  progressDiv.id = 'regenerateAllProgressDiv';
+  progressDiv.className = 'fixed top-4 right-4 bg-blue-600 text-white px-6 py-4 rounded-lg shadow-xl z-50';
+  progressDiv.innerHTML = `
+    <div class="font-bold mb-2">🔄 Regenerating PDFs...</div>
+    <div id="regenerateAllProgress" class="text-sm">0 / ${approvedEmployees.length}</div>
+    <div class="text-xs mt-2 opacity-80">Please wait...</div>
+  `;
+  document.body.appendChild(progressDiv);
+  
+  let completed = 0;
+  const errors = [];
+  
+  for (const emp of approvedEmployees) {
+    try {
+      const response = await client.functions.invoke('regenerate-handbook-pdf', {
+        body: {
+          employee_initials: emp.initials,
+          manager_signature: managerSignatureData,
+          manager_name: currentManager.full_name,
+          manager_username: currentManager.username
+        }
+      });
+      
+      if (response.error || !response.data?.ok) {
+        throw new Error(response.error?.message || response.data?.error || 'Failed');
+      }
+      
+      completed++;
+      document.getElementById('regenerateAllProgress').textContent = `${completed} / ${approvedEmployees.length}`;
+      
+    } catch (error) {
+      console.error(`Error regenerating ${emp.initials}:`, error);
+      errors.push(`${emp.full_name}: ${error.message}`);
+    }
+  }
+  
+  document.body.removeChild(progressDiv);
+  
+  if (errors.length > 0) {
+    alert(`⚠️ Regenerated ${completed} PDFs.\n\nErrors for ${errors.length} employees:\n${errors.join('\n')}`);
+  } else {
+    alert(`✅ Successfully regenerated ${completed} PDFs!`);
+  }
+  
+  await loadEmployees();
+});
     // ============================================
     // SAVE MANAGER SIGNATURE - FIXED
     // ============================================
@@ -664,7 +737,7 @@ document.getElementById('btnApproveAll').addEventListener('click', async () => {
       
       // 3. Regenerate PDF with manager signature
       console.log(`🔄 Calling Edge Function for ${emp.initials}...`);
-      const edgeFunctionResponse = await client.functions.invoke('manager-approve-pdf', {
+      const edgeFunctionResponse = await client.functions.invoke('regenerate-handbook-pdf', {
         body: {
           employee_initials: emp.initials,
           manager_signature: managerSignatureData,
@@ -762,6 +835,84 @@ document.getElementById('btnApproveAll').addEventListener('click', async () => {
         document.getElementById('managerPassword').value = '';
       }
     });
+
+
+
+    // ============================================
+// REGENERATE SINGLE PDF
+// ============================================
+window.regenerateSinglePDF = async function(employeeInitials, employeeName) {
+  if (!confirm(`Regenerate PDF for ${employeeName}?\n\nThis will create a new PDF with all current signatures.`)) {
+    return;
+  }
+  
+  console.log('🔄 Regenerating PDF for', employeeInitials);
+  
+  // Show loading indicator
+  const progressDiv = document.createElement('div');
+  progressDiv.id = 'regenerateProgressDiv';
+  progressDiv.className = 'fixed top-4 right-4 bg-blue-600 text-white px-6 py-4 rounded-lg shadow-xl z-50';
+  progressDiv.innerHTML = `
+    <div class="font-bold mb-2">🔄 Regenerating PDF...</div>
+    <div class="text-sm">${employeeName}</div>
+    <div class="text-xs mt-2 opacity-80">Please wait...</div>
+  `;
+  document.body.appendChild(progressDiv);
+  
+  try {
+    console.log('📞 Calling Edge Function...');
+    
+    const response = await client.functions.invoke('regenerate-handbook-pdf', {
+      body: {
+        employee_initials: employeeInitials,
+        manager_signature: managerSignatureData,
+        manager_name: currentManager.full_name,
+        manager_username: currentManager.username
+      }
+    });
+    
+    console.log('📬 Edge Function response:', response);
+    
+    if (response.error) {
+      throw new Error(response.error.message || 'PDF regeneration failed');
+    }
+    
+    if (!response.data || !response.data.ok) {
+      throw new Error(response.data?.error || 'PDF regeneration failed');
+    }
+    
+    document.body.removeChild(progressDiv);
+    
+    // Show success message
+    const successDiv = document.createElement('div');
+    successDiv.className = 'fixed top-4 right-4 bg-green-600 text-white px-6 py-4 rounded-lg shadow-xl z-50';
+    successDiv.innerHTML = `
+      <div class="font-bold mb-2">✅ PDF Regenerated!</div>
+      <div class="text-sm">${employeeName}</div>
+      <div class="text-xs mt-2">
+        <a href="${response.data.pdf_url}" target="_blank" class="underline">View PDF</a>
+      </div>
+    `;
+    document.body.appendChild(successDiv);
+    
+    setTimeout(() => {
+      document.body.removeChild(successDiv);
+    }, 5000);
+    
+    // Reload employee list to update UI
+    await loadEmployees();
+    
+  } catch (error) {
+    console.error('❌ Regeneration error:', error);
+    
+    document.body.removeChild(progressDiv);
+    
+    alert(`❌ Failed to regenerate PDF:\n\n${error.message}\n\nCheck console for details.`);
+  }
+};
+
+
+
   </script>
 </body>
 </html>
