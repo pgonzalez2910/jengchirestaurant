@@ -192,7 +192,38 @@
       </div>
     </main>
   </div>
-
+<!-- SIGNATURE SECTION (Hidden until all policies acknowledged) -->
+<div id="signatureSection" class="hidden mt-8 p-6 border-t-2 border-jc-gold">
+  <h3 class="text-2xl font-serif-head text-jc-primary mb-4">Final Step: Your Signature</h3>
+  <p class="text-sm text-slate-600 mb-4">
+    By signing below, you acknowledge that you have read, understood, and agree to comply with all policies in this Employee Handbook.
+  </p>
+  
+  <!-- Signature Canvas -->
+  <div class="bg-white border-2 border-slate-300 rounded-xl p-4 max-w-2xl mx-auto">
+    <div class="flex justify-between items-center mb-2">
+      <span class="text-sm font-medium">Sign here:</span>
+      <button id="btnClearSignature" class="text-sm text-red-600 hover:underline">Clear</button>
+    </div>
+    <canvas id="signatureCanvas" 
+            width="600" 
+            height="200" 
+            class="border border-slate-200 rounded cursor-crosshair w-full"
+            style="touch-action: none;">
+    </canvas>
+    <p class="text-xs text-slate-500 mt-2">Draw your signature using your mouse or touchscreen</p>
+  </div>
+  
+  <!-- Submit Button -->
+  <div class="mt-6 text-center">
+    <button id="btnSubmitWithSignature" 
+            class="rounded-xl bg-emerald-600 text-white px-8 py-3 text-base font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed">
+      Submit Handbook Acknowledgment
+    </button>
+  </div>
+  
+  <div id="signatureMsg" class="text-sm text-center mt-3"></div>
+</div>
   <script>
     /* ========= SUPABASE ========= */
    const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
@@ -2458,170 +2489,245 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
     }
     
     function wireNavigationButtons() {
-      
-      // Back button logic
-      btnBack?.addEventListener('click', goPrevSection); 
+  
+  // ===================================================================
+  // BACK BUTTON LOGIC (Unchanged)
+  // ===================================================================
+  btnBack?.addEventListener('click', goPrevSection); 
 
-      // Next button logic
-      btnNext.addEventListener('click', ()=>{
-        if(btnNext.disabled) return;
-        const idx = SECTION_ORDER.indexOf(currentTab);
-        if(idx >=0 && idx < SECTION_ORDER.length-1){
-          const nextTabKey = SECTION_ORDER[idx+1];
-          gotoSection(nextTabKey);   // ← call directly
-        }
-      });
-
-      // Finalize button logic (The logic that was broken)
-      btnFinalize.addEventListener('click', async ()=>{
-        // Count total vs saved
-        const totalPolicies = Object.values(SECTIONS).reduce((s, d) => s + d.items.length, 0);
-        const missing = [];
-        for (const [key, def] of Object.entries(SECTIONS)) {
-          for (const item of def.items) {
-            const k = nsKey(def.store) + item.code;
-            if (!localStorage.getItem(k)) missing.push({ key, code: item.code, title: item.title });
-          }
-        }
-
-        if (missing.length) {
-          const first = missing[0]; // show where to go
-          toast(document.getElementById('finalizeMsg'),
-              `Please acknowledge ALL policies before finalizing. Missing: ${missing.length}. First: ${first.code} ${first.title}`);
-          // Jump the user to the first incomplete section so they can fix it
-          gotoSection(findResumeSectionKey());
-          return;
-        }
-
-        await enrichManagerPosition();
-
-        // Build policy-by-section table for the PDF
-        const sectionsPayload = collectPolicyRows();
-
-        // Recipient routing from position - NOTE: This is for display/logging only on the client side
-        const position  = empProfile.position || 'N/A';
-        
-        // Finalize button: send neutral data to Edge Function (no emails)
-        const allAcks = getAllAcksFromLocalStorage();
-        const s = getSession();
-        const payload = {
-          employee: {
-            fullName: empProfile.full_name || s?.full_name || 'N/A',
-            initials: getInitials(),
-            position: empProfile.position || s?.position || 'N/A',
-            department: empProfile.department || s?.department || 'N/A',
-            reportsTo: empProfile.reports_to || s?.reports_to || 'N/A',
-            email: empProfile.email || s?.email || '',
-            phone: empProfile.phone || s?.phone || '',
-            sessionId: getSessionId(),
-            date: new Date().toISOString()
-          },
-          policies: allAcks, // send raw list of acknowledged policies
-          card: { // snapshot of UI data for PDF layout
-            user: document.getElementById('fi_user')?.textContent || '',
-            name: document.getElementById('fi_name')?.textContent || '',
-            position: document.getElementById('fi_position')?.textContent || '',
-            department: document.getElementById('fi_department')?.textContent || '',
-            reports_to: document.getElementById('fi_reports_to')?.textContent || '',
-            email: document.getElementById('fi_email')?.textContent || '',
-            phone: document.getElementById('fi_phone')?.textContent || '',
-            session_started: document.getElementById('fi_session_started')?.textContent || ''
-          }
-        };
-
-
-        // Log intent (best-effort)
-        try {
-          await client.from('hb_ack_forms').insert({
-            initials: getInitials(),
-            session_id: getSessionId() || null,
-            employee_id: empProfile.employee_id || null,
-            status: 'Finalized - Sending',
-            position,
-            manager_email_to: getFinalRecipient(position).to, // Log the intended recipient for debugging/admin viewing
-          });
-        } catch {}
-
-        // === Call the Edge Function to build the PDF & send the email (Manual Fetch for debug/visibility) ===
-        if (EMAIL_FUNCTION_URL) {
-          try {
-            btnFinalize.textContent = 'Sending...';
-            btnFinalize.disabled = true;
-
-            const resp = await fetch(
-              EMAIL_FUNCTION_URL,
-              {
-                method: "POST",
-                headers: { 
-                  "Content-Type": "application/json",
-                  // CRITICAL: Must send API key for direct function URL access 
-                  "apikey": SUPABASE_ANON_KEY 
-                },
-                body: JSON.stringify(payload)
-              }
-            );
-
-            let data;
-            try {
-              data = await resp.json();
-            } catch {
-              data = {};
-            }
-
-            console.log("📬 Edge Function:", resp.status, data);
-
-            const status = document.getElementById('finalizeMsg');
-
-            if (resp.ok && data.ok) {
-              // ✅ Visible success
-              btnFinalize.classList.remove("bg-red-600", "bg-slate-600", "hover:bg-slate-700");
-              btnFinalize.classList.add("bg-jc-green", "hover:bg-emerald-700");
-              btnFinalize.textContent = "✅ Submitted (Email Sent)";
-              btnFinalize.disabled = true;
-              
-              if (status) {
-                status.textContent = `✅ Your acknowledgment and email were successfully sent.`;
-                status.className = "text-jc-green font-medium mt-2 text-sm h-5 text-center";
-              }
-              
-              try {
-                await client.from('hb_ack_forms')
-                  .update({ status: 'Finalized - Email Sent' })
-                  .eq('session_id', getSessionId() || null)
-                  .eq('initials', getInitials() || '');
-              } catch {}
-
-            } else {
-              // ❌ Failure
-              console.error("❌ Email failed:", data.error || resp.statusText);
-              btnFinalize.classList.remove("bg-jc-green", "bg-slate-600", "hover:bg-emerald-700");
-              btnFinalize.classList.add("bg-red-600");
-              btnFinalize.textContent = "❌ Submitted (Email Failed)";
-              btnFinalize.disabled = false; // Allow retry
-
-              if (status) {
-                status.textContent = `❌ Email failed: ${data.error || resp.status} - Please notify admin@jengchirestaurant.com`;
-                status.className = "text-red-600 font-medium mt-2 text-sm h-5 text-center";
-              }
-            }
-
-          } catch (e) {
-            console.error("⚠️ Request error:", e);
-            const status = document.getElementById('finalizeMsg');
-            status.textContent = `⚠️ Network error: Could not connect to server.`;
-            status.className = "text-red-600 font-medium mt-2 text-sm h-5 text-center";
-            btnFinalize.textContent = "❌ Submitted (Network Error)";
-            btnFinalize.classList.add('bg-red-600');
-            btnFinalize.disabled = false; // Allow retry
-          }
-        } else {
-          toast(document.getElementById('finalizeMsg'), 'Finalized! (No email function URL configured)', true);
-          btnFinalize.textContent = 'SUBMITTED (Mock)';
-          btnFinalize.classList.add('bg-jc-green');
-        }
-
-      });
+  // ===================================================================
+  // NEXT BUTTON LOGIC (Unchanged)
+  // ===================================================================
+  btnNext.addEventListener('click', ()=>{
+    if(btnNext.disabled) return;
+    const idx = SECTION_ORDER.indexOf(currentTab);
+    if(idx >=0 && idx < SECTION_ORDER.length-1){
+      const nextTabKey = SECTION_ORDER[idx+1];
+      gotoSection(nextTabKey);
     }
+  });
+
+  // ===================================================================
+  // FINALIZE BUTTON LOGIC (MODIFIED - Shows Signature Section)
+  // ===================================================================
+  btnFinalize.addEventListener('click', async ()=>{
+    // Count total vs saved
+    const totalPolicies = Object.values(SECTIONS).reduce((s, d) => s + d.items.length, 0);
+    const missing = [];
+    for (const [key, def] of Object.entries(SECTIONS)) {
+      for (const item of def.items) {
+        const k = nsKey(def.store) + item.code;
+        if (!localStorage.getItem(k)) missing.push({ key, code: item.code, title: item.title });
+      }
+    }
+
+    if (missing.length) {
+      const first = missing[0];
+      toast(document.getElementById('finalizeMsg'),
+          `Please acknowledge ALL policies before finalizing. Missing: ${missing.length}. First: ${first.code} ${first.title}`);
+      gotoSection(findResumeSectionKey());
+      return;
+    }
+
+    // ✅ ALL POLICIES ACKNOWLEDGED - Show signature section instead of submitting
+    document.getElementById('signatureSection')?.classList.remove('hidden');
+    btnFinalize.classList.add('hidden'); // Hide the finalize button
+    
+    // Scroll to signature section
+    setTimeout(() => {
+      document.getElementById('signatureSection')?.scrollIntoView({ 
+        behavior: 'smooth', 
+        block: 'center' 
+      });
+    }, 100);
+    
+    // Initialize signature canvas if not already done
+    if (!signatureCanvas) {
+      initSignatureCanvas();
+    }
+  });
+
+  // ===================================================================
+  // SUBMIT WITH SIGNATURE BUTTON LOGIC (NEW - Does Actual Submission)
+  // ===================================================================
+  document.getElementById('btnSubmitWithSignature')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btnSubmitWithSignature');
+    const msgEl = document.getElementById('signatureMsg');
+    
+    // Validate signature exists
+    if (!hasSignature || isSignatureEmpty()) {
+      toast(msgEl, '❌ Please sign before submitting.');
+      return;
+    }
+    
+    btn.disabled = true;
+    btn.textContent = 'Submitting...';
+    btn.classList.add('opacity-70', 'cursor-wait');
+    
+    try {
+      await enrichManagerPosition();
+      
+      // Get signature as base64 PNG
+      const signatureData = getSignatureDataURL();
+      
+      // Build payload (same structure as old finalize, but with signature)
+      const allAcks = getAllAcksFromLocalStorage();
+      const s = getSession();
+      const position = empProfile.position || s?.position || 'N/A';
+      
+      const payload = {
+        employee: {
+          fullName: empProfile.full_name || s?.full_name || 'N/A',
+          initials: getInitials(),
+          position: position,
+          department: empProfile.department || s?.department || 'N/A',
+          reportsTo: empProfile.reports_to || s?.reports_to || 'N/A',
+          email: empProfile.email || s?.email || '',
+          phone: empProfile.phone || s?.phone || '',
+          sessionId: getSessionId(),
+          date: new Date().toISOString(),
+          signature: signatureData // ⬅️ NEW: Include signature
+        },
+        policies: allAcks,
+        card: {
+          user: document.getElementById('fi_user')?.textContent || '',
+          name: document.getElementById('fi_name')?.textContent || '',
+          position: document.getElementById('fi_position')?.textContent || '',
+          department: document.getElementById('fi_department')?.textContent || '',
+          reports_to: document.getElementById('fi_reports_to')?.textContent || '',
+          email: document.getElementById('fi_email')?.textContent || '',
+          phone: document.getElementById('fi_phone')?.textContent || '',
+          session_started: document.getElementById('fi_session_started')?.textContent || ''
+        }
+      };
+      
+      // ─────────────────────────────────────────────────────────────
+      // STEP 1: Save signature to database FIRST
+      // ─────────────────────────────────────────────────────────────
+      const { error: sigError } = await client.from('hb_employee_signatures').insert({
+        employee_id: s?.employee_id || null,
+        employee_initials: getInitials(),
+        session_id: getSessionId(),
+        signature_data: signatureData,
+        signature_type: 'canvas',
+        ip_address: null, // Can be captured server-side if needed
+        user_agent: navigator.userAgent
+      });
+      
+      if (sigError) {
+        console.warn('⚠️ Signature save warning:', sigError);
+        // Continue anyway - signature is in payload
+      }
+      
+      // ─────────────────────────────────────────────────────────────
+      // STEP 2: Update acknowledgment status table
+      // ─────────────────────────────────────────────────────────────
+      await client.from('hb_acknowledgment_status').upsert({
+        employee_id: s?.employee_id || null,
+        employee_initials: getInitials(),
+        session_id: getSessionId(),
+        employee_signed: true,
+        employee_signed_at: new Date().toISOString()
+      }, { 
+        onConflict: 'employee_initials,session_id',
+        ignoreDuplicates: false 
+      });
+      
+      // ─────────────────────────────────────────────────────────────
+      // STEP 3: Log submission intent to hb_ack_forms
+      // ─────────────────────────────────────────────────────────────
+      try {
+        await client.from('hb_ack_forms').insert({
+          initials: getInitials(),
+          session_id: getSessionId() || null,
+          employee_id: s?.employee_id || null,
+          status: 'Finalized - Sending with Signature',
+          position: position,
+          manager_email_to: getFinalRecipient(position).to
+        });
+      } catch (logErr) {
+        console.warn('⚠️ Could not log to hb_ack_forms:', logErr);
+      }
+      
+      // ─────────────────────────────────────────────────────────────
+      // STEP 4: Send to Edge Function (generates PDF + sends email)
+      // ─────────────────────────────────────────────────────────────
+      if (EMAIL_FUNCTION_URL) {
+        const resp = await fetch(EMAIL_FUNCTION_URL, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            "apikey": SUPABASE_ANON_KEY 
+          },
+          body: JSON.stringify(payload)
+        });
+        
+        let data;
+        try {
+          data = await resp.json();
+        } catch {
+          data = {};
+        }
+        
+        console.log("📬 Edge Function Response:", resp.status, data);
+        
+        // ─────────────────────────────────────────────────────────────
+        // SUCCESS HANDLING
+        // ─────────────────────────────────────────────────────────────
+        if (resp.ok && data.ok) {
+          btn.classList.remove("bg-emerald-600", "opacity-70", "cursor-wait");
+          btn.classList.add("bg-jc-green", "hover:bg-emerald-700");
+          btn.textContent = "✅ Submitted Successfully";
+          btn.disabled = true;
+          
+          toast(msgEl, `✅ Your signed acknowledgment has been submitted and emailed.`, true);
+          
+          // Update status in database
+          try {
+            await client.from('hb_ack_forms')
+              .update({ status: 'Finalized - Email Sent with Signature' })
+              .eq('session_id', getSessionId() || null)
+              .eq('initials', getInitials() || '');
+          } catch {}
+          
+          // Optional: Hide the signature canvas after success
+          setTimeout(() => {
+            document.getElementById('signatureCanvas')?.classList.add('opacity-50');
+          }, 1000);
+          
+        // ─────────────────────────────────────────────────────────────
+        // FAILURE HANDLING
+        // ─────────────────────────────────────────────────────────────
+        } else {
+          console.error("❌ Email submission failed:", data.error || resp.statusText);
+          
+          btn.classList.remove("bg-emerald-600", "opacity-70", "cursor-wait");
+          btn.classList.add("bg-red-600", "hover:bg-red-700");
+          btn.textContent = "❌ Submission Failed - Retry";
+          btn.disabled = false; // Allow retry
+          
+          toast(msgEl, `❌ Submission failed: ${data.error || resp.status}. Please try again or contact admin@jengchirestaurant.com`);
+        }
+        
+      } else {
+        // No email function configured (development mode)
+        btn.classList.add("bg-jc-green");
+        btn.textContent = "✅ Submitted (Mock Mode)";
+        toast(msgEl, 'Signature saved locally (Email function not configured)', true);
+      }
+      
+    } catch (e) {
+      console.error("⚠️ Submission error:", e);
+      
+      btn.classList.remove("bg-emerald-600", "opacity-70", "cursor-wait");
+      btn.classList.add("bg-red-600");
+      btn.textContent = "❌ Error - Retry";
+      btn.disabled = false;
+      
+      toast(msgEl, `⚠️ Network error: ${e.message}`);
+    }
+  });
+}
 
     /* ========= BOOT ========= */
     async function bootApp(){
@@ -2652,6 +2758,102 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
       if (s?.username) { showApp(); await bootApp(); }
       else { showLogin(); }
     })();
+
+
+
+
+
+    /* ========= SIGNATURE CANVAS ========= */
+let signatureCanvas = null;
+let signatureCtx = null;
+let isDrawing = false;
+let hasSignature = false;
+
+function initSignatureCanvas() {
+  signatureCanvas = document.getElementById('signatureCanvas');
+  if (!signatureCanvas) return;
+  
+  signatureCtx = signatureCanvas.getContext('2d');
+  signatureCtx.strokeStyle = '#000';
+  signatureCtx.lineWidth = 2;
+  signatureCtx.lineCap = 'round';
+  signatureCtx.lineJoin = 'round';
+  
+  // Mouse events
+  signatureCanvas.addEventListener('mousedown', startDrawing);
+  signatureCanvas.addEventListener('mousemove', draw);
+  signatureCanvas.addEventListener('mouseup', stopDrawing);
+  signatureCanvas.addEventListener('mouseout', stopDrawing);
+  
+  // Touch events (mobile)
+  signatureCanvas.addEventListener('touchstart', handleTouchStart);
+  signatureCanvas.addEventListener('touchmove', handleTouchMove);
+  signatureCanvas.addEventListener('touchend', stopDrawing);
+  
+  // Clear button
+  document.getElementById('btnClearSignature')?.addEventListener('click', clearSignature);
+}
+
+function startDrawing(e) {
+  isDrawing = true;
+  hasSignature = true;
+  const rect = signatureCanvas.getBoundingClientRect();
+  signatureCtx.beginPath();
+  signatureCtx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
+}
+
+function draw(e) {
+  if (!isDrawing) return;
+  const rect = signatureCanvas.getBoundingClientRect();
+  signatureCtx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+  signatureCtx.stroke();
+}
+
+function stopDrawing() {
+  isDrawing = false;
+}
+
+function handleTouchStart(e) {
+  e.preventDefault();
+  const touch = e.touches[0];
+  const mouseEvent = new MouseEvent('mousedown', {
+    clientX: touch.clientX,
+    clientY: touch.clientY
+  });
+  signatureCanvas.dispatchEvent(mouseEvent);
+}
+
+function handleTouchMove(e) {
+  e.preventDefault();
+  const touch = e.touches[0];
+  const mouseEvent = new MouseEvent('mousemove', {
+    clientX: touch.clientX,
+    clientY: touch.clientY
+  });
+  signatureCanvas.dispatchEvent(mouseEvent);
+}
+
+function clearSignature() {
+  signatureCtx.clearRect(0, 0, signatureCanvas.width, signatureCanvas.height);
+  hasSignature = false;
+}
+
+function getSignatureDataURL() {
+  // Returns base64 PNG
+  return signatureCanvas.toDataURL('image/png');
+}
+
+function isSignatureEmpty() {
+  // Check if canvas is blank
+  const blank = document.createElement('canvas');
+  blank.width = signatureCanvas.width;
+  blank.height = signatureCanvas.height;
+  return signatureCanvas.toDataURL() === blank.toDataURL();
+}
+
+
+
   </script>
 </body>
 </html>
+
