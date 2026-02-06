@@ -600,80 +600,107 @@
     // ============================================
     // APPROVE ALL EMPLOYEES
     // ============================================
-    document.getElementById('btnApproveAll').addEventListener('click', async () => {
-      if (!managerSignatureData) {
-        alert('⚠️ Please save your signature first!');
-        return;
-      }
+    // ============================================
+// APPROVE ALL EMPLOYEES - WITH PDF REGENERATION
+// ============================================
+document.getElementById('btnApproveAll').addEventListener('click', async () => {
+  if (!managerSignatureData) {
+    alert('⚠️ Please save your signature first!');
+    return;
+  }
+  
+  const employeesToApprove = submittedEmployees.filter(e => !e.status?.manager_approved);
+  
+  if (employeesToApprove.length === 0) {
+    alert('✅ All employees already approved!');
+    return;
+  }
+  
+  if (!confirm(`Approve ${employeesToApprove.length} employees and add your signature to their handbooks?`)) {
+    return;
+  }
+  
+  const progressDiv = document.createElement('div');
+  progressDiv.id = 'approvalProgressDiv';
+  progressDiv.className = 'fixed top-4 right-4 bg-blue-600 text-white px-6 py-4 rounded-lg shadow-xl z-50';
+  progressDiv.innerHTML = `
+    <div class="font-bold mb-2">📝 Processing Approvals...</div>
+    <div id="approvalProgress" class="text-sm">0 / ${employeesToApprove.length}</div>
+    <div class="text-xs mt-2 opacity-80">Updating PDFs with your signature...</div>
+  `;
+  document.body.appendChild(progressDiv);
+  
+  let completed = 0;
+  const errors = [];
+  
+  for (const emp of employeesToApprove) {
+    try {
+      console.log(`📝 Approving ${emp.full_name}...`);
       
-      const employeesToApprove = submittedEmployees.filter(e => !e.status?.manager_approved);
+      // 1. Update database approval status
+      const { error: statusError } = await client
+        .from('hb_acknowledgment_status')
+        .update({
+          manager_approved: true,
+          manager_approved_by: currentManager.username,
+          manager_approved_at: new Date().toISOString()
+        })
+        .eq('employee_initials', emp.initials)
+        .eq('session_id', emp.status.session_id);
       
-      if (employeesToApprove.length === 0) {
-        alert('✅ All employees already approved!');
-        return;
-      }
+      if (statusError) throw statusError;
+      console.log(`✅ Status updated for ${emp.initials}`);
       
-      if (!confirm(`Approve ${employeesToApprove.length} employees and add your signature to their handbooks?`)) {
-        return;
-      }
+      // 2. Save manager signature record
+      const { error: sigError } = await client.from('hb_manager_signatures').insert({
+        manager_username: currentManager.username,
+        employee_initials: emp.initials,
+        signature_data: managerSignatureData,
+        signed_at: new Date().toISOString()
+      });
       
-      const progressDiv = document.createElement('div');
-      progressDiv.id = 'approvalProgressDiv';
-      progressDiv.className = 'fixed top-4 right-4 bg-blue-600 text-white px-6 py-4 rounded-lg shadow-xl z-50';
-      progressDiv.innerHTML = `
-        <div class="font-bold mb-2">📝 Processing Approvals...</div>
-        <div id="approvalProgress" class="text-sm">0 / ${employeesToApprove.length}</div>
-        <div class="text-xs mt-2 opacity-80">Please wait...</div>
-      `;
-      document.body.appendChild(progressDiv);
+      if (sigError) throw sigError;
+      console.log(`✅ Signature saved for ${emp.initials}`);
       
-      let completed = 0;
-      const errors = [];
-      
-      for (const emp of employeesToApprove) {
-        try {
-          const { error: statusError } = await client
-            .from('hb_acknowledgment_status')
-            .update({
-              manager_approved: true,
-              manager_approved_by: currentManager.username,
-              manager_approved_at: new Date().toISOString()
-            })
-            .eq('employee_initials', emp.initials)
-            .eq('session_id', emp.status.session_id);
-          
-          if (statusError) throw statusError;
-          
-          const { error: sigError } = await client.from('hb_manager_signatures').insert({
-            manager_username: currentManager.username,
-            employee_initials: emp.initials,
-            signature_data: managerSignatureData,
-            signed_at: new Date().toISOString()
-          });
-          
-          if (sigError) throw sigError;
-          
-          completed++;
-          document.getElementById('approvalProgress').textContent = `${completed} / ${employeesToApprove.length}`;
-          
-        } catch (error) {
-          console.error(`Error approving ${emp.initials}:`, error);
-          errors.push(`${emp.full_name}: ${error.message}`);
+      // 3. Regenerate PDF with manager signature
+      console.log(`🔄 Calling Edge Function for ${emp.initials}...`);
+      const edgeFunctionResponse = await client.functions.invoke('manager-approve-pdf', {
+        body: {
+          employee_initials: emp.initials,
+          manager_signature: managerSignatureData,
+          manager_name: currentManager.full_name,
+          manager_username: currentManager.username
         }
+      });
+      
+      console.log(`📬 Edge Function response for ${emp.initials}:`, edgeFunctionResponse);
+      
+      if (edgeFunctionResponse.error) {
+        throw new Error(`PDF update failed: ${edgeFunctionResponse.error.message}`);
       }
       
-      document.body.removeChild(progressDiv);
+      console.log(`✅ PDF updated for ${emp.initials}`);
       
-      if (errors.length > 0) {
-        alert(`⚠️ Approved ${completed} employees.\n\nErrors for ${errors.length} employees:\n${errors.join('\n')}`);
-      } else {
-        alert(`✅ Successfully approved all ${completed} employees!\n\nTheir handbooks now have your signature.`);
-      }
+      completed++;
+      document.getElementById('approvalProgress').textContent = `${completed} / ${employeesToApprove.length}`;
       
-      await loadEmployees();
-      updateApprovalCount();
-    });
-    
+    } catch (error) {
+      console.error(`❌ Error approving ${emp.initials}:`, error);
+      errors.push(`${emp.full_name}: ${error.message}`);
+    }
+  }
+  
+  document.body.removeChild(progressDiv);
+  
+  if (errors.length > 0) {
+    alert(`⚠️ Approved ${completed} employees.\n\nErrors for ${errors.length} employees:\n${errors.join('\n')}`);
+  } else {
+    alert(`✅ Successfully approved all ${completed} employees!\n\nPDFs updated with your signature.`);
+  }
+  
+  await loadEmployees();
+  updateApprovalCount();
+});
     // ============================================
     // PRINT SINGLE PDF
     // ============================================
