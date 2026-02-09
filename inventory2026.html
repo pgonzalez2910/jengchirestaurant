@@ -6975,38 +6975,86 @@ async function saveNewProduct(event) {
 
 // Delete Product from Julio (FIXED VERSION)
 // ========== FIXED: Remove Assignment (Don't Delete Product) ==========
+// ========== ENHANCED DELETE WITH DEBUGGING ==========
 async function deleteProductFromJulio(productName) {
-    if (!confirm(`Remove "${productName}" from Julio's list?\n\nThis will unassign it from Julio but keep the product in the system.`)) return;
+    if (!confirm(`Remove "${productName}" from Julio's list?`)) return;
     
     showLoading(true);
     try {
-        console.log('🔍 Deleting product:', productName);
+        console.log('🔍 Original product name:', productName);
+        console.log('🔍 Product name length:', productName.length);
+        console.log('🔍 Product name (trimmed):', productName.trim());
         
-        // Find all rows with this product name
-        const { data: rows, error: fetchError } = await supabaseClient
+        // STEP 1: Try exact match first
+        let { data: rows, error: fetchError } = await supabaseClient
             .from('inventory_management')
             .select('id, product_name, assigned_to')
             .eq('product_name', productName);
         
-        if (fetchError) {
-            console.error('❌ Fetch error:', fetchError);
-            throw fetchError;
+        if (fetchError) throw fetchError;
+        
+        console.log('📦 Exact match found:', rows?.length || 0, 'rows');
+        
+        // STEP 2: If no exact match, try trimmed version
+        if (!rows || rows.length === 0) {
+            console.log('⚠️ No exact match, trying trimmed version...');
+            const trimmedName = productName.trim();
+            
+            const result = await supabaseClient
+                .from('inventory_management')
+                .select('id, product_name, assigned_to')
+                .eq('product_name', trimmedName);
+            
+            rows = result.data;
+            console.log('📦 Trimmed match found:', rows?.length || 0, 'rows');
         }
         
-        console.log('📦 Found rows:', rows);
-        
+        // STEP 3: If still no match, do case-insensitive search
         if (!rows || rows.length === 0) {
-            showAlert('⚠️ Product not found', 'error');
+            console.log('⚠️ No trimmed match, trying case-insensitive search...');
+            
+            const result = await supabaseClient
+                .from('inventory_management')
+                .select('id, product_name, assigned_to')
+                .ilike('product_name', productName);
+            
+            rows = result.data;
+            console.log('📦 Case-insensitive match found:', rows?.length || 0, 'rows');
+            
+            if (rows && rows.length > 0) {
+                console.log('📋 Actual product names in DB:', rows.map(r => `"${r.product_name}"`));
+            }
+        }
+        
+        // STEP 4: If STILL no match, list all products assigned to Julio
+        if (!rows || rows.length === 0) {
+            console.log('❌ Product not found anywhere! Searching all Julio products...');
+            
+            const { data: allJulio } = await supabaseClient
+                .from('inventory_management')
+                .select('product_name, assigned_to');
+            
+            const julioProducts = allJulio?.filter(p => {
+                const assigned = String(p.assigned_to || '').toLowerCase();
+                return assigned.includes('julio');
+            });
+            
+            console.log('📋 All Julio products in database:');
+            julioProducts?.forEach((p, idx) => {
+                console.log(`  ${idx + 1}. "${p.product_name}" (length: ${p.product_name.length})`);
+            });
+            
+            showAlert(`⚠️ Product "${productName}" not found in database. Check console for details.`, 'error');
             return;
         }
         
-        // Process each row
+        console.log('✅ Product found! Processing deletion...');
+        
+        // Process each matching row
         for (const row of rows) {
-            console.log('🔄 Processing row:', row.id, 'assigned_to:', row.assigned_to);
+            console.log('🔄 Processing row ID:', row.id, 'Product:', row.product_name);
             
             let assignedArray = [];
-            
-            // Parse assigned_to
             if (Array.isArray(row.assigned_to)) {
                 assignedArray = row.assigned_to;
             } else if (typeof row.assigned_to === 'string') {
@@ -7017,64 +7065,45 @@ async function deleteProductFromJulio(productName) {
                 }
             }
             
-            console.log('📋 Parsed assigned array:', assignedArray);
+            console.log('📋 Current assignments:', assignedArray);
             
-            // Remove 'julio' (case-insensitive)
             const newAssigned = assignedArray.filter(user => 
                 String(user).toLowerCase() !== 'julio'
             );
             
-            console.log('📝 New assigned array:', newAssigned);
+            console.log('📝 New assignments:', newAssigned);
             
-            // Delete or update based on remaining assignments
             if (newAssigned.length === 0) {
-                console.log('🗑️ Deleting row (no assignments left):', row.id);
+                console.log('🗑️ Deleting row (no assignments left)');
                 const { error: deleteError } = await supabaseClient
                     .from('inventory_management')
                     .delete()
                     .eq('id', row.id);
                 
-                if (deleteError) {
-                    console.error('❌ Delete error:', deleteError);
-                    throw deleteError;
-                }
-                console.log('✅ Row deleted');
+                if (deleteError) throw deleteError;
             } else {
-                console.log('✏️ Updating row assignments:', row.id, newAssigned);
+                console.log('✏️ Updating assignments');
                 const { error: updateError } = await supabaseClient
                     .from('inventory_management')
                     .update({ assigned_to: newAssigned })
                     .eq('id', row.id);
                 
-                if (updateError) {
-                    console.error('❌ Update error:', updateError);
-                    throw updateError;
-                }
-                console.log('✅ Row updated');
+                if (updateError) throw updateError;
             }
         }
         
-        // Remove from target_inventory table
-        console.log('🗑️ Removing from target_inventory...');
-        const { error: targetError } = await supabaseClient
+        // Remove from target_inventory
+        await supabaseClient
             .from('target_inventory')
             .delete()
             .eq('product_name', productName);
         
-        if (targetError) {
-            console.warn('⚠️ Target delete error (might not exist):', targetError);
-        }
-        
-        showAlert(`✅ ${productName} removed from Julio's list`, 'success');
-        
-        // Reload Julio's view
-        console.log('🔄 Reloading Julio orders...');
+        showAlert(`✅ Product removed successfully`, 'success');
         await loadJulioOrders();
-        console.log('✅ Reload complete');
         
     } catch (error) {
-        console.error('❌ Remove assignment error:', error);
-        showAlert('❌ Error removing product: ' + error.message, 'error');
+        console.error('❌ Delete error:', error);
+        showAlert('❌ Error: ' + error.message, 'error');
     } finally {
         showLoading(false);
     }
