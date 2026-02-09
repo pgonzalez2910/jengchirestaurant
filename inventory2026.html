@@ -6980,65 +6980,97 @@ async function deleteProductFromJulio(productName) {
     
     showLoading(true);
     try {
-        // Find all rows with this product name assigned to Julio
+        console.log('🔍 Deleting product:', productName);
+        
+        // Find all rows with this product name
         const { data: rows, error: fetchError } = await supabaseClient
             .from('inventory_management')
-            .select('id, assigned_to')
+            .select('id, product_name, assigned_to')
             .eq('product_name', productName);
         
-        if (fetchError) throw fetchError;
+        if (fetchError) {
+            console.error('❌ Fetch error:', fetchError);
+            throw fetchError;
+        }
+        
+        console.log('📦 Found rows:', rows);
         
         if (!rows || rows.length === 0) {
             showAlert('⚠️ Product not found', 'error');
             return;
         }
         
-        // Update each row: remove 'julio' from assigned_to array
+        // Process each row
         for (const row of rows) {
+            console.log('🔄 Processing row:', row.id, 'assigned_to:', row.assigned_to);
+            
             let assignedArray = [];
             
-            try {
-                if (Array.isArray(row.assigned_to)) {
-                    assignedArray = row.assigned_to;
-                } else if (typeof row.assigned_to === 'string') {
+            // Parse assigned_to
+            if (Array.isArray(row.assigned_to)) {
+                assignedArray = row.assigned_to;
+            } else if (typeof row.assigned_to === 'string') {
+                try {
                     assignedArray = JSON.parse(row.assigned_to);
+                } catch (e) {
+                    assignedArray = [];
                 }
-            } catch (e) {
-                assignedArray = [];
             }
             
-            // Remove 'julio' from the array
-            const newAssigned = assignedArray.filter(user => user.toLowerCase() !== 'julio');
+            console.log('📋 Parsed assigned array:', assignedArray);
             
-            // If array is now empty, you can either:
-            // Option A: Keep the row with empty array
-            // Option B: Delete the row (uncomment below)
+            // Remove 'julio' (case-insensitive)
+            const newAssigned = assignedArray.filter(user => 
+                String(user).toLowerCase() !== 'julio'
+            );
             
+            console.log('📝 New assigned array:', newAssigned);
+            
+            // Delete or update based on remaining assignments
             if (newAssigned.length === 0) {
-                // Option B: Delete row if no one is assigned
-                await supabaseClient
+                console.log('🗑️ Deleting row (no assignments left):', row.id);
+                const { error: deleteError } = await supabaseClient
                     .from('inventory_management')
                     .delete()
                     .eq('id', row.id);
+                
+                if (deleteError) {
+                    console.error('❌ Delete error:', deleteError);
+                    throw deleteError;
+                }
+                console.log('✅ Row deleted');
             } else {
-                // Option A: Update with new assignment
-                await supabaseClient
+                console.log('✏️ Updating row assignments:', row.id, newAssigned);
+                const { error: updateError } = await supabaseClient
                     .from('inventory_management')
                     .update({ assigned_to: newAssigned })
                     .eq('id', row.id);
+                
+                if (updateError) {
+                    console.error('❌ Update error:', updateError);
+                    throw updateError;
+                }
+                console.log('✅ Row updated');
             }
         }
         
-        showAlert(`✅ ${productName} removed from Julio's list`, 'success');
-        
-        // Also remove from target_inventory table if exists
-        await supabaseClient
+        // Remove from target_inventory table
+        console.log('🗑️ Removing from target_inventory...');
+        const { error: targetError } = await supabaseClient
             .from('target_inventory')
             .delete()
             .eq('product_name', productName);
         
+        if (targetError) {
+            console.warn('⚠️ Target delete error (might not exist):', targetError);
+        }
+        
+        showAlert(`✅ ${productName} removed from Julio's list`, 'success');
+        
         // Reload Julio's view
+        console.log('🔄 Reloading Julio orders...');
         await loadJulioOrders();
+        console.log('✅ Reload complete');
         
     } catch (error) {
         console.error('❌ Remove assignment error:', error);
