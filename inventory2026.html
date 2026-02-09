@@ -4587,11 +4587,13 @@ for (const product of selectedInvoiceProducts) {
 
 let julioTargetsMap = new Map();
 
+// ========== FIXED: Julio's Orders with invoice_items data ==========
+
 async function loadJulioOrders() {
     try {
         const { data: products, error: prodError } = await supabaseClient
             .from('inventory_management')
-            .select('product_name, image_url, item_code, assigned_to') // Changed 'user' to 'assigned_to'
+            .select('product_name, image_url, item_code, assigned_to')
             .order('product_name');
         
         if (prodError) throw prodError;
@@ -4601,7 +4603,6 @@ async function loadJulioOrders() {
             const name = (p.product_name || '').trim();
             if (!name) return;
             
-            // Checks if 'julio' is in the assigned_to field
             const assigned = String(p.assigned_to || '').toLowerCase();
             if (!assigned.includes('julio')) return;
             
@@ -4629,6 +4630,67 @@ async function loadJulioOrders() {
             });
         }
         
+        // ✅ NEW: Load vendor and price data from invoice_items
+        const { data: invoiceItems, error: itemsError } = await supabaseClient
+            .from('invoice_items')
+            .select('product_name, vendor, unit_price, price_per_unit, has_weight, invoice_id');
+        
+        // Get invoice dates
+        const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id))];
+        let invoiceDates = new Map();
+        
+        if (invoiceIds.length > 0) {
+            const { data: invoices } = await supabaseClient
+                .from('invoices')
+                .select('id, invoice_date, vendor')
+                .in('id', invoiceIds);
+            
+            (invoices || []).forEach(inv => {
+                invoiceDates.set(inv.id, { date: inv.invoice_date, vendor: inv.vendor });
+            });
+        }
+        
+        // Build vendor and price maps
+        uniqueProducts.forEach((product, productName) => {
+            // Get all invoice items for this product
+            const productInvoices = (invoiceItems || []).filter(i => i.product_name === productName);
+            
+            // Get vendors
+            const vendors = new Set();
+            const priceData = [];
+            
+            productInvoices.forEach(item => {
+                const invInfo = invoiceDates.get(item.invoice_id);
+                if (!invInfo) return;
+                
+                vendors.add(invInfo.vendor);
+                
+                const unitPrice = item.has_weight 
+                    ? parseFloat(item.price_per_unit || 0)
+                    : parseFloat(item.unit_price || 0);
+                
+                priceData.push({
+                    vendor: invInfo.vendor,
+                    price: unitPrice,
+                    date: invInfo.date
+                });
+            });
+            
+            // Also check purchase_history for legacy data
+            const legacyData = inventoryData.filter(i => i.product_name === productName);
+            legacyData.forEach(item => {
+                if (item.vendor) vendors.add(item.vendor);
+                priceData.push({
+                    vendor: item.vendor,
+                    price: parseFloat(item.unit_price || 0),
+                    date: item.purchase_date
+                });
+            });
+            
+            product.vendors = Array.from(vendors);
+            product.priceData = priceData;
+        });
+        
         julioTargetsMap = uniqueProducts;
         renderJulioProducts();
         
@@ -4638,9 +4700,11 @@ async function loadJulioOrders() {
     }
 }
 
-// ✅ FIXED: renderJulioProducts function
-// ✅ UPDATED: renderJulioProducts with DELETE button
-// ========== PROFESSIONAL CORPORATE REDESIGN: JULIO'S ORDERS ==========
+// ========== UPDATED: renderJulioProducts with vendor data ==========
+
+// ========== SIMPLIFIED JULIO CARD - ORDER FOCUSED ==========
+
+// ========== ULTRA-SIMPLIFIED JULIO CARD ==========
 
 function renderJulioProducts() {
   const container = document.getElementById('julioProductGrid');
@@ -4666,33 +4730,7 @@ function renderJulioProducts() {
   
   container.innerHTML = products.map(product => {
     const imageUrl = resolveImage(product.image_url);
-    const currentStock = product.target_quantity || 0;
-    
-    // Get price data
-    const productPrices = inventoryData.filter(i => i.product_name === product.product_name);
-    const prices = productPrices.map(i => parseFloat(i.unit_price || 0));
-    
-    let bestPrice = { price: 0, vendor: 'N/A', date: 'N/A' };
-    let highestPrice = { price: 0, vendor: 'N/A', date: 'N/A' };
-    
-    if (prices.length > 0) {
-      const minPrice = Math.min(...prices);
-      const maxPrice = Math.max(...prices);
-      const minItem = productPrices.find(i => parseFloat(i.unit_price) === minPrice);
-      const maxItem = productPrices.find(i => parseFloat(i.unit_price) === maxPrice);
-      
-      bestPrice = {
-        price: minPrice,
-        vendor: minItem?.vendor || 'N/A',
-        date: minItem?.purchase_date || 'N/A'
-      };
-      
-      highestPrice = {
-        price: maxPrice,
-        vendor: maxItem?.vendor || 'N/A',
-        date: maxItem?.purchase_date || 'N/A'
-      };
-    }
+    const orderQty = product.target_quantity || 0;
     
     return `
       <div class="julio-corporate-card" style="
@@ -4706,7 +4744,7 @@ function renderJulioProducts() {
         flex-direction: column;
       ">
         
-        <!-- HEADER SECTION: Image + Title -->
+        <!-- PRODUCT INFO SECTION -->
         <div style="
           background: linear-gradient(135deg, var(--neutral-50), white);
           padding: 1.5rem;
@@ -4727,10 +4765,10 @@ function renderJulioProducts() {
                  border: 1px solid var(--neutral-300);
                ">
           <h3 style="
-            font-size: 1rem;
+            font-size: 1.125rem;
             font-weight: 700;
             color: var(--neutral-900);
-            margin: 0 0 0.5rem 0;
+            margin: 0;
             line-height: 1.3;
             min-height: 2.6rem;
             display: flex;
@@ -4739,216 +4777,49 @@ function renderJulioProducts() {
           ">
             ${product.product_name}
           </h3>
-          <div style="
-            font-family: var(--font-mono);
-            font-size: 0.8125rem;
-            color: var(--neutral-500);
-            font-weight: 600;
-          ">
-            ${product.item_code || 'No Code'}
-          </div>
         </div>
         
-        <!-- METRICS SECTION: Current Stock -->
+        <!-- ORDER QUANTITY SECTION (75% SIZE) -->
         <div style="
-          padding: 1.25rem;
-          background: var(--primary-50);
-          border-bottom: 2px solid var(--primary-200);
-        ">
-          <div style="text-align: center;">
-            <div style="
-              font-size: 0.75rem;
-              font-weight: 700;
-              color: var(--primary-700);
-              text-transform: uppercase;
-              letter-spacing: 0.05em;
-              margin-bottom: 0.5rem;
-            ">
-              CURRENT STOCK
-            </div>
-            <div style="
-              font-size: 2.5rem;
-              font-weight: 700;
-              font-family: var(--font-mono);
-              color: var(--primary-900);
-              line-height: 1;
-            ">
-              ${currentStock.toFixed(2)}
-            </div>
-          </div>
-        </div>
-        
-        <!-- PRICE COMPARISON SECTION -->
-        <div style="
-          padding: 1.25rem;
-          background: white;
-          border-bottom: 2px solid var(--neutral-200);
-        ">
-          <div style="
-            font-size: 0.75rem;
-            font-weight: 700;
-            color: var(--neutral-600);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 1rem;
-            text-align: center;
-          ">
-            💰 PRICE COMPARISON
-          </div>
-          
-          <div style="
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-          ">
-            <!-- BEST PRICE -->
-            <div style="
-              background: linear-gradient(135deg, var(--success-50), white);
-              padding: 1rem;
-              border-radius: 8px;
-              border: 2px solid var(--success-400);
-              text-align: center;
-            ">
-              <div style="
-                font-size: 0.65rem;
-                font-weight: 700;
-                color: var(--success-700);
-                text-transform: uppercase;
-                margin-bottom: 0.5rem;
-              ">
-                🏆 BEST PRICE
-              </div>
-              <div style="
-                font-size: 1.5rem;
-                font-weight: 700;
-                font-family: var(--font-mono);
-                color: var(--success-700);
-                margin-bottom: 0.5rem;
-              ">
-                $${bestPrice.price.toFixed(2)}
-              </div>
-              <div style="
-                font-size: 0.75rem;
-                color: var(--neutral-700);
-                font-weight: 600;
-                margin-bottom: 0.25rem;
-              ">
-                ${bestPrice.vendor}
-              </div>
-              <div style="
-                font-size: 0.7rem;
-                color: var(--neutral-500);
-              ">
-                ${bestPrice.date !== 'N/A' ? formatDate(bestPrice.date) : 'No data'}
-              </div>
-            </div>
-            
-            <!-- HIGHEST PRICE -->
-            <div style="
-              background: linear-gradient(135deg, var(--neutral-100), white);
-              padding: 1rem;
-              border-radius: 8px;
-              border: 2px solid var(--neutral-300);
-              text-align: center;
-            ">
-              <div style="
-                font-size: 0.65rem;
-                font-weight: 700;
-                color: var(--neutral-600);
-                text-transform: uppercase;
-                margin-bottom: 0.5rem;
-              ">
-                📈 HIGHEST
-              </div>
-              <div style="
-                font-size: 1.5rem;
-                font-weight: 700;
-                font-family: var(--font-mono);
-                color: var(--neutral-700);
-                margin-bottom: 0.5rem;
-              ">
-                $${highestPrice.price.toFixed(2)}
-              </div>
-              <div style="
-                font-size: 0.75rem;
-                color: var(--neutral-700);
-                font-weight: 600;
-                margin-bottom: 0.25rem;
-              ">
-                ${highestPrice.vendor}
-              </div>
-              <div style="
-                font-size: 0.7rem;
-                color: var(--neutral-500);
-              ">
-                ${highestPrice.date !== 'N/A' ? formatDate(highestPrice.date) : 'No data'}
-              </div>
-            </div>
-          </div>
-        </div>
-        
-        <!-- ORDER FORM SECTION -->
-        <div style="
-          padding: 1.25rem;
-          background: var(--neutral-50);
+          padding: 1.5rem;
+          background: var(--accent-50);
           flex-grow: 1;
           display: flex;
           flex-direction: column;
-          gap: 1rem;
+          justify-content: center;
+          border-bottom: 3px solid var(--accent-300);
         ">
-          <!-- Vendor Selection -->
-          <div>
-            <label style="
-              display: block;
-              font-size: 0.75rem;
-              font-weight: 700;
-              color: var(--neutral-700);
-              text-transform: uppercase;
-              letter-spacing: 0.05em;
-              margin-bottom: 0.5rem;
-            ">
-              📦 SELECT VENDOR
-            </label>
-            <select id="vendor-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}" 
-                    class="search-input" 
-                    style="width: 100%; font-size: 0.9375rem;">
-              <option value="">-- Choose Vendor --</option>
-              ${[...new Set(inventoryData.filter(i => i.product_name === product.product_name).map(i => i.vendor))].map(v => 
-                `<option value="${v}">${v}</option>`
-              ).join('')}
-            </select>
-          </div>
-          
-          <!-- Order Quantity -->
-          <div>
-            <label style="
-              display: block;
-              font-size: 0.75rem;
-              font-weight: 700;
-              color: var(--neutral-700);
-              text-transform: uppercase;
-              letter-spacing: 0.05em;
-              margin-bottom: 0.5rem;
-            ">
-              📋 ORDER QUANTITY
-            </label>
-            <input type="number" 
-                   id="qty-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}" 
-                   value="${currentStock}" 
-                   min="0" 
-                   step="0.1"
-                   class="search-input" 
-                   style="
-                     width: 100%;
-                     font-size: 1.5rem;
-                     font-weight: 700;
-                     text-align: center;
-                     padding: 1rem;
-                     font-family: var(--font-mono);
-                     background: white;
-                     border: 2px solid var(--primary-400);
-                   ">
-          </div>
+          <label style="
+            display: block;
+            font-size: 0.8125rem;
+            font-weight: 700;
+            color: var(--accent-700);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.75rem;
+            text-align: center;
+          ">
+            🛒 Order Quantity
+          </label>
+          <input type="number" 
+                 id="qty-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}" 
+                 value="${orderQty > 0 ? orderQty : ''}" 
+                 min="0" 
+                 step="0.1"
+                 placeholder="0.00"
+                 onchange="setJulioQuantity('${product.product_name.replace(/'/g, "\\'")}', this.value)"
+                 class="search-input" 
+                 style="
+                   width: 100%;
+                   font-size: 1.5rem;
+                   font-weight: 700;
+                   text-align: center;
+                   padding: 0.875rem;
+                   font-family: var(--font-mono);
+                   background: white;
+                   border: 3px solid var(--accent-500);
+                   box-shadow: 0 2px 4px rgba(217, 119, 6, 0.15);
+                 ">
         </div>
         
         <!-- FOOTER: Delete Button -->
@@ -4968,6 +4839,7 @@ function renderJulioProducts() {
     `;
   }).join('');
 }
+
 
 
 function updateJulioQuantity(productName, delta) {
