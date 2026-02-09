@@ -1722,25 +1722,36 @@ input[id^="par-input-"]:focus {
         </div>
     </div>
 
-    <!-- Julio's Orders Section -->
+  <!-- Julio's Orders Section -->
 <div id="julioOrders" class="content-section">
   <div class="search-filter-bar">
     <div class="search-group">
       <label>🔍 Search Products</label>
       <input type="text" id="julioSearchInput" class="search-input" placeholder="Search by product name..." oninput="filterJulioProducts()">
     </div>
-    <div style="display: flex; gap: 0.75rem; align-items: flex-end;">
-      <button class="btn btn-success" onclick="openAddProductModal('julio')">
-        <i class="fas fa-plus"></i> Add Product
-      </button>
-      <button class="btn btn-primary" onclick="saveJulioOrders()">
-        <i class="fas fa-save"></i> Save Order Request
-      </button>
-      <button class="btn btn-secondary" onclick="clearJulioOrders()">
-        <i class="fas fa-eraser"></i> Clear All
-      </button>
+    
+    <!-- ✅ ADD CATEGORY FILTER HERE -->
+    <div class="filter-group">
+      <label>📂 Category Filter</label>
+      <select id="julioCategoryFilter" class="search-input" onchange="filterJulioProducts()">
+        <option value="">All Categories</option>
+        <option value="Produce">🥬 Produce</option>
+        <option value="Meat">🥩 Meat (Beef/Lamb)</option>
+        <option value="Poultry">🐔 Poultry (Chicken/Duck)</option>
+        <option value="Pork">🐷 Pork</option>
+        <option value="Seafood">🐟 Seafood</option>
+        <option value="Dairy">🥛 Dairy</option>
+        <option value="Dry Goods">📦 Dry Goods</option>
+        <option value="Frozen">❄️ Frozen</option>
+        <option value="Beverages">🥤 Beverages</option>
+        <option value="Cleaning Supplies">🧹 Cleaning</option>
+        <option value="Office Supplies">📎 Office</option>
+        <option value="Kitchen Equipment">🔪 Equipment</option>
+        <option value="Other">📋 Other</option>
+      </select>
     </div>
-  </div>
+    
+    <div style="display: flex; gap: 0.75rem; align-items: flex-end;">
   
   <div class="data-table-container">
     <div class="table-header" style="display: flex; justify-content: space-between; align-items: center;">
@@ -2627,6 +2638,8 @@ async function initializeApp() {
             }, 100);
         }
 
+
+
         function renderVendorChart(vendor, data, selectedMonths, monthNames) {
             const canvasId = `vendorChart_${vendor.replace(/\s+/g, '_')}`;
             const ctx = document.getElementById(canvasId);
@@ -2891,6 +2904,78 @@ dataToShow.forEach(item => {
         showLoading(false);
     }
 }
+
+
+// ========== COMPLETE: saveJulioOrders() ==========
+async function saveJulioOrders() {
+    showLoading(true);
+    try {
+        const submissionDate = new Date().toISOString();
+        
+        // ✅ SAVE ALL PRODUCTS - not just ones with quantities > 0
+        const allUpdates = Array.from(julioTargetsMap.values())
+            .map(p => ({
+                product_name: p.product_name,
+                target_quantity: p.target_quantity || 0,  // ✅ Default to 0 if null
+                last_updated: submissionDate,
+                item_code: p.item_code || null,
+                image_url: p.image_url || null,
+                category: p.category || null  // ✅ ALWAYS save category
+            }));
+        
+        if (allUpdates.length === 0) {
+            showAlert('❌ No products found for Julio', 'error');
+            return;
+        }
+        
+        console.log(`💾 Saving ${allUpdates.length} products for Julio...`);
+        
+        // 1️⃣ Save to target_inventory table (ALL products)
+        const { error: targetError } = await supabaseClient
+            .from('target_inventory')
+            .upsert(allUpdates, { onConflict: 'product_name' });
+        
+        if (targetError) throw targetError;
+        
+        // 2️⃣ Save to historical submissions (ONLY products with qty > 0)
+        const submissionsWithQty = allUpdates
+            .filter(u => u.target_quantity > 0)
+            .map(u => ({
+                submission_date: submissionDate,
+                submitted_by: 'julio',
+                product_name: u.product_name,
+                quantity: u.target_quantity,
+                submission_type: 'target_inventory',
+                category: u.category,  // ✅ SAVE CATEGORY IN HISTORY
+                notes: `Target inventory submission`
+            }));
+        
+        if (submissionsWithQty.length > 0) {
+            const { error: historyError } = await supabaseClient
+                .from('inventory_submissions')
+                .insert(submissionsWithQty);
+            
+            if (historyError) {
+                console.error('⚠️ Error saving submission history:', historyError);
+            }
+        }
+        
+        showAlert(
+            `✅ Saved ALL ${allUpdates.length} products for Julio!\n` +
+            `📝 ${submissionsWithQty.length} products have target quantities > 0`,
+            'success'
+        );
+        
+    } catch (error) {
+        console.error('❌ Save Julio targets error:', error);
+        showAlert('Error saving targets: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+
+
 
         async function quickAssign(itemCode, person) {
             if (!person || !itemCode) return;
@@ -4742,19 +4827,18 @@ let julioTargetsMap = new Map();
 // ========== FIX 1: STOP TRIMMING PRODUCT NAMES ==========
 async function loadJulioOrders() {
     try {
+        // ✅ Load ALL products assigned to Julio from inventory_management
         const { data: products, error: prodError } = await supabaseClient
             .from('inventory_management')
-            .select('product_name, image_url, item_code, assigned_to')
+            .select('product_name, image_url, item_code, assigned_to, category')  // ✅ category included
             .order('product_name');
         
         if (prodError) throw prodError;
         
+        // ✅ Filter ONLY Julio's products
         const uniqueProducts = new Map();
         (products || []).forEach(p => {
-            // ❌ OLD (trimmed): const name = (p.product_name || '').trim();
-            // ✅ NEW (keep original with spaces):
-            const name = p.product_name || '';
-            
+            const name = p.product_name || '';  // ✅ Keep original (no trim)
             if (!name) return;
             
             const assigned = String(p.assigned_to || '').toLowerCase();
@@ -4762,31 +4846,35 @@ async function loadJulioOrders() {
             
             if (!uniqueProducts.has(name)) {
                 uniqueProducts.set(name, {
-                    product_name: name,  // ✅ Keep original name with spaces
+                    product_name: name,
                     image_url: p.image_url,
                     item_code: p.item_code,
+                    category: p.category,  // ✅✅✅ CRITICAL: ADD THIS LINE
                     target_quantity: null
                 });
             }
         });
         
-        // Load existing targets
+        // ✅ Load existing targets
         const { data: targets, error: targError } = await supabaseClient
             .from('target_inventory')
             .select('*');
         
         if (!targError && targets) {
             targets.forEach(t => {
-                const name = t.product_name || '';  // ✅ Don't trim here either
+                const name = t.product_name || '';
                 if (uniqueProducts.has(name)) {
-                    uniqueProducts.get(name).target_quantity = t.target_quantity;
+                    const product = uniqueProducts.get(name);
+                    product.target_quantity = t.target_quantity;
+                    // ✅ Preserve category from target_inventory if inventory_management doesn't have it
+                    if (!product.category && t.category) {
+                        product.category = t.category;
+                    }
                 }
             });
         }
         
-        // ... rest of function stays the same
-        
-        // ✅ NEW: Load vendor and price data from invoice_items
+        // ✅ Load vendor and price data from invoice_items
         const { data: invoiceItems, error: itemsError } = await supabaseClient
             .from('invoice_items')
             .select('product_name, vendor, unit_price, price_per_unit, has_weight, invoice_id');
@@ -4848,13 +4936,16 @@ async function loadJulioOrders() {
         });
         
         julioTargetsMap = uniqueProducts;
+        
+        console.log(`✅ Loaded ${julioTargetsMap.size} products for Julio with categories`);
         renderJulioProducts();
         
     } catch (error) {
-        console.error('Load Julio targets error:', error);
+        console.error('❌ Load Julio targets error:', error);
         showAlert('Error loading Julio targets', 'error');
     }
 }
+
 
 // ========== UPDATED: renderJulioProducts with vendor data ==========
 
@@ -4863,138 +4954,169 @@ async function loadJulioOrders() {
 // ========== ULTRA-SIMPLIFIED JULIO CARD ==========
 
 function renderJulioProducts() {
-  const container = document.getElementById('julioProductGrid');
-  const searchTerm = document.getElementById('julioSearchInput')?.value.toLowerCase() || '';
-  
-  let products = Array.from(julioTargetsMap.values()).filter(p => {
-    if (!searchTerm) return true;
-    return (p.product_name || '').toLowerCase().includes(searchTerm);
-  });
-  
-  products.sort((a, b) => (a.product_name || '').localeCompare(b.product_name || ''));
-  document.getElementById('julioProductCount').textContent = `${products.length} products`;
-  
-  if (products.length === 0) {
-    container.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-state-icon">📦</div>
-        <h3>No Products Found</h3>
-      </div>
-    `;
-    return;
-  }
-  
-  container.innerHTML = products.map(product => {
-    const imageUrl = resolveImage(product.image_url);
-    const orderQty = product.target_quantity || 0;
+    const container = document.getElementById('julioProductGrid');
+    const searchTerm = document.getElementById('julioSearchInput')?.value.toLowerCase() || '';
+    const categoryFilter = document.getElementById('julioCategoryFilter')?.value || '';
     
-    return `
-      <div class="julio-corporate-card" style="
-        background: white;
-        border-radius: 12px;
-        overflow: hidden;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        border: 2px solid var(--neutral-200);
-        transition: all 0.3s;
-        display: flex;
-        flex-direction: column;
-      ">
+    let products = Array.from(julioTargetsMap.values()).filter(p => {
+        const matchesSearch = !searchTerm || 
+            (p.product_name || '').toLowerCase().includes(searchTerm);
         
-        <!-- PRODUCT INFO SECTION -->
-        <div style="
-          background: linear-gradient(135deg, var(--neutral-50), white);
-          padding: 1.5rem;
-          border-bottom: 2px solid var(--neutral-200);
-          text-align: center;
-        ">
-          <img src="${imageUrl}"
-               onerror="this.src='${PLACEHOLDER_IMAGE}'"
-               style="
-                 width: 120px;
-                 height: 120px;
-                 object-fit: contain;
-                 border-radius: 8px;
-                 margin: 0 auto 1rem auto;
-                 display: block;
-                 background: white;
-                 padding: 0.5rem;
-                 border: 1px solid var(--neutral-300);
-               ">
-          <h3 style="
-            font-size: 1.125rem;
-            font-weight: 700;
-            color: var(--neutral-900);
-            margin: 0;
-            line-height: 1.3;
-            min-height: 2.6rem;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          ">
-            ${product.product_name}
-          </h3>
-        </div>
+        const matchesCategory = !categoryFilter || 
+            (p.category || '') === categoryFilter;
         
-        <!-- ORDER QUANTITY SECTION (75% SIZE) -->
-        <div style="
-          padding: 1.5rem;
-          background: var(--accent-50);
-          flex-grow: 1;
-          display: flex;
-          flex-direction: column;
-          justify-content: center;
-          border-bottom: 3px solid var(--accent-300);
-        ">
-          <label style="
-            display: block;
-            font-size: 0.8125rem;
-            font-weight: 700;
-            color: var(--accent-700);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            margin-bottom: 0.75rem;
-            text-align: center;
-          ">
-            🛒 Order Quantity
-          </label>
-          <input type="number" 
-                 id="qty-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}" 
-                 value="${orderQty > 0 ? orderQty : ''}" 
-                 min="0" 
-                 step="0.1"
-                 placeholder="0.00"
-                 onchange="setJulioQuantity('${product.product_name.replace(/'/g, "\\'")}', this.value)"
-                 class="search-input" 
-                 style="
-                   width: 100%;
-                   font-size: 1.5rem;
-                   font-weight: 700;
-                   text-align: center;
-                   padding: 0.875rem;
-                   font-family: var(--font-mono);
-                   background: white;
-                   border: 3px solid var(--accent-500);
-                   box-shadow: 0 2px 4px rgba(217, 119, 6, 0.15);
-                 ">
-        </div>
+        return matchesSearch && matchesCategory;
+    });
+    
+    products.sort((a, b) => (a.product_name || '').localeCompare(b.product_name || ''));
+    
+    // ✅ Show total count including filtered/unfiltered
+    const totalProducts = julioTargetsMap.size;
+    const filteredCount = products.length;
+    
+    document.getElementById('julioProductCount').textContent = 
+        filteredCount < totalProducts 
+            ? `${filteredCount} of ${totalProducts} products` 
+            : `${totalProducts} products`;
+    
+    // ✅ Log category statistics
+    const withCategory = products.filter(p => p.category).length;
+    const withoutCategory = products.filter(p => !p.category).length;
+    console.log(`📊 Products: ${products.length} total, ${withCategory} with category, ${withoutCategory} without category`);
+    
+    if (products.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">📦</div>
+                <h3>No Products Found</h3>
+                <p style="color: var(--neutral-600); margin-top: 0.5rem;">
+                    ${searchTerm ? 'Try a different search term' : ''}
+                    ${categoryFilter ? 'Try a different category' : ''}
+                </p>
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = products.map(product => {
+        const imageUrl = resolveImage(product.image_url);
+        const orderQty = product.target_quantity || 0;
         
-        <!-- FOOTER: Delete Button -->
-        <div style="
-          padding: 1rem;
-          background: white;
-          border-top: 2px solid var(--neutral-200);
-        ">
-          <button onclick="deleteProductFromJulio('${product.product_name.replace(/'/g, "\\'")}')"
-                  class="btn btn-danger"
-                  style="width: 100%; padding: 0.875rem; font-size: 0.9375rem;">
-            <i class="fas fa-trash"></i> Remove Product
-          </button>
-        </div>
-        
-      </div>
-    `;
-  }).join('');
+        return `
+            <div class="julio-corporate-card" style="
+                background: white;
+                border-radius: 12px;
+                overflow: hidden;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                border: 2px solid var(--neutral-200);
+                transition: all 0.3s;
+                display: flex;
+                flex-direction: column;
+            ">
+                
+                <!-- PRODUCT INFO SECTION -->
+                <div style="
+                    background: linear-gradient(135deg, var(--neutral-50), white);
+                    padding: 1.5rem;
+                    border-bottom: 2px solid var(--neutral-200);
+                    text-align: center;
+                ">
+                    <img src="${imageUrl}"
+                         onerror="this.src='${PLACEHOLDER_IMAGE}'"
+                         style="
+                             width: 120px;
+                             height: 120px;
+                             object-fit: contain;
+                             border-radius: 8px;
+                             margin: 0 auto 1rem auto;
+                             display: block;
+                             background: white;
+                             padding: 0.5rem;
+                             border: 1px solid var(--neutral-300);
+                         ">
+                    <h3 style="
+                        font-size: 1.125rem;
+                        font-weight: 700;
+                        color: var(--neutral-900);
+                        margin: 0;
+                        line-height: 1.3;
+                        min-height: 2.6rem;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                    ">
+                        ${product.product_name}
+                    </h3>
+                    ${product.category ? `
+                        <div style="margin-top: 0.5rem;">
+                            <span class="vendor-badge" style="background: var(--accent-100); color: var(--accent-700); font-size: 0.75rem; padding: 0.25rem 0.75rem;">
+                                ${product.category}
+                            </span>
+                        </div>
+                    ` : ''}
+                </div>
+                
+                <!-- ORDER QUANTITY SECTION -->
+                <div style="
+                    padding: 1.5rem;
+                    background: var(--accent-50);
+                    flex-grow: 1;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    border-bottom: 3px solid var(--accent-300);
+                ">
+                    <label style="
+                        display: block;
+                        font-size: 0.8125rem;
+                        font-weight: 700;
+                        color: var(--accent-700);
+                        text-transform: uppercase;
+                        letter-spacing: 0.05em;
+                        margin-bottom: 0.75rem;
+                        text-align: center;
+                    ">
+                        🛒 Order Quantity
+                    </label>
+                    <input type="number" 
+                           id="qty-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}" 
+                           value="${orderQty > 0 ? orderQty : ''}" 
+                           min="0" 
+                           step="0.1"
+                           placeholder="0.00"
+                           onchange="setJulioQuantity('${product.product_name.replace(/'/g, "\\'")}', this.value)"
+                           class="search-input" 
+                           style="
+                               width: 100%;
+                               font-size: 1.5rem;
+                               font-weight: 700;
+                               text-align: center;
+                               padding: 0.875rem;
+                               font-family: var(--font-mono);
+                               background: white;
+                               border: 3px solid var(--accent-500);
+                               box-shadow: 0 2px 4px rgba(217, 119, 6, 0.15);
+                           ">
+                </div>
+                
+                <!-- FOOTER: Delete Button -->
+                <div style="
+                    padding: 1rem;
+                    background: white;
+                    border-top: 2px solid var(--neutral-200);
+                ">
+                    <button onclick="deleteProductFromJulio('${product.product_name.replace(/'/g, "\\'")}')"
+                            class="btn btn-danger"
+                            style="width: 100%; padding: 0.875rem; font-size: 0.9375rem;">
+                        <i class="fas fa-trash"></i> Remove Product
+                    </button>
+                </div>
+                
+            </div>
+        `;
+    }).join('');
 }
+
 
 
 
@@ -5024,63 +5146,88 @@ function setJulioQuantity(productName, value) {
 }
 
 function filterJulioProducts() {
-    renderJulioProducts();
-}
-
-async function saveJulioOrders() {
-    showLoading(true);
-    try {
-        const submissionDate = new Date().toISOString();
+    const searchTerm = document.getElementById('julioSearchInput')?.value.toLowerCase() || '';
+    const categoryFilter = document.getElementById('julioCategoryFilter')?.value || '';
+    
+    const container = document.getElementById('julioProductGrid');
+    
+    let products = Array.from(julioTargetsMap.values()).filter(p => {
+        const matchesSearch = !searchTerm || 
+            (p.product_name || '').toLowerCase().includes(searchTerm);
         
-        const targets = Array.from(julioTargetsMap.values())
-            .filter(p => p.target_quantity != null && p.target_quantity > 0)
-            .map(p => ({
-                product_name: p.product_name,
-                target_quantity: p.target_quantity,
-                last_updated: submissionDate
-            }));
+        const matchesCategory = !categoryFilter || 
+            (p.category || '') === categoryFilter;
         
-        if (targets.length === 0) {
-            showAlert('No target quantities set', 'error');
-            return;
-        }
-        
-        // 1. Save to target_inventory table (existing)
-        const { error: targetError } = await supabaseClient
-            .from('target_inventory')
-            .upsert(targets, { onConflict: 'product_name' });
-        
-        if (targetError) throw targetError;
-        
-        // 2. NEW: Save to historical submissions table
-        const submissions = targets.map(t => ({
-            submission_date: submissionDate,
-            submitted_by: 'julio',
-            product_name: t.product_name,
-            quantity: t.target_quantity,
-            submission_type: 'target_inventory',
-            notes: `Target inventory submission`
-        }));
-        
-        const { error: historyError } = await supabaseClient
-            .from('inventory_submissions')
-            .insert(submissions);
-        
-        if (historyError) {
-            console.error('Error saving submission history:', historyError);
-            // Don't throw - main save succeeded
-        }
-        
-        showAlert(`✅ Saved ${targets.length} target inventory levels! Submission recorded.`, 'success');
-        
-    } catch (error) {
-        console.error('Save Julio targets error:', error);
-        showAlert('Error saving targets: ' + error.message, 'error');
-    } finally {
-        showLoading(false);
+        return matchesSearch && matchesCategory;
+    });
+    
+    products.sort((a, b) => (a.product_name || '').localeCompare(b.product_name || ''));
+    document.getElementById('julioProductCount').textContent = `${products.length} products`;
+    
+    if (products.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">📦</div>
+                <h3>No Products Found</h3>
+                <p style="color: var(--neutral-600); margin-top: 0.5rem;">
+                    ${searchTerm ? 'Try a different search term' : ''}
+                    ${categoryFilter ? 'Try a different category' : ''}
+                </p>
+            </div>
+        `;
+        return;
     }
+    
+    // Render products (rest of your existing rendering code)
+    container.innerHTML = products.map(product => {
+        const imageUrl = resolveImage(product.image_url);
+        const orderQty = product.target_quantity || 0;
+        
+        return `
+          <div class="julio-corporate-card" style="background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border: 2px solid var(--neutral-200); transition: all 0.3s; display: flex; flex-direction: column;">
+            
+            <!-- PRODUCT INFO -->
+            <div style="background: linear-gradient(135deg, var(--neutral-50), white); padding: 1.5rem; border-bottom: 2px solid var(--neutral-200); text-align: center;">
+              <img src="${imageUrl}" onerror="this.src='${PLACEHOLDER_IMAGE}'" style="width: 120px; height: 120px; object-fit: contain; border-radius: 8px; margin: 0 auto 1rem auto; display: block; background: white; padding: 0.5rem; border: 1px solid var(--neutral-300);">
+              <h3 style="font-size: 1.125rem; font-weight: 700; color: var(--neutral-900); margin: 0; line-height: 1.3; min-height: 2.6rem; display: flex; align-items: center; justify-content: center;">
+                ${product.product_name}
+              </h3>
+              ${product.category ? `
+                <div style="margin-top: 0.5rem;">
+                  <span class="vendor-badge" style="background: var(--accent-100); color: var(--accent-700); font-size: 0.75rem; padding: 0.25rem 0.75rem;">
+                    ${product.category}
+                  </span>
+                </div>
+              ` : ''}
+            </div>
+            
+            <!-- ORDER QUANTITY -->
+            <div style="padding: 1.5rem; background: var(--accent-50); flex-grow: 1; display: flex; flex-direction: column; justify-content: center; border-bottom: 3px solid var(--accent-300);">
+              <label style="display: block; font-size: 0.8125rem; font-weight: 700; color: var(--accent-700); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem; text-align: center;">
+                🛒 Order Quantity
+              </label>
+              <input type="number" 
+                     id="qty-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}" 
+                     value="${orderQty > 0 ? orderQty : ''}" 
+                     min="0" 
+                     step="0.1"
+                     placeholder="0.00"
+                     onchange="setJulioQuantity('${product.product_name.replace(/'/g, "\\'")}', this.value)"
+                     class="search-input" 
+                     style="width: 100%; font-size: 1.5rem; font-weight: 700; text-align: center; padding: 0.875rem; font-family: var(--font-mono); background: white; border: 3px solid var(--accent-500); box-shadow: 0 2px 4px rgba(217, 119, 6, 0.15);">
+            </div>
+            
+            <!-- DELETE BUTTON -->
+            <div style="padding: 1rem; background: white; border-top: 2px solid var(--neutral-200);">
+              <button onclick="deleteProductFromJulio('${product.product_name.replace(/'/g, "\\'")}')" class="btn btn-danger" style="width: 100%; padding: 0.875rem; font-size: 0.9375rem;">
+                <i class="fas fa-trash"></i> Remove Product
+              </button>
+            </div>
+            
+          </div>
+        `;
+    }).join('');
 }
-
 
 
 async function clearJulioOrders() {
