@@ -2175,8 +2175,15 @@ input[id^="par-input-"]:focus {
     </div>
 
     <!-- Julio's Orders Section -->
+<!-- Julio's Orders Section -->
 <div id="julioOrders" class="content-section">
   <div class="search-filter-bar">
+    <!-- ADD DATE PICKER -->
+    <div class="filter-group">
+      <label>📅 Order Date</label>
+      <input type="date" id="julioOrderDate" class="search-input" onchange="loadJulioOrders()">
+    </div>
+    
     <div class="search-group">
       <label>🔍 Search Products</label>
       <input type="text" id="julioSearchInput" class="search-input" placeholder="Search by product name..." oninput="filterJulioProducts()">
@@ -2243,8 +2250,15 @@ input[id^="par-input-"]:focus {
 </div>
 
 <!-- Rony's Orders Section -->
+<!-- Rony's Orders Section -->
 <div id="ronyOrders" class="content-section">
     <div class="search-filter-bar">
+        <!-- ADD DATE PICKER -->
+        <div class="filter-group">
+            <label>📅 Stock Count Date</label>
+            <input type="date" id="ronyOrderDate" class="search-input" onchange="loadRonyOrders()">
+        </div>
+        
         <div class="search-group">
             <label>🔍 Search Products</label>
             <input type="text" id="ronySearchInput" class="search-input" placeholder="Search by product name..." oninput="filterRonyProducts()">
@@ -5194,9 +5208,18 @@ let julioTargetsMap = new Map();
 // ========== FIX 1: STOP TRIMMING PRODUCT NAMES ==========
 async function loadJulioOrders() {
     try {
+        // ✅ Get selected date or use today
+        const dateInput = document.getElementById('julioOrderDate');
+        const selectedDate = dateInput ? dateInput.value : todayYMD();
+        
+        // ✅ Set default date if not set
+        if (dateInput && !dateInput.value) {
+            dateInput.value = todayYMD();
+        }
+        
         const { data: products, error: prodError } = await supabaseClient
             .from('inventory_management')
-            .select('product_name, image_url, item_code, assigned_to, category')  // ← ADD category here
+            .select('product_name, image_url, item_code, assigned_to, category')
             .order('product_name');
         
         if (prodError) throw prodError;
@@ -5215,28 +5238,28 @@ async function loadJulioOrders() {
                     product_name: name,
                     image_url: p.image_url,
                     item_code: p.item_code,
-                    category: p.category || 'Uncategorized',  // ← ADD this line
+                    category: p.category || 'Uncategorized',
                     target_quantity: null
                 });
             }
         });
-        // Load existing targets
+        
+        // ✅ Load existing targets FOR THE SELECTED DATE
         const { data: targets, error: targError } = await supabaseClient
             .from('target_inventory')
-            .select('*');
+            .select('*')
+            .eq('order_date', selectedDate);
         
         if (!targError && targets) {
             targets.forEach(t => {
-                const name = t.product_name || '';  // ✅ Don't trim here either
+                const name = t.product_name || '';
                 if (uniqueProducts.has(name)) {
                     uniqueProducts.get(name).target_quantity = t.target_quantity;
                 }
             });
         }
         
-        // ... rest of function stays the same
-        
-        // ✅ NEW: Load vendor and price data from invoice_items
+        // Load vendor and price data from invoice_items
         const { data: invoiceItems, error: itemsError } = await supabaseClient
             .from('invoice_items')
             .select('product_name, vendor, unit_price, price_per_unit, has_weight, invoice_id');
@@ -5576,12 +5599,14 @@ async function saveJulioOrders() {
     showLoading(true);
     try {
         const submissionDate = new Date().toISOString();
+        const orderDate = document.getElementById('julioOrderDate')?.value || todayYMD();
         
         const targets = Array.from(julioTargetsMap.values())
             .filter(p => p.target_quantity != null && p.target_quantity > 0)
             .map(p => ({
                 product_name: p.product_name,
                 target_quantity: p.target_quantity,
+                order_date: orderDate,
                 last_updated: submissionDate
             }));
         
@@ -5590,21 +5615,27 @@ async function saveJulioOrders() {
             return;
         }
         
-        // 1. Save to target_inventory table (existing)
+        // Delete existing entries for this date first
+        await supabaseClient
+            .from('target_inventory')
+            .delete()
+            .eq('order_date', orderDate);
+        
+        // Insert new entries
         const { error: targetError } = await supabaseClient
             .from('target_inventory')
-            .upsert(targets, { onConflict: 'product_name' });
+            .insert(targets);
         
         if (targetError) throw targetError;
         
-        // 2. NEW: Save to historical submissions table
+        // Save to historical submissions table
         const submissions = targets.map(t => ({
             submission_date: submissionDate,
             submitted_by: 'julio',
             product_name: t.product_name,
             quantity: t.target_quantity,
             submission_type: 'target_inventory',
-            notes: `Target inventory submission`
+            notes: `Target inventory for ${orderDate}`
         }));
         
         const { error: historyError } = await supabaseClient
@@ -5613,10 +5644,9 @@ async function saveJulioOrders() {
         
         if (historyError) {
             console.error('Error saving submission history:', historyError);
-            // Don't throw - main save succeeded
         }
         
-        showAlert(`✅ Saved ${targets.length} target inventory levels! Submission recorded.`, 'success');
+        showAlert(`✅ Saved ${targets.length} target inventory levels for ${orderDate}!`, 'success');
         
     } catch (error) {
         console.error('Save Julio targets error:', error);
@@ -5625,7 +5655,6 @@ async function saveJulioOrders() {
         showLoading(false);
     }
 }
-
 
 
 async function clearJulioOrders() {
@@ -5644,9 +5673,18 @@ let ronyProductsByPosition = new Map();
 
 async function loadRonyOrders() {
     try {
+        // Get selected date or use today
+        const dateInput = document.getElementById('ronyOrderDate');
+        const selectedDate = dateInput ? dateInput.value : todayYMD();
+        
+        // Set default date if not set
+        if (dateInput && !dateInput.value) {
+            dateInput.value = todayYMD();
+        }
+        
         const { data: products, error: prodError } = await supabaseClient
             .from('inventory_management')
-            .select('product_name, image_url, position, assigned_to') // Changed 'user' to 'assigned_to'
+            .select('product_name, image_url, position, assigned_to')
             .order('position', { ascending: true });
         
         if (prodError) throw prodError;
@@ -5666,10 +5704,12 @@ async function loadRonyOrders() {
                 });
             }
         });
-        // Load stock levels
+        
+        // ✅ Load stock levels for the selected date
         const { data: stock, error: stockError } = await supabaseClient
             .from('current_stock')
-            .select('*');
+            .select('*')
+            .eq('stock_date', selectedDate);
         
         if (!stockError && stock) {
             stock.forEach(s => {
@@ -5697,6 +5737,8 @@ async function loadRonyOrders() {
         showAlert('Error loading Rony stock', 'error');
     }
 }
+
+
 
 function renderRonyProducts() {
     const container = document.getElementById('ronyProductContainer');
@@ -5850,6 +5892,7 @@ async function saveRonyOrders() {
     showLoading(true);
     try {
         const submissionDate = new Date().toISOString();
+        const stockDate = document.getElementById('ronyOrderDate')?.value || todayYMD();
         
         let allProducts = [];
         ronyProductsByPosition.forEach(products => {
@@ -5861,6 +5904,7 @@ async function saveRonyOrders() {
             .map(p => ({
                 product_name: p.product_name,
                 quantity_in_stock: p.current_stock,
+                stock_date: stockDate,
                 last_updated: submissionDate
             }));
         
@@ -5869,21 +5913,27 @@ async function saveRonyOrders() {
             return;
         }
         
-        // 1. Save to current_stock table (existing)
+        // Delete existing entries for this date first
+        await supabaseClient
+            .from('current_stock')
+            .delete()
+            .eq('stock_date', stockDate);
+        
+        // Insert new entries
         const { error: stockError } = await supabaseClient
             .from('current_stock')
-            .upsert(stockUpdates, { onConflict: 'product_name' });
+            .insert(stockUpdates);
         
         if (stockError) throw stockError;
         
-        // 2. NEW: Save to historical submissions table
+        // Save to historical submissions table
         const submissions = stockUpdates.map(s => ({
             submission_date: submissionDate,
             submitted_by: 'rony',
             product_name: s.product_name,
             quantity: s.quantity_in_stock,
             submission_type: 'current_stock',
-            notes: `Current stock count submission`
+            notes: `Stock count for ${stockDate}`
         }));
         
         const { error: historyError } = await supabaseClient
@@ -5892,10 +5942,9 @@ async function saveRonyOrders() {
         
         if (historyError) {
             console.error('Error saving submission history:', historyError);
-            // Don't throw - main save succeeded
         }
         
-        showAlert(`✅ Saved ${stockUpdates.length} stock levels for Rony! Submission recorded.`, 'success');
+        showAlert(`✅ Saved ${stockUpdates.length} stock levels for ${stockDate}!`, 'success');
         
     } catch (error) {
         console.error('Save Rony stock error:', error);
@@ -5904,7 +5953,6 @@ async function saveRonyOrders() {
         showLoading(false);
     }
 }
-
 
 
 async function clearRonyOrders() {
