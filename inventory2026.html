@@ -5737,7 +5737,33 @@ async function saveJulioOrders() {
             console.error('Error saving submission history:', historyError);
         }
         
-        showAlert(`✅ Saved ${targets.length} target inventory levels for ${orderDate}!`, 'success');
+        // ✅ NEW: Send email notification to admin
+        const emailItems = targets.map(t => ({
+            product_name: t.product_name,
+            quantity: t.target_quantity,
+            notes: `Target: ${t.target_quantity}`
+        }));
+
+        const emailResponse = await fetch(`${SUPABASE_URL}/functions/v1/send-order-notification`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+            },
+            body: JSON.stringify({
+                submittedBy: 'julio',
+                orderDate: orderDate,
+                items: emailItems
+            })
+        });
+
+        const emailResult = await emailResponse.json();
+        
+        if (emailResult.success) {
+            showAlert(`✅ Saved ${targets.length} target inventory levels for ${orderDate}! 📧 Admin notified via email.`, 'success');
+        } else {
+            showAlert(`✅ Saved ${targets.length} targets, but email notification failed: ${emailResult.error}`, 'warning');
+        }
         
     } catch (error) {
         console.error('Save Julio targets error:', error);
@@ -6035,7 +6061,33 @@ async function saveRonyOrders() {
             console.error('Error saving submission history:', historyError);
         }
         
-        showAlert(`✅ Saved ${stockUpdates.length} stock levels for ${stockDate}!`, 'success');
+        // ✅ NEW: Send email notification to admin
+        const emailItems = stockUpdates.map(s => ({
+            product_name: s.product_name,
+            quantity: s.quantity_in_stock,
+            notes: `Current stock`
+        }));
+
+        const emailResponse = await fetch(`${SUPABASE_URL}/functions/v1/send-order-notification`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+            },
+            body: JSON.stringify({
+                submittedBy: 'rony',
+                orderDate: stockDate,
+                items: emailItems
+            })
+        });
+
+        const emailResult = await emailResponse.json();
+        
+        if (emailResult.success) {
+            showAlert(`✅ Saved ${stockUpdates.length} stock levels for ${stockDate}! 📧 Admin notified via email.`, 'success');
+        } else {
+            showAlert(`✅ Saved ${stockUpdates.length} stock levels, but email notification failed: ${emailResult.error}`, 'warning');
+        }
         
     } catch (error) {
         console.error('Save Rony stock error:', error);
@@ -6044,7 +6096,6 @@ async function saveRonyOrders() {
         showLoading(false);
     }
 }
-
 
 async function clearRonyOrders() {
     if (!confirm('Clear all stock levels?')) return;
@@ -8295,7 +8346,275 @@ async function initializeEnhancedPlaceOrder() {
 }
 
 
+async function generateAllVendorPDFs() {
+    const orderDate = document.getElementById('pdfOrderDate')?.value || todayYMD();
+    const resultsDiv = document.getElementById('pdfGenerationResults');
+    
+    showLoading(true);
+    
+    try {
+        // Get all vendors with orders for this date
+        const { data: orderData, error: orderError } = await supabaseClient
+            .from('inventory_check')
+            .select('vendor, tentative, on_hand, user')
+            .eq('order_date', orderDate);
+        
+        if (orderError) throw orderError;
+        
+        if (!orderData || orderData.length === 0) {
+            showAlert('❌ No orders found for this date', 'error');
+            resultsDiv.innerHTML = `
+                <div style="text-align: center; padding: 3rem; background: var(--neutral-50); border-radius: 12px; border: 2px dashed var(--neutral-300);">
+                    <div style="font-size: 3rem; opacity: 0.3; margin-bottom: 1rem;">📦</div>
+                    <h3 style="color: var(--neutral-600);">No orders found for ${formatDate(orderDate)}</h3>
+                    <p style="color: var(--neutral-500);">Make sure Julio and Rony have submitted their orders first</p>
+                </div>
+            `;
+            return;
+        }
+        
+        // Filter items with quantity > 0 and group by vendor
+        const vendorOrders = new Map();
+        
+        orderData.forEach(item => {
+            const qty = item.user?.toLowerCase() === 'julio' 
+                ? parseFloat(item.on_hand || 0)
+                : parseFloat(item.tentative || 0);
+            
+            if (qty > 0 && item.vendor) {
+                if (!vendorOrders.has(item.vendor)) {
+                    vendorOrders.set(item.vendor, 0);
+                }
+                vendorOrders.set(item.vendor, vendorOrders.get(item.vendor) + 1);
+            }
+        });
+        
+        const vendors = Array.from(vendorOrders.keys());
+        
+        if (vendors.length === 0) {
+            showAlert('❌ No items with quantity > 0', 'error');
+            return;
+        }
+        
+        resultsDiv.innerHTML = `
+            <div style="background: var(--primary-50); padding: 1.5rem; border-radius: 12px; border: 2px solid var(--primary-300); margin-bottom: 1.5rem;">
+                <h3 style="color: var(--primary-700); font-size: 1.25rem; margin: 0 0 1rem 0;">
+                    🔄 Generating PDFs for ${vendors.length} vendor(s)...
+                </h3>
+                <div id="pdfProgress"></div>
+            </div>
+        `;
+        
+        const pdfResults = [];
+        const progressDiv = document.getElementById('pdfProgress');
+        
+        for (let i = 0; i < vendors.length; i++) {
+            const vendor = vendors[i];
+            const itemCount = vendorOrders.get(vendor);
+            
+            progressDiv.innerHTML += `
+                <div style="margin-bottom: 0.75rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
+                        <span style="font-weight: 600;">${i + 1}. ${vendor}</span>
+                        <span style="font-size: 0.875rem; color: var(--neutral-600);">${itemCount} items</span>
+                    </div>
+                    <div id="progress-${i}" style="font-size: 0.875rem; color: var(--neutral-600);">⏳ Generating PDF...</div>
+                </div>
+            `;
+            
+            try {
+                const response = await fetch(`${SUPABASE_URL}/functions/v1/generate-purchase-order-pdf`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+                    },
+                    body: JSON.stringify({
+                        orderDate: orderDate,
+                        vendor: vendor
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success && result.pdfBase64) {
+                    // Convert base64 to blob
+                    const byteCharacters = atob(result.pdfBase64);
+                    const byteNumbers = new Array(byteCharacters.length);
+                    for (let i = 0; i < byteCharacters.length; i++) {
+                        byteNumbers[i] = byteCharacters.charCodeAt(i);
+                    }
+                    const byteArray = new Uint8Array(byteNumbers);
+                    const blob = new Blob([byteArray], { type: 'application/pdf' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    pdfResults.push({
+                        vendor: vendor,
+                        url: url,
+                        fileName: result.fileName,
+                        itemCount: result.itemCount,
+                        subtotal: result.subtotal,
+                        tax: result.tax,
+                        total: result.total
+                    });
+                    
+                    document.getElementById(`progress-${i}`).innerHTML = `
+                        ✅ <a href="${url}" download="${result.fileName}" style="color: var(--success-600); font-weight: 600; text-decoration: none;">
+                            Download PDF
+                        </a> • ${result.itemCount} items • $${result.total.toFixed(2)}
+                    `;
+                } else {
+                    throw new Error(result.error || 'PDF generation failed');
+                }
+                
+            } catch (error) {
+                console.error(`Error generating PDF for ${vendor}:`, error);
+                document.getElementById(`progress-${i}`).innerHTML = `
+                    ❌ <span style="color: var(--warning-600);">Error: ${error.message}</span>
+                `;
+            }
+            
+            // Small delay between requests
+            await new Promise(resolve => setTimeout(resolve, 300));
+        }
+        
+        // Show final summary with download all button
+        if (pdfResults.length > 0) {
+            resultsDiv.innerHTML += `
+                <div style="background: white; padding: 2rem; border-radius: 12px; box-shadow: var(--shadow-md); margin-top: 2rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                        <h3 style="color: var(--success-600); font-size: 1.5rem; margin: 0; display: flex; align-items: center; gap: 0.75rem;">
+                            <i class="fas fa-check-circle"></i>
+                            ${pdfResults.length} PDF(s) Ready
+                        </h3>
+                        <button class="btn btn-success" onclick="downloadAllPDFs()" style="padding: 0.875rem 1.5rem;">
+                            <i class="fas fa-download"></i> Download All
+                        </button>
+                    </div>
+                    
+                    <div style="display: grid; gap: 1rem;">
+                        ${pdfResults.map((pdf, idx) => `
+                            <div id="pdf-card-${idx}" style="display: flex; justify-content: space-between; align-items: center; padding: 1.25rem; background: var(--neutral-50); border-radius: 8px; border: 2px solid var(--success-200);">
+                                <div>
+                                    <div style="font-weight: 700; font-size: 1.125rem; color: var(--neutral-900);">${pdf.vendor}</div>
+                                    <div style="font-size: 0.875rem; color: var(--neutral-600); margin-top: 0.25rem;">
+                                        ${pdf.itemCount} items • 
+                                        Subtotal: $${pdf.subtotal.toFixed(2)} • 
+                                        Tax: $${pdf.tax.toFixed(2)} • 
+                                        <strong>Total: $${pdf.total.toFixed(2)}</strong>
+                                    </div>
+                                </div>
+                                <a href="${pdf.url}" download="${pdf.fileName}" class="btn btn-success" style="text-decoration: none;">
+                                    <i class="fas fa-download"></i> Download
+                                </a>
+                            </div>
+                        `).join('')}
+                    </div>
+                    
+                    <div style="margin-top: 2rem; padding: 1.5rem; background: var(--accent-50); border-radius: 8px; border-left: 4px solid var(--accent-500);">
+                        <h4 style="margin: 0 0 0.75rem 0; color: var(--accent-700); display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="fas fa-info-circle"></i> Next Steps
+                        </h4>
+                        <ol style="margin: 0; padding-left: 1.5rem; color: var(--neutral-700); line-height: 1.8;">
+                            <li>Download the PDF for each vendor (or click "Download All")</li>
+                            <li>Review the quantities and prices</li>
+                            <li>Email or fax the purchase orders to vendors</li>
+                            <li>Track delivery dates and confirm receipt</li>
+                        </ol>
+                    </div>
+                </div>
+            `;
+            
+            // Store PDF results globally for download all function
+            window.generatedPDFs = pdfResults;
+        }
+        
+        showAlert(`✅ Generated ${pdfResults.length} PDF purchase order(s)!`, 'success');
+        
+    } catch (error) {
+        console.error('PDF generation error:', error);
+        showAlert('❌ Error: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
 
+// Download all PDFs at once
+function downloadAllPDFs() {
+    if (!window.generatedPDFs || window.generatedPDFs.length === 0) {
+        showAlert('No PDFs to download', 'error');
+        return;
+    }
+    
+    window.generatedPDFs.forEach((pdf, index) => {
+        setTimeout(() => {
+            const link = document.createElement('a');
+            link.href = pdf.url;
+            link.download = pdf.fileName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }, index * 500); // Stagger downloads by 500ms
+    });
+    
+    showAlert(`📥 Downloading ${window.generatedPDFs.length} PDF(s)...`, 'success');
+}
+
+// Initialize PDF date to today
+document.addEventListener('DOMContentLoaded', () => {
+    const pdfDateInput = document.getElementById('pdfOrderDate');
+    if (pdfDateInput) {
+        pdfDateInput.value = todayYMD();
+    }
+});
+
+
+
+// Client-side HTML to PDF conversion (fallback)
+async function generatePDFFromHTML(html, vendor, orderDate) {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({
+        unit: 'pt',
+        format: 'letter'
+    });
+    
+    // Create temporary div
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+    tempDiv.style.width = '8.5in';
+    tempDiv.style.padding = '0.5in';
+    document.body.appendChild(tempDiv);
+    
+    try {
+        await doc.html(tempDiv, {
+            callback: function (doc) {
+                // Clean up
+                document.body.removeChild(tempDiv);
+            },
+            x: 0,
+            y: 0,
+            width: 612, // Letter width in pts
+            windowWidth: 816 // 8.5in * 96dpi
+        });
+        
+        // Convert to blob URL
+        const pdfBlob = doc.output('blob');
+        const pdfUrl = URL.createObjectURL(pdfBlob);
+        
+        return pdfUrl;
+    } catch (error) {
+        document.body.removeChild(tempDiv);
+        throw error;
+    }
+}
+
+// Initialize PDF date to today
+document.addEventListener('DOMContentLoaded', () => {
+    const pdfDateInput = document.getElementById('pdfOrderDate');
+    if (pdfDateInput) {
+        pdfDateInput.value = todayYMD();
+    }
+});
 
 
 
@@ -8365,6 +8684,41 @@ async function initializeEnhancedPlaceOrder() {
         </div>
     </div>
 </div>
+
+
+
+
+
+
+<!-- In your finalOrder section -->
+<div style="background: white; padding: 2rem; border-radius: 12px; box-shadow: var(--shadow-md); margin-top: 2rem;">
+    <div style="text-align: center; margin-bottom: 2rem;">
+        <h2 style="font-size: 1.75rem; font-weight: 700; color: var(--neutral-900); margin-bottom: 0.5rem;">
+            📄 Generate Purchase Order PDFs
+        </h2>
+        <p style="color: var(--neutral-600); font-size: 1rem;">
+            Create professional PDF purchase orders for each vendor to download and send
+        </p>
+    </div>
+    
+    <div style="display: grid; grid-template-columns: 1fr auto; gap: 1rem; align-items: end; margin-bottom: 2rem;">
+        <div>
+            <label style="display: block; font-size: 0.875rem; font-weight: 600; color: var(--neutral-700); margin-bottom: 0.5rem;">📅 Order Date</label>
+            <input type="date" id="pdfOrderDate" class="search-input">
+        </div>
+        <button class="btn btn-success" onclick="generateAllVendorPDFs()" style="padding: 1rem 2rem; font-size: 1.125rem;">
+            <i class="fas fa-file-pdf"></i> Generate All PDFs
+        </button>
+    </div>
+    
+    <div id="pdfGenerationResults" style="margin-top: 2rem;"></div>
+</div>
+
+
+
+
+
+
 
 
 </body>
