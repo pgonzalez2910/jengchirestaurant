@@ -6741,7 +6741,7 @@ async function selectVendorAndUpdateItemCode(rowId, productName, vendor) {
 // ========== FIXED: Load prices from BOTH invoice_items AND purchase_history ==========
 async function loadVendorPricesForProduct(productName, productId) {
     try {
-        // Pull from invoice_items
+        // ── Step 1: Get invoice_items for this product ──────────────────
         const { data: invoiceItems, error: itemsError } = await supabaseClient
             .from('invoice_items')
             .select('vendor, item_code, unit_price, price_per_unit, has_weight, invoice_id')
@@ -6749,8 +6749,9 @@ async function loadVendorPricesForProduct(productName, productId) {
 
         if (itemsError) throw itemsError;
 
+        // ── Step 2: Fetch invoice dates in one query ────────────────────
         const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id))];
-        let invoiceDates = new Map();
+        const invoiceDatesMap = new Map();
 
         if (invoiceIds.length > 0) {
             const { data: invoices } = await supabaseClient
@@ -6758,37 +6759,47 @@ async function loadVendorPricesForProduct(productName, productId) {
                 .select('id, invoice_date, vendor')
                 .in('id', invoiceIds);
             (invoices || []).forEach(inv => {
-                invoiceDates.set(inv.id, { date: inv.invoice_date, vendor: inv.vendor });
+                invoiceDatesMap.set(inv.id, { date: inv.invoice_date, vendor: inv.vendor });
             });
         }
 
-        // Pull from purchase_history
+        // ── Step 3: Also pull from purchase_history (legacy) ───────────
         const { data: historyData } = await supabaseClient
             .from('purchase_history')
             .select('vendor, item_code, unit_price, purchase_date')
             .eq('product_name', productName)
             .order('purchase_date', { ascending: false });
 
-        // Combine — key = vendor + item_code + date (keep ALL entries)
-        const allRows = [];
+        // ── Step 4: Build a flat list of ALL entries ────────────────────
+        //  { vendor, item_code, price (actual), date }
+        const allEntries = [];
 
         (invoiceItems || []).forEach(item => {
-            const invInfo = invoiceDates.get(item.invoice_id);
-            if (!invInfo) return;
-            const unitPrice = item.has_weight
+            const invInfo = invoiceDatesMap.get(item.invoice_id);
+            if (!invInfo || !invInfo.date) return;
+
+            // ✅ 2026 filter
+            const year = new Date(invInfo.date).getFullYear();
+            if (year !== 2026) return;
+
+            const price = item.has_weight
                 ? parseFloat(item.price_per_unit || 0)
                 : parseFloat(item.unit_price || 0);
-            allRows.push({
+
+            allEntries.push({
                 vendor:    invInfo.vendor,
                 item_code: item.item_code || 'N/A',
-                price:     unitPrice,
+                price,
                 date:      invInfo.date
             });
         });
 
-        // Add purchase_history entries not already covered
+        // Also add purchase_history 2026 entries as fallback
         (historyData || []).forEach(row => {
-            allRows.push({
+            const year = new Date(row.purchase_date).getFullYear();
+            if (year !== 2026) return;
+
+            allEntries.push({
                 vendor:    row.vendor || 'Unknown',
                 item_code: row.item_code || 'N/A',
                 price:     parseFloat(row.unit_price || 0),
@@ -6796,101 +6807,137 @@ async function loadVendorPricesForProduct(productName, productId) {
             });
         });
 
+        // ── Step 5: Deduplicate — per vendor keep ONLY most recent entry ─
+        //  vendorLatestMap: vendor → { item_code, price, date }
+        const vendorLatestMap = new Map();
+
+        allEntries.forEach(entry => {
+            const existing = vendorLatestMap.get(entry.vendor);
+            if (!existing || new Date(entry.date) > new Date(existing.date)) {
+                vendorLatestMap.set(entry.vendor, {
+                    item_code: entry.item_code,
+                    price:     entry.price,
+                    date:      entry.date
+                });
+            }
+        });
+
+        // ── Step 6: Render ──────────────────────────────────────────────
         const container = document.getElementById(`vendor-prices-${productId}`);
         if (!container) return;
 
-        if (allRows.length === 0) {
+        if (vendorLatestMap.size === 0) {
             container.innerHTML = `
-                <div style="font-size:0.8125rem;font-weight:700;color:var(--neutral-700);margin-bottom:0.5rem;">🔥 Vendor Prices</div>
-                <div style="font-size:0.75rem;color:var(--neutral-500);text-align:center;padding:1rem;background:var(--neutral-50);border-radius:6px;border:1px dashed var(--neutral-300);">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.35rem;">
+                    <span style="font-size:0.75rem;font-weight:700;color:var(--neutral-600);">🔥 VENDOR PRICES</span>
+                    <span style="font-size:0.6rem;color:var(--neutral-400);">2026 only</span>
+                </div>
+                <div style="font-size:0.7rem;color:var(--neutral-500);text-align:center;padding:0.6rem;
+                            background:var(--neutral-50);border-radius:5px;border:1px dashed var(--neutral-300);">
                     No pricing history available
                 </div>`;
             return;
         }
 
-        // Sort: by vendor, then by date desc
-        allRows.sort((a, b) => {
-            const vCmp = (a.vendor || '').localeCompare(b.vendor || '');
-            if (vCmp !== 0) return vCmp;
-            return new Date(b.date) - new Date(a.date);
-        });
+        // Sort vendors alphabetically, find best price
+        const sortedVendors = Array.from(vendorLatestMap.keys()).sort();
+        const allPrices50   = sortedVendors.map(v => vendorLatestMap.get(v).price * 0.5);
+        const bestPrice50   = Math.min(...allPrices50);
+        const highPrice50   = Math.max(...allPrices50);
+        const range50       = (highPrice50 - bestPrice50).toFixed(2);
 
-        const allPrices = allRows.map(r => r.price * 0.5);
-        const bestPrice50  = Math.min(...allPrices);
-        const highPrice50  = Math.max(...allPrices);
-        const range50      = (highPrice50 - bestPrice50).toFixed(2);
-
-        // Group vendors to know which is first row per vendor (for separator line)
-        const vendorSeen = new Set();
-
-        const rowsHTML = allRows.map(item => {
-            const price50 = (item.price * 0.5).toFixed(2);
-            const isBest  = (item.price * 0.5) === bestPrice50;
-            const isFirstVendor = !vendorSeen.has(item.vendor);
-            vendorSeen.add(item.vendor);
-
-            const borderStyle = isFirstVendor && vendorSeen.size > 1
-                ? 'border-top:2px solid var(--neutral-300);'
-                : '';
+        const rowsHTML = sortedVendors.map(vendor => {
+            const entry   = vendorLatestMap.get(vendor);
+            const price50 = (entry.price * 0.5).toFixed(2);
+            const isBest  = (entry.price * 0.5) === bestPrice50;
 
             return `
-            <tr style="${borderStyle}background:${isBest ? 'rgba(16,185,129,0.08)' : 'white'};">
-                <td style="padding:0.4rem 0.5rem;font-weight:700;color:var(--primary-700);font-size:0.75rem;">${item.vendor}</td>
-                <td style="padding:0.4rem 0.5rem;font-family:var(--font-mono);font-size:0.7rem;color:var(--neutral-700);text-align:center;">${item.item_code}</td>
-                <td style="padding:0.4rem 0.5rem;font-size:0.7rem;color:var(--neutral-500);text-align:center;">${item.date ? formatDate(item.date) : 'N/A'}</td>
-                <td style="padding:0.4rem 0.5rem;font-family:var(--font-mono);font-weight:700;font-size:0.8rem;text-align:right;color:${isBest ? 'var(--success-700)' : 'var(--neutral-800)'};">
+            <tr style="background:${isBest ? 'rgba(16,185,129,0.07)' : 'white'};border-bottom:1px solid var(--neutral-200);">
+                <td style="padding:0.35rem 0.5rem;font-weight:700;color:var(--primary-700);font-size:0.7rem;">
+                    ${vendor}
+                </td>
+                <td style="padding:0.35rem 0.5rem;font-family:var(--font-mono);font-size:0.65rem;
+                           color:${isBest ? 'var(--success-700)' : 'var(--neutral-600)'};text-align:center;font-weight:600;">
+                    ${entry.item_code}
+                </td>
+                <td style="padding:0.35rem 0.5rem;font-size:0.6rem;color:var(--neutral-500);text-align:center;">
+                    ${entry.date ? formatDate(entry.date) : 'N/A'}
+                </td>
+                <td style="padding:0.35rem 0.5rem;font-family:var(--font-mono);font-weight:700;
+                           font-size:0.75rem;text-align:right;
+                           color:${isBest ? 'var(--success-700)' : 'var(--neutral-800)'};">
                     $${price50}${isBest ? ' 🏆' : ''}
                 </td>
             </tr>`;
         }).join('');
 
+        const optionsLabel = sortedVendors.length === 1
+            ? '1 vendor'
+            : `${sortedVendors.length} vendors`;
+
         container.innerHTML = `
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;">
-                <span style="font-size:0.8125rem;font-weight:700;color:var(--neutral-700);">🔥 Vendor Prices</span>
-                <span style="font-size:0.65rem;color:var(--neutral-500);font-weight:600;">${allRows.length} entries • prices at 50%</span>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.35rem;">
+                <span style="font-size:0.75rem;font-weight:700;color:var(--neutral-600);">🔥 VENDOR PRICES</span>
+                <span style="font-size:0.6rem;color:var(--neutral-400);font-weight:600;">
+                    ${optionsLabel} • 2026 • 50%
+                </span>
             </div>
-            <div style="max-height:200px;overflow-y:auto;border:1px solid var(--neutral-300);border-radius:6px;">
-                <table style="width:100%;border-collapse:collapse;">
-                    <thead style="position:sticky;top:0;background:var(--neutral-800);z-index:10;">
-                        <tr>
-                            <th style="padding:0.4rem 0.5rem;font-size:0.65rem;font-weight:700;color:white;text-align:left;">Vendor</th>
-                            <th style="padding:0.4rem 0.5rem;font-size:0.65rem;font-weight:700;color:white;text-align:center;">Code</th>
-                            <th style="padding:0.4rem 0.5rem;font-size:0.65rem;font-weight:700;color:white;text-align:center;">Date</th>
-                            <th style="padding:0.4rem 0.5rem;font-size:0.65rem;font-weight:700;color:white;text-align:right;">Price (50%)</th>
-                        </tr>
-                    </thead>
-                    <tbody>${rowsHTML}</tbody>
-                </table>
-            </div>
-            <div style="margin-top:0.5rem;padding:0.5rem 0.75rem;background:var(--success-50);border-radius:6px;border:1px solid var(--success-300);">
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.25rem;font-size:0.65rem;">
+
+            <table style="width:100%;border-collapse:collapse;border:1px solid var(--neutral-300);border-radius:5px;overflow:hidden;">
+                <thead>
+                    <tr style="background:var(--neutral-800);">
+                        <th style="padding:0.3rem 0.5rem;font-size:0.6rem;font-weight:700;color:white;text-align:left;">Vendor</th>
+                        <th style="padding:0.3rem 0.5rem;font-size:0.6rem;font-weight:700;color:white;text-align:center;">Code</th>
+                        <th style="padding:0.3rem 0.5rem;font-size:0.6rem;font-weight:700;color:white;text-align:center;">Date</th>
+                        <th style="padding:0.3rem 0.5rem;font-size:0.6rem;font-weight:700;color:white;text-align:right;">Price (50%)</th>
+                    </tr>
+                </thead>
+                <tbody>${rowsHTML}</tbody>
+            </table>
+
+            ${sortedVendors.length > 1 ? `
+            <div style="margin-top:0.4rem;padding:0.4rem 0.6rem;background:var(--success-50);
+                        border-radius:5px;border:1px solid var(--success-200);">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.25rem;font-size:0.6rem;">
                     <div style="text-align:center;">
-                        <div style="color:var(--neutral-500);font-weight:600;margin-bottom:0.2rem;">BEST (50%)</div>
-                        <div style="font-size:0.9rem;font-weight:700;color:var(--success-700);font-family:var(--font-mono);">$${bestPrice50.toFixed(2)} 🏆</div>
+                        <div style="color:var(--neutral-500);font-weight:600;margin-bottom:0.1rem;">BEST</div>
+                        <div style="font-size:0.8rem;font-weight:700;color:var(--success-700);
+                                    font-family:var(--font-mono);">$${bestPrice50.toFixed(2)} 🏆</div>
                     </div>
                     <div style="text-align:center;">
-                        <div style="color:var(--neutral-500);font-weight:600;margin-bottom:0.2rem;">HIGH (50%)</div>
-                        <div style="font-size:0.9rem;font-weight:700;color:var(--warning-600);font-family:var(--font-mono);">$${highPrice50.toFixed(2)}</div>
+                        <div style="color:var(--neutral-500);font-weight:600;margin-bottom:0.1rem;">HIGH</div>
+                        <div style="font-size:0.8rem;font-weight:700;color:var(--warning-600);
+                                    font-family:var(--font-mono);">$${highPrice50.toFixed(2)}</div>
                     </div>
                     <div style="text-align:center;">
-                        <div style="color:var(--neutral-500);font-weight:600;margin-bottom:0.2rem;">RANGE</div>
-                        <div style="font-size:0.9rem;font-weight:700;color:var(--primary-700);font-family:var(--font-mono);">$${range50}</div>
+                        <div style="color:var(--neutral-500);font-weight:600;margin-bottom:0.1rem;">RANGE</div>
+                        <div style="font-size:0.8rem;font-weight:700;color:var(--primary-700);
+                                    font-family:var(--font-mono);">$${range50}</div>
                     </div>
                 </div>
-            </div>`;
+            </div>` : ''}
+        `;
 
     } catch (error) {
         console.error('⚠️ Load vendor prices error:', error);
         const container = document.getElementById(`vendor-prices-${productId}`);
         if (container) {
             container.innerHTML = `
-                <div style="font-size:0.8125rem;font-weight:700;color:var(--neutral-700);margin-bottom:0.5rem;">🔥 Vendor Prices</div>
-                <div style="font-size:0.75rem;color:var(--warning-600);text-align:center;padding:0.75rem;background:var(--warning-50);border-radius:6px;border:1px solid var(--warning-300);">
+                <div style="font-size:0.75rem;font-weight:700;color:var(--neutral-600);margin-bottom:0.35rem;">🔥 VENDOR PRICES</div>
+                <div style="font-size:0.7rem;color:var(--warning-600);text-align:center;padding:0.5rem;
+                            background:var(--warning-50);border-radius:5px;border:1px solid var(--warning-300);">
                     ⚠️ Error loading prices
                 </div>`;
         }
     }
 }
+
+
+
+
+
+
+
 
 // Update PAR value with auto-save
 async function updateParValue(productName, newPar) {
