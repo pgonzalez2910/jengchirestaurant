@@ -5302,126 +5302,136 @@ let julioTargetsMap = new Map();
 // ========== FIX 1: STOP TRIMMING PRODUCT NAMES ==========
 async function loadJulioOrders() {
     try {
-        // ✅ Get selected date or use today
-        const dateInput = document.getElementById('julioOrderDate');
+        const dateInput   = document.getElementById('julioOrderDate');
         const selectedDate = dateInput ? dateInput.value : todayYMD();
-        
-        // ✅ Set default date if not set
+
         if (dateInput && !dateInput.value) {
             dateInput.value = todayYMD();
         }
-        
+
+        // ── Products assigned to Julio ────────────────────────────────────
         const { data: products, error: prodError } = await supabaseClient
             .from('inventory_management')
             .select('product_name, image_url, item_code, assigned_to, category')
             .order('product_name');
-        
+
         if (prodError) throw prodError;
-        
+
         const uniqueProducts = new Map();
         (products || []).forEach(p => {
-            const name = p.product_name || '';
-            
-            if (!name) return;
-            
+            const name     = p.product_name || '';
             const assigned = String(p.assigned_to || '').toLowerCase();
-            if (!assigned.includes('julio')) return;
-            
+            if (!name || !assigned.includes('julio')) return;
+
             if (!uniqueProducts.has(name)) {
                 uniqueProducts.set(name, {
-                    product_name: name,
-                    image_url: p.image_url,
-                    item_code: p.item_code,
-                    category: p.category || 'Uncategorized',
-                    target_quantity: null
+                    product_name:    name,
+                    image_url:       p.image_url,
+                    item_code:       p.item_code,
+                    category:        p.category || 'Uncategorized',
+                    target_quantity: null,   // what Julio submitted as target
+                    order_needed:    null    // calculated: target − on_hand
                 });
             }
         });
-        
-        // ✅ Load existing targets FOR THE SELECTED DATE
-        const { data: targets, error: targError } = await supabaseClient
+
+        // ── Load Julio's submitted targets ────────────────────────────────
+        const { data: targets } = await supabaseClient
             .from('target_inventory')
-            .select('*')
+            .select('product_name, target_quantity')
             .eq('order_date', selectedDate);
-        
-        if (!targError && targets) {
-            targets.forEach(t => {
-                const name = t.product_name || '';
-                if (uniqueProducts.has(name)) {
-                    uniqueProducts.get(name).target_quantity = t.target_quantity;
-                }
-            });
-        }
-        
-        // Load vendor and price data from invoice_items
-        const { data: invoiceItems, error: itemsError } = await supabaseClient
+
+        (targets || []).forEach(t => {
+            const name = t.product_name || '';
+            if (uniqueProducts.has(name)) {
+                uniqueProducts.get(name).target_quantity = t.target_quantity;
+            }
+        });
+
+        // ── Load inventory_check for this date (has on_hand & target) ─────
+        // This gives us the ALREADY CALCULATED needed quantity
+        const { data: checkRows } = await supabaseClient
+            .from('inventory_check')
+            .select('product_name, on_hand, target, tentative, user')
+            .eq('order_date', selectedDate);
+
+        (checkRows || []).forEach(row => {
+            if ((row.user || '').toLowerCase() !== 'julio') return;
+            const name = row.product_name || '';
+            if (!uniqueProducts.has(name)) return;
+
+            const product   = uniqueProducts.get(name);
+            const onHand    = parseFloat(row.on_hand  || 0);
+            const target    = parseFloat(row.target   || 0);
+            const tentative = parseFloat(row.tentative|| 0);
+
+            // ORDER NEEDED = target − on_hand  (never negative)
+            const needed = Math.max(0, target - onHand);
+
+            // Auto-fill: use saved tentative if already set, else needed qty
+            product.order_needed = needed;
+            if (tentative > 0) {
+                product.target_quantity = tentative;  // already saved order qty
+            } else if (needed > 0) {
+                product.target_quantity = needed;     // pre-fill with needed
+            }
+        });
+
+        // ── Vendor / price data (unchanged from original) ────────────────
+        const { data: invoiceItems } = await supabaseClient
             .from('invoice_items')
             .select('product_name, vendor, unit_price, price_per_unit, has_weight, invoice_id');
-        
-        // Get invoice dates
+
         const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id))];
         let invoiceDates = new Map();
-        
+
         if (invoiceIds.length > 0) {
             const { data: invoices } = await supabaseClient
                 .from('invoices')
                 .select('id, invoice_date, vendor')
                 .in('id', invoiceIds);
-            
             (invoices || []).forEach(inv => {
                 invoiceDates.set(inv.id, { date: inv.invoice_date, vendor: inv.vendor });
             });
         }
-        
-        // Build vendor and price maps
+
         uniqueProducts.forEach((product, productName) => {
-            // Get all invoice items for this product
             const productInvoices = (invoiceItems || []).filter(i => i.product_name === productName);
-            
-            // Get vendors
-            const vendors = new Set();
+            const vendors   = new Set();
             const priceData = [];
-            
+
             productInvoices.forEach(item => {
                 const invInfo = invoiceDates.get(item.invoice_id);
                 if (!invInfo) return;
-                
                 vendors.add(invInfo.vendor);
-                
-                const unitPrice = item.has_weight 
+                const unitPrice = item.has_weight
                     ? parseFloat(item.price_per_unit || 0)
-                    : parseFloat(item.unit_price || 0);
-                
-                priceData.push({
-                    vendor: invInfo.vendor,
-                    price: unitPrice,
-                    date: invInfo.date
-                });
+                    : parseFloat(item.unit_price     || 0);
+                priceData.push({ vendor: invInfo.vendor, price: unitPrice, date: invInfo.date });
             });
-            
-            // Also check purchase_history for legacy data
-            const legacyData = inventoryData.filter(i => i.product_name === productName);
-            legacyData.forEach(item => {
+
+            // Legacy purchase_history
+            const legacy = window.inventoryData
+                ? window.inventoryData.filter(i => i.product_name === productName)
+                : [];
+            legacy.forEach(item => {
                 if (item.vendor) vendors.add(item.vendor);
-                priceData.push({
-                    vendor: item.vendor,
-                    price: parseFloat(item.unit_price || 0),
-                    date: item.purchase_date
-                });
+                priceData.push({ vendor: item.vendor, price: parseFloat(item.unit_price || 0), date: item.purchase_date });
             });
-            
-            product.vendors = Array.from(vendors);
+
+            product.vendors   = Array.from(vendors);
             product.priceData = priceData;
         });
-        
+
         julioTargetsMap = uniqueProducts;
         renderJulioProducts();
-        
+
     } catch (error) {
-        console.error('Load Julio targets error:', error);
-        showAlert('Error loading Julio targets', 'error');
+        console.error('Load Julio orders error:', error);
+        showAlert('Error loading Julio orders', 'error');
     }
 }
+
 
 // ========== UPDATED: renderJulioProducts with vendor data ==========
 
@@ -5541,105 +5551,92 @@ function getCategoryIcon(category) {
 
 // ✅ NEW: Separate product card function
 function renderJulioProductCard(product, categoryColors) {
-  const imageUrl = resolveImage(product.image_url);
-  const orderQty = product.target_quantity || 0;
-  const hasQty = orderQty > 0;
+    const imageUrl  = resolveImage(product.image_url);
+    const orderQty  = product.target_quantity || 0;
+    const hasQty    = orderQty > 0;
+    const needLabel = (product.order_needed > 0)
+        ? `<div style="font-size:0.7rem;color:var(--warning-600);font-weight:700;margin-top:0.35rem;">
+               📦 Calculated need: ${parseFloat(product.order_needed).toFixed(1)}
+           </div>`
+        : '';
 
-  // ✅ Visual indicator: green border + checkmark if already submitted
-  const submittedStyle = hasQty
-    ? `border: 3px solid var(--success-600); box-shadow: 0 0 0 2px rgba(16,185,129,0.2);`
-    : `border: 2px solid ${categoryColors.border};`;
+    const submittedStyle = hasQty
+        ? `border: 3px solid var(--success-600); box-shadow: 0 0 0 2px rgba(16,185,129,0.2);`
+        : `border: 2px solid ${categoryColors.border};`;
 
-  const submittedBadge = hasQty
-    ? `<div style="position:absolute;top:8px;right:8px;background:var(--success-600);color:white;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:1rem;box-shadow:var(--shadow-md);">✓</div>`
-    : '';
+    const submittedBadge = hasQty
+        ? `<div style="position:absolute;top:8px;right:8px;background:var(--success-600);color:white;
+                       border-radius:50%;width:28px;height:28px;display:flex;align-items:center;
+                       justify-content:center;font-size:1rem;box-shadow:var(--shadow-md);">✓</div>`
+        : '';
 
-  return `
+    return `
     <div class="julio-corporate-card" style="
-      background: white;
-      border-radius: 12px;
-      overflow: hidden;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-      ${submittedStyle}
-      transition: all 0.3s;
-      display: flex;
-      flex-direction: column;
-      position: relative;
-    ">
-      ${submittedBadge}
+        background:white;border-radius:12px;overflow:hidden;
+        box-shadow:0 2px 8px rgba(0,0,0,0.08);
+        ${submittedStyle}
+        transition:all 0.3s;display:flex;flex-direction:column;position:relative;">
 
-      <!-- PRODUCT INFO SECTION -->
-      <div style="
-        background: ${hasQty ? 'linear-gradient(135deg, rgba(16,185,129,0.08), white)' : 'linear-gradient(135deg, var(--neutral-50), white)'};
-        padding: 1.5rem;
-        border-bottom: 2px solid ${hasQty ? 'var(--success-300)' : categoryColors.border};
-        text-align: center;
-      ">
-        <img src="${imageUrl}"
-             onerror="this.src='${PLACEHOLDER_IMAGE}'"
-             style="width:120px;height:120px;object-fit:contain;border-radius:8px;margin:0 auto 1rem auto;display:block;background:white;padding:0.5rem;border:1px solid var(--neutral-300);">
-        <h3 style="font-size:1.125rem;font-weight:700;color:var(--neutral-900);margin:0;line-height:1.3;min-height:2.6rem;display:flex;align-items:center;justify-content:center;">
-          ${product.product_name}
-        </h3>
-      </div>
+        ${submittedBadge}
 
-      <!-- ORDER QUANTITY SECTION -->
-      <div style="
-        padding: 1.5rem;
-        background: ${hasQty ? 'rgba(16,185,129,0.08)' : categoryColors.bg};
-        flex-grow: 1;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        border-bottom: 3px solid ${hasQty ? 'var(--success-600)' : categoryColors.border};
-      ">
-        <label style="
-          display: block;
-          font-size: 0.8125rem;
-          font-weight: 700;
-          color: ${hasQty ? 'var(--success-700)' : categoryColors.text};
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-          margin-bottom: 0.75rem;
-          text-align: center;
-        ">
-          ${hasQty ? '✅ Order Quantity (Saved)' : '🛒 Order Quantity'}
-        </label>
-        <input type="number"
-               id="qty-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}"
-               value="${orderQty > 0 ? orderQty : ''}"
-               min="0"
-               step="0.1"
-               placeholder="0.00"
-               data-product-name="${escAttr(product.product_name)}"
-               onchange="setJulioQuantity(this.dataset.productName, this.value)"
-               class="search-input"
-               style="
-                 width: 100%;
-                 font-size: 1.5rem;
-                 font-weight: 700;
-                 text-align: center;
-                 padding: 0.875rem;
-                 font-family: var(--font-mono);
-                 background: white;
-                 border: 3px solid ${hasQty ? 'var(--success-600)' : categoryColors.border};
-                 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-               ">
-      </div>
+        <!-- PRODUCT INFO -->
+        <div style="
+            background:${hasQty ? 'linear-gradient(135deg,rgba(16,185,129,0.08),white)' : 'linear-gradient(135deg,var(--neutral-50),white)'};
+            padding:1.5rem;
+            border-bottom:2px solid ${hasQty ? 'var(--success-300)' : categoryColors.border};
+            text-align:center;">
+            <img src="${imageUrl}" onerror="this.src='${PLACEHOLDER_IMAGE}'"
+                 style="width:120px;height:120px;object-fit:contain;border-radius:8px;
+                        margin:0 auto 1rem auto;display:block;background:white;
+                        padding:0.5rem;border:1px solid var(--neutral-300);">
+            <h3 style="font-size:1.125rem;font-weight:700;color:var(--neutral-900);margin:0;
+                       line-height:1.3;min-height:2.6rem;display:flex;align-items:center;justify-content:center;">
+                ${product.product_name}
+            </h3>
+        </div>
 
-      <!-- FOOTER: Delete Button -->
-      <div style="padding: 1rem; background: white; border-top: 2px solid var(--neutral-200);">
-        <button data-product="${escAttr(product.product_name)}"
-                onclick="deleteProductFromJulio(this.dataset.product)"
-                class="btn btn-danger"
-                style="width: 100%; padding: 0.875rem; font-size: 0.9375rem;">
-          <i class="fas fa-trash"></i> Remove Product
-        </button>
-      </div>
+        <!-- ORDER QUANTITY -->
+        <div style="
+            padding:1.5rem;
+            background:${hasQty ? 'rgba(16,185,129,0.08)' : categoryColors.bg};
+            flex-grow:1;display:flex;flex-direction:column;justify-content:center;
+            border-bottom:3px solid ${hasQty ? 'var(--success-600)' : categoryColors.border};">
 
-    </div>
-  `;
+            <label style="
+                display:block;font-size:0.8125rem;font-weight:700;
+                color:${hasQty ? 'var(--success-700)' : categoryColors.text};
+                text-transform:uppercase;letter-spacing:0.05em;
+                margin-bottom:0.75rem;text-align:center;">
+                ${hasQty ? '✅ Order Quantity (Saved)' : '🛒 Order Quantity'}
+            </label>
+
+            <input type="number"
+                   id="qty-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}"
+                   value="${orderQty > 0 ? orderQty : ''}"
+                   min="0" step="0.1" placeholder="0.00"
+                   data-product-name="${escAttr(product.product_name)}"
+                   onchange="setJulioQuantity(this.dataset.productName, this.value)"
+                   class="search-input"
+                   style="width:100%;font-size:1.5rem;font-weight:700;text-align:center;
+                          padding:0.875rem;font-family:var(--font-mono);background:white;
+                          border:3px solid ${hasQty ? 'var(--success-600)' : categoryColors.border};
+                          box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+
+            ${needLabel}
+        </div>
+
+        <!-- FOOTER -->
+        <div style="padding:1rem;background:white;border-top:2px solid var(--neutral-200);">
+            <button data-product="${escAttr(product.product_name)}"
+                    onclick="deleteProductFromJulio(this.dataset.product)"
+                    class="btn btn-danger"
+                    style="width:100%;padding:0.875rem;font-size:0.9375rem;">
+                <i class="fas fa-trash"></i> Remove Product
+            </button>
+        </div>
+    </div>`;
 }
+
 
 
 
@@ -8921,6 +8918,165 @@ function normalizeUser(user) {
     if (u === 'office') return 'Office';
     return null; // ✅ Return null for anything unrecognized
 }
+
+
+
+
+async function submitAndMarkOrder() {
+    const dateISO = document.getElementById('createOrderDate').value || todayYMD();
+
+    // Collect all current card states from the DOM
+    const cards = document.querySelectorAll('.enhanced-order-card');
+
+    if (cards.length === 0) {
+        showAlert('❌ No products loaded. Please load an order first.', 'error');
+        return;
+    }
+
+    // Build list of items that have a qty > 0 OR a vendor selected
+    const orderItems = [];
+    cards.forEach(card => {
+        const productName = card.dataset.product;
+        const userType    = card.dataset.user;
+        const productId   = (productName || '').replace(/[^a-zA-Z0-9]/g, '_');
+
+        const qtyInput    = document.getElementById(`qty-${productId}`);
+        const vendorInput = document.getElementById(`vendor-${productId}`);
+        const codeInput   = document.getElementById(`itemcode-input-${productId}`);
+
+        const qty    = parseFloat(qtyInput?.value  || 0);
+        const vendor = vendorInput?.value || '';
+        const code   = codeInput?.value   || '';
+
+        if (qty > 0 || vendor) {
+            orderItems.push({
+                product_name: productName,
+                user:         userType,
+                quantity:     qty,
+                vendor:       vendor || null,
+                item_code:    code   || null
+            });
+        }
+    });
+
+    if (orderItems.length === 0) {
+        showAlert('❌ No items have quantities or vendors set. Fill in the order first.', 'error');
+        return;
+    }
+
+    if (!confirm(`Submit order with ${orderItems.length} item(s) for ${formatDate(dateISO)}?`)) return;
+
+    showLoading(true);
+    try {
+        // ── STEP 1: Save / update every item in inventory_check ──────────
+        for (const item of orderItems) {
+            await supabaseClient
+                .from('inventory_check')
+                .update({
+                    tentative:  item.quantity,
+                    vendor:     item.vendor,
+                    item_code:  item.item_code
+                })
+                .eq('order_date',    dateISO)
+                .eq('product_name',  item.product_name)
+                .eq('user',          item.user   === 'rony' ? 'Rony'
+                                   : item.user   === 'julio' ? 'Julio'
+                                   : item.user   === 'office' ? 'Office'
+                                   : item.user);
+        }
+
+        // ── STEP 2: Write to submitted_orders table ───────────────────────
+        const submittedAt = new Date().toISOString();
+
+        const submissionRows = orderItems.map(item => ({
+            order_date:      dateISO,
+            submitted_at:    submittedAt,
+            submitted_by:    'office',          // person placing the final order
+            product_name:    item.product_name,
+            quantity:        item.quantity,
+            vendor:          item.vendor,
+            item_code:       item.item_code,
+            user_section:    item.user          // 'rony' | 'julio' | 'office'
+        }));
+
+        const { error: insertError } = await supabaseClient
+            .from('submitted_orders')
+            .insert(submissionRows);
+
+        if (insertError) {
+            // Table may not exist yet — log but don't block
+            console.warn('submitted_orders insert warning:', insertError.message);
+        }
+
+        // ── STEP 3: Also write to inventory_submissions (history) ─────────
+        const historyRows = orderItems.map(item => ({
+            submission_date: submittedAt,
+            submitted_by:    'office',
+            product_name:    item.product_name,
+            quantity:        item.quantity,
+            submission_type: 'place_order',
+            notes:           `Order for ${dateISO} | Vendor: ${item.vendor || 'TBD'}`
+        }));
+
+        await supabaseClient
+            .from('inventory_submissions')
+            .insert(historyRows);
+
+        // ── STEP 4: Send email notification ──────────────────────────────
+        let emailMsg = '';
+        try {
+            const emailPayload = {
+                submittedBy: 'office',
+                orderDate:   dateISO,
+                items: orderItems.map(i => ({
+                    product_name: i.product_name,
+                    quantity:     i.quantity,
+                    vendor:       i.vendor || 'TBD',
+                    item_code:    i.item_code || '',
+                    notes:        `Section: ${i.user}`
+                }))
+            };
+
+            const resp = await fetch(
+                `${SUPABASE_URL}/functions/v1/send-order-notification`,
+                {
+                    method:  'POST',
+                    headers: {
+                        'Content-Type':  'application/json',
+                        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+                    },
+                    body: JSON.stringify(emailPayload)
+                }
+            );
+
+            const result = await resp.json();
+            emailMsg = result.success
+                ? ' 📧 Email notification sent!'
+                : ` (Email failed: ${result.error})`;
+
+        } catch (emailErr) {
+            console.error('Email send error:', emailErr);
+            emailMsg = ' (Email could not be sent)';
+        }
+
+        // ── STEP 5: Success message ───────────────────────────────────────
+        showAlert(
+            `✅ Order submitted successfully! ${orderItems.length} items saved for ${formatDate(dateISO)}.${emailMsg}`,
+            'success'
+        );
+
+        // Reload the cards to reflect saved state
+        await loadEnhancedCreateOrder();
+
+    } catch (error) {
+        console.error('submitAndMarkOrder error:', error);
+        showAlert('❌ Error submitting order: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+
 
 
 
