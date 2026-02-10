@@ -8757,6 +8757,209 @@ function escAttr(str) {
 
 
 
+// ========== ADD THIS NEW FUNCTION (place it before initializeEnhancedPlaceOrder) ==========
+async function syncInventoryCheck(dateISO) {
+    try {
+        console.log('🔄 Syncing inventory_check for date:', dateISO);
+
+        // 1. Load all products from inventory_management
+        const { data: mgmtProducts, error: mgmtError } = await supabaseClient
+            .from('inventory_management')
+            .select('product_name, image_url, par, position, assigned_to');
+
+        if (mgmtError) throw mgmtError;
+
+        // 2. Load Rony's stock counts for this date
+        const { data: stockData, error: stockError } = await supabaseClient
+            .from('current_stock')
+            .select('product_name, quantity_in_stock')
+            .eq('stock_date', dateISO);
+
+        if (stockError) throw stockError;
+
+        // 3. Load Julio's targets for this date
+        const { data: targetData, error: targetError } = await supabaseClient
+            .from('target_inventory')
+            .select('product_name, target_quantity')
+            .eq('order_date', dateISO);
+
+        if (targetError) throw targetError;
+
+        // 4. Build lookup maps
+        const stockMap = new Map();
+        (stockData || []).forEach(s => stockMap.set(s.product_name, s.quantity_in_stock));
+
+        const targetMap = new Map();
+        (targetData || []).forEach(t => targetMap.set(t.product_name, t.target_quantity));
+
+        console.log('📦 Stock entries:', stockMap.size, '| Target entries:', targetMap.size);
+
+        // 5. Build upsert rows
+        const rows = [];
+
+        // ✅ Track seen product+user combos to avoid duplicates
+        const seen = new Set();
+
+        (mgmtProducts || []).forEach(product => {
+            const name = product.product_name || '';
+            if (!name) return;
+
+            // ✅ FIXED: Handle assigned_to as plain STRING (e.g. 'Rony') 
+            // OR array OR JSON string
+            let assignedArray = [];
+            const raw = product.assigned_to;
+
+            if (Array.isArray(raw)) {
+                assignedArray = raw;
+            } else if (typeof raw === 'string') {
+                const trimmed = raw.trim();
+                // Try JSON parse first
+                if (trimmed.startsWith('[')) {
+                    try {
+                        const parsed = JSON.parse(trimmed);
+                        assignedArray = Array.isArray(parsed) ? parsed : [trimmed];
+                    } catch (e) {
+                        assignedArray = [trimmed];
+                    }
+                } else {
+                    // Plain string like 'Rony' or 'Julio'
+                    assignedArray = [trimmed];
+                }
+            }
+
+         assignedArray.forEach(user => {
+    const userNormalized = normalizeUser(user);
+    
+    // ✅ Skip null/unrecognized users — won't violate constraint
+    if (!userNormalized) return;
+
+    // ✅ Skip duplicates
+    const key = `${name}__${userNormalized}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    let on_hand = 0;
+    let target = 0;
+
+    const userLower = userNormalized.toLowerCase();
+
+    if (userLower === 'rony') {
+        on_hand = parseFloat(stockMap.get(name) || 0);
+        target = parseFloat(product.par || 0);
+    } else if (userLower === 'julio') {
+        on_hand = parseFloat(targetMap.get(name) || 0);
+        target = parseFloat(targetMap.get(name) || 0);
+    } else if (userLower === 'office') {
+        on_hand = parseFloat(stockMap.get(name) || targetMap.get(name) || 0);
+        target = parseFloat(product.par || 0);
+    }
+
+    rows.push({
+        order_date: dateISO,
+        product_name: name,
+        user: userNormalized,  // ✅ Always 'Rony', 'Julio', or 'Office'
+        on_hand: on_hand,
+        target: target,
+        image_url: product.image_url || null
+    });
+});
+        });
+
+        console.log('📝 Rows to upsert into inventory_check:', rows.length);
+
+        if (rows.length === 0) {
+            console.log('⚠️ No products found to sync');
+            return 0;
+        }
+
+        // 6. Upsert in batches of 50 to avoid payload limits
+        const batchSize = 50;
+        for (let i = 0; i < rows.length; i += batchSize) {
+            const batch = rows.slice(i, i + batchSize);
+            const { error: upsertError } = await supabaseClient
+                .from('inventory_check')
+                .upsert(batch, {
+                    onConflict: 'order_date,product_name,user',
+                    ignoreDuplicates: false
+                });
+
+            if (upsertError) {
+                console.error('❌ Upsert error on batch', i, upsertError);
+                throw upsertError;
+            }
+        }
+
+        console.log('✅ Synced', rows.length, 'rows into inventory_check');
+        return rows.length;
+
+    } catch (error) {
+        console.error('❌ syncInventoryCheck error:', error);
+        throw error;
+    }
+}
+
+// ========== REPLACE your existing initializeEnhancedPlaceOrder with this ==========
+async function initializeEnhancedPlaceOrder() {
+    loadJsPDF();
+
+    const today = todayYMD();
+    document.getElementById('createOrderDate').value = today;
+    document.getElementById('editOrderDate').value = today;
+    document.getElementById('finalOrderDate').value = today;
+
+    const vendorOptions = ALLOWED_VENDORS.map(v => `<option value="${v}">${v}</option>`).join('');
+    document.getElementById('createVendorFilter').innerHTML = '<option value="">— All Vendors —</option>' + vendorOptions;
+
+    await buildVendorCodeMap();
+
+    // ✅ SYNC FIRST, then load
+    const dateISO = document.getElementById('createOrderDate').value || today;
+    await syncAndLoad(dateISO);
+}
+
+
+// ========== ADD THIS HELPER (sync + load in one call) ==========
+async function syncAndLoad(dateISO) {
+    showLoading(true);
+    try {
+        const synced = await syncInventoryCheck(dateISO);
+        console.log('✅ Sync complete:', synced, 'rows');
+        await loadEnhancedCreateOrder();
+    } catch (error) {
+        console.error('Sync error:', error);
+        showAlert('Error syncing data: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+
+// ========== REPLACE your existing date change listener with this ==========
+// Find: document.addEventListener('change', (e) => {
+//     if (e.target && e.target.id === 'createOrderDate') {
+//         loadEnhancedCreateOrder();
+//     }
+// });
+// REPLACE WITH:
+document.addEventListener('change', (e) => {
+    if (e.target && e.target.id === 'createOrderDate') {
+        const dateISO = e.target.value;
+        syncAndLoad(dateISO);
+    }
+});
+
+
+
+// ✅ ADD THIS HELPER before syncInventoryCheck
+function normalizeUser(user) {
+    const u = (user || '').trim().toLowerCase();
+    if (u === 'rony')   return 'Rony';
+    if (u === 'julio')  return 'Julio';
+    if (u === 'office') return 'Office';
+    return null; // ✅ Return null for anything unrecognized
+}
+
+
 
     </script>
 
