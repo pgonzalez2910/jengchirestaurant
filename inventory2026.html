@@ -6,6 +6,8 @@
     <title>Enterprise Inventory Intelligence Platform</title>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -2925,17 +2927,31 @@ const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-
-    const VENDOR_LOGOS = {
-    'autochlor': 'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/jengchi/autochlor.jpg',
-    'bakemark': 'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/jengchi/bakemark.jpg',
-    'formosa': 'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/jengchi/formosa.jpg',
-    'formosafoods': 'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/jengchi/formosa.jpg',
-    'formosa foods': 'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/jengchi/formosa.jpg',
-    'northfoodgroup': 'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/jengchi/northfoodgroup.jpg',
-    'north food group': 'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/jengchi/northfoodgroup.jpg',
-    'pacific': 'https://kpldzwlftkvjjntgsqxx.supabase.co/storage/v1/object/public/jengchi/pacific.jpg'
+// ── VENDOR LOGO URLS ─────────────────────────────────────────
+const VENDOR_LOGO_URLS = {
+    'Formosa Foods':         'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/formosa.jpg',
+    'North Food Group':      'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/northfoodgroup.jpg',
+    'Pacific Plus':          'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/pacific.jpg',
+    'BakeMark':              'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/bakemark.jpg',
+    'Delta Office Products': 'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/delta.jpg',
+    'Autochlor':             'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/autochlor.jpg',
 };
+
+const COMPANY_LOGO_URL =
+    'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg';
+
+const VENDOR_TAX_RULES = {
+    'Formosa Foods':         { taxAll: false },
+    'North Food Group':      { taxAll: false },
+    'Pacific Plus':          { taxAll: false, taxableItemCodes: ['752GO'] },
+    'Delta Office Products': { taxAll: true },
+    'BakeMark':              { taxAll: false },
+    'Autochlor':             { taxAll: false },
+};
+
+const TAX_RATE_PDF = 0.0825;
+
+
 
         let inventoryData = [];
         let filteredData = [];
@@ -3186,6 +3202,43 @@ async function initializeApp() {
                 });
             }, 100);
         }
+
+function calcLineTax(vendor, itemCode, lineTotal) {
+    const rule = VENDOR_TAX_RULES[vendor];
+    if (!rule) return 0;
+    if (rule.taxAll) return lineTotal * TAX_RATE_PDF;
+    if (rule.taxableItemCodes && rule.taxableItemCodes.includes((itemCode || '').trim().toUpperCase())) {
+        return lineTotal * TAX_RATE_PDF;
+    }
+    return 0;
+}
+// ── IMAGE HELPER ─────────────────────────────────────────────
+async function fetchImageBase64(url) {
+    if (!url) return null;
+    try {
+        // Convert GitHub blob URLs to raw URLs
+        let fetchUrl = url;
+        if (fetchUrl.includes('github.com') && !fetchUrl.includes('raw.githubusercontent.com')) {
+            fetchUrl = fetchUrl
+                .replace('github.com', 'raw.githubusercontent.com')
+                .replace('/blob/', '/');
+        }
+        const res = await fetch(fetchUrl);
+        if (!res.ok) return null;
+        const blob = await res.blob();
+        return await new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+        });
+    } catch (e) {
+        console.warn('Image fetch failed:', url, e.message);
+        return null;
+    }
+}
+
+
 
         function renderVendorChart(vendor, data, selectedMonths, monthNames) {
             const canvasId = `vendorChart_${vendor.replace(/\s+/g, '_')}`;
@@ -8295,198 +8348,543 @@ async function initializeEnhancedPlaceOrder() {
 }
 
 
+// ── MAIN: GENERATE ALL PDFS ───────────────────────────────────
 async function generateAllVendorPDFs() {
     const orderDate = document.getElementById('pdfOrderDate')?.value || todayYMD();
     const resultsDiv = document.getElementById('pdfGenerationResults');
-    
+
     showLoading(true);
-    
+    resultsDiv.innerHTML = `
+        <div style="padding:2rem;text-align:center;color:var(--neutral-600);">
+            <div class="spinner" style="margin:0 auto 1rem;"></div>
+            <p style="font-size:1.1rem;">Building PDFs — please wait…</p>
+        </div>`;
+
     try {
-        // Get all vendors with orders for this date
-        const { data: orderData, error: orderError } = await supabaseClient
+        // ── 1. Load all inventory_check rows for this date ────────────
+        const { data: orderData, error: orderErr } = await supabaseClient
             .from('inventory_check')
-            .select('vendor, tentative, on_hand, user')
+            .select('product_name, on_hand, target, tentative, user, vendor, item_code, image_url')
             .eq('order_date', orderDate);
-        
-        if (orderError) throw orderError;
-        
+
+        if (orderErr) throw orderErr;
+
         if (!orderData || orderData.length === 0) {
-            showAlert('❌ No orders found for this date', 'error');
             resultsDiv.innerHTML = `
-                <div style="text-align: center; padding: 3rem; background: var(--neutral-50); border-radius: 12px; border: 2px dashed var(--neutral-300);">
-                    <div style="font-size: 3rem; opacity: 0.3; margin-bottom: 1rem;">📦</div>
-                    <h3 style="color: var(--neutral-600);">No orders found for ${formatDate(orderDate)}</h3>
-                    <p style="color: var(--neutral-500);">Make sure Julio and Rony have submitted their orders first</p>
-                </div>
-            `;
+                <div class="empty-state">
+                    <div class="empty-state-icon">📦</div>
+                    <h3>No orders found for ${formatDate(orderDate)}</h3>
+                    <p>Make sure inventory counts have been submitted first.</p>
+                </div>`;
             return;
         }
-        
-        // Filter items with quantity > 0 and group by vendor
-        const vendorOrders = new Map();
-        
-        orderData.forEach(item => {
-            const qty = item.user?.toLowerCase() === 'julio' 
-                ? parseFloat(item.on_hand || 0)
-                : parseFloat(item.tentative || 0);
-            
-            if (qty > 0 && item.vendor) {
-                if (!vendorOrders.has(item.vendor)) {
-                    vendorOrders.set(item.vendor, 0);
-                }
-                vendorOrders.set(item.vendor, vendorOrders.get(item.vendor) + 1);
+
+        // ── 2. Load latest prices (2026) from invoice_items ───────────
+        const { data: invoiceItems } = await supabaseClient
+            .from('invoice_items')
+            .select('product_name, vendor, item_code, unit_price, price_per_unit, has_weight, invoice_id');
+
+        const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id).filter(Boolean))];
+        const invDateMap = new Map();
+        if (invoiceIds.length > 0) {
+            const { data: invoices } = await supabaseClient
+                .from('invoices')
+                .select('id, invoice_date, vendor')
+                .in('id', invoiceIds);
+            (invoices || []).forEach(inv => invDateMap.set(inv.id, inv.invoice_date));
+        }
+
+        // Build: key = `product_name|vendor` → latest 2026 price
+        const latestPriceMap = new Map();
+        (invoiceItems || []).forEach(item => {
+            const invDate = invDateMap.get(item.invoice_id);
+            if (!invDate || new Date(invDate).getFullYear() !== 2026) return;
+            const key = `${item.product_name}|${item.vendor}`;
+            const price = item.has_weight
+                ? parseFloat(item.price_per_unit || 0)
+                : parseFloat(item.unit_price || 0);
+            const existing = latestPriceMap.get(key);
+            if (!existing || new Date(invDate) > new Date(existing.date)) {
+                latestPriceMap.set(key, { price, date: invDate, item_code: item.item_code });
             }
         });
-        
-        const vendors = Array.from(vendorOrders.keys());
-        
-        if (vendors.length === 0) {
-            showAlert('❌ No items with quantity > 0', 'error');
+
+        // ── 3. Filter rows that have a qty > 0 and a vendor ──────────
+        const rowsWithQty = orderData.filter(row => {
+            const qty = (row.user || '').toLowerCase() === 'julio'
+                ? parseFloat(row.on_hand || row.target || 0)
+                : parseFloat(row.tentative || 0);
+            return qty > 0 && row.vendor;
+        });
+
+        if (rowsWithQty.length === 0) {
+            resultsDiv.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">📋</div>
+                    <h3>No items with quantities and vendors assigned</h3>
+                    <p>Set quantities and select vendors in the Create Order tab first.</p>
+                </div>`;
             return;
         }
-        
-        resultsDiv.innerHTML = `
-            <div style="background: var(--primary-50); padding: 1.5rem; border-radius: 12px; border: 2px solid var(--primary-300); margin-bottom: 1.5rem;">
-                <h3 style="color: var(--primary-700); font-size: 1.25rem; margin: 0 0 1rem 0;">
-                    🔄 Generating PDFs for ${vendors.length} vendor(s)...
-                </h3>
-                <div id="pdfProgress"></div>
-            </div>
-        `;
-        
+
+        // ── 4. Group by vendor ────────────────────────────────────────
+        const byVendor = {};
+        rowsWithQty.forEach(row => {
+            const qty = (row.user || '').toLowerCase() === 'julio'
+                ? parseFloat(row.on_hand || row.target || 0)
+                : parseFloat(row.tentative || 0);
+
+            // Look up price
+            const priceKey = `${row.product_name}|${row.vendor}`;
+            const priceEntry = latestPriceMap.get(priceKey);
+            const unitPrice = priceEntry ? priceEntry.price : 0;
+            const resolvedCode = row.item_code || (priceEntry ? priceEntry.item_code : '') || '';
+
+            if (!byVendor[row.vendor]) byVendor[row.vendor] = [];
+            byVendor[row.vendor].push({
+                product_name: row.product_name,
+                item_code:    resolvedCode,
+                qty:          qty,
+                unit_price:   unitPrice,
+                line_total:   qty * unitPrice,
+                image_url:    row.image_url || null,
+            });
+        });
+
+        // ── 5. Pre-fetch all images concurrently ──────────────────────
+        const companyLogoB64 = await fetchImageBase64(COMPANY_LOGO_URL);
+
+        // ── 6. Generate one PDF per vendor ────────────────────────────
         const pdfResults = [];
-        const progressDiv = document.getElementById('pdfProgress');
-        
-        for (let i = 0; i < vendors.length; i++) {
-            const vendor = vendors[i];
-            const itemCount = vendorOrders.get(vendor);
-            
-            progressDiv.innerHTML += `
-                <div style="margin-bottom: 0.75rem;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem;">
-                        <span style="font-weight: 600;">${i + 1}. ${vendor}</span>
-                        <span style="font-size: 0.875rem; color: var(--neutral-600);">${itemCount} items</span>
-                    </div>
-                    <div id="progress-${i}" style="font-size: 0.875rem; color: var(--neutral-600);">⏳ Generating PDF...</div>
-                </div>
-            `;
-            
-            try {
-                const response = await fetch(`${SUPABASE_URL}/functions/v1/generate-purchase-order-pdf`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
-                    },
-                    body: JSON.stringify({
-                        orderDate: orderDate,
-                        vendor: vendor
-                    })
-                });
-                
-                const result = await response.json();
-                
-                if (result.success && result.pdfBase64) {
-                    // Convert base64 to blob
-                    const byteCharacters = atob(result.pdfBase64);
-                    const byteNumbers = new Array(byteCharacters.length);
-                    for (let i = 0; i < byteCharacters.length; i++) {
-                        byteNumbers[i] = byteCharacters.charCodeAt(i);
-                    }
-                    const byteArray = new Uint8Array(byteNumbers);
-                    const blob = new Blob([byteArray], { type: 'application/pdf' });
-                    const url = URL.createObjectURL(blob);
-                    
-                    pdfResults.push({
-                        vendor: vendor,
-                        url: url,
-                        fileName: result.fileName,
-                        itemCount: result.itemCount,
-                        subtotal: result.subtotal,
-                        tax: result.tax,
-                        total: result.total
-                    });
-                    
-                    document.getElementById(`progress-${i}`).innerHTML = `
-                        ✅ <a href="${url}" download="${result.fileName}" style="color: var(--success-600); font-weight: 600; text-decoration: none;">
-                            Download PDF
-                        </a> • ${result.itemCount} items • $${result.total.toFixed(2)}
-                    `;
-                } else {
-                    throw new Error(result.error || 'PDF generation failed');
-                }
-                
-            } catch (error) {
-                console.error(`Error generating PDF for ${vendor}:`, error);
-                document.getElementById(`progress-${i}`).innerHTML = `
-                    ❌ <span style="color: var(--warning-600);">Error: ${error.message}</span>
-                `;
+        const vendors = Object.keys(byVendor).sort();
+
+        for (const vendor of vendors) {
+            const items = byVendor[vendor];
+            const vendorLogoB64 = await fetchImageBase64(VENDOR_LOGO_URLS[vendor] || null);
+
+            // Pre-fetch product images
+            for (const item of items) {
+                item._imageB64 = await fetchImageBase64(
+                    item.image_url
+                        ? (item.image_url.startsWith('http') ? item.image_url : GITHUB_IMAGE_BASE + item.image_url)
+                        : null
+                );
             }
-            
-            // Small delay between requests
-            await new Promise(resolve => setTimeout(resolve, 300));
+
+            const result = await buildVendorPDF(
+                vendor, items, orderDate,
+                companyLogoB64, vendorLogoB64
+            );
+            pdfResults.push(result);
         }
-        
-        // Show final summary with download all button
-        if (pdfResults.length > 0) {
-            resultsDiv.innerHTML += `
-                <div style="background: white; padding: 2rem; border-radius: 12px; box-shadow: var(--shadow-md); margin-top: 2rem;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
-                        <h3 style="color: var(--success-600); font-size: 1.5rem; margin: 0; display: flex; align-items: center; gap: 0.75rem;">
-                            <i class="fas fa-check-circle"></i>
-                            ${pdfResults.length} PDF(s) Ready
-                        </h3>
-                        <button class="btn btn-success" onclick="downloadAllPDFs()" style="padding: 0.875rem 1.5rem;">
-                            <i class="fas fa-download"></i> Download All
-                        </button>
-                    </div>
-                    
-                    <div style="display: grid; gap: 1rem;">
-                        ${pdfResults.map((pdf, idx) => `
-                            <div id="pdf-card-${idx}" style="display: flex; justify-content: space-between; align-items: center; padding: 1.25rem; background: var(--neutral-50); border-radius: 8px; border: 2px solid var(--success-200);">
-                                <div>
-                                    <div style="font-weight: 700; font-size: 1.125rem; color: var(--neutral-900);">${pdf.vendor}</div>
-                                    <div style="font-size: 0.875rem; color: var(--neutral-600); margin-top: 0.25rem;">
-                                        ${pdf.itemCount} items • 
-                                        Subtotal: $${pdf.subtotal.toFixed(2)} • 
-                                        Tax: $${pdf.tax.toFixed(2)} • 
-                                        <strong>Total: $${pdf.total.toFixed(2)}</strong>
-                                    </div>
-                                </div>
-                                <a href="${pdf.url}" download="${pdf.fileName}" class="btn btn-success" style="text-decoration: none;">
-                                    <i class="fas fa-download"></i> Download
-                                </a>
-                            </div>
-                        `).join('')}
-                    </div>
-                    
-                    <div style="margin-top: 2rem; padding: 1.5rem; background: var(--accent-50); border-radius: 8px; border-left: 4px solid var(--accent-500);">
-                        <h4 style="margin: 0 0 0.75rem 0; color: var(--accent-700); display: flex; align-items: center; gap: 0.5rem;">
-                            <i class="fas fa-info-circle"></i> Next Steps
-                        </h4>
-                        <ol style="margin: 0; padding-left: 1.5rem; color: var(--neutral-700); line-height: 1.8;">
-                            <li>Download the PDF for each vendor (or click "Download All")</li>
-                            <li>Review the quantities and prices</li>
-                            <li>Email or fax the purchase orders to vendors</li>
-                            <li>Track delivery dates and confirm receipt</li>
-                        </ol>
-                    </div>
-                </div>
-            `;
-            
-            // Store PDF results globally for download all function
-            window.generatedPDFs = pdfResults;
-        }
-        
-        showAlert(`✅ Generated ${pdfResults.length} PDF purchase order(s)!`, 'success');
-        
-    } catch (error) {
-        console.error('PDF generation error:', error);
-        showAlert('❌ Error: ' + error.message, 'error');
+
+        // ── 7. Render download links ──────────────────────────────────
+        renderPDFResults(resultsDiv, pdfResults, orderDate);
+        showAlert(`✅ ${pdfResults.length} PDF(s) generated!`, 'success');
+
+    } catch (err) {
+        console.error('PDF generation error:', err);
+        showAlert('❌ PDF generation failed: ' + err.message, 'error');
+        resultsDiv.innerHTML = `<div class="alert alert-error">❌ Error: ${err.message}</div>`;
     } finally {
         showLoading(false);
     }
 }
+
+
+// ── BUILD A SINGLE VENDOR PDF ─────────────────────────────────
+async function buildVendorPDF(vendor, items, orderDate, companyLogoB64, vendorLogoB64) {
+    // jsPDF must be loaded via CDN in the HTML head:
+  
+
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'portrait' });
+
+    const PW = doc.internal.pageSize.getWidth();   // 612
+    const PH = doc.internal.pageSize.getHeight();  // 792
+    const ML = 36, MR = 36, MT = 36;
+
+    const NAVY   = [10, 22, 40];
+    const GOLD   = [245, 158, 11];
+    const WHITE  = [255, 255, 255];
+    const LGRAY  = [245, 245, 245];
+    const MGRAY  = [200, 200, 200];
+    const GREEN  = [5, 150, 105];
+    const RED    = [220, 38, 38];
+
+    // ── HEADER BAND ───────────────────────────────────────────
+    doc.setFillColor(10, 22, 40);
+    doc.rect(0, 0, PW, 90, 'F');
+
+    // Gold accent bar at bottom of header
+    doc.setFillColor(245, 158, 11);
+    doc.rect(0, 87, PW, 4, 'F');
+
+    // Company logo (left inside header)
+    if (companyLogoB64) {
+        try { doc.addImage(companyLogoB64, 'JPEG', ML, 10, 100, 70); } catch (e) {}
+    } else {
+        doc.setFontSize(18).setTextColor(255, 255, 255).setFont('helvetica', 'bold');
+        doc.text('JENG CHI', ML + 5, 52);
+    }
+
+    // Vendor logo (right inside header)
+    if (vendorLogoB64) {
+        try { doc.addImage(vendorLogoB64, 'JPEG', PW - MR - 110, 10, 110, 70, undefined, 'FAST'); } catch (e) {}
+    }
+
+    // Centre: title + date
+  doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.text('PURCHASE ORDER', PW / 2, 38, { align: 'center' });
+    doc.setFontSize(11).setFont('helvetica', 'normal');
+    doc.text(`Order Date: ${formatDate(orderDate)}`, PW / 2, 58, { align: 'center' });
+
+    // PO number (date-based)
+    const poNum = `PO-${orderDate.replace(/-/g, '')}-${vendor.replace(/\s+/g, '').substring(0, 4).toUpperCase()}`;
+    doc.setFontSize(9);
+    doc.text(`PO #: ${poNum}`, PW / 2, 74, { align: 'center' });
+
+    // ── VENDOR INFO STRIPE ────────────────────────────────────
+    let y = 102;
+ doc.setFillColor(245, 245, 245);
+ doc.rect(ML, y, PW - ML - MR, 36, 'F');
+   doc.setDrawColor(200, 200, 200);
+    doc.setLineWidth(0.5);
+    doc.rect(ML, y, PW - ML - MR, 36, 'S');
+
+    doc.setFillColor(10, 22, 40);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.text('VENDOR:', ML + 12, y + 14);
+    doc.setFont('helvetica', 'normal').setFontSize(13);
+    doc.text(vendor, ML + 62, y + 14);
+
+    // Tax notice
+    const taxRule = VENDOR_TAX_RULES[vendor] || { taxAll: false };
+    let taxNote = 'Tax: None';
+    if (taxRule.taxAll) taxNote = 'Tax: 8.25% on all items';
+    else if (taxRule.taxableItemCodes && taxRule.taxableItemCodes.length)
+        taxNote = `Tax: 8.25% on item(s) ${taxRule.taxableItemCodes.join(', ')} only`;
+
+    doc.setFontSize(9).setFont('helvetica', 'italic').setTextColor(80, 80, 80);
+    doc.text(taxNote, ML + 12, y + 30);
+
+    y += 50;
+
+    // ── PRODUCT TABLE ─────────────────────────────────────────
+    // Columns: Image | Item Code | Product Name | Qty | Unit Price | Tax | Line Total
+    const IMG_W   = 50;
+    const CODE_W  = 72;
+    const QTY_W   = 42;
+    const PRICE_W = 62;
+    const TAX_W   = 52;
+    const TOT_W   = 68;
+    const NAME_W  = PW - ML - MR - IMG_W - CODE_W - QTY_W - PRICE_W - TAX_W - TOT_W;
+    const ROW_H   = 58;
+    const HEADER_H = 24;
+
+    // Table header
+    const drawTableHeader = (startY) => {
+        doc.setFillColor(10, 22, 40);
+        doc.rect(ML, startY, PW - ML - MR, HEADER_H, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8.5);
+        const cols = [
+            { label: 'Image',      x: ML + IMG_W / 2,                                 align: 'center' },
+            { label: 'Item Code',  x: ML + IMG_W + CODE_W / 2,                        align: 'center' },
+            { label: 'Product',    x: ML + IMG_W + CODE_W + NAME_W / 2,               align: 'center' },
+            { label: 'Qty',        x: ML + IMG_W + CODE_W + NAME_W + QTY_W / 2,       align: 'center' },
+            { label: 'Unit Price', x: ML + IMG_W + CODE_W + NAME_W + QTY_W + PRICE_W / 2, align: 'center' },
+            { label: 'Tax',        x: ML + IMG_W + CODE_W + NAME_W + QTY_W + PRICE_W + TAX_W / 2, align: 'center' },
+            { label: 'Total',      x: ML + IMG_W + CODE_W + NAME_W + QTY_W + PRICE_W + TAX_W + TOT_W / 2, align: 'center' },
+        ];
+        cols.forEach(col => doc.text(col.label, col.x, startY + 16, { align: col.align }));
+        return startY + HEADER_H;
+    };
+
+    let tableY = drawTableHeader(y);
+
+    // Draw rows
+    let subtotal = 0, totalTax = 0;
+    const usedPageH = PH - 36; // bottom margin
+
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+
+        // Page break check
+        if (tableY + ROW_H > usedPageH) {
+            // Footer on current page
+            drawPageFooter(doc, vendor, orderDate, PW, PH, MR);
+            doc.addPage();
+            y = MT;
+            tableY = drawTableHeader(y);
+        }
+
+    const rowColor = i % 2 === 0 ? WHITE : LGRAY;
+        doc.setFillColor(rowColor[0], rowColor[1], rowColor[2]);
+        doc.rect(ML, tableY, PW - ML - MR, ROW_H, 'F');
+        doc.setDrawColor(200, 200, 200);
+        doc.setLineWidth(0.3);
+        doc.rect(ML, tableY, PW - ML - MR, ROW_H, 'S');
+
+        // Vertical dividers
+        let divX = ML + IMG_W;
+        [CODE_W, NAME_W, QTY_W, PRICE_W, TAX_W, TOT_W].forEach(w => {
+            doc.line(divX, tableY, divX, tableY + ROW_H);
+            divX += w;
+        });
+
+        // Product image
+        if (item._imageB64) {
+            try {
+                const imgSize = 44;
+                doc.addImage(
+                    item._imageB64, 'JPEG',
+                    ML + (IMG_W - imgSize) / 2,
+                    tableY + (ROW_H - imgSize) / 2,
+                    imgSize, imgSize
+                );
+            } catch (e) {}
+        } else {
+            // Placeholder box
+            doc.setFillColor(220, 220, 220);
+            doc.rect(ML + 3, tableY + 7, 44, 44, 'F');
+            doc.setFontSize(7).setTextColor(150, 150, 150).setFont('helvetica', 'italic');
+            doc.text('No img', ML + 25, tableY + 32, { align: 'center' });
+        }
+
+        // Column x positions
+        let cx = ML + IMG_W;
+
+        const cellText = (text, width, align = 'left', bold = false) => {
+            doc.setTextColor(10, 22, 40);
+            doc.setFont('helvetica', bold ? 'bold' : 'normal');
+            const pad = 5;
+            const tx = align === 'center' ? cx + width / 2
+                      : align === 'right'  ? cx + width - pad
+                      : cx + pad;
+            // Word-wrap for name column
+            const maxW = width - 2 * pad;
+            const lines = doc.splitTextToSize(String(text), maxW);
+            const lineH = 11;
+            const totalH = lines.length * lineH;
+            const startTy = tableY + (ROW_H - totalH) / 2 + 9;
+            lines.forEach((line, li) => {
+                doc.text(line, tx, startTy + li * lineH, { align });
+            });
+            cx += width;
+        };
+
+        // Item code
+        doc.setFontSize(8);
+        doc.setFont('courier', 'bold');
+        doc.setTextColor(10, 22, 40);
+        const code = item.item_code || '—';
+        doc.text(code, ML + IMG_W + CODE_W / 2, tableY + ROW_H / 2 + 4, { align: 'center' });
+        cx = ML + IMG_W + CODE_W;
+
+        // Product name
+        doc.setFontSize(8.5).setFont('helvetica', 'normal');
+        cellText(item.product_name, NAME_W, 'left');
+
+        // Qty
+        doc.setFontSize(10);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(10, 22, 40);
+        doc.text(item.qty.toFixed(2), cx + QTY_W / 2, tableY + ROW_H / 2 + 4, { align: 'center' });
+        cx += QTY_W;
+
+        // Unit Price
+        doc.setFontSize(9).setFont('courier', 'normal');
+        const priceStr = item.unit_price > 0 ? `$${item.unit_price.toFixed(2)}` : '—';
+        doc.text(priceStr, cx + PRICE_W - 6, tableY + ROW_H / 2 + 4, { align: 'right' });
+        cx += PRICE_W;
+
+        // Tax
+        const taxAmt = calcLineTax(vendor, item.item_code, item.line_total);
+        const taxStr = taxAmt > 0 ? `$${taxAmt.toFixed(2)}` : '—';
+       doc.setTextColor(
+            taxAmt > 0 ? RED[0] : NAVY[0],
+            taxAmt > 0 ? RED[1] : NAVY[1],
+            taxAmt > 0 ? RED[2] : NAVY[2]
+        );
+        doc.text(taxStr, cx + TAX_W / 2, tableY + ROW_H / 2 + 4, { align: 'center' });
+        cx += TAX_W;
+
+        // Line total
+        const lineTotalWithTax = item.line_total + taxAmt;
+       doc.setTextColor(5, 150, 105);
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(10);
+        doc.text(`$${lineTotalWithTax.toFixed(2)}`, cx + TOT_W - 6, tableY + ROW_H / 2 + 4, { align: 'right' });
+
+        subtotal   += item.line_total;
+        totalTax   += taxAmt;
+        tableY += ROW_H;
+    }
+
+    // ── TOTALS BOX ────────────────────────────────────────────
+    const grandTotal = subtotal + totalTax;
+    const TOTBOX_W = 220;
+    const TOTBOX_H = totalTax > 0 ? 80 : 52;
+
+    // Page break check for totals
+    if (tableY + TOTBOX_H + 20 > usedPageH) {
+        drawPageFooter(doc, vendor, orderDate, PW, PH, MR);
+        doc.addPage();
+        tableY = MT;
+    }
+
+    tableY += 16;
+    const totX = PW - MR - TOTBOX_W;
+
+ doc.setFillColor(245, 245, 245);
+ doc.rect(totX, tableY, TOTBOX_W, TOTBOX_H, 'F');
+   doc.setDrawColor(200, 200, 200);
+    doc.rect(totX, tableY, TOTBOX_W, TOTBOX_H, 'S');
+
+    const totRow = (label, value, color, fontSize = 10, bold = false, ty) => {
+        doc.setFontSize(fontSize);
+        doc.setFont('helvetica', bold ? 'bold' : 'normal');
+        doc.setTextColor(10, 22, 40);
+        doc.text(label, totX + 12, ty);
+        doc.setFont('courier', bold ? 'bold' : 'normal');
+        doc.setTextColor(color[0], color[1], color[2]);
+        doc.text(value, totX + TOTBOX_W - 12, ty, { align: 'right' });
+    };
+
+    let tr = tableY + 18;
+    totRow('Subtotal:', `$${subtotal.toFixed(2)}`, NAVY, 10, false, tr);
+    if (totalTax > 0) {
+        tr += 22;
+        totRow('Tax (8.25%):', `$${totalTax.toFixed(2)}`, RED, 10, false, tr);
+    }
+    tr += 22;
+    // Separator line
+ doc.setFillColor(10, 22, 40);
+    doc.setLineWidth(1);
+    doc.line(totX + 8, tr - 6, totX + TOTBOX_W - 8, tr - 6);
+    totRow('GRAND TOTAL:', `$${grandTotal.toFixed(2)}`, GREEN, 13, true, tr);
+
+    // Item count summary
+    tableY += TOTBOX_H + 12;
+    doc.setFontSize(9).setFont('helvetica', 'italic').setTextColor(100, 100, 100);
+    doc.text(`${items.length} line item${items.length !== 1 ? 's' : ''} on this order`, ML, tableY);
+
+    // ── FOOTER ────────────────────────────────────────────────
+    drawPageFooter(doc, vendor, orderDate, PW, PH, MR);
+
+    // ── SAVE ──────────────────────────────────────────────────
+    const safeVendor = vendor.replace(/[^a-zA-Z0-9]/g, '_');
+    const safeDate   = orderDate.replace(/-/g, '');
+    const fileName   = `PO_${safeVendor}_${safeDate}.pdf`;
+
+    const blobUrl = doc.output('bloburl');
+    return { vendor, fileName, blobUrl, itemCount: items.length, grandTotal, subtotal, totalTax };
+}
+
+// ── PAGE FOOTER ───────────────────────────────────────────────
+function drawPageFooter(doc, vendor, orderDate, PW, PH, MR) {
+    const NAVY = [10, 22, 40];
+    const GOLD = [245, 158, 11];
+doc.setFillColor(245, 158, 11);
+    doc.rect(0, PH - 26, PW, 3, 'F');
+    doc.setFillColor(10, 22, 40);
+    doc.rect(0, PH - 23, PW, 23, 'F');
+
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+
+    doc.text('JENG CHI RESTAURANT  •  Confidential Purchase Order', 40, PH - 8);
+    doc.text(`${vendor}  •  ${formatDate(orderDate)}`, PW - MR, PH - 8, { align: 'right' });
+    doc.text(
+        `Page ${doc.internal.getNumberOfPages()}`,
+        PW / 2, PH - 8, { align: 'center' }
+    );
+}
+
+// ── RENDER DOWNLOAD UI ────────────────────────────────────────
+function renderPDFResults(container, results, orderDate) {
+    const NAVY = '#0a1628';
+    const html = `
+        <div style="background:white;border-radius:16px;box-shadow:var(--shadow-lg);overflow:hidden;margin-top:1rem;">
+            <!-- Header -->
+            <div style="background:${NAVY};padding:1.5rem 2rem;display:flex;justify-content:space-between;align-items:center;">
+                <h3 style="color:white;font-size:1.375rem;margin:0;display:flex;align-items:center;gap:0.75rem;">
+                    <i class="fas fa-file-pdf"></i>
+                    ${results.length} Purchase Order PDF${results.length !== 1 ? 's' : ''} Ready
+                </h3>
+                <button onclick="downloadAllPDFsNew()" class="btn" style="background:var(--accent-500);color:white;padding:0.75rem 1.5rem;font-size:0.9375rem;">
+                    <i class="fas fa-download"></i> Download All
+                </button>
+            </div>
+
+            <!-- Cards -->
+            <div style="padding:1.5rem;display:grid;gap:1rem;">
+                ${results.map((r, idx) => `
+                    <div style="display:flex;justify-content:space-between;align-items:center;
+                                padding:1.25rem 1.5rem;background:var(--neutral-50);
+                                border-radius:10px;border:2px solid var(--neutral-200);">
+                        <div>
+                            <div style="font-weight:700;font-size:1.125rem;color:var(--neutral-900);margin-bottom:0.3rem;">
+                                ${r.vendor}
+                            </div>
+                            <div style="font-size:0.875rem;color:var(--neutral-600);">
+                                ${r.itemCount} items &nbsp;•&nbsp;
+                                Subtotal: <strong>$${r.subtotal.toFixed(2)}</strong>
+                                ${r.totalTax > 0 ? `&nbsp;•&nbsp; Tax: <strong style="color:#dc2626;">$${r.totalTax.toFixed(2)}</strong>` : ''}
+                                &nbsp;•&nbsp;
+                                <strong style="color:var(--success-600);font-family:var(--font-mono);">
+                                    Total: $${r.grandTotal.toFixed(2)}
+                                </strong>
+                            </div>
+                        </div>
+                        <a href="${r.blobUrl}" download="${r.fileName}"
+                           class="btn btn-success" style="text-decoration:none;white-space:nowrap;">
+                            <i class="fas fa-download"></i> Download
+                        </a>
+                    </div>`).join('')}
+            </div>
+
+            <!-- Grand summary -->
+            <div style="padding:1.5rem 2rem;border-top:2px solid var(--neutral-200);
+                        background:var(--neutral-50);display:flex;justify-content:flex-end;">
+                <div style="text-align:right;">
+                    <div style="font-size:0.875rem;color:var(--neutral-600);margin-bottom:0.25rem;">Combined Grand Total</div>
+                    <div style="font-size:2rem;font-weight:700;font-family:var(--font-mono);color:var(--success-600);">
+                        $${results.reduce((s, r) => s + r.grandTotal, 0).toFixed(2)}
+                    </div>
+                </div>
+            </div>
+        </div>`;
+
+    container.innerHTML = html;
+    // Store for "Download All" button
+    window._generatedPDFsNew = results;
+}
+
+
+function downloadAllPDFsNew() {
+    const pdfs = window._generatedPDFsNew || [];
+    if (!pdfs.length) { showAlert('No PDFs to download', 'error'); return; }
+    pdfs.forEach((pdf, i) => {
+        setTimeout(() => {
+            const a = document.createElement('a');
+            a.href = pdf.blobUrl;
+            a.download = pdf.fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }, i * 600);
+    });
+    showAlert(`📥 Downloading ${pdfs.length} PDFs…`, 'success');
+}
+
+
 
 // Download all PDFs at once
 function downloadAllPDFs() {
@@ -8694,7 +9092,6 @@ async function loadFinalOrderPreview() {
 
 async function generateFinalPDFs() {
     const dateISO = document.getElementById('finalOrderDate').value || todayYMD();
-    // Sync the pdfOrderDate field and trigger the existing generator
     const pdfInput = document.getElementById('pdfOrderDate');
     if (pdfInput) pdfInput.value = dateISO;
     await generateAllVendorPDFs();
@@ -9186,9 +9583,3 @@ async function submitAndMarkOrder() {
 </body>
 
 </html>
-
-
-
-
-
-
