@@ -5990,57 +5990,50 @@ for (const product of selectedInvoiceProducts) {
                 return;
             }
 
-            // Show assignment options dialog
-            const assignTo = prompt(
-                `Assign ${selectedItems.size} selected items to:\n\n` +
-                `Type one of:\n` +
-                `- rony\n` +
-                `- julio\n` +
-                `- office\n` +
-                `- rony,julio (for multiple)\n\n` +
-                `Leave blank to cancel`
-            );
-
-            if (!assignTo) return;
-
-            const validOptions = ['rony', 'julio', 'office'];
-            const assignments = assignTo.toLowerCase().split(',').map(s => s.trim());
+            // Update count and show modal
+            document.getElementById('selectedItemsCount').textContent = selectedItems.size;
             
-            // Validate all assignments
-            for (const assignment of assignments) {
-                if (!validOptions.includes(assignment)) {
-                    showAlert(`❌ Invalid option: "${assignment}". Use rony, julio, or office`, 'error');
-                    return;
-                }
+            // Clear previous selection
+            document.querySelectorAll('input[name="assignmentChoice"]').forEach(radio => {
+                radio.checked = false;
+            });
+            
+            // Show modal
+            openModal('quickAssignModal');
+        }
+
+        async function confirmQuickAssignment() {
+            const selectedRadio = document.querySelector('input[name="assignmentChoice"]:checked');
+            
+            if (!selectedRadio) {
+                showAlert('⚠️ Please select who to assign to', 'warning');
+                return;
             }
 
-            const finalAssignment = assignments.join(',');
+            const assignTo = selectedRadio.value; // 'rony', 'julio', or 'office'
+            const itemCount = selectedItems.size;
 
-            if (!confirm(`Assign ${selectedItems.size} items to: ${finalAssignment}?`)) return;
+            closeModal('quickAssignModal');
 
             showLoading(true);
             try {
-                // Update inventory_management table (main assignment)
-                const { error: mgmtError } = await supabaseClient
-                    .from('inventory_management')
-                    .update({ assigned_to: finalAssignment })
-                    .in('id', Array.from(selectedItems));
-
-                if (mgmtError) throw mgmtError;
-
-                // Also update purchase_history if needed
-                const { error: histError } = await supabaseClient
+                // Update purchase_history table (this is the main inventory table)
+                const { data, error } = await supabaseClient
                     .from('purchase_history')
-                    .update({ assigned_to: finalAssignment })
-                    .in('id', Array.from(selectedItems));
+                    .update({ assigned_to: assignTo })
+                    .in('id', Array.from(selectedItems))
+                    .select();
 
-                if (histError) console.warn('History update warning:', histError);
+                if (error) throw error;
 
-                showAlert(`✅ Assigned ${selectedItems.size} items to: ${finalAssignment}`, 'success');
+                const updatedCount = data ? data.length : itemCount;
+
+                showAlert(`✅ Successfully assigned ${updatedCount} items to ${assignTo.toUpperCase()}`, 'success');
                 selectedItems.clear();
                 bulkAssignMode = false;
                 toggleBulkAssignMode(); // Reset UI
-                await loadInventory();
+                await loadInventoryData();
+                renderInventoryTable();
             } catch (error) {
                 console.error('Bulk assign error:', error);
                 showAlert('❌ Assignment failed: ' + error.message, 'error');
@@ -11869,7 +11862,76 @@ function getWeeksInMonth(year, month) {
     </div>
 </div>
 
+<!-- Quick Assignment Modal -->
+<div class="modal-overlay" id="quickAssignModal">
+    <div class="modal" style="max-width: 450px;">
+        <div class="modal-header">
+            <h2>👥 Assign Selected Items</h2>
+            <button class="modal-close" onclick="closeModal('quickAssignModal')">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label style="font-size: 1rem; margin-bottom: 1rem; display: block;">
+                    Assign <strong id="selectedItemsCount">0</strong> items to:
+                </label>
+                
+                <div style="display: flex; flex-direction: column; gap: 1rem;">
+                    <label class="assignment-option" style="display: flex; align-items: center; gap: 1rem; padding: 1rem; border: 2px solid var(--neutral-300); border-radius: 8px; cursor: pointer; transition: all 0.2s;">
+                        <input type="radio" name="assignmentChoice" value="rony" style="width: 20px; height: 20px; cursor: pointer;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <span style="font-size: 2rem;">👨‍🍳</span>
+                            <div>
+                                <div style="font-weight: 600; font-size: 1.1rem;">Rony</div>
+                                <div style="font-size: 0.875rem; color: var(--neutral-600);">Kitchen Staff</div>
+                            </div>
+                        </div>
+                    </label>
+                    
+                    <label class="assignment-option" style="display: flex; align-items: center; gap: 1rem; padding: 1rem; border: 2px solid var(--neutral-300); border-radius: 8px; cursor: pointer; transition: all 0.2s;">
+                        <input type="radio" name="assignmentChoice" value="julio" style="width: 20px; height: 20px; cursor: pointer;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <span style="font-size: 2rem;">👨‍🍳</span>
+                            <div>
+                                <div style="font-weight: 600; font-size: 1.1rem;">Julio</div>
+                                <div style="font-size: 0.875rem; color: var(--neutral-600);">Kitchen Staff</div>
+                            </div>
+                        </div>
+                    </label>
+                    
+                    <label class="assignment-option" style="display: flex; align-items: center; gap: 1rem; padding: 1rem; border: 2px solid var(--neutral-300); border-radius: 8px; cursor: pointer; transition: all 0.2s;">
+                        <input type="radio" name="assignmentChoice" value="office" style="width: 20px; height: 20px; cursor: pointer;">
+                        <div style="display: flex; align-items: center; gap: 0.75rem;">
+                            <span style="font-size: 2rem;">🏢</span>
+                            <div>
+                                <div style="font-weight: 600; font-size: 1.1rem;">Office</div>
+                                <div style="font-size: 0.875rem; color: var(--neutral-600);">Administrative Use</div>
+                            </div>
+                        </div>
+                    </label>
+                </div>
+            </div>
+            
+            <div class="form-actions" style="margin-top: 1.5rem;">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('quickAssignModal')">Cancel</button>
+                <button type="button" class="btn btn-success" onclick="confirmQuickAssignment()">
+                    <i class="fas fa-check"></i> Assign Now
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 
+<style>
+.assignment-option:has(input:checked) {
+    border-color: var(--primary-600) !important;
+    background: var(--primary-100) !important;
+}
+
+.assignment-option:hover {
+    border-color: var(--primary-500);
+    background: var(--neutral-50);
+}
+</style>
 
 </body>
 
