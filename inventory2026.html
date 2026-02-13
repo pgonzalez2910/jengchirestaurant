@@ -3134,9 +3134,36 @@ input[id^="par-input-"]:focus {
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>Price *</label>
-                        <input type="number" id="itemPrice" step="0.01" required>
+                        <label>
+                            <input type="checkbox" id="itemHasWeight" onchange="toggleWeightFields()">
+                            Sold by Weight (instead of quantity)
+                        </label>
                     </div>
+                    
+                    <!-- Quantity fields (shown when NOT sold by weight) -->
+                    <div id="quantityFields">
+                        <div class="form-group">
+                            <label>Quantity *</label>
+                            <input type="number" id="itemQuantity" min="1" value="1" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Price per Unit *</label>
+                            <input type="number" id="itemPrice" step="0.01" required>
+                        </div>
+                    </div>
+                    
+                    <!-- Weight fields (shown when sold by weight) -->
+                    <div id="weightFields" style="display: none;">
+                        <div class="form-group">
+                            <label>Weight (lbs) *</label>
+                            <input type="number" id="itemWeight" step="0.01" min="0.01">
+                        </div>
+                        <div class="form-group">
+                            <label>Price per Pound *</label>
+                            <input type="number" id="itemPricePerUnit" step="0.01">
+                        </div>
+                    </div>
+                    
                     <div class="form-group">
                         <label>Purchase Date *</label>
                         <input type="date" id="itemEffectiveDate" required>
@@ -5137,10 +5164,48 @@ function switchTab(tabName, evt) {
             showAlert('Exported successfully', 'success');
         }
 
+function toggleWeightFields() {
+    const hasWeight = document.getElementById('itemHasWeight').checked;
+    const quantityFields = document.getElementById('quantityFields');
+    const weightFields = document.getElementById('weightFields');
+    
+    if (hasWeight) {
+        // Show weight fields, hide quantity fields
+        quantityFields.style.display = 'none';
+        weightFields.style.display = 'block';
+        
+        // Update required attributes
+        document.getElementById('itemQuantity').required = false;
+        document.getElementById('itemPrice').required = false;
+        document.getElementById('itemWeight').required = true;
+        document.getElementById('itemPricePerUnit').required = true;
+    } else {
+        // Show quantity fields, hide weight fields
+        quantityFields.style.display = 'block';
+        weightFields.style.display = 'none';
+        
+        // Update required attributes
+        document.getElementById('itemQuantity').required = true;
+        document.getElementById('itemPrice').required = true;
+        document.getElementById('itemWeight').required = false;
+        document.getElementById('itemPricePerUnit').required = false;
+    }
+}
+
      async function openAddItemModal() {
     document.getElementById('itemModalTitle').textContent = 'Add Item';
     document.getElementById('itemForm').reset();
     document.getElementById('itemForm').removeAttribute('data-edit-id');
+    
+    // Reset weight checkbox and show quantity fields by default
+    document.getElementById('itemHasWeight').checked = false;
+    document.getElementById('quantityFields').style.display = 'block';
+    document.getElementById('weightFields').style.display = 'none';
+    document.getElementById('itemQuantity').value = 1;
+    document.getElementById('itemQuantity').required = true;
+    document.getElementById('itemPrice').required = true;
+    document.getElementById('itemWeight').required = false;
+    document.getElementById('itemPricePerUnit').required = false;
     
     // Show invoice selector for new items and make it required
     const invoiceSelectGroup = document.getElementById('invoiceSelectGroup');
@@ -5148,9 +5213,11 @@ function switchTab(tabName, evt) {
     invoiceSelectGroup.style.display = 'block';
     invoiceSelect.required = true;
     
-    // Hide purchase date field (date comes from invoice)
-    const dateGroup = document.getElementById('itemEffectiveDate').closest('.form-group');
+    // Hide purchase date field (date comes from invoice) and remove required
+    const dateField = document.getElementById('itemEffectiveDate');
+    const dateGroup = dateField.closest('.form-group');
     if (dateGroup) dateGroup.style.display = 'none';
+    dateField.required = false; // Remove required attribute for hidden field
     
     // Load available invoices
     await loadInvoicesForSelection();
@@ -5234,14 +5301,39 @@ async function editItem(id) {
         document.getElementById('itemNumber').value = item.item_code || '';
         document.getElementById('itemProductImage').value = item.image_path || '';
         document.getElementById('itemVendor').value = item.vendor || '';
-        document.getElementById('itemCategory').value = item.category || '';  // ADD THIS LINE
+        document.getElementById('itemCategory').value = item.category || '';
 
-        document.getElementById('itemPrice').value = item.unit_price || '';
+        // Handle weight vs quantity
+        const hasWeight = item.has_weight || false;
+        document.getElementById('itemHasWeight').checked = hasWeight;
+        
+        if (hasWeight) {
+            // Item sold by weight
+            document.getElementById('quantityFields').style.display = 'none';
+            document.getElementById('weightFields').style.display = 'block';
+            document.getElementById('itemWeight').value = item.weight || '';
+            document.getElementById('itemPricePerUnit').value = item.price_per_unit || '';
+            document.getElementById('itemWeight').required = true;
+            document.getElementById('itemPricePerUnit').required = true;
+            document.getElementById('itemQuantity').required = false;
+            document.getElementById('itemPrice').required = false;
+        } else {
+            // Item sold by quantity
+            document.getElementById('quantityFields').style.display = 'block';
+            document.getElementById('weightFields').style.display = 'none';
+            document.getElementById('itemQuantity').value = item.quantity || 1;
+            document.getElementById('itemPrice').value = item.unit_price || '';
+            document.getElementById('itemQuantity').required = true;
+            document.getElementById('itemPrice').required = true;
+            document.getElementById('itemWeight').required = false;
+            document.getElementById('itemPricePerUnit').required = false;
+        }
         
         // Set purchase date and make it readonly (it's in the invoices table, not invoice_items)
         const dateField = document.getElementById('itemEffectiveDate');
         dateField.value = item.purchase_date || '';
         dateField.readOnly = true;
+        dateField.required = true; // Keep required even though readonly
         dateField.style.backgroundColor = '#f5f5f5';
         dateField.style.cursor = 'not-allowed';
         dateField.title = 'Date cannot be changed for individual items. Edit through Invoice Tracking tab.';
@@ -5329,17 +5421,32 @@ function openAddInvoiceModal() {
         const assignedTo = Array.from(assignedToSelect.selectedOptions).map(o => o.value);
         const editId = document.getElementById('itemForm').dataset.editId;
 
-        const itemData = {
+        // Check if item is sold by weight or quantity
+        const hasWeight = document.getElementById('itemHasWeight').checked;
+        
+        let itemData = {
             product_name: document.getElementById('itemProductName').value,
             item_code: document.getElementById('itemNumber').value,
             vendor: document.getElementById('itemVendor').value,
             category: document.getElementById('itemCategory').value || null,
-            unit_price: parseFloat(document.getElementById('itemPrice').value),
             image_path: document.getElementById('itemProductImage').value.trim() || null,
             assigned_to: assignedTo,
-            has_weight: false,
-            price_per_unit: 0
+            has_weight: hasWeight
         };
+        
+        if (hasWeight) {
+            // Item sold by weight
+            itemData.weight = parseFloat(document.getElementById('itemWeight').value) || 0;
+            itemData.price_per_unit = parseFloat(document.getElementById('itemPricePerUnit').value) || 0;
+            itemData.unit_price = 0; // Not used for weight-based items
+            itemData.quantity = 0;   // Not used for weight-based items
+        } else {
+            // Item sold by quantity
+            itemData.quantity = parseInt(document.getElementById('itemQuantity').value) || 1;
+            itemData.unit_price = parseFloat(document.getElementById('itemPrice').value) || 0;
+            itemData.weight = 0;         // Not used for quantity-based items
+            itemData.price_per_unit = 0; // Not used for quantity-based items
+        }
 
         if (editId) {
             // Get the original item to know the old product_name
@@ -5411,9 +5518,30 @@ function openAddInvoiceModal() {
                 return;
             }
             
+            // Get the next line number for this invoice
+            const { data: existingItems, error: countError } = await supabaseClient
+                .from('invoice_items')
+                .select('line_number')
+                .eq('invoice_id', invoiceId)
+                .order('line_number', { ascending: false })
+                .limit(1);
+            
+            if (countError) throw countError;
+            
+            const nextLineNumber = existingItems && existingItems.length > 0 
+                ? existingItems[0].line_number + 1 
+                : 1;
+            
             // Add invoice_id to itemData for new items
             itemData.invoice_id = invoiceId;
-            itemData.quantity = 1; // Default quantity
+            itemData.line_number = nextLineNumber; // Set line number
+            
+            // Calculate line total based on whether it's sold by weight or quantity
+            if (itemData.has_weight) {
+                itemData.line_total = itemData.weight * itemData.price_per_unit;
+            } else {
+                itemData.line_total = itemData.quantity * itemData.unit_price;
+            }
             
             const { error: insertError } = await supabaseClient
                 .from('invoice_items')
