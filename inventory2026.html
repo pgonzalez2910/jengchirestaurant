@@ -5134,8 +5134,16 @@ function switchTab(tabName, evt) {
     document.getElementById('itemModalTitle').textContent = 'Add Item';
     document.getElementById('itemForm').reset();
     document.getElementById('itemForm').removeAttribute('data-edit-id');
-    document.getElementById('itemEffectiveDate').valueAsDate = new Date();
-    populateVendorDropdownInModal(); // ← ADD THIS LINE
+    
+    // Enable and reset the date field for new items
+    const dateField = document.getElementById('itemEffectiveDate');
+    dateField.valueAsDate = new Date();
+    dateField.readOnly = false;
+    dateField.style.backgroundColor = '';
+    dateField.style.cursor = '';
+    dateField.title = '';
+    
+    populateVendorDropdownInModal();
     openModal('itemModal');
 }
 
@@ -5177,7 +5185,14 @@ async function editItem(id) {
         document.getElementById('itemCategory').value = item.category || '';  // ADD THIS LINE
 
         document.getElementById('itemPrice').value = item.unit_price || '';
-        document.getElementById('itemEffectiveDate').value = item.purchase_date || '';
+        
+        // Set purchase date and make it readonly (it's in the invoices table, not invoice_items)
+        const dateField = document.getElementById('itemEffectiveDate');
+        dateField.value = item.purchase_date || '';
+        dateField.readOnly = true;
+        dateField.style.backgroundColor = '#f5f5f5';
+        dateField.style.cursor = 'not-allowed';
+        dateField.title = 'Date cannot be changed for individual items. Edit through Invoice Tracking tab.';
         
         // Set assigned_to
         const assignedToSelect = document.getElementById('itemAssignedTo');
@@ -5275,35 +5290,69 @@ function openAddInvoiceModal() {
         };
 
         if (editId) {
-            // Single item edit
-            const { error } = await supabaseClient.from('invoice_items').update(itemData).eq('id', editId);
-            if (error) throw error;
-
-            // Auto-update ALL matching item_codes
-            if (itemData.item_code) {
-                const { data: matchingItems, error: updateError } = await supabaseClient
-                    .from('invoice_items')
-                    .update({
-                        product_name: itemData.product_name,
-                        vendor: itemData.vendor,
-                        category: itemData.category,
-                        unit_price: itemData.unit_price,
-                        image_path: itemData.image_path
-                    })
-                    .eq('item_code', itemData.item_code)
-                    .select();
-
-                if (updateError) throw updateError;
-
-                const updateCount = matchingItems ? matchingItems.length : 0;
-                showAlert(`✅ Updated ${updateCount} item(s) with code ${itemData.item_code}`, 'success');
-            } else {
-                showAlert('Item updated!', 'success');
+            // Get the original item to know the old product_name
+            const originalItem = inventoryData.find(i => String(i.id) === String(editId));
+            if (!originalItem) {
+                throw new Error('Original item not found');
             }
+
+            const oldProductName = originalItem.product_name;
+
+            // STEP 1: Update THIS specific item with ALL fields
+            const { error: itemError } = await supabaseClient
+                .from('invoice_items')
+                .update(itemData)
+                .eq('id', editId);
+            
+            if (itemError) throw itemError;
+
+            let updateMessages = [];
+
+            // STEP 2: Update PRODUCT-LEVEL attributes across ALL vendors (same product name)
+            // These are: product_name, category, image_path, assigned_to
+            const { data: productUpdates, error: productError } = await supabaseClient
+                .from('invoice_items')
+                .update({
+                    product_name: itemData.product_name,
+                    category: itemData.category,
+                    image_path: itemData.image_path,
+                    assigned_to: itemData.assigned_to
+                })
+                .eq('product_name', oldProductName)
+                .neq('id', editId) // Don't update the item we already updated
+                .select();
+            
+            if (productError) {
+                console.warn('Product-level update warning:', productError);
+            } else if (productUpdates && productUpdates.length > 0) {
+                updateMessages.push(`Updated ${productUpdates.length} items across all vendors`);
+            }
+
+            // STEP 3: Update VENDOR-SPECIFIC attributes (item_code) for same product + same vendor
+            const { data: vendorUpdates, error: vendorError } = await supabaseClient
+                .from('invoice_items')
+                .update({
+                    item_code: itemData.item_code
+                })
+                .eq('product_name', itemData.product_name)
+                .eq('vendor', itemData.vendor)
+                .neq('id', editId) // Don't update the item we already updated
+                .select();
+            
+            if (vendorError) {
+                console.warn('Vendor-specific update warning:', vendorError);
+            } else if (vendorUpdates && vendorUpdates.length > 0) {
+                updateMessages.push(`Updated item code for ${vendorUpdates.length} ${itemData.vendor} items`);
+            }
+
+            // Show success message with details
+            const mainMessage = '✅ Item updated successfully!';
+            const detailMessage = updateMessages.length > 0 ? '\n' + updateMessages.join('\n') : '';
+            showAlert(mainMessage + detailMessage, 'success');
+
         } else {
-            // For new items, we need an invoice_id - this should probably be handled differently
-            // For now, let's show an error
-            showAlert('Please add items through Invoice Tracking tab', 'error');
+            // For new items, we need an invoice_id - this should be handled through Invoice Tracking
+            showAlert('❌ Please add new items through Invoice Tracking tab', 'error');
             return;
         }
 
