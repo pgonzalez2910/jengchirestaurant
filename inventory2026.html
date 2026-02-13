@@ -5413,8 +5413,76 @@ function openAddInvoiceModal() {
             document.getElementById(modalId).classList.remove('active');
         }
 
+// Recalculate and update invoice totals after adding/editing items
+async function updateInvoiceTotals(invoiceId) {
+    try {
+        // Get all items for this invoice
+        const { data: items, error: itemsError } = await supabaseClient
+            .from('invoice_items')
+            .select('line_total')
+            .eq('invoice_id', invoiceId);
+        
+        if (itemsError) throw itemsError;
+        
+        // Count items and calculate subtotal
+        const itemCount = items.length;
+        const subtotal = items.reduce((sum, item) => sum + (parseFloat(item.line_total) || 0), 0);
+        
+        // Get the invoice to check tax settings
+        const { data: invoice, error: invoiceError } = await supabaseClient
+            .from('invoices')
+            .select('tax_enabled')
+            .eq('id', invoiceId)
+            .single();
+        
+        if (invoiceError) throw invoiceError;
+        
+        // Calculate tax (8.25% if enabled)
+        const TAX_RATE = 0.0825;
+        const taxAmount = invoice.tax_enabled ? subtotal * TAX_RATE : 0;
+        const total = subtotal + taxAmount;
+        
+        // Update the invoice with correct column names
+        const { error: updateError } = await supabaseClient
+            .from('invoices')
+            .update({
+                subtotal: subtotal,      // ✅ Correct column name
+                tax_amount: taxAmount,   // ✅ Correct column name
+                total: total,            // ✅ Correct column name
+                amount: total            // ✅ Also update 'amount' (main total field)
+            })
+            .eq('id', invoiceId);
+        
+        if (updateError) throw updateError;
+        
+        console.log(`✅ Invoice updated: ${itemCount} items, Subtotal=$${subtotal.toFixed(2)}, Tax=$${taxAmount.toFixed(2)}, Total=$${total.toFixed(2)}`);
+        
+    } catch (error) {
+        console.error('Error updating invoice totals:', error);
+        // Don't throw - item was added successfully, just log the error
+    }
+}
+
+let isSubmittingItem = false; // Flag to prevent multiple submissions
+
       async function saveVendorItem(event) {
     event.preventDefault();
+    
+    // Prevent multiple submissions
+    if (isSubmittingItem) {
+        console.log('⚠️ Already submitting, ignoring duplicate submission');
+        return;
+    }
+    
+    isSubmittingItem = true;
+    
+    // Disable the submit button immediately
+    const submitButton = event.target.querySelector('button[type="submit"]');
+    if (submitButton) {
+        submitButton.disabled = true;
+        submitButton.textContent = 'Saving...';
+    }
+    
     showLoading(true);
     try {
         const assignedToSelect = document.getElementById('itemAssignedTo');
@@ -5457,6 +5525,13 @@ function openAddInvoiceModal() {
 
             const oldProductName = originalItem.product_name;
 
+            // Calculate line_total for the updated item
+            if (itemData.has_weight) {
+                itemData.line_total = itemData.weight * itemData.price_per_unit;
+            } else {
+                itemData.line_total = itemData.quantity * itemData.unit_price;
+            }
+
             // STEP 1: Update THIS specific item with ALL fields
             const { error: itemError } = await supabaseClient
                 .from('invoice_items')
@@ -5464,6 +5539,9 @@ function openAddInvoiceModal() {
                 .eq('id', editId);
             
             if (itemError) throw itemError;
+            
+            // Recalculate and update invoice totals
+            await updateInvoiceTotals(originalItem.invoice_id);
 
             let updateMessages = [];
 
@@ -5518,23 +5596,8 @@ function openAddInvoiceModal() {
                 return;
             }
             
-            // Get the next line number for this invoice
-            const { data: existingItems, error: countError } = await supabaseClient
-                .from('invoice_items')
-                .select('line_number')
-                .eq('invoice_id', invoiceId)
-                .order('line_number', { ascending: false })
-                .limit(1);
-            
-            if (countError) throw countError;
-            
-            const nextLineNumber = existingItems && existingItems.length > 0 
-                ? existingItems[0].line_number + 1 
-                : 1;
-            
             // Add invoice_id to itemData for new items
             itemData.invoice_id = invoiceId;
-            itemData.line_number = nextLineNumber; // Set line number
             
             // Calculate line total based on whether it's sold by weight or quantity
             if (itemData.has_weight) {
@@ -5543,17 +5606,43 @@ function openAddInvoiceModal() {
                 itemData.line_total = itemData.quantity * itemData.unit_price;
             }
             
+            console.log('💾 Saving new item to invoice:', invoiceId);
+            console.log('💾 Item data:', itemData);
+            
             const { error: insertError } = await supabaseClient
                 .from('invoice_items')
                 .insert([itemData]);
             
             if (insertError) throw insertError;
             
-            showAlert('✅ Item added successfully!', 'success');
+            // Verify the item was saved
+            const { data: savedItem, error: verifyError } = await supabaseClient
+                .from('invoice_items')
+                .select('*')
+                .eq('invoice_id', invoiceId)
+                .eq('product_name', itemData.product_name)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .single();
+            
+            if (!verifyError && savedItem) {
+                console.log('✅ Item verified in database:', savedItem.product_name, '- ID:', savedItem.id);
+            }
+            
+            // Recalculate and update invoice totals
+            await updateInvoiceTotals(invoiceId);
+            
+            showAlert('✅ Item added successfully! Invoice totals updated.', 'success');
         }
 
         closeModal('itemModal');
         await loadInventoryData();
+        
+        // Also reload invoice data so Invoice Tracking tab shows updated totals
+        if (typeof loadInvoices === 'function') {
+            await loadInvoices();
+        }
+        
         renderQuickEditTable();
         applyFilters();
     } catch (error) {
@@ -5561,6 +5650,15 @@ function openAddInvoiceModal() {
         showAlert('Error: ' + error.message, 'error');
     } finally {
         showLoading(false);
+        isSubmittingItem = false; // Reset flag
+        
+        // Re-enable submit button
+        const form = document.getElementById('itemForm');
+        const submitButton = form.querySelector('button[type="submit"]');
+        if (submitButton) {
+            submitButton.disabled = false;
+            submitButton.textContent = 'Save';
+        }
     }
 }
 
@@ -6257,7 +6355,9 @@ for (const product of selectedInvoiceProducts) {
                 
                 if (itemsError) throw itemsError;
 
-                console.log('Loaded invoice items:', items);
+                console.log('📦 Loaded invoice:', invoice);
+                console.log('📦 Loaded', items.length, 'items for invoice', invoice.invoice_number);
+                console.log('📦 Items:', items.map(i => i.product_name));
 
                 openModal('invoiceModal');
                 populateInvoiceVendorDropdown();
