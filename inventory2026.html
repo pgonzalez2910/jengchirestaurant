@@ -2100,6 +2100,14 @@ input[id^="par-input-"]:focus {
                         <option value="Other">Other</option>
                     </select>
                 </div>
+                <div class="filter-group">
+                    <label>Image Status</label>
+                    <select id="imageFilter" class="search-input" onchange="applyFilters()">
+                        <option value="">All Products</option>
+                        <option value="missing">⚠️ Missing Images</option>
+                        <option value="has_image">✅ Has Images</option>
+                    </select>
+                </div>
                 <div style="display: flex; gap: 0.5rem; align-items: flex-end;">
                     <button class="btn btn-primary" onclick="exportToCSV()">📥 Export</button>
                     <button class="btn btn-secondary" onclick="openBulkAssignModal()">👥 Bulk Assign</button>
@@ -2111,6 +2119,9 @@ input[id^="par-input-"]:focus {
                 <div class="table-header">
                     <h2>Product Inventory</h2>
                     <div class="table-actions" style="display: flex; align-items: center; gap: 1rem;">
+                        <button class="btn" onclick="syncAllProductImages()" title="Sync all images from Inventory Management to 2026 invoices" style="background: var(--accent-600); color: white; min-width: 140px; white-space: nowrap;">
+                            <i class="fas fa-sync"></i> Sync Images
+                        </button>
                         <button class="btn" onclick="toggleBulkAssignMode()" id="bulkAssignToggleBtn" title="Bulk Assign Mode" style="background: var(--primary-600); color: white; min-width: 140px; white-space: nowrap;">
                             <i class="fas fa-user-check"></i> Bulk Assign
                         </button>
@@ -3658,17 +3669,81 @@ async function initializeApp() {
 
         async function loadInventoryData() {
             try {
-                const { data, error } = await supabaseClient
-                    .from('purchase_history')
-                    .select('*')
-                    .order('purchase_date', { ascending: false });
-                if (error) throw error;
-                inventoryData = data || [];
+                // ✅ Load from invoice_items table (2026+ invoices)
+                const { data: invoiceItems, error: itemsError } = await supabaseClient
+                    .from('invoice_items')
+                    .select('*');
+                
+                if (itemsError) throw itemsError;
+
+                // Get invoice dates
+                const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id).filter(Boolean))];
+                let invDateMap = new Map();
+                let invVendorMap = new Map();
+                
+                if (invoiceIds.length > 0) {
+                    const { data: invoices } = await supabaseClient
+                        .from('invoices')
+                        .select('id, invoice_date, vendor')
+                        .in('id', invoiceIds);
+                    
+                    (invoices || []).forEach(inv => {
+                        invDateMap.set(inv.id, inv.invoice_date);
+                        invVendorMap.set(inv.id, inv.vendor);
+                    });
+                }
+
+                // ✅ Load images from inventory_management table
+                const { data: inventoryMgmt } = await supabaseClient
+                    .from('inventory_management')
+                    .select('product_name, image_url');
+                
+                const imageMap = new Map();
+                (inventoryMgmt || []).forEach(item => {
+                    if (item.image_url) {
+                        imageMap.set(item.product_name, item.image_url);
+                    }
+                });
+
+                // Transform invoice_items to match purchase_history structure
+                inventoryData = (invoiceItems || []).map(item => {
+                    const invoiceDate = invDateMap.get(item.invoice_id);
+                    const vendor = item.vendor || invVendorMap.get(item.invoice_id);
+                    
+                    // Calculate unit price (same as invoice logic)
+                    const unitPrice = item.has_weight 
+                        ? parseFloat(item.price_per_unit || 0)
+                        : parseFloat(item.unit_price || 0);
+
+                    // Get image from inventory_management or use existing image_path
+                    const imagePath = imageMap.get(item.product_name) || item.image_path;
+
+                    return {
+                        id: item.id,
+                        product_name: item.product_name,
+                        item_code: item.item_code,
+                        vendor: vendor,
+                        category: item.category || 'Uncategorized',
+                        unit_price: unitPrice,
+                        purchase_date: invoiceDate,
+                        image_path: imagePath,
+                        assigned_to: item.assigned_to || [],
+                        invoice_id: item.invoice_id
+                    };
+                })
+                .filter(item => {
+                    // Filter for 2026+ only
+                    if (!item.purchase_date) return false;
+                    return new Date(item.purchase_date).getFullYear() >= 2026;
+                })
+                .sort((a, b) => new Date(b.purchase_date) - new Date(a.purchase_date));
+
                 filteredData = [...inventoryData];
                 populateVendorFilter();
                 populateProductSelects();
                 populateInvoiceVendorSelect();
                 populateInvoiceVendorDropdown();
+                renderInventoryTable();
             } catch (error) {
                 console.error('Load inventory error:', error);
             }
@@ -4161,16 +4236,16 @@ async function renderQuickEditTable() {
             (invoices || []).forEach(inv => invDateMap.set(inv.id, inv.invoice_date));
         }
 
-        // Load product images from purchase_history (where inventory is actually stored)
-        const { data: historyData } = await supabaseClient
-            .from('purchase_history')
-            .select('product_name, image_path, item_code');
+        // Load product images from inventory_management table
+        const { data: inventoryMgmt } = await supabaseClient
+            .from('inventory_management')
+            .select('product_name, image_url, item_code');
         const imageMap = new Map();
-        (historyData || []).forEach(item => {
-            if (item.image_path) {
+        (inventoryMgmt || []).forEach(item => {
+            if (item.image_url) {
                 // Store by both product name and item code for better matching
-                imageMap.set(item.product_name, item.image_path);
-                if (item.item_code) imageMap.set(item.item_code, item.image_path);
+                imageMap.set(item.product_name, item.image_url);
+                if (item.item_code) imageMap.set(item.item_code, item.image_url);
             }
         });
 
@@ -4420,7 +4495,7 @@ async function saveQuickEditInvoice(event) {
                     if (!currentAssigned.includes(person)) {
                       const newAssigned = [person]; // exclusive!
                         const { error } = await supabaseClient
-                            .from('purchase_history')
+                            .from('invoice_items')
                             .update({ assigned_to: newAssigned })
                             .eq('id', item.id);
 
@@ -4455,8 +4530,8 @@ async function saveQuickEditInvoice(event) {
                 const newAssignment = existingArray.filter(p => p !== person);
 
                 const { error } = await supabaseClient
-                    .from('purchase_history')
-                   .update({ assigned_to: [person] })
+                    .from('invoice_items')
+                   .update({ assigned_to: newAssignment })
                     .eq('id', itemId);
 
                 if (error) throw error;
@@ -4861,7 +4936,8 @@ function performSearch() {
     const vendorFilter = document.getElementById('vendorFilter').value;
     const yearFilter = document.getElementById('yearFilter').value;
     const assignedFilter = document.getElementById('assignedToFilter').value;
-    const categoryFilter = document.getElementById('categoryFilter').value;  // ADD THIS LINE
+    const categoryFilter = document.getElementById('categoryFilter').value;
+    const imageFilter = document.getElementById('imageFilter').value;
 
     let data = filteredData.length > 0 ? filteredData : inventoryData;
 
@@ -4884,9 +4960,17 @@ function performSearch() {
         }
     }
 
-    // ADD THIS BLOCK
     if (categoryFilter) {
         data = data.filter(i => i.category === categoryFilter);
+    }
+
+    // ✅ NEW: Filter by image status
+    if (imageFilter) {
+        if (imageFilter === 'missing') {
+            data = data.filter(i => !i.image_path || i.image_path.trim() === '');
+        } else if (imageFilter === 'has_image') {
+            data = data.filter(i => i.image_path && i.image_path.trim() !== '');
+        }
     }
 
     filteredData = data;
@@ -5164,20 +5248,21 @@ function openAddInvoiceModal() {
             vendor: document.getElementById('itemVendor').value,
             category: document.getElementById('itemCategory').value || null,
             unit_price: parseFloat(document.getElementById('itemPrice').value),
-            purchase_date: document.getElementById('itemEffectiveDate').value,
             image_path: document.getElementById('itemProductImage').value.trim() || null,
-            assigned_to: assignedTo
+            assigned_to: assignedTo,
+            has_weight: false,
+            price_per_unit: 0
         };
 
         if (editId) {
             // Single item edit
-            const { error } = await supabaseClient.from('purchase_history').update(itemData).eq('id', editId);
+            const { error } = await supabaseClient.from('invoice_items').update(itemData).eq('id', editId);
             if (error) throw error;
 
             // Auto-update ALL matching item_codes
             if (itemData.item_code) {
                 const { data: matchingItems, error: updateError } = await supabaseClient
-                    .from('purchase_history')
+                    .from('invoice_items')
                     .update({
                         product_name: itemData.product_name,
                         vendor: itemData.vendor,
@@ -5196,9 +5281,10 @@ function openAddInvoiceModal() {
                 showAlert('Item updated!', 'success');
             }
         } else {
-            const { error } = await supabaseClient.from('purchase_history').insert([itemData]);
-            if (error) throw error;
-            showAlert('Item added!', 'success');
+            // For new items, we need an invoice_id - this should probably be handled differently
+            // For now, let's show an error
+            showAlert('Please add items through Invoice Tracking tab', 'error');
+            return;
         }
 
         closeModal('itemModal');
@@ -5996,7 +6082,7 @@ for (const product of selectedInvoiceProducts) {
             if (!confirm('Delete this item?')) return;
             showLoading(true);
             try {
-                const { error } = await supabaseClient.from('purchase_history').delete().eq('id', id);
+                const { error } = await supabaseClient.from('invoice_items').delete().eq('id', id);
                 if (error) throw error;
                 showAlert('Item deleted', 'success');
                 await loadInventoryData();
@@ -6079,15 +6165,109 @@ for (const product of selectedInvoiceProducts) {
             
             showLoading(true);
             try {
-                const { error } = await supabaseClient.from('purchase_history').delete().in('id', Array.from(selectedItems));
+                const { error } = await supabaseClient.from('invoice_items').delete().in('id', Array.from(selectedItems));
                 if (error) throw error;
                 showAlert('Items deleted', 'success');
                 selectedItems.clear();
                 deleteMode = false;
-                await loadInventory();
+                await loadInventoryData();
+                applyFilters();
             } catch (error) {
                 console.error('Delete error:', error);
                 showAlert('Delete failed', 'error');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // ✅ NEW: Sync all product images from inventory_management to invoice_items
+        async function syncAllProductImages() {
+            if (!confirm('This will copy all product images from Inventory Management to your 2026 invoices.\n\nDo you want to continue?')) {
+                return;
+            }
+
+            showLoading(true);
+            try {
+                // 1. Load all products with images from inventory_management
+                const { data: inventoryMgmt, error: mgmtError } = await supabaseClient
+                    .from('inventory_management')
+                    .select('product_name, image_url')
+                    .not('image_url', 'is', null);
+
+                if (mgmtError) throw mgmtError;
+
+                if (!inventoryMgmt || inventoryMgmt.length === 0) {
+                    showAlert('No images found in Inventory Management table', 'warning');
+                    return;
+                }
+
+                // 2. Create a map of product_name -> image_url
+                const imageMap = new Map();
+                inventoryMgmt.forEach(item => {
+                    if (item.image_url && item.image_url.trim() !== '') {
+                        imageMap.set(item.product_name, item.image_url);
+                    }
+                });
+
+                console.log(`📸 Found ${imageMap.size} products with images in inventory_management`);
+
+                // 3. Load all invoice_items
+                const { data: invoiceItems, error: itemsError } = await supabaseClient
+                    .from('invoice_items')
+                    .select('id, product_name, image_path');
+
+                if (itemsError) throw itemsError;
+
+                // 4. Update invoice_items that match and need images
+                let updatedCount = 0;
+                let skippedCount = 0;
+                const batchSize = 50;
+
+                for (let i = 0; i < invoiceItems.length; i += batchSize) {
+                    const batch = invoiceItems.slice(i, i + batchSize);
+                    
+                    for (const item of batch) {
+                        const newImage = imageMap.get(item.product_name);
+                        
+                        // Only update if:
+                        // 1. We have an image for this product
+                        // 2. Current image_path is null or empty
+                        if (newImage && (!item.image_path || item.image_path.trim() === '')) {
+                            const { error: updateError } = await supabaseClient
+                                .from('invoice_items')
+                                .update({ image_path: newImage })
+                                .eq('id', item.id);
+
+                            if (updateError) {
+                                console.error(`Error updating ${item.product_name}:`, updateError);
+                            } else {
+                                updatedCount++;
+                            }
+                        } else if (item.image_path && item.image_path.trim() !== '') {
+                            skippedCount++;
+                        }
+                    }
+                }
+
+                console.log(`✅ Updated ${updatedCount} products with images`);
+                console.log(`⏭️ Skipped ${skippedCount} products (already have images)`);
+
+                // 5. Reload inventory to show new images
+                await loadInventoryData();
+                applyFilters();
+
+                // 6. Show summary
+                showAlert(
+                    `✅ Image Sync Complete!\n\n` +
+                    `📸 Updated: ${updatedCount} products\n` +
+                    `⏭️ Skipped: ${skippedCount} products (already had images)\n` +
+                    `📊 Total in inventory_management: ${imageMap.size} images available`,
+                    'success'
+                );
+
+            } catch (error) {
+                console.error('Sync images error:', error);
+                showAlert('❌ Error syncing images: ' + error.message, 'error');
             } finally {
                 showLoading(false);
             }
@@ -7600,7 +7780,7 @@ function renderEnhancedCard(row, userType) {
     const isAssignedToJulio  = currentUser === 'julio';
     const isAssignedToOffice = currentUser === 'office';
 
-    // Price data (ACTUAL 2026 prices)
+    // Price data (50% of actual)
     const productPrices = inventoryData.filter(i => i.product_name === productName);
     const prices = productPrices.map(i => parseFloat(i.unit_price || 0));
     let bestPrice    = { price: 0, vendor: 'N/A', date: 'N/A' };
@@ -7611,8 +7791,8 @@ function renderEnhancedCard(row, userType) {
         const maxPrice = Math.max(...prices);
         const minItem  = productPrices.find(i => parseFloat(i.unit_price) === minPrice);
         const maxItem  = productPrices.find(i => parseFloat(i.unit_price) === maxPrice);
-        bestPrice    = { price: minPrice, vendor: minItem?.vendor || 'N/A', date: minItem?.purchase_date || 'N/A' };
-        highestPrice = { price: maxPrice, vendor: maxItem?.vendor || 'N/A', date: maxItem?.purchase_date || 'N/A' };
+        bestPrice    = { price: minPrice * 0.5, vendor: minItem?.vendor || 'N/A', date: minItem?.purchase_date || 'N/A' };
+        highestPrice = { price: maxPrice * 0.5, vendor: maxItem?.vendor || 'N/A', date: maxItem?.purchase_date || 'N/A' };
     }
 
     return `
@@ -7653,29 +7833,38 @@ function renderEnhancedCard(row, userType) {
     </div>
   </div>
 
-  <!-- INVENTORY METRICS — ACTUAL VALUES -->
+  <!-- INVENTORY METRICS — ALL AT 50% -->
   <div style="padding:1rem;background:var(--neutral-50);border-bottom:1px solid var(--neutral-200);">
+    <!-- Halved notice badge -->
+    <div style="text-align:center;margin-bottom:0.75rem;">
+      <span style="display:inline-block;background:var(--primary-100);color:var(--primary-800);padding:0.25rem 0.75rem;border-radius:50px;font-size:0.7rem;font-weight:700;letter-spacing:0.05em;">
+        ÷2 — ALL VALUES SHOWN AT 50%
+      </span>
+    </div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;">
 
-      <!-- CURRENT STOCK / ORDER QTY - Shows ACTUAL values for both Rony and Julio -->
+      <!-- CURRENT STOCK - For Julio shows his order qty at 50%, for Rony shows ACTUAL inventory (not halved) -->
       <div style="background:white;padding:0.75rem;border-radius:8px;border:1px solid var(--neutral-300);text-align:center;">
         <div style="font-size:0.6875rem;font-weight:700;color:var(--neutral-600);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">${isJulio ? 'Order Qty' : 'Current Stock'}</div>
-        <div style="font-size:1.75rem;font-weight:700;font-family:var(--font-mono);color:var(--primary-700);">${displayStockRaw.toFixed(1)}</div>
+        <div style="font-size:1.75rem;font-weight:700;font-family:var(--font-mono);color:var(--primary-700);">${isRony ? displayStockRaw.toFixed(1) : displayStock50.toFixed(1)}</div>
+        ${isJulio ? `<div style="font-size:0.6rem;color:var(--neutral-400);margin-top:0.2rem;">actual: ${displayStockRaw.toFixed(1)}</div>` : ''}
       </div>
 
-      <!-- PAR LEVEL - ACTUAL value -->
+      <!-- PAR (50%) — editable but shows 50% -->
       <div style="background:white;padding:0.75rem;border-radius:8px;border:1px solid var(--accent-400);text-align:center;">
         <div style="font-size:0.6875rem;font-weight:700;color:var(--neutral-600);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">PAR Level</div>
-        <div style="font-size:1.75rem;font-weight:700;font-family:var(--font-mono);color:var(--accent-700);">${parRaw.toFixed(1)}</div>
+        <div style="font-size:1.75rem;font-weight:700;font-family:var(--font-mono);color:var(--accent-700);">${par50.toFixed(1)}</div>
+        <div style="font-size:0.6rem;color:var(--neutral-400);margin-top:0.2rem;">actual: ${parRaw.toFixed(1)}</div>
       </div>
 
-      <!-- ORDER NEEDED - ACTUAL value -->
-      <div style="background:${neededRaw > 0 ? 'var(--warning-50)' : 'var(--success-50)'};padding:0.75rem;border-radius:8px;border:1px solid ${neededRaw > 0 ? 'var(--warning-400)' : 'var(--success-400)'};text-align:center;">
+      <!-- ORDER NEEDED (50%) -->
+      <div style="background:${needed50 > 0 ? 'var(--warning-50)' : 'var(--success-50)'};padding:0.75rem;border-radius:8px;border:1px solid ${needed50 > 0 ? 'var(--warning-400)' : 'var(--success-400)'};text-align:center;">
         <div style="font-size:0.6875rem;font-weight:700;color:var(--neutral-600);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">
-          ${neededRaw > 0 ? 'Order Needed' : 'Fully Stocked'}
+          ${needed50 > 0 ? 'Order Needed' : 'Fully Stocked'}
         </div>
-        ${neededRaw > 0 ? `
-          <div style="font-size:1.75rem;font-weight:700;font-family:var(--font-mono);color:var(--warning-700);">${neededRaw.toFixed(1)}</div>
+        ${needed50 > 0 ? `
+          <div style="font-size:1.75rem;font-weight:700;font-family:var(--font-mono);color:var(--warning-700);">${needed50.toFixed(1)}</div>
+          <div style="font-size:0.6rem;color:var(--neutral-400);margin-top:0.2rem;">actual: ${neededRaw.toFixed(1)}</div>
         ` : `
           <div style="font-size:1.75rem;font-weight:700;color:var(--success-600);"><i class="fas fa-check-circle"></i></div>
         `}
@@ -7689,7 +7878,7 @@ function renderEnhancedCard(row, userType) {
       <span style="display:inline-block;background:var(--success-50);color:var(--success-800);
                    padding:0.2rem 0.6rem;border-radius:50px;font-size:0.6rem;font-weight:700;
                    letter-spacing:0.04em;">
-        2026 ACTUAL PRICES
+        2026 PRICES AT 50%
       </span>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;">
@@ -7824,7 +8013,7 @@ async function selectVendorAndUpdateItemCode(rowId, productName, vendor) {
     const statusEl = document.getElementById(`save-status-${productId}`);
     
     try {
-        // ✅ Look up item code from invoice_items table (2026 data first)
+        // ✅ Look up item code from invoice_items table (2026 data)
         const { data: invoiceItems, error: itemsError } = await supabaseClient
             .from('invoice_items')
             .select('item_code, unit_price, price_per_unit, has_weight, invoice_id, vendor')
@@ -7836,7 +8025,6 @@ async function selectVendorAndUpdateItemCode(rowId, productName, vendor) {
         // Get invoice dates to filter for 2026 and get most recent
         let itemCode = '';
         let latestPrice = 0;
-        let dataSource = '2026';
         
         if (invoiceItems && invoiceItems.length > 0) {
             const invoiceIds = [...new Set(invoiceItems.map(i => i.invoice_id))];
@@ -7863,52 +8051,14 @@ async function selectVendorAndUpdateItemCode(rowId, productName, vendor) {
             }
         }
         
-        // ✅ FALLBACK to 2025 if no item code found in 2026
-        if (!itemCode) {
-            const { data: items2025, error: err2025 } = await supabaseClient
-                .from('invoice_items')
-                .select('item_code, unit_price, price_per_unit, has_weight, invoice_id, vendor')
-                .eq('product_name', productName)
-                .eq('vendor', vendor);
-
-            if (!err2025 && items2025 && items2025.length > 0) {
-                const inv2025Ids = [...new Set(items2025.map(i => i.invoice_id))];
-                const { data: invoices2025 } = await supabaseClient
-                    .from('invoices')
-                    .select('id, invoice_date')
-                    .in('id', inv2025Ids)
-                    .gte('invoice_date', '2025-01-01')
-                    .lt('invoice_date', '2026-01-01');
-
-                // Find most recent 2025 item
-                const valid2025 = items2025
-                    .map(item => {
-                        const invoice = invoices2025?.find(inv => inv.id === item.invoice_id);
-                        return { ...item, invoice_date: invoice?.invoice_date };
-                    })
-                    .filter(item => item.invoice_date)
-                    .sort((a, b) => new Date(b.invoice_date) - new Date(a.invoice_date));
-
-                if (valid2025.length > 0) {
-                    const mostRecent2025 = valid2025[0];
-                    itemCode = mostRecent2025.item_code || '';
-                    latestPrice = mostRecent2025.has_weight
-                        ? parseFloat(mostRecent2025.price_per_unit || 0)
-                        : parseFloat(mostRecent2025.unit_price || 0);
-                    dataSource = '2025';
-                }
-            }
-        }
-        
         // Update UI
         if (itemCodeInput) itemCodeInput.value = itemCode || '';
         if (itemCodeDisplay) itemCodeDisplay.textContent = itemCode || 'Not Set - Select Vendor';
         
         // Show status
         if (statusEl) {
-            const sourceLabel = dataSource === '2025' ? ' (from 2025 📅)' : '';
             statusEl.innerHTML = itemCode 
-                ? `<span style="color: var(--success-600);"><i class="fas fa-check-circle"></i> Item code loaded: ${itemCode}${sourceLabel}</span>`
+                ? `<span style="color: var(--success-600);"><i class="fas fa-check-circle"></i> Item code loaded: ${itemCode}</span>`
                 : `<span style="color: var(--warning-600);"><i class="fas fa-exclamation-triangle"></i> No item code found for ${vendor}</span>`;
         }
         
@@ -7924,8 +8074,7 @@ async function selectVendorAndUpdateItemCode(rowId, productName, vendor) {
         if (updateError) throw updateError;
         
         if (statusEl) {
-            const sourceLabel = dataSource === '2025' ? ' 📅' : '';
-            statusEl.innerHTML = `<span style="color: var(--success-600);">✅ ${vendor} selected${itemCode ? ` (${itemCode}${sourceLabel})` : ''}${latestPrice ? ` - $${parseFloat(latestPrice).toFixed(2)}` : ''}</span>`;
+            statusEl.innerHTML = `<span style="color: var(--success-600);">✅ ${vendor} selected${itemCode ? ` (${itemCode})` : ''}${price ? ` - $${parseFloat(price).toFixed(2)}` : ''}</span>`;
             setTimeout(() => { statusEl.innerHTML = ''; }, 3000);
         }
         
@@ -7972,8 +8121,6 @@ async function loadVendorPricesForProduct(productName, productId) {
 
         // 3. Build flat list — 2026 ONLY
         const allEntries = [];
-        const vendorsWithItemCodeButNoPrice = new Map(); // Track vendors that need 2025 fallback
-        
         (invoiceItems || []).forEach(item => {
             const invInfo = invoiceDatesMap.get(item.invoice_id);
             if (!invInfo || !invInfo.date) return;
@@ -7983,71 +8130,13 @@ async function loadVendorPricesForProduct(productName, productId) {
                 ? parseFloat(item.price_per_unit || 0)
                 : parseFloat(item.unit_price || 0);
 
-            // If item has code but no price, mark for 2025 fallback
-            if (item.item_code && (!price || price === 0)) {
-                vendorsWithItemCodeButNoPrice.set(invInfo.vendor, item.item_code);
-            }
-
-            if (price > 0) {
-                allEntries.push({
-                    vendor:    invInfo.vendor,
-                    item_code: item.item_code || 'N/A',
-                    price,
-                    date:      invInfo.date,
-                    source:    '2026'
-                });
-            }
+            allEntries.push({
+                vendor:    invInfo.vendor,
+                item_code: item.item_code || 'N/A',
+                price,
+                date:      invInfo.date
+            });
         });
-
-        // 3.5. ✅ FALLBACK to 2025 for vendors with item codes but no 2026 price
-        if (vendorsWithItemCodeButNoPrice.size > 0) {
-            for (const [vendor, itemCode] of vendorsWithItemCodeButNoPrice.entries()) {
-                // Search 2025 invoices for this vendor + item_code
-                const { data: items2025, error: err2025 } = await supabaseClient
-                    .from('invoice_items')
-                    .select('vendor, item_code, unit_price, price_per_unit, has_weight, invoice_id')
-                    .eq('item_code', itemCode)
-                    .eq('vendor', vendor);
-
-                if (!err2025 && items2025 && items2025.length > 0) {
-                    // Get invoice dates for 2025 items
-                    const inv2025Ids = [...new Set(items2025.map(i => i.invoice_id))];
-                    const { data: invoices2025 } = await supabaseClient
-                        .from('invoices')
-                        .select('id, invoice_date, vendor')
-                        .in('id', inv2025Ids)
-                        .gte('invoice_date', '2025-01-01')
-                        .lt('invoice_date', '2026-01-01');
-
-                    // Find most recent 2025 price for this item code
-                    let mostRecent2025 = null;
-                    (invoices2025 || []).forEach(inv => {
-                        const item = items2025.find(i => i.invoice_id === inv.id);
-                        if (item) {
-                            const price2025 = item.has_weight
-                                ? parseFloat(item.price_per_unit || 0)
-                                : parseFloat(item.unit_price || 0);
-                            
-                            if (price2025 > 0) {
-                                if (!mostRecent2025 || new Date(inv.invoice_date) > new Date(mostRecent2025.date)) {
-                                    mostRecent2025 = {
-                                        vendor: inv.vendor,
-                                        item_code: item.item_code,
-                                        price: price2025,
-                                        date: inv.invoice_date,
-                                        source: '2025'
-                                    };
-                                }
-                            }
-                        }
-                    });
-
-                    if (mostRecent2025) {
-                        allEntries.push(mostRecent2025);
-                    }
-                }
-            }
-        }
 
         // 4. Per vendor: keep only MOST RECENT entry
         const vendorLatestMap = new Map();
@@ -8057,8 +8146,7 @@ async function loadVendorPricesForProduct(productName, productId) {
                 vendorLatestMap.set(entry.vendor, {
                     item_code: entry.item_code,
                     price:     entry.price,
-                    date:      entry.date,
-                    source:    entry.source || '2026'
+                    date:      entry.date
                 });
             }
         });
@@ -8109,34 +8197,34 @@ async function loadVendorPricesForProduct(productName, productId) {
             }
         }
 
-        // 6. Compute best / highest (ACTUAL prices, no 50% reduction)
+        // 6. Compute best / highest
         const sortedVendors = Array.from(vendorLatestMap.keys()).sort();
-        const prices        = sortedVendors.map(v => vendorLatestMap.get(v).price);
-        const bestPrice     = Math.min(...prices);
-        const highPrice     = Math.max(...prices);
-        const bestVendor    = sortedVendors[prices.indexOf(bestPrice)];
-        const highVendor    = sortedVendors[prices.indexOf(highPrice)];
+        const prices50      = sortedVendors.map(v => vendorLatestMap.get(v).price * 0.5);
+        const bestPrice50   = Math.min(...prices50);
+        const highPrice50   = Math.max(...prices50);
+        const bestVendor    = sortedVendors[prices50.indexOf(bestPrice50)];
+        const highVendor    = sortedVendors[prices50.indexOf(highPrice50)];
         const bestEntry     = vendorLatestMap.get(bestVendor);
         const highEntry     = vendorLatestMap.get(highVendor);
 
-        // 7. ✅ UPDATE the Best Price box (2026 data, ACTUAL prices)
+        // 7. ✅ UPDATE the Best Price box (2026 data)
         const bestBoxEl = document.getElementById(`best-price-box-${productId}`);
         if (bestBoxEl) bestBoxEl.innerHTML = `
             <div style="font-size:1.25rem;font-weight:700;font-family:var(--font-mono);
                         color:var(--success-700);margin-bottom:0.2rem;">
-                $${bestPrice.toFixed(2)}
+                $${bestPrice50.toFixed(2)}
             </div>
             <div style="font-size:0.7rem;color:var(--neutral-700);font-weight:600;">${bestVendor}</div>
             <div style="font-size:0.6rem;color:var(--neutral-500);margin-top:0.1rem;">
                 ${bestEntry.date ? formatDate(bestEntry.date) : 'N/A'}
             </div>`;
 
-        // 8. ✅ UPDATE the Highest Price box (2026 data, ACTUAL prices)
+        // 8. ✅ UPDATE the Highest Price box (2026 data)
         const highBoxEl = document.getElementById(`high-price-box-${productId}`);
         if (highBoxEl) highBoxEl.innerHTML = `
             <div style="font-size:1.25rem;font-weight:700;font-family:var(--font-mono);
                         color:var(--neutral-700);margin-bottom:0.2rem;">
-                $${highPrice.toFixed(2)}
+                $${highPrice50.toFixed(2)}
             </div>
             <div style="font-size:0.7rem;color:var(--neutral-600);font-weight:600;">${highVendor}</div>
             <div style="font-size:0.6rem;color:var(--neutral-500);margin-top:0.1rem;">
@@ -8146,38 +8234,23 @@ async function loadVendorPricesForProduct(productName, productId) {
         // 9. Render vendor table
         if (!container) return;
 
-        const range  = (highPrice - bestPrice).toFixed(2);
+        const range50  = (highPrice50 - bestPrice50).toFixed(2);
         const optLabel = sortedVendors.length === 1 ? '1 vendor' : `${sortedVendors.length} vendors`;
         
-        // Check data sources
-        const has2025Data = Array.from(vendorLatestMap.values()).some(e => e.source === '2025');
+        // Check if any data came from price_history
         const hasHistoryData = Array.from(vendorLatestMap.values()).some(e => e.source === 'price_history');
-        
-        let dataSource = '2026 Invoices';
-        if (has2025Data && hasHistoryData) {
-            dataSource = '2026 + 2025 + History';
-        } else if (has2025Data) {
-            dataSource = '2026 + 2025 Invoices';
-        } else if (hasHistoryData) {
-            dataSource = '2026 + Price History';
-        }
+        const dataSource = hasHistoryData ? 'Price History' : '2026 Invoices';
 
         const rowsHTML = sortedVendors.map(vendor => {
             const entry   = vendorLatestMap.get(vendor);
-            const price   = entry.price.toFixed(2);
+            const price50 = (entry.price * 0.5).toFixed(2);
             const isBest  = vendor === bestVendor;
-            const is2025 = entry.source === '2025';
             const isHistory = entry.source === 'price_history';
-            
-            let sourceIcon = '';
-            if (is2025) sourceIcon = ' <span style="font-size:0.55rem;color:var(--accent-600);" title="2025 data">📅</span>';
-            else if (isHistory) sourceIcon = ' <span style="font-size:0.55rem;color:var(--warning-600);" title="Price history">📜</span>';
-            
             return `
             <tr style="background:${isBest?'rgba(16,185,129,0.07)':'white'};
                        border-bottom:1px solid var(--neutral-200);">
                 <td style="padding:0.3rem 0.45rem;font-weight:700;color:var(--primary-700);font-size:0.7rem;">
-                    ${vendor}${sourceIcon}</td>
+                    ${vendor}${isHistory ? ' <span style="font-size:0.55rem;color:var(--warning-600);">📜</span>' : ''}</td>
                 <td style="padding:0.3rem 0.45rem;font-family:var(--font-mono);font-size:0.65rem;
                            color:${isBest?'var(--success-700)':'var(--neutral-600)'};
                            text-align:center;font-weight:600;">
@@ -8187,7 +8260,7 @@ async function loadVendorPricesForProduct(productName, productId) {
                 <td style="padding:0.3rem 0.45rem;font-family:var(--font-mono);font-weight:700;
                            font-size:0.75rem;text-align:right;
                            color:${isBest?'var(--success-700)':'var(--neutral-800)'};">
-                    $${price}${isBest?' 🏆':''}</td>
+                    $${price50}${isBest?' 🏆':''}</td>
             </tr>`;
         }).join('');
 
@@ -8195,7 +8268,7 @@ async function loadVendorPricesForProduct(productName, productId) {
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.35rem;">
                 <span style="font-size:0.7rem;font-weight:700;color:var(--neutral-600);">🔥 VENDOR PRICES</span>
                 <span style="font-size:0.6rem;color:var(--neutral-400);font-weight:600;">
-                    ${optLabel} • ${dataSource}
+                    ${optLabel} • ${dataSource} • 50%
                 </span>
             </div>
             <table style="width:100%;border-collapse:collapse;
@@ -8205,7 +8278,7 @@ async function loadVendorPricesForProduct(productName, productId) {
                         <th style="padding:0.28rem 0.45rem;font-size:0.6rem;font-weight:700;color:white;text-align:left;">Vendor</th>
                         <th style="padding:0.28rem 0.45rem;font-size:0.6rem;font-weight:700;color:white;text-align:center;">Code</th>
                         <th style="padding:0.28rem 0.45rem;font-size:0.6rem;font-weight:700;color:white;text-align:center;">Date</th>
-                        <th style="padding:0.28rem 0.45rem;font-size:0.6rem;font-weight:700;color:white;text-align:right;">Price</th>
+                        <th style="padding:0.28rem 0.45rem;font-size:0.6rem;font-weight:700;color:white;text-align:right;">Price (50%)</th>
                     </tr>
                 </thead>
                 <tbody>${rowsHTML}</tbody>
@@ -8216,15 +8289,15 @@ async function loadVendorPricesForProduct(productName, productId) {
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.2rem;font-size:0.6rem;">
                     <div style="text-align:center;">
                         <div style="color:var(--neutral-500);font-weight:600;margin-bottom:0.1rem;">BEST</div>
-                        <div style="font-size:0.75rem;font-weight:700;color:var(--success-700);font-family:var(--font-mono);">$${bestPrice.toFixed(2)} 🏆</div>
+                        <div style="font-size:0.75rem;font-weight:700;color:var(--success-700);font-family:var(--font-mono);">$${bestPrice50.toFixed(2)} 🏆</div>
                     </div>
                     <div style="text-align:center;">
                         <div style="color:var(--neutral-500);font-weight:600;margin-bottom:0.1rem;">HIGH</div>
-                        <div style="font-size:0.75rem;font-weight:700;color:var(--warning-600);font-family:var(--font-mono);">$${highPrice.toFixed(2)}</div>
+                        <div style="font-size:0.75rem;font-weight:700;color:var(--warning-600);font-family:var(--font-mono);">$${highPrice50.toFixed(2)}</div>
                     </div>
                     <div style="text-align:center;">
                         <div style="color:var(--neutral-500);font-weight:600;margin-bottom:0.1rem;">RANGE</div>
-                        <div style="font-size:0.75rem;font-weight:700;color:var(--primary-700);font-family:var(--font-mono);">$${range}</div>
+                        <div style="font-size:0.75rem;font-weight:700;color:var(--primary-700);font-family:var(--font-mono);">$${range50}</div>
                     </div>
                 </div>
             </div>` : ''}`;
