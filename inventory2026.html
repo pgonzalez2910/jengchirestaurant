@@ -3141,6 +3141,13 @@ input[id^="par-input-"]:focus {
                         <label>Purchase Date *</label>
                         <input type="date" id="itemEffectiveDate" required>
                     </div>
+                    <div class="form-group" id="invoiceSelectGroup" style="display: none;">
+                        <label>Select Invoice *</label>
+                        <select id="itemInvoiceId" class="search-input">
+                            <option value="">-- Select Invoice --</option>
+                        </select>
+                        <small style="color: var(--neutral-500); font-size: 0.8125rem;">Choose which invoice this item belongs to</small>
+                    </div>
                     <div class="form-group">
                         <label>Assign To</label>
                         <select id="itemAssignedTo" class="search-input" multiple style="height: 120px;">
@@ -5130,21 +5137,56 @@ function switchTab(tabName, evt) {
             showAlert('Exported successfully', 'success');
         }
 
-     function openAddItemModal() {
+     async function openAddItemModal() {
     document.getElementById('itemModalTitle').textContent = 'Add Item';
     document.getElementById('itemForm').reset();
     document.getElementById('itemForm').removeAttribute('data-edit-id');
     
-    // Enable and reset the date field for new items
-    const dateField = document.getElementById('itemEffectiveDate');
-    dateField.valueAsDate = new Date();
-    dateField.readOnly = false;
-    dateField.style.backgroundColor = '';
-    dateField.style.cursor = '';
-    dateField.title = '';
+    // Show invoice selector for new items and make it required
+    const invoiceSelectGroup = document.getElementById('invoiceSelectGroup');
+    const invoiceSelect = document.getElementById('itemInvoiceId');
+    invoiceSelectGroup.style.display = 'block';
+    invoiceSelect.required = true;
+    
+    // Hide purchase date field (date comes from invoice)
+    const dateGroup = document.getElementById('itemEffectiveDate').closest('.form-group');
+    if (dateGroup) dateGroup.style.display = 'none';
+    
+    // Load available invoices
+    await loadInvoicesForSelection();
     
     populateVendorDropdownInModal();
     openModal('itemModal');
+}
+
+async function loadInvoicesForSelection() {
+    try {
+        const { data: invoices, error } = await supabaseClient
+            .from('invoices')
+            .select('id, invoice_date, vendor, invoice_number')
+            .order('invoice_date', { ascending: false })
+            .limit(50);
+        
+        if (error) throw error;
+        
+        const select = document.getElementById('itemInvoiceId');
+        select.innerHTML = '<option value="">-- Select Invoice --</option>';
+        
+        invoices.forEach(inv => {
+            // Parse date without timezone conversion
+            const [year, month, day] = inv.invoice_date.split('-');
+            const date = `${month}/${day}/${year}`;
+            
+            const option = document.createElement('option');
+            option.value = inv.id;
+            option.textContent = `${date} - ${inv.vendor}${inv.invoice_number ? ' - #' + inv.invoice_number : ''}`;
+            select.appendChild(option);
+        });
+        
+    } catch (error) {
+        console.error('Error loading invoices:', error);
+        showAlert('Error loading invoices', 'error');
+    }
 }
 
 
@@ -5173,6 +5215,16 @@ async function editItem(id) {
         // Set form title and edit ID FIRST
         document.getElementById('itemModalTitle').textContent = 'Edit Item';
         document.getElementById('itemForm').dataset.editId = id;
+        
+        // Hide invoice selector for editing and remove required
+        const invoiceSelectGroup = document.getElementById('invoiceSelectGroup');
+        const invoiceSelect = document.getElementById('itemInvoiceId');
+        invoiceSelectGroup.style.display = 'none';
+        invoiceSelect.required = false;
+        
+        // Show purchase date field (readonly)
+        const dateGroup = document.getElementById('itemEffectiveDate').closest('.form-group');
+        if (dateGroup) dateGroup.style.display = 'block';
         
         // Populate vendor dropdown BEFORE setting values
         populateVendorDropdownInModal();
@@ -5351,9 +5403,25 @@ function openAddInvoiceModal() {
             showAlert(mainMessage + detailMessage, 'success');
 
         } else {
-            // For new items, we need an invoice_id - this should be handled through Invoice Tracking
-            showAlert('❌ Please add new items through Invoice Tracking tab', 'error');
-            return;
+            // ADD NEW ITEM
+            const invoiceId = document.getElementById('itemInvoiceId').value;
+            
+            if (!invoiceId) {
+                showAlert('❌ Please select an invoice', 'error');
+                return;
+            }
+            
+            // Add invoice_id to itemData for new items
+            itemData.invoice_id = invoiceId;
+            itemData.quantity = 1; // Default quantity
+            
+            const { error: insertError } = await supabaseClient
+                .from('invoice_items')
+                .insert([itemData]);
+            
+            if (insertError) throw insertError;
+            
+            showAlert('✅ Item added successfully!', 'success');
         }
 
         closeModal('itemModal');
