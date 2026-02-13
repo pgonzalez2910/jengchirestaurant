@@ -5431,21 +5431,22 @@ async function updateInvoiceTotals(invoiceId) {
         const itemCount = items.length;
         const subtotal = items.reduce((sum, item) => sum + (parseFloat(item.line_total) || 0), 0);
         
-        // Get the invoice to check tax settings
+        // Get the invoice to check vendor and tax settings
         const { data: invoice, error: invoiceError } = await supabaseClient
             .from('invoices')
-            .select('tax_enabled')
+            .select('vendor, tax_enabled')
             .eq('id', invoiceId)
             .single();
         
         if (invoiceError) throw invoiceError;
         
-        // Calculate tax (8.25% if enabled)
+        // Calculate tax - ONLY for Pacific Plus vendor (8.25%)
         const TAX_RATE = 0.0825;
-        const taxAmount = invoice.tax_enabled ? subtotal * TAX_RATE : 0;
+        const isPacificPlus = invoice.vendor === 'Pacific Plus';
+        const taxAmount = (invoice.tax_enabled && isPacificPlus) ? subtotal * TAX_RATE : 0;
         const total = subtotal + taxAmount;
         
-        console.log(`📊 Calculated from items: ${itemCount} items, Subtotal=$${subtotal.toFixed(2)}, Tax=$${taxAmount.toFixed(2)}, Total=$${total.toFixed(2)}`);
+        console.log(`📊 Calculated from items: ${itemCount} items, Vendor: ${invoice.vendor}, Subtotal=$${subtotal.toFixed(2)}, Tax=$${taxAmount.toFixed(2)}, Total=$${total.toFixed(2)}`);
         
         // Update the invoice with correct column names
         const { error: updateError } = await supabaseClient
@@ -5698,7 +5699,11 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
             }, 0);
             
             const taxEnabled = document.getElementById('invoiceTaxEnabled').checked;
-            const taxAmount = taxEnabled ? subtotal * TAX_RATE : 0;
+            const vendor = document.getElementById('invoiceVendorDropdown').value;
+            const isPacificPlus = vendor === 'Pacific Plus';
+            
+            // Only apply tax for Pacific Plus vendor
+            const taxAmount = (taxEnabled && isPacificPlus) ? subtotal * TAX_RATE : 0;
             const total = subtotal + taxAmount;
             
             document.getElementById('invoiceSubtotal').textContent = '$' + subtotal.toFixed(2);
@@ -5707,9 +5712,12 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
             
             // Update tax label
             const taxLabel = document.getElementById('taxLabel');
-            if (taxEnabled) {
+            if (taxEnabled && isPacificPlus) {
                 taxLabel.textContent = 'Tax (8.25%):';
                 taxLabel.style.color = 'var(--neutral-700)';
+            } else if (taxEnabled && !isPacificPlus) {
+                taxLabel.textContent = 'Tax (N/A - Not Pacific Plus):';
+                taxLabel.style.color = 'var(--neutral-500)';
             } else {
                 taxLabel.textContent = 'Tax (Disabled):';
                 taxLabel.style.color = 'var(--neutral-400)';
