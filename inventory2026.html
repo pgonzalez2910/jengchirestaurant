@@ -2105,6 +2105,9 @@ input[id^="par-input-"]:focus {
                     <button class="btn btn-primary" onclick="exportToCSV()">📥 Export</button>
                     <button class="btn btn-secondary" onclick="openBulkAssignModal()">👥 Bulk Assign</button>
                     <button class="btn btn-success" onclick="openAddItemModal()">+ Add Item</button>
+                    <button class="btn btn-primary" onclick="syncMissingImages()" title="Sync images from Inventory Management to items missing images">
+                        🔄 Sync Missing Images
+                    </button>
                 </div>
             </div>
 
@@ -5192,6 +5195,84 @@ function toggleWeightFields() {
         document.getElementById('itemPrice').required = true;
         document.getElementById('itemWeight').required = false;
         document.getElementById('itemPricePerUnit').required = false;
+    }
+}
+
+// Sync missing images from inventory_management to invoice_items
+async function syncMissingImages() {
+    if (!confirm('Sync images for all items missing images? This will copy image paths from Inventory Management.')) {
+        return;
+    }
+    
+    showLoading(true);
+    try {
+        // Step 1: Get all items missing images from invoice_items
+        const { data: itemsMissingImages, error: fetchError } = await supabaseClient
+            .from('invoice_items')
+            .select('id, product_name, item_code')
+            .or('image_path.is.null,image_path.eq.');
+        
+        if (fetchError) throw fetchError;
+        
+        console.log(`📸 Found ${itemsMissingImages.length} items missing images`);
+        
+        if (itemsMissingImages.length === 0) {
+            showAlert('✅ All items already have images!', 'success');
+            return;
+        }
+        
+        // Step 2: Get all products with images from inventory_management
+        const { data: inventoryWithImages, error: inventoryError } = await supabaseClient
+            .from('inventory_management')
+            .select('product_name, image_url')
+            .not('image_url', 'is', null)
+            .neq('image_url', '');
+        
+        if (inventoryError) throw inventoryError;
+        
+        console.log(`📦 Found ${inventoryWithImages.length} products with images in inventory_management`);
+        
+        // Step 3: Match and update
+        let updatedCount = 0;
+        
+        for (const item of itemsMissingImages) {
+            // Find matching product in inventory_management
+            const inventoryItem = inventoryWithImages.find(inv => 
+                inv.product_name === item.product_name
+            );
+            
+            if (inventoryItem) {
+                // Build the full GitHub URL
+                let imagePath = inventoryItem.image_url;
+                if (!imagePath.startsWith('http')) {
+                    imagePath = `https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/${imagePath}`;
+                }
+                
+                // Update the invoice_item
+                const { error: updateError } = await supabaseClient
+                    .from('invoice_items')
+                    .update({ image_path: imagePath })
+                    .eq('id', item.id);
+                
+                if (!updateError) {
+                    updatedCount++;
+                    console.log(`✅ Updated image for: ${item.product_name}`);
+                }
+            }
+        }
+        
+        showAlert(`✅ Synced images for ${updatedCount} items!`, 'success');
+        
+        // Reload data
+        await loadInventoryData();
+        renderQuickEditTable();
+        applyFilters();
+        
+    } catch (error) {
+        console.error('Error syncing images:', error);
+        showAlert('Error: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
     }
 }
 
