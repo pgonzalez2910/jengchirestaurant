@@ -5419,19 +5419,15 @@ function openAddInvoiceModal() {
 // Recalculate and update invoice totals after adding/editing items
 async function updateInvoiceTotals(invoiceId) {
     try {
-        // Get all items for this invoice
+        // Get all items for this invoice with item_code
         const { data: items, error: itemsError } = await supabaseClient
             .from('invoice_items')
-            .select('line_total')
+            .select('line_total, item_code')
             .eq('invoice_id', invoiceId);
         
         if (itemsError) throw itemsError;
         
-        // Count items and calculate subtotal
-        const itemCount = items.length;
-        const subtotal = items.reduce((sum, item) => sum + (parseFloat(item.line_total) || 0), 0);
-        
-        // Get the invoice to check vendor and tax settings
+        // Get the invoice to check tax settings
         const { data: invoice, error: invoiceError } = await supabaseClient
             .from('invoices')
             .select('vendor, tax_enabled')
@@ -5440,28 +5436,42 @@ async function updateInvoiceTotals(invoiceId) {
         
         if (invoiceError) throw invoiceError;
         
-        // Calculate tax - ONLY for Pacific Plus vendor (8.25%)
+        // Calculate subtotal and tax PER ITEM
         const TAX_RATE = 0.0825;
-        const isPacificPlus = invoice.vendor === 'Pacific Plus';
-        const taxAmount = (invoice.tax_enabled && isPacificPlus) ? subtotal * TAX_RATE : 0;
-        const total = subtotal + taxAmount;
+        const itemCount = items.length;
+        let subtotal = 0;
+        let totalTax = 0;
         
-        console.log(`📊 Calculated from items: ${itemCount} items, Vendor: ${invoice.vendor}, Subtotal=$${subtotal.toFixed(2)}, Tax=$${taxAmount.toFixed(2)}, Total=$${total.toFixed(2)}`);
+        items.forEach(item => {
+            const itemSubtotal = parseFloat(item.line_total) || 0;
+            subtotal += itemSubtotal;
+            
+            // ONLY apply tax to item code "752GO"
+            const is752GO = item.item_code === '752GO';
+            if (invoice.tax_enabled && is752GO) {
+                totalTax += itemSubtotal * TAX_RATE;
+            }
+        });
+        
+        const total = subtotal + totalTax;
+        
+        const has752GO = items.some(item => item.item_code === '752GO');
+        console.log(`📊 Calculated from items: ${itemCount} items (${has752GO ? 'includes 752GO' : 'no 752GO'}), Vendor: ${invoice.vendor}, Subtotal=$${subtotal.toFixed(2)}, Tax=$${totalTax.toFixed(2)}, Total=$${total.toFixed(2)}`);
         
         // Update the invoice with correct column names
         const { error: updateError } = await supabaseClient
             .from('invoices')
             .update({
-                subtotal: subtotal,      // ✅ Correct column name
-                tax_amount: taxAmount,   // ✅ Correct column name
-                total: total,            // ✅ Correct column name
-                amount: total            // ✅ Also update 'amount' (main total field)
+                subtotal: subtotal,
+                tax_amount: totalTax,
+                total: total,
+                amount: total
             })
             .eq('id', invoiceId);
         
         if (updateError) throw updateError;
         
-        console.log(`✅ Invoice updated in database: Subtotal=$${subtotal.toFixed(2)}, Tax=$${taxAmount.toFixed(2)}, Total=$${total.toFixed(2)}`);
+        console.log(`✅ Invoice updated in database: Subtotal=$${subtotal.toFixed(2)}, Tax=$${totalTax.toFixed(2)}, Total=$${total.toFixed(2)}`);
         
     } catch (error) {
         console.error('Error updating invoice totals:', error);
@@ -5689,41 +5699,53 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
         // ========== ENHANCED INVOICE FUNCTIONS WITH WEIGHT & PRICE PER UNIT ==========
 
         function calculateInvoiceTotals() {
-            const subtotal = selectedInvoiceProducts.reduce((sum, p) => {
+            const TAX_RATE = 0.0825;
+            let subtotal = 0;
+            let totalTax = 0;
+            
+            // Calculate per-item totals with tax ONLY for item 752GO
+            selectedInvoiceProducts.forEach(p => {
                 const hasWeight = p.has_weight && p.weight && p.weight > 0;
+                let itemSubtotal = 0;
+                
                 if (hasWeight) {
-                    return sum + (parseFloat(p.weight || 0) * parseFloat(p.price_per_unit || 0));
+                    itemSubtotal = parseFloat(p.weight || 0) * parseFloat(p.price_per_unit || 0);
                 } else {
-                    return sum + (parseFloat(p.quantity || 0) * parseFloat(p.invoice_price || 0));
+                    itemSubtotal = parseFloat(p.quantity || 0) * parseFloat(p.invoice_price || 0);
                 }
-            }, 0);
+                
+                // ONLY apply tax to item code "752GO"
+                const taxEnabled = document.getElementById('invoiceTaxEnabled').checked;
+                const is752GO = p.item_code === '752GO';
+                const itemTax = (taxEnabled && is752GO) ? itemSubtotal * TAX_RATE : 0;
+                
+                subtotal += itemSubtotal;
+                totalTax += itemTax;
+            });
             
-            const taxEnabled = document.getElementById('invoiceTaxEnabled').checked;
-            const vendor = document.getElementById('invoiceVendorDropdown').value;
-            const isPacificPlus = vendor === 'Pacific Plus';
-            
-            // Only apply tax for Pacific Plus vendor
-            const taxAmount = (taxEnabled && isPacificPlus) ? subtotal * TAX_RATE : 0;
-            const total = subtotal + taxAmount;
+            const total = subtotal + totalTax;
             
             document.getElementById('invoiceSubtotal').textContent = '$' + subtotal.toFixed(2);
-            document.getElementById('invoiceTax').textContent = '$' + taxAmount.toFixed(2);
+            document.getElementById('invoiceTax').textContent = '$' + totalTax.toFixed(2);
             document.getElementById('invoiceTotal').textContent = '$' + total.toFixed(2);
             
             // Update tax label
             const taxLabel = document.getElementById('taxLabel');
-            if (taxEnabled && isPacificPlus) {
-                taxLabel.textContent = 'Tax (8.25%):';
+            const taxEnabled = document.getElementById('invoiceTaxEnabled').checked;
+            const has752GO = selectedInvoiceProducts.some(p => p.item_code === '752GO');
+            
+            if (taxEnabled && has752GO) {
+                taxLabel.textContent = 'Tax (8.25% on item 752GO):';
                 taxLabel.style.color = 'var(--neutral-700)';
-            } else if (taxEnabled && !isPacificPlus) {
-                taxLabel.textContent = 'Tax (N/A - Not Pacific Plus):';
+            } else if (taxEnabled && !has752GO) {
+                taxLabel.textContent = 'Tax (No 752GO items):';
                 taxLabel.style.color = 'var(--neutral-500)';
             } else {
                 taxLabel.textContent = 'Tax (Disabled):';
                 taxLabel.style.color = 'var(--neutral-400)';
             }
             
-            return { subtotal, taxAmount, total, taxEnabled };
+            return { subtotal, taxAmount: totalTax, total, taxEnabled };
         }
 
         function updateInvoiceVendorField() {
