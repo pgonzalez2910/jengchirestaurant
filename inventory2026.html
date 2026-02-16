@@ -3619,6 +3619,7 @@ input[id^="par-input-"]:focus {
 const PLACEHOLDER_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTIwIDEyMCI+PHJlY3Qgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMjAiIGZpbGw9IiNlNWU3ZWIiLz48dGV4dCB4PSI2MCIgeT0iNjAiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzljYTNhZiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9IjAuM2VtIj5ObyBJbWFnZTwvdGV4dD48L3N2Zz4=';
 const GITHUB_IMAGE_BASE = 'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/';
 
+
 // VENDOR LOGOS - Add your vendor logos here
 
 
@@ -3632,26 +3633,204 @@ window.handleImageError = function(img) {
 
 // ========== IMAGE RESOLUTION FUNCTION ==========
 function resolveImage(imageName) {
-    if (!imageName || imageName.trim() === '') {
-        return PLACEHOLDER_IMAGE;
-    }
-    
-    const trimmed = imageName.trim();
-    
-    // If it's a full Supabase URL, extract just the filename
-    if (trimmed.includes('supabase.co/storage') || trimmed.startsWith('http')) {
-        const parts = trimmed.split('/');
-        const filename = parts[parts.length - 1];
-        
-        // Remove any query parameters (like timestamps)
-        const cleanFilename = filename.split('?')[0];
-        
-        return GITHUB_IMAGE_BASE + cleanFilename;
-    }
-    
-    // Otherwise, it's just a filename - use it directly
-    return GITHUB_IMAGE_BASE + trimmed;
+  let s = (imageName || '').trim();
+  if (!s) return PLACEHOLDER_IMAGE;
+
+  // If it's already a full URL (Supabase, GitHub, CDN, etc) => use as-is
+  if (/^https?:\/\//i.test(s)) {
+    return s;
+  }
+
+  // If they paste a path, keep only the filename
+  s = s.split('/').pop();
+
+  // Remove query params
+  s = s.split('?')[0];
+
+  // If no extension, assume .jpg
+  if (!/\.(png|jpe?g|webp|gif)$/i.test(s)) {
+    s += '.jpg';
+  }
+
+  // Optional: remove spaces
+  s = s.replace(/\s+/g, '');
+
+  return GITHUB_IMAGE_BASE + encodeURIComponent(s);
 }
+
+
+
+function normalizeImageInput(input) {
+
+  if (!input) return '';
+
+  const s = String(input).trim();
+
+  if (!s) return '';
+
+
+
+  // If user pasted a data URL, keep it
+
+  if (s.startsWith('data:image/')) return s;
+
+
+
+  // If it's a full URL, extract the last path segment
+
+  if (s.startsWith('http://') || s.startsWith('https://')) {
+
+    try {
+
+      const u = new URL(s);
+
+      const filename = (u.pathname.split('/').pop() || '').split('?')[0];
+
+      return decodeURIComponent(filename);
+
+    } catch (e) {
+
+      // fall through
+
+    }
+
+  }
+
+
+
+  // If it's a path-like string, use last segment
+
+  const noQuery = s.split('?')[0];
+
+  const parts = noQuery.split('/');
+
+  return parts[parts.length - 1];
+
+}
+
+
+
+
+
+async function upsertInventoryManagementImage(productName, imageInput, extra = {}) {
+
+  const img = normalizeImageInput(imageInput); // filename OR url OR null
+
+
+
+  // Try update first
+
+  const { data: updated, error: upErr } = await supabaseClient
+
+    .from("inventory_management")
+
+    .update({ image_url: img, ...extra })
+
+    .eq("product_name", productName)
+
+    .select("id");
+
+
+
+  if (upErr) throw upErr;
+
+
+
+  // If no row existed, insert a minimal one
+
+  if (!updated || updated.length === 0) {
+
+    const { error: insErr } = await supabaseClient
+
+      .from("inventory_management")
+
+      .insert({ product_name: productName, image_url: img, ...extra });
+
+
+
+    if (insErr) throw insErr;
+
+  }
+
+}
+
+
+
+
+
+
+
+
+
+function normalizeImageForStorage(v) {
+
+  let s = (v || "").trim();
+
+  if (!s) return "";
+
+
+
+  // If it's a URL, decide whether to store filename or full URL
+
+  if (/^https?:\/\//i.test(s)) {
+
+    // If it's GitHub raw OR Supabase storage, store ONLY the filename
+
+    const isGithubRaw = s.includes("raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/");
+
+    const isSupabaseStorage = s.includes("supabase.co/storage");
+
+
+
+    const parts = s.split("/");
+
+    let filename = parts[parts.length - 1] || "";
+
+    filename = filename.split("?")[0];
+
+
+
+    if (isGithubRaw || isSupabaseStorage) {
+
+      s = filename; // store filename only
+
+    } else {
+
+      return s; // keep full URL for other CDNs if you want
+
+    }
+
+  }
+
+
+
+  // If they pasted a path, keep only filename
+
+  s = s.split("/").pop();
+
+  s = s.split("?")[0];
+
+
+
+  // Auto-add .jpg if missing extension
+
+  if (!/\.(png|jpe?g|webp|gif)$/i.test(s)) s += ".jpg";
+
+
+
+  // Optional: remove spaces
+
+  s = s.replace(/\s+/g, "");
+
+
+
+  return s;
+
+}
+
+
+
+
 // ========== END IMAGE RESOLUTION FUNCTION ==========
 
 const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
@@ -5556,7 +5735,7 @@ async function editItem(id) {
         // Now set all the field values
         document.getElementById('itemProductName').value = item.product_name || '';
         document.getElementById('itemNumber').value = item.item_code || '';
-        document.getElementById('itemProductImage').value = item.image_path || '';
+        document.getElementById('itemProductImage').value = normalizeImageInput(item.image_path || '');
         document.getElementById('itemVendor').value = item.vendor || '';
         document.getElementById('itemCategory').value = item.category || '';
 
@@ -5798,7 +5977,7 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
             item_code: document.getElementById('itemNumber').value,
             vendor: document.getElementById('itemVendor').value,
             category: document.getElementById('itemCategory').value || null,
-            image_path: document.getElementById('itemProductImage').value.trim() || null,
+            image_path: normalizeImageInput(document.getElementById('itemProductImage').value) || null,
             assigned_to: assignedTo,
             has_weight: hasWeight
         };
@@ -7800,8 +7979,8 @@ function renderRonyProducts() {
 // ✅ UPDATED: renderRonyProductCard with DELETE button
 function renderRonyProductCard(product) {
     const imageUrl = resolveImage(product.image_url);
-    const hasStock = product.current_stock != null && product.current_stock > 0;
-    const displayQty = hasStock ? product.current_stock : '';
+    const hasStock = product.current_stock != null;  // ✅ FIXED: Show stock even if it's 0
+    const displayQty = product.current_stock != null ? product.current_stock : '';  // ✅ Display 0 if stock is 0
 
     return `
         <div style="
@@ -8161,6 +8340,7 @@ async function loadEnhancedCreateOrder() {
                 product_name: row.product_name,
                 user: 'rony',
                 tentative: row.quantity_in_stock,
+                on_hand: row.quantity_in_stock,  // ✅ FIX: Add on_hand so Current Stock displays
                 image_url: mgmt?.image_url || null,
                 par: mgmt?.par || 0,
                 position: mgmt?.position || null,
@@ -13792,6 +13972,11 @@ document.addEventListener('keydown', function(e) {
         closeAddItemTrackingModal();
     }
 });
+
+
+
+
+
 </script>
 
 </body>
