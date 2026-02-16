@@ -4689,6 +4689,18 @@ async function saveQuickEditInvoice(event) {
             })
             .eq('item_code', oldItemCode);
 
+        // ✅ FIX: Also update inventory_management table with the new image
+        if (imagePath) {
+            await supabaseClient
+                .from('inventory_management')
+                .update({
+                    image_url: imagePath,
+                    category: category,
+                    assigned_to: assignedTo
+                })
+                .eq('product_name', productName);
+        }
+
         const updateCount = updated ? updated.length : 0;
         showAlert(`✅ Updated ${updateCount} matching items with code ${oldItemCode}`, 'success');
         closeModal('quickEditModal');
@@ -7685,6 +7697,7 @@ function renderJulioProductCard(product, categoryColors) {
                    id="qty-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}"
                    value="${orderQty > 0 ? orderQty : ''}"
                    min="0" step="0.1" placeholder="0.00"
+                   inputmode="decimal"
                    data-product-name="${escAttr(product.product_name)}"
                    onchange="setJulioQuantity(this.dataset.productName, this.value)"
                    class="search-input"
@@ -8030,6 +8043,7 @@ function renderRonyProductCard(product) {
                        value="${displayQty}"
                        min="0"
                        step="0.1"
+                       inputmode="decimal"
                        placeholder=""
                        onchange="setRonyStock('${escAttr(product.product_name)}', this.value)"
                        style="width: 65px; text-align: center; padding: 0.4rem; border: 2px solid ${hasStock ? 'var(--success-600)' : 'var(--primary-400)'}; border-radius: 6px; font-size: 1rem; font-weight: 700; font-family: var(--font-mono); background: ${hasStock ? 'rgba(16,185,129,0.05)' : 'white'};">
@@ -11597,7 +11611,20 @@ async function generateVendorPDF(vendor, items, dateISO) {
     
     y += 65;
     
-    // ===== PRODUCT TABLE =====
+    // ✅ NEW: GROUP ITEMS BY CATEGORY
+    const itemsByCategory = {};
+    items.forEach(item => {
+        const category = item.category || 'Other';
+        if (!itemsByCategory[category]) {
+            itemsByCategory[category] = [];
+        }
+        itemsByCategory[category].push(item);
+    });
+    
+    // Sort categories alphabetically
+    const categories = Object.keys(itemsByCategory).sort();
+    
+    // ===== PRODUCT TABLE WITH CATEGORY GROUPING =====
     // Cache product images
     const imgCache = {};
     const uniqueUrls = [...new Set(items.map(r => r.image_url).filter(Boolean))];
@@ -11614,18 +11641,60 @@ async function generateVendorPDF(vendor, items, dateISO) {
         { header: 'Total', dataKey: 'total' }
     ];
     
-    const body = items.map(item => ({
-        img: item.image_url ? { url: item.image_url } : null,
-        code: item.item_code,
-        product: item.product_name,
-        qty: item.qty.toFixed(2),
-        price: '$' + item.unit_price.toFixed(2),
-        total: '$' + item.line_total.toFixed(2)
-    }));
+    // Build table body with category headers
+    const body = [];
+    let grandTotal = 0;
+    
+    categories.forEach(category => {
+        // Add category header row
+        body.push({
+            img: null,
+            code: '',
+            product: `━━━ ${category.toUpperCase()} ━━━`,
+            qty: '',
+            price: '',
+            total: '',
+            _isCategory: true
+        });
+        
+        // Add items in this category
+        const categoryItems = itemsByCategory[category];
+        let categoryTotal = 0;
+        
+        categoryItems.forEach(item => {
+            const lineTotal = item.line_total || (item.qty * item.unit_price);
+            categoryTotal += lineTotal;
+            
+            body.push({
+                img: item.image_url ? { url: item.image_url } : null,
+                code: item.item_code,
+                product: item.product_name,
+                qty: item.qty.toFixed(2),
+                price: '$' + item.unit_price.toFixed(2),
+                total: '$' + lineTotal.toFixed(2),
+                _isCategory: false
+            });
+        });
+        
+        // Add category subtotal
+        body.push({
+            img: null,
+            code: '',
+            product: `${category} Subtotal`,
+            qty: '',
+            price: '',
+            total: '$' + categoryTotal.toFixed(2),
+            _isSubtotal: true
+        });
+        
+        grandTotal += categoryTotal;
+    });
     
     const ink = [17, 24, 39];
     const line = [226, 232, 240];
     const zebra = [247, 249, 252];
+    const categoryBg = [59, 130, 246]; // Blue for category headers
+    const subtotalBg = [245, 245, 245]; // Light gray for subtotals
     
     doc.autoTable({
         startY: y,
@@ -11659,6 +11728,25 @@ async function generateVendorPDF(vendor, items, dateISO) {
         columns,
         body,
         didParseCell: (data) => {
+            const row = data.row.raw;
+            
+            // Category header styling
+            if (row._isCategory) {
+                data.cell.styles.fillColor = categoryBg;
+                data.cell.styles.textColor = [255, 255, 255];
+                data.cell.styles.fontStyle = 'bold';
+                data.cell.styles.fontSize = 11;
+                data.cell.styles.minCellHeight = 30;
+            }
+            
+            // Subtotal styling
+            if (row._isSubtotal) {
+                data.cell.styles.fillColor = subtotalBg;
+                data.cell.styles.fontStyle = 'bold';
+                data.cell.styles.minCellHeight = 25;
+            }
+            
+            // Clear image text for non-image cells
             if (data.section === 'body' && data.column.dataKey === 'img') {
                 data.cell.text = '';
             }
@@ -11695,7 +11783,6 @@ async function generateVendorPDF(vendor, items, dateISO) {
     
     // ===== TOTALS SECTION =====
     const finalY = doc.lastAutoTable.finalY + 20;
-    const grandTotal = items.reduce((sum, item) => sum + item.line_total, 0);
     
     doc.setFillColor(247, 249, 252);
     doc.rect(pageW - M - 200, finalY, 200, 80, 'F');
@@ -11766,7 +11853,7 @@ async function generateAllVendorPDFs() {
         // ── 1. Load all inventory_check rows for this date ────────────
         const { data: orderData, error: orderErr } = await supabaseClient
             .from('inventory_check')
-            .select('product_name, on_hand, target, tentative, user, vendor, item_code, image_url')
+            .select('product_name, on_hand, target, tentative, user, vendor, item_code, image_url, category')
             .eq('order_date', orderDate);
 
         if (orderErr) throw orderErr;
@@ -11932,6 +12019,7 @@ async function generateAllVendorPDFs() {
                 unit_price:   unitPrice,
                 line_total:   qty * unitPrice,
                 image_url:    row.image_url || null,
+                category:     row.category || 'Other',  // ✅ Add category field
             });
         });
 
