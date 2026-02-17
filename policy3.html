@@ -129,19 +129,39 @@
     <!-- STEP 1: ONE-TIME MANAGER SIGNATURE -->
     <!-- ============================================ -->
     <div id="signatureSetupSection" class="bg-white rounded-xl shadow-sm p-6 mb-6">
-      <h2 class="text-xl font-bold mb-4">Step 1: Sign Once for All Approvals</h2>
-      <p class="text-gray-600 mb-4">Draw your signature below using your mouse or finger.</p>
-      <div class="signature-container">
-        <canvas id="managerSignatureCanvas"></canvas>
-      </div>
-      <div class="flex gap-2 mt-4">
-        <button id="btnClearManagerSig" class="text-sm text-red-600 hover:text-red-700 font-medium">
-          🗑️ Clear Signature
-        </button>
-        <button id="btnSaveManagerSig" class="ml-auto px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold">
-          ✅ Save My Signature
+      <div class="flex justify-between items-center mb-2">
+        <h2 class="text-xl font-bold">Step 1: Your Signature</h2>
+        <button id="btnEditSignature" class="hidden px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 font-semibold text-sm">
+          ✏️ Edit Signature
         </button>
       </div>
+
+      <!-- Existing signature display -->
+      <div id="existingSignatureBox" class="hidden mb-4 border-2 border-green-300 rounded-xl p-4 bg-green-50">
+        <p class="text-green-700 font-semibold text-sm mb-2">✅ Signature on file:</p>
+        <img id="existingSignatureImg" src="" alt="Saved signature" class="max-h-20 border border-gray-200 rounded bg-white p-1">
+        <p id="existingSigDate" class="text-xs text-gray-500 mt-1"></p>
+      </div>
+
+      <!-- Draw new signature -->
+      <div id="drawSignatureBox">
+        <p class="text-gray-600 mb-3">Draw your signature below using your mouse or finger.</p>
+        <div class="signature-container">
+          <canvas id="managerSignatureCanvas"></canvas>
+        </div>
+        <div class="flex gap-2 mt-4">
+          <button id="btnClearManagerSig" class="text-sm text-red-600 hover:text-red-700 font-medium">
+            🗑️ Clear
+          </button>
+          <button id="btnCancelEdit" class="hidden text-sm text-gray-600 hover:text-gray-800 font-medium ml-2">
+            ✕ Cancel
+          </button>
+          <button id="btnSaveManagerSig" class="ml-auto px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold">
+            ✅ Save Signature
+          </button>
+        </div>
+      </div>
+
       <div id="signatureSavedMsg" class="text-green-600 text-sm mt-2 hidden">✅ Signature saved successfully!</div>
     </div>
 
@@ -435,8 +455,50 @@ async function showDashboard() {
   setTimeout(() => {
     initSignatureCanvas();
   }, 100);
+
+  // Load existing signature for this manager
+  await loadExistingSignature();
   
   await loadEmployees();
+}
+
+// ============================================
+// LOAD EXISTING SIGNATURE
+// ============================================
+async function loadExistingSignature() {
+  const { data: sigs } = await client
+    .from('hb_manager_signatures')
+    .select('signature_data, signed_at')
+    .eq('manager_username', currentManager.username)
+    .order('signed_at', { ascending: false })
+    .limit(1);
+
+  if (sigs?.length && sigs[0].signature_data) {
+    const sig = sigs[0];
+    managerSignatureData = sig.signature_data;
+
+    // Show existing signature box
+    document.getElementById('existingSignatureImg').src = sig.signature_data;
+    document.getElementById('existingSigDate').textContent =
+      'Saved: ' + toCSTDate(sig.signed_at);
+    document.getElementById('existingSignatureBox').classList.remove('hidden');
+    document.getElementById('drawSignatureBox').classList.add('hidden');
+    document.getElementById('btnEditSignature').classList.remove('hidden');
+
+    // Show approve section immediately since sig exists
+    if (currentManager.username === 'JTJG') {
+      document.getElementById('hrApproveAllSection').classList.remove('hidden');
+    } else {
+      document.getElementById('approveAllSection').classList.remove('hidden');
+    }
+    console.log('✅ Existing signature loaded for', currentManager.username);
+  } else {
+    // No signature — show draw box
+    document.getElementById('existingSignatureBox').classList.add('hidden');
+    document.getElementById('drawSignatureBox').classList.remove('hidden');
+    document.getElementById('btnEditSignature').classList.add('hidden');
+    console.log('ℹ️ No existing signature for', currentManager.username);
+  }
 }
 
 // ============================================
@@ -843,6 +905,26 @@ document.getElementById('btnRegenerateAll').addEventListener('click', async () =
 });
 
 // ============================================
+// EDIT SIGNATURE BUTTON
+// ============================================
+document.getElementById('btnEditSignature').addEventListener('click', () => {
+  document.getElementById('existingSignatureBox').classList.add('hidden');
+  document.getElementById('drawSignatureBox').classList.remove('hidden');
+  document.getElementById('btnEditSignature').classList.add('hidden');
+  document.getElementById('btnCancelEdit').classList.remove('hidden');
+  clearSignature();
+  setTimeout(() => initSignatureCanvas(), 50);
+});
+
+document.getElementById('btnCancelEdit').addEventListener('click', () => {
+  // Restore existing sig display
+  document.getElementById('drawSignatureBox').classList.add('hidden');
+  document.getElementById('existingSignatureBox').classList.remove('hidden');
+  document.getElementById('btnEditSignature').classList.remove('hidden');
+  document.getElementById('btnCancelEdit').classList.add('hidden');
+});
+
+// ============================================
 // SAVE MANAGER SIGNATURE
 // ============================================
 document.getElementById('btnSaveManagerSig').addEventListener('click', async () => {
@@ -854,15 +936,15 @@ document.getElementById('btnSaveManagerSig').addEventListener('click', async () 
   managerSignatureData = getSignatureDataURL();
   console.log('💾 Saving signature...');
   
-  // ✅ Save with CST timestamp
   const cstNow = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
-  
+  const nowISO = new Date().toISOString();
+
   const { error } = await client.from('hb_manager_signatures').insert({
     manager_username: currentManager.username,
-    employee_initials: null,  // ← Generic signature for all
+    employee_initials: null,
     signature_data: managerSignatureData,
-    signed_at: new Date().toISOString(),  // Store in UTC (correct)
-    signed_at_cst: cstNow  // ← NEW: Store CST display time
+    signed_at: nowISO,
+    signed_at_cst: cstNow
   });
   
   if (error) {
@@ -872,17 +954,26 @@ document.getElementById('btnSaveManagerSig').addEventListener('click', async () 
   }
   
   console.log('✅ Signature saved!', cstNow);
+
+  // Update the existing sig preview
+  document.getElementById('existingSignatureImg').src = managerSignatureData;
+  document.getElementById('existingSigDate').textContent = 'Saved: ' + toCSTDate(nowISO);
+
   document.getElementById('signatureSavedMsg').classList.remove('hidden');
-  
+  document.getElementById('btnCancelEdit').classList.add('hidden');
+
   setTimeout(() => {
-    document.getElementById('signatureSetupSection').style.display = 'none';
-    
+    document.getElementById('signatureSavedMsg').classList.add('hidden');
+    document.getElementById('drawSignatureBox').classList.add('hidden');
+    document.getElementById('existingSignatureBox').classList.remove('hidden');
+    document.getElementById('btnEditSignature').classList.remove('hidden');
+    document.getElementById('signatureSetupSection').style.display = '';
+
     if (currentManager.username === 'JTJG') {
       document.getElementById('hrApproveAllSection').classList.remove('hidden');
     } else {
       document.getElementById('approveAllSection').classList.remove('hidden');
     }
-    
     updateApprovalCount();
   }, 1500);
 });
