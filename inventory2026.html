@@ -8435,149 +8435,187 @@ async function loadEnhancedCreateOrder() {
 
 
 
-// ========== FIXED VERSION: ALWAYS SHOWS BOTH RONY AND JULIO SECTIONS ==========
-// Find this function in your code and REPLACE it with this version
+// ========== PLACE ORDER: SECTION FILTER STATE ==========
+// Per-section filter state (persists across re-renders without page jump)
+window._placeOrderFilters = window._placeOrderFilters || {
+    rony:  { vendor: '', category: '' },
+    julio: { vendor: '', category: '' },
+};
 
-// ========== COMPLETE FIXED renderEnhancedOrderCards FUNCTION ==========
-// ========== FIXED: renderEnhancedOrderCards FUNCTION ==========
-function renderEnhancedOrderCards(ronyData, julioData, officeData = []) {
+function applyPlaceOrderFilter(section, type, value) {
+    // ✅ STAY IN PLACE: remember scroll position
+    const scrollY = window.scrollY;
+    window._placeOrderFilters[section][type] = value;
+    // Re-render only the cards, NOT reload from DB
+    _rerenderPlaceOrderSections();
+    requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' }));
+}
+
+function _buildSectionFilters(section, allRows, accentColor) {
+    const vendors    = [...new Set(allRows.map(r => r.vendor).filter(Boolean))].sort();
+    const categories = [...new Set(allRows.map(r => r.category).filter(Boolean))].sort();
+    const f = window._placeOrderFilters[section];
+    const selStyle = `padding:0.4rem 0.75rem;border-radius:6px;border:1px solid ${accentColor};font-size:0.8125rem;font-weight:600;background:white;cursor:pointer;min-width:140px;`;
+    return `
+      <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:center;margin-top:0.75rem;">
+        <span style="font-size:0.75rem;font-weight:700;color:rgba(255,255,255,0.8);text-transform:uppercase;letter-spacing:.05em;">Filter:</span>
+        <select style="${selStyle}" onchange="applyPlaceOrderFilter('${section}','vendor',this.value)">
+          <option value="">All Vendors</option>
+          ${vendors.map(v=>`<option value="${v}" ${f.vendor===v?'selected':''}>${v}</option>`).join('')}
+        </select>
+        <select style="${selStyle}" onchange="applyPlaceOrderFilter('${section}','category',this.value)">
+          <option value="">All Categories</option>
+          ${categories.map(c=>`<option value="${c}" ${f.category===c?'selected':''}>${c}</option>`).join('')}
+        </select>
+        ${(f.vendor||f.category)?`<button onclick="applyPlaceOrderFilter('${section}','vendor','');applyPlaceOrderFilter('${section}','category','')" style="padding:0.4rem 0.75rem;border-radius:6px;border:none;background:rgba(255,255,255,0.25);color:white;font-size:0.8125rem;font-weight:600;cursor:pointer;">✕ Clear</button>`:''}
+      </div>`;
+}
+
+function _filterRows(rows, section) {
+    const f = window._placeOrderFilters[section];
+    return rows.filter(r => {
+        if (f.vendor   && r.vendor   !== f.vendor)   return false;
+        if (f.category && (r.category||'Other') !== f.category) return false;
+        return true;
+    });
+}
+
+function _groupByCategory(rows) {
+    const map = {};
+    rows.forEach(r => {
+        const cat = r.category || 'Other';
+        if (!map[cat]) map[cat] = [];
+        map[cat].push(r);
+    });
+    return Object.keys(map).sort().map(cat => ({ cat, rows: map[cat] }));
+}
+
+function _renderCategoryGroups(groups, userType, accentColor) {
+    if (groups.length === 0) return `
+      <div style="text-align:center;padding:3rem;background:white;border-radius:12px;border:2px dashed var(--neutral-300);">
+        <div style="font-size:2rem;opacity:0.4;">🔍</div>
+        <p style="color:var(--neutral-500);margin-top:0.5rem;">No products match the selected filters</p>
+      </div>`;
+
+    return groups.map(({ cat, rows }) => `
+      <div style="margin-bottom:1.5rem;">
+        <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem;padding:0.5rem 1rem;background:${accentColor}22;border-left:4px solid ${accentColor};border-radius:0 8px 8px 0;">
+          <span style="font-size:0.875rem;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--neutral-800);">${cat}</span>
+          <span style="font-size:0.75rem;font-weight:600;color:var(--neutral-500);">${rows.length} item${rows.length!==1?'s':''}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:1.5rem;">
+          ${rows.map(row => renderEnhancedCard(row, userType)).join('')}
+        </div>
+      </div>
+    `).join('');
+}
+
+// Cached data for re-renders without DB hit
+window._placeOrderCache = window._placeOrderCache || { rony: [], julio: [], office: [] };
+
+function _rerenderPlaceOrderSections() {
     const container = document.getElementById('enhancedOrderContainer');
-    let html = '';
-    
-    // ✅ Get user filter to determine what to show
+    if (!container) return;
     const userFilter = document.getElementById('createUserFilter')?.value || 'all';
-    
-    // ✅ FIXED: Don't redeclare officeData - it's already a parameter
-    // Just ensure ronyData doesn't have any office items that slipped through
-    ronyData = ronyData.filter(row => 
-        (row.user || '').toLowerCase().trim() === 'rony'
+    container.innerHTML = _buildPlaceOrderHTML(
+        window._placeOrderCache.rony,
+        window._placeOrderCache.julio,
+        window._placeOrderCache.office,
+        userFilter
     );
-    
-    // 🍳 RONY'S SECTION - BLUE BACKGROUND (Show if filter is 'all' or 'rony')
+}
+
+function _buildPlaceOrderHTML(ronyData, julioData, officeData, userFilter) {
+    let html = '';
+
+    // ─── RONY SECTION ────────────────────────────────────────────
     if (userFilter === 'all' || userFilter === 'rony') {
+        const filtered = _filterRows(ronyData, 'rony');
+        const groups   = _groupByCategory(filtered);
+        const accent   = '#2c5688';
         html += `
-            <div style="margin-bottom: 3rem; padding: 2rem; background: linear-gradient(135deg, rgba(44, 86, 136, 0.08), rgba(44, 86, 136, 0.03)); border-radius: 20px; border: 3px solid var(--primary-400); box-shadow: 0 8px 16px rgba(44, 86, 136, 0.15);">
-                <!-- HEADER -->
-                <div style="background: linear-gradient(135deg, var(--primary-700), var(--primary-600)); padding: 1.5rem 2rem; border-radius: 15px; margin-bottom: 2rem; box-shadow: var(--shadow-lg);">
-                    <h2 style="font-size: 2rem; font-weight: 800; color: white; margin: 0; display: flex; align-items: center; gap: 15px;">
-                        🍳 RONY'S PRODUCTS
-                        <span style="background: white; color: var(--primary-700); padding: 0.5rem 1.5rem; border-radius: 50px; font-size: 1.5rem; font-family: var(--font-mono);">
-                            ${ronyData.length}
-                        </span>
-                    </h2>
-                    <p style="color: rgba(255, 255, 255, 0.9); margin: 0.5rem 0 0 0; font-size: 1rem;">
-                        All products submitted by Rony - current stock inventory
-                    </p>
-                </div>
-                
-                <!-- PRODUCTS GRID OR EMPTY STATE -->
-                ${ronyData.length > 0 ? `
-                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 2rem;">
-                        ${ronyData.map(row => renderEnhancedCard(row, 'rony')).join('')}
-                    </div>
-                ` : `
-                    <div style="text-align: center; padding: 3rem; background: white; border-radius: 12px; border: 2px dashed var(--neutral-300);">
-                        <div style="font-size: 3rem; opacity: 0.3; margin-bottom: 1rem;">🍳</div>
-                        <h3 style="color: var(--neutral-600);">No submitted orders from Rony for this date</h3>
-                        <p style="color: var(--neutral-500);">Rony hasn't submitted any quantities yet</p>
-                    </div>
-                `}
+        <div style="margin-bottom:3rem;padding:2rem;background:linear-gradient(135deg,rgba(44,86,136,0.08),rgba(44,86,136,0.03));border-radius:20px;border:3px solid var(--primary-400);box-shadow:0 8px 16px rgba(44,86,136,0.15);">
+          <div style="background:linear-gradient(135deg,var(--primary-700),var(--primary-600));padding:1.5rem 2rem;border-radius:15px;margin-bottom:1.5rem;box-shadow:var(--shadow-lg);">
+            <div style="display:flex;align-items:center;gap:15px;flex-wrap:wrap;">
+              <h2 style="font-size:2rem;font-weight:800;color:white;margin:0;">🍳 RONY'S PRODUCTS</h2>
+              <span style="background:white;color:var(--primary-700);padding:0.4rem 1.2rem;border-radius:50px;font-size:1.4rem;font-family:var(--font-mono);font-weight:700;">${filtered.length}${filtered.length!==ronyData.length?` / ${ronyData.length}`:''}</span>
             </div>
-        `;
+            ${_buildSectionFilters('rony', ronyData, 'rgba(255,255,255,0.6)')}
+          </div>
+          ${ronyData.length > 0 ? _renderCategoryGroups(groups, 'rony', accent) : `
+            <div style="text-align:center;padding:3rem;background:white;border-radius:12px;border:2px dashed var(--neutral-300);">
+              <div style="font-size:3rem;opacity:0.3;">🍳</div>
+              <h3 style="color:var(--neutral-600);">No submitted orders from Rony for this date</h3>
+            </div>`}
+        </div>`;
     }
-    
-    // ⭐⭐⭐ BIG VISUAL SEPARATOR ⭐⭐⭐ (Only if showing multiple sections)
-    if (userFilter === 'all' && (ronyData.length > 0 || julioData.length > 0)) {
-        html += `
-            <div style="height: 4rem; display: flex; align-items: center; justify-content: center; position: relative; margin: 3rem 0;">
-                <div style="position: absolute; width: 100%; height: 3px; background: linear-gradient(90deg, var(--primary-400), var(--accent-400));"></div>
-                <div style="background: white; padding: 1rem 2rem; border-radius: 50px; border: 3px solid var(--neutral-300); box-shadow: var(--shadow-xl); position: relative; z-index: 10;">
-                    <span style="font-size: 1.5rem; font-weight: 800; color: var(--neutral-700);">⬇️ SEPARATOR ⬇️</span>
-                </div>
-            </div>
-        `;
+
+    // ─── SEPARATOR ────────────────────────────────────────────────
+    if (userFilter === 'all') {
+        html += `<div style="height:3px;background:linear-gradient(90deg,var(--primary-400),var(--accent-400));border-radius:2px;margin:2rem 0;"></div>`;
     }
-    
-    // 📦 JULIO'S SECTION - ORANGE BACKGROUND (Show if filter is 'all' or 'julio')
+
+    // ─── JULIO SECTION ────────────────────────────────────────────
     if (userFilter === 'all' || userFilter === 'julio') {
+        const filtered = _filterRows(julioData, 'julio');
+        const groups   = _groupByCategory(filtered);
+        const accent   = '#d97706';
         html += `
-            <div style="margin-top: ${userFilter === 'julio' ? '0' : '3rem'}; padding: 2rem; background: linear-gradient(135deg, rgba(217, 119, 6, 0.08), rgba(217, 119, 6, 0.03)); border-radius: 20px; border: 3px solid var(--accent-400); box-shadow: 0 8px 16px rgba(217, 119, 6, 0.15);">
-                <!-- HEADER -->
-                <div style="background: linear-gradient(135deg, var(--accent-600), var(--accent-500)); padding: 1.5rem 2rem; border-radius: 15px; margin-bottom: 2rem; box-shadow: var(--shadow-lg);">
-                    <h2 style="font-size: 2rem; font-weight: 800; color: white; margin: 0; display: flex; align-items: center; gap: 15px;">
-                        📦 JULIO'S PRODUCTS
-                        <span style="background: white; color: var(--accent-700); padding: 0.5rem 1.5rem; border-radius: 50px; font-size: 1.5rem; font-family: var(--font-mono);">
-                            ${julioData.length}
-                        </span>
-                    </h2>
-                    <p style="color: rgba(255, 255, 255, 0.9); margin: 0.5rem 0 0 0; font-size: 1rem;">
-                        Items Julio wants to order - quantities auto-filled
-                    </p>
-                </div>
-                
-                <!-- PRODUCTS GRID OR EMPTY STATE -->
-                ${julioData.length > 0 ? `
-                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 2rem;">
-                        ${julioData.map(row => renderEnhancedCard(row, 'julio')).join('')}
-                    </div>
-                ` : `
-                    <div style="text-align: center; padding: 3rem; background: white; border-radius: 12px; border: 2px dashed var(--neutral-300);">
-                        <div style="font-size: 3rem; opacity: 0.3; margin-bottom: 1rem;">📦</div>
-                        <h3 style="color: var(--neutral-600);">No submitted orders from Julio for this date</h3>
-                        <p style="color: var(--neutral-500);">Julio hasn't submitted any quantities yet</p>
-                    </div>
-                `}
+        <div style="margin-bottom:3rem;padding:2rem;background:linear-gradient(135deg,rgba(217,119,6,0.08),rgba(217,119,6,0.03));border-radius:20px;border:3px solid var(--accent-400);box-shadow:0 8px 16px rgba(217,119,6,0.15);">
+          <div style="background:linear-gradient(135deg,var(--accent-600),var(--accent-500));padding:1.5rem 2rem;border-radius:15px;margin-bottom:1.5rem;box-shadow:var(--shadow-lg);">
+            <div style="display:flex;align-items:center;gap:15px;flex-wrap:wrap;">
+              <h2 style="font-size:2rem;font-weight:800;color:white;margin:0;">📦 JULIO'S PRODUCTS</h2>
+              <span style="background:white;color:var(--accent-700);padding:0.4rem 1.2rem;border-radius:50px;font-size:1.4rem;font-family:var(--font-mono);font-weight:700;">${filtered.length}${filtered.length!==julioData.length?` / ${julioData.length}`:''}</span>
             </div>
-        `;
+            ${_buildSectionFilters('julio', julioData, 'rgba(255,255,255,0.6)')}
+          </div>
+          ${julioData.length > 0 ? _renderCategoryGroups(groups, 'julio', accent) : `
+            <div style="text-align:center;padding:3rem;background:white;border-radius:12px;border:2px dashed var(--neutral-300);">
+              <div style="font-size:3rem;opacity:0.3;">📦</div>
+              <h3 style="color:var(--neutral-600);">No submitted orders from Julio for this date</h3>
+            </div>`}
+        </div>`;
     }
-    
-    // ⭐ SEPARATOR BEFORE OFFICE ⭐ (Only if showing multiple sections)
-    if (userFilter === 'all' && ((ronyData.length > 0 || julioData.length > 0) && officeData.length > 0)) {
-        html += `
-            <div style="height: 4rem; display: flex; align-items: center; justify-content: center; position: relative; margin: 3rem 0;">
-                <div style="position: absolute; width: 100%; height: 3px; background: linear-gradient(90deg, var(--accent-400), var(--success-400));"></div>
-                <div style="background: white; padding: 1rem 2rem; border-radius: 50px; border: 3px solid var(--neutral-300); box-shadow: var(--shadow-xl); position: relative; z-index: 10;">
-                    <span style="font-size: 1.5rem; font-weight: 800; color: var(--neutral-700);">⬇️ SEPARATOR ⬇️</span>
-                </div>
-            </div>
-        `;
+
+    // ─── SEPARATOR ────────────────────────────────────────────────
+    if (userFilter === 'all' && officeData.length > 0) {
+        html += `<div style="height:3px;background:linear-gradient(90deg,var(--accent-400),var(--success-400));border-radius:2px;margin:2rem 0;"></div>`;
     }
-    
-    // 🏢 OFFICE SECTION - GREEN BACKGROUND (Show if filter is 'all' or 'office')
+
+    // ─── OFFICE SECTION ────────────────────────────────────────────
     if (userFilter === 'all' || userFilter === 'office') {
         html += `
-            <div style="margin-top: ${userFilter === 'office' ? '0' : '3rem'}; padding: 2rem; background: linear-gradient(135deg, rgba(5, 150, 105, 0.08), rgba(5, 150, 105, 0.03)); border-radius: 20px; border: 3px solid var(--success-400); box-shadow: 0 8px 16px rgba(5, 150, 105, 0.15);">
-                <!-- HEADER -->
-                <div style="background: linear-gradient(135deg, var(--success-600), var(--success-500)); padding: 1.5rem 2rem; border-radius: 15px; margin-bottom: 2rem; box-shadow: var(--shadow-lg);">
-                    <h2 style="font-size: 2rem; font-weight: 800; color: white; margin: 0; display: flex; align-items: center; gap: 15px;">
-                        🏢 OFFICE PRODUCTS
-                        <span style="background: white; color: var(--success-700); padding: 0.5rem 1.5rem; border-radius: 50px; font-size: 1.5rem; font-family: var(--font-mono);">
-                            ${officeData.length}
-                        </span>
-                    </h2>
-                    <p style="color: rgba(255, 255, 255, 0.9); margin: 0.5rem 0 0 0; font-size: 1rem;">
-                        Office supplies and general inventory
-                    </p>
-                </div>
-                
-                <!-- PRODUCTS GRID OR EMPTY STATE -->
-                ${officeData.length > 0 ? `
-                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 2rem;">
-                        ${officeData.map(row => renderEnhancedCard(row, 'office')).join('')}
-                    </div>
-                ` : `
-                    <div style="text-align: center; padding: 3rem; background: white; border-radius: 12px; border: 2px dashed var(--neutral-300);">
-                        <div style="font-size: 3rem; opacity: 0.3; margin-bottom: 1rem;">🏢</div>
-                        <h3 style="color: var(--neutral-600);">No submitted orders from Office for this date</h3>
-                        <p style="color: var(--neutral-500);">No office supplies have been submitted yet</p>
-                    </div>
-                `}
-            </div>
-        `;
+        <div style="margin-bottom:3rem;padding:2rem;background:linear-gradient(135deg,rgba(5,150,105,0.08),rgba(5,150,105,0.03));border-radius:20px;border:3px solid var(--success-400);box-shadow:0 8px 16px rgba(5,150,105,0.15);">
+          <div style="background:linear-gradient(135deg,var(--success-600),var(--success-500));padding:1.5rem 2rem;border-radius:15px;margin-bottom:1.5rem;box-shadow:var(--shadow-lg);">
+            <h2 style="font-size:2rem;font-weight:800;color:white;margin:0;">🏢 OFFICE PRODUCTS
+              <span style="background:white;color:var(--success-700);padding:0.4rem 1.2rem;border-radius:50px;font-size:1.4rem;font-family:var(--font-mono);font-weight:700;margin-left:15px;">${officeData.length}</span>
+            </h2>
+          </div>
+          ${officeData.length > 0 ? `
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:1.5rem;">
+              ${officeData.map(row => renderEnhancedCard(row, 'office')).join('')}
+            </div>` : `
+            <div style="text-align:center;padding:3rem;background:white;border-radius:12px;border:2px dashed var(--neutral-300);">
+              <div style="font-size:3rem;opacity:0.3;">🏢</div>
+              <h3 style="color:var(--neutral-600);">No submitted orders from Office for this date</h3>
+            </div>`}
+        </div>`;
     }
-    
-    // ✅ SET THE HTML
-    container.innerHTML = html;
+
+    return html;
+}
+
+function renderEnhancedOrderCards(ronyData, julioData, officeData = []) {
+    const userFilter = document.getElementById('createUserFilter')?.value || 'all';
+    ronyData = ronyData.filter(r => (r.user||'').toLowerCase().trim() === 'rony');
+
+    // ✅ Cache so filters can re-render without a DB round-trip
+    window._placeOrderCache = { rony: ronyData, julio: julioData, office: officeData };
+    // ✅ Reset per-section filters when new data loads
+    window._placeOrderFilters = { rony: { vendor:'', category:'' }, julio: { vendor:'', category:'' } };
+
+    const container = document.getElementById('enhancedOrderContainer');
+    container.innerHTML = _buildPlaceOrderHTML(ronyData, julioData, officeData, userFilter);
 }
 
 // ========== NEW MANAGEMENT FUNCTIONS ==========
@@ -8659,7 +8697,20 @@ function renderEnhancedCard(row, userType) {
              style="width:100px;height:100px;object-fit:contain;border-radius:8px;border:1px solid var(--neutral-200);background:white;padding:0.5rem;">
       </div>
       <div>
-        <h3 style="font-size:1rem;font-weight:700;color:var(--neutral-900);margin:0 0 0.5rem 0;line-height:1.3;">${escapedProductName}</h3>
+        ${(isRony || isJulio) ? `
+        <!-- ✅ EDITABLE PRODUCT NAME (Rony & Julio) -->
+        <input type="text"
+          data-original="${escapedProductName}"
+          value="${escapedProductName}"
+          onkeydown="if(event.key==='Enter')this.blur()"
+          onblur="autoSaveProductName(this)"
+          onfocus="this.style.borderColor='var(--primary-400)';this.style.background='var(--primary-50)'"
+          style="width:100%;font-size:1rem;font-weight:700;color:var(--neutral-900);
+                 border:2px dashed transparent;border-radius:6px;padding:0.2rem 0.4rem;
+                 margin:0 0 0.5rem 0;background:transparent;outline:none;
+                 line-height:1.3;transition:all .2s;cursor:text;"
+          title="Click to edit — saves automatically">
+        ` : `<h3 style="font-size:1rem;font-weight:700;color:var(--neutral-900);margin:0 0 0.5rem 0;line-height:1.3;">${escapedProductName}</h3>`}
         <div style="display:grid;grid-template-columns:auto 1fr;gap:0.5rem 1rem;font-size:0.8125rem;">
           <span style="color:var(--neutral-600);font-weight:600;">Item Code:</span>
           <span style="font-family:var(--font-mono);font-weight:600;color:${row.item_code ? 'var(--success-700)' : 'var(--warning-600)'};" id="itemcode-display-${productId}">
@@ -9269,8 +9320,9 @@ async function updateItemCode(rowId, itemCode) {
     }
 }
 
-// Toggle assignment (rony ↔ julio)
+// Toggle assignment (rony ↔ julio) — stays in place
 async function toggleAssignment(rowId, newUser) {
+    const scrollY = window.scrollY;
     try {
         const { error } = await supabaseClient
             .from('inventory_check')
@@ -9279,19 +9331,25 @@ async function toggleAssignment(rowId, newUser) {
         
         if (error) throw error;
         
-        showAlert(`✅ Assignment updated to ${newUser.toUpperCase()}`, 'success');
-        await loadEnhancedCreateOrder();
+        // Update cache row and re-render in-place
+        ['rony','julio','office'].forEach(section => {
+            window._placeOrderCache[section] = window._placeOrderCache[section].map(r =>
+                String(r.id) === String(rowId) ? { ...r, user: newUser.toLowerCase() } : r
+            );
+        });
+        _rerenderPlaceOrderSections();
+        requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' }));
+        showAlert(`✅ Assigned to ${newUser}`, 'success');
     } catch (error) {
         console.error('Toggle assignment error:', error);
         showAlert('❌ Error updating assignment', 'error');
     }
 }
 
-// Delete product
-// ✅ KEEP THIS VERSION - It works with row.id
+// Delete product — stays in place
 async function deleteProductFromPlaceOrder(rowId) {
     if (!confirm('⚠️ Delete this product from inventory_check?')) return;
-    
+    const scrollY = window.scrollY;
     showLoading(true);
     try {
         const { error } = await supabaseClient
@@ -9300,15 +9358,65 @@ async function deleteProductFromPlaceOrder(rowId) {
             .eq('id', rowId);
         
         if (error) throw error;
-        
+
+        // Remove from cache and re-render in-place
+        ['rony','julio','office'].forEach(section => {
+            window._placeOrderCache[section] = window._placeOrderCache[section].filter(r =>
+                String(r.id) !== String(rowId)
+            );
+        });
+        _rerenderPlaceOrderSections();
+        requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' }));
         showAlert('✅ Product deleted', 'success');
-        await loadEnhancedCreateOrder();
     } catch (error) {
         console.error('Delete error:', error);
         showAlert('❌ Error deleting product', 'error');
     } finally {
         showLoading(false);
     }
+}
+
+// ✅ AUTO-SAVE PRODUCT NAME — updates ALL tables, stays in place
+const _pnSaveTimers = {};
+async function autoSaveProductName(input) {
+    const oldName = (input.dataset.original || "").trim();
+    const newName = (input.value || "").trim();
+    if (!oldName || !newName || oldName === newName) return;
+
+    input.style.borderColor = "var(--accent-500)";
+    input.style.background  = "rgba(245,158,11,0.08)";
+
+    clearTimeout(_pnSaveTimers[oldName]);
+    _pnSaveTimers[oldName] = setTimeout(async () => {
+        const scrollY = window.scrollY;
+        try {
+            await Promise.all([
+                supabaseClient.from("inventory_management").update({ product_name: newName }).eq("product_name", oldName),
+                supabaseClient.from("current_stock")        .update({ product_name: newName }).eq("product_name", oldName),
+                supabaseClient.from("target_inventory")     .update({ product_name: newName }).eq("product_name", oldName),
+                supabaseClient.from("inventory_check")      .update({ product_name: newName }).eq("product_name", oldName),
+                supabaseClient.from("purchase_history")     .update({ product_name: newName }).eq("product_name", oldName),
+                supabaseClient.from("invoice_items")        .update({ product_name: newName }).eq("product_name", oldName),
+                supabaseClient.from("vendor_prices")        .update({ product_name: newName }).eq("product_name", oldName),
+            ]);
+            ["rony","julio","office"].forEach(s => {
+                window._placeOrderCache[s] = window._placeOrderCache[s].map(r =>
+                    r.product_name === oldName ? { ...r, product_name: newName } : r
+                );
+            });
+            input.dataset.original = newName;
+            input.style.borderColor = "var(--success-500)";
+            input.style.background  = "rgba(16,185,129,0.08)";
+            showAlert(`Renamed "${oldName}" to "${newName}"`, "success");
+            requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: "instant" }));
+            setTimeout(() => { input.style.borderColor="transparent"; input.style.background="transparent"; }, 2000);
+        } catch(err) {
+            input.style.borderColor = "var(--warning-600)";
+            input.style.background  = "rgba(220,38,38,0.08)";
+            input.value = oldName;
+            showAlert("Failed to save name — reverted", "error");
+        }
+    }, 400);
 }
 
 // Select vendor for product
