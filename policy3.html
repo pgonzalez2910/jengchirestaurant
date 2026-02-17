@@ -510,7 +510,7 @@ async function loadEmployees() {
   
   const { data: signatures, error: sigError } = await client
     .from('hb_employee_signatures')
-    .select('employee_initials, pdf_url, signed_at, created_at, session_id, employee_signed_at')
+    .select('employee_initials, pdf_url, signed_at, created_at, session_id')
     .order('created_at', { ascending: false });  // Newest first
 
   // ── ALSO fetch from hb_ack_forms which stores the email-sent PDF url ──
@@ -586,7 +586,7 @@ async function loadEmployees() {
       // Use the most recent signed_at across status and signature records
       const sigDate = latestSig?.signed_at || latestSig?.created_at;
       const statusDate = status.employee_signed_at || status.created_at;
-      status.employee_signed_at = sigDate > statusDate ? sigDate : statusDate;
+      if (sigDate) status.employee_signed_at = sigDate > statusDate ? sigDate : statusDate;
     }
   });
   
@@ -953,7 +953,7 @@ document.getElementById('btnApproveAll').addEventListener('click', async () => {
           manager_approved_at: new Date().toISOString()
         })
         .eq('employee_initials', emp.initials)
-        .eq('session_id', emp.status.session_id);
+        .eq('id', emp.status.id);
       
       if (statusError) throw statusError;
       
@@ -1035,7 +1035,7 @@ document.getElementById('btnHRApproveAll').addEventListener('click', async () =>
           hr_approved_at: new Date().toISOString()
         })
         .eq('employee_initials', emp.initials)
-        .eq('session_id', emp.status.session_id);
+        .eq('id', emp.status.id);
       
       if (statusError) throw statusError;
       
@@ -1099,7 +1099,7 @@ window.approveSingleEmployee = async function(employeeInitials, employeeName) {
         manager_approved_at: new Date().toISOString()
       })
       .eq('employee_initials', employeeInitials)
-      .eq('session_id', employee.status.session_id);
+      .eq('id', employee.status.id);
     if (statusError) throw statusError;
 
     // 2. Regenerate PDF with manager signature
@@ -1151,7 +1151,7 @@ window.hrApproveSingle = async function(employeeInitials, employeeName) {
         hr_approved_at: new Date().toISOString()
       })
       .eq('employee_initials', employeeInitials)
-      .eq('session_id', employee.status.session_id);
+      .eq('id', employee.status.id);
     
     if (statusError) throw statusError;
     
@@ -1197,7 +1197,7 @@ window.printSinglePDF = async function(employeeInitials) {
       print_count: (employee.status.print_count || 0) + 1
     })
     .eq('employee_initials', employeeInitials)
-    .eq('session_id', employee.status.session_id);
+    .eq('id', employee.status.id || 0);
   
   await loadEmployees();
 };
@@ -1335,6 +1335,14 @@ document.getElementById('btnRunDiag').addEventListener('click', async () => {
       .order('created_at', { ascending: false })
       .limit(50);
 
+    // ── 5. hb_ack_forms (email submissions — has the emailed PDF url) ──
+    const { data: ackForms } = await client
+      .from('hb_ack_forms')
+      .select('id, initials, session_id, status, pdf_url, created_at, manager_email_to')
+      .eq('initials', initials)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
     // ── Build report ───────────────────────────────────────────────
     const row = (label, val, highlight = false) =>
       `<div class="${highlight ? 'text-red-700 font-bold' : 'text-gray-800'}"><span class="text-gray-500 w-40 inline-block">${label}:</span> ${val}</div>`;
@@ -1359,7 +1367,7 @@ document.getElementById('btnRunDiag').addEventListener('click', async () => {
       ? sigs.map((s, i) => `<div class="mb-2 pl-2 border-l-4 ${i === 0 ? 'border-green-400' : 'border-gray-200'}">
           <b>${i === 0 ? '⭐ MOST RECENT' : `#${i+1}`}</b> | session_id: <b>${s.session_id ?? 'NULL'}</b>
           | signed_at: ${fmt(s.signed_at)} | created_at: ${fmt(s.created_at)}
-          | has_pdf: ${s.pdf_url ? '✅' : '❌'}
+          | has_pdf: ${s.pdf_url ? `✅ <a href="${s.pdf_url}" target="_blank" class="underline text-blue-600 text-xs">View PDF</a>` : '❌'}
         </div>`).join('')
       : '<div class="text-red-500 font-bold">❌ NO SIGNATURE RECORDS FOUND</div>';
 
@@ -1371,6 +1379,7 @@ document.getElementById('btnRunDiag').addEventListener('click', async () => {
           | emp_signed: ${s.employee_signed ? '✅' : '❌'} @ ${fmt(s.employee_signed_at)}
           | mgr_approved: ${s.manager_approved ? '✅' : '❌'} @ ${fmt(s.manager_approved_at)}
           | hr_approved: ${s.hr_approved ? '✅' : '❌'} @ ${fmt(s.hr_approved_at)}
+          ${s.pdf_url ? `| pdf: <a href="${s.pdf_url}" target="_blank" class="underline text-blue-600 text-xs">View PDF</a>` : '| pdf: none'}
         </div>`).join('')
       : '<div class="text-red-500 font-bold">❌ NO STATUS RECORDS FOUND</div>';
 
@@ -1401,12 +1410,27 @@ document.getElementById('btnRunDiag').addEventListener('click', async () => {
       latestStatus?.session_id !== null &&
       String(latestSig.session_id) !== String(latestStatus?.session_id);
 
+    // ── ack_forms (email submissions) ──────────────────────────────
+    let ackFormsHtml = ackForms?.length
+      ? ackForms.map((af, i) => `<div class="mb-2 pl-2 border-l-4 ${i === 0 ? 'border-green-400' : 'border-gray-200'}">
+          <b>${i === 0 ? '⭐ MOST RECENT' : `#${i+1}`}</b> | session_id: ${af.session_id ?? 'null'}
+          | status: ${af.status || 'N/A'} | date: ${fmt(af.created_at)}
+          ${af.pdf_url ? `| 📄 <a href="${af.pdf_url}" target="_blank" class="underline text-blue-600 font-bold">Open Emailed PDF</a>` : '| no pdf_url'}
+        </div>`).join('')
+      : '<div class="text-gray-400">No hb_ack_forms records found</div>';
+
+    // ── Find the most recent emailed PDF URL ──────────────────────
+    const emailedPDF = (ackForms || []).find(af => af.pdf_url)?.pdf_url;
+
     let diagHtml = `<div class="bg-${mismatch ? 'red' : 'green'}-50 border border-${mismatch ? 'red' : 'green'}-300 rounded p-3 mb-2">`;
     diagHtml += `<b class="text-${mismatch ? 'red' : 'green'}-800">DIAGNOSIS:</b><br>`;
     diagHtml += `• Latest signature session_id: <b>${latestSigSession ?? 'NULL'}</b> (${fmt(latestSignedAt)})<br>`;
     diagHtml += `• Latest status session_id: <b>${latestStatus?.session_id ?? 'NULL'}</b> (${fmt(latestStatus?.created_at)})<br>`;
     diagHtml += `• Acks found for latest sig's session: <b>${acksForLatestSig.length}</b><br>`;
-    
+    diagHtml += `• Emailed PDF exists in hb_ack_forms: <b>${emailedPDF ? '✅ Yes' : '❌ No'}</b>`;
+    if (emailedPDF) diagHtml += ` — <a href="${emailedPDF}" target="_blank" class="underline text-blue-700 font-bold">📄 Open it here</a>`;
+    diagHtml += `<br>`;
+
     if (mismatch) {
       diagHtml += `<br>⚠️ <b class="text-red-700">SESSION MISMATCH DETECTED!</b> The latest signature uses session ${latestSigSession} but the status record uses session ${latestStatus?.session_id}. The PDF was built from the WRONG session's acks.<br>`;
       diagHtml += `Click "🔧 Fix" below to re-tag acks with the correct session.`;
@@ -1419,6 +1443,15 @@ document.getElementById('btnRunDiag').addEventListener('click', async () => {
     } else {
       diagHtml += `<br>✅ Sessions match. ${acksForLatestSig.length} acks linked to latest signature.`;
     }
+
+    // ── Show "Save Emailed PDF to DB" button if we have the URL ──
+    if (emailedPDF) {
+      diagHtml += `<br><br><button onclick="saveEmailedPDFtoDB('${initials}', '${emailedPDF}')" 
+        class="px-4 py-2 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 mt-2">
+        💾 Save Emailed PDF URL to DB (makes it appear in manager portal)
+      </button>`;
+    }
+
     diagHtml += '</div>';
 
     out.innerHTML =
@@ -1426,12 +1459,58 @@ document.getElementById('btnRunDiag').addEventListener('click', async () => {
       section('📡 Sessions (hb_sessions)', 'blue', sessHtml) +
       section(`✍️ Employee Signatures (hb_employee_signatures) — ${sigs?.length || 0} records`, 'green', sigHtml) +
       section(`📋 Acknowledgment Status (hb_acknowledgment_status) — ${statuses?.length || 0} records`, 'orange', statusHtml) +
-      section(`📝 Individual Acks (hb_acks) — ${acks?.length || 0} records`, 'purple', acksHtml);
+      section(`📝 Individual Acks (hb_acks) — ${acks?.length || 0} records`, 'purple', acksHtml) +
+      section(`📬 Email Submissions (hb_ack_forms) — ${ackForms?.length || 0} records`, 'indigo', ackFormsHtml);
 
   } catch (err) {
     out.innerHTML = `<div class="text-red-600 font-bold">❌ Diagnostic failed: ${err.message}</div>`;
   }
 });
+
+// ── Save emailed PDF URL to DB so manager portal can find it ──────────────
+window.saveEmailedPDFtoDB = async function(initials, pdfUrl) {
+  if (!confirm(`Save the emailed PDF URL for ${initials} to the database?\nThis will make the PDF appear in the manager portal immediately.`)) return;
+
+  const nowISO = new Date().toISOString();
+  let saved = false;
+
+  // Update hb_employee_signatures (most recent record)
+  const { error: sigErr } = await client
+    .from('hb_employee_signatures')
+    .update({ pdf_url: pdfUrl, pdf_generated_at: nowISO })
+    .eq('employee_initials', initials)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (!sigErr) saved = true;
+  else console.warn('sigErr:', sigErr.message);
+
+  // Update hb_acknowledgment_status (most recent record)
+  const { data: latestStatus } = await client
+    .from('hb_acknowledgment_status')
+    .select('session_id')
+    .eq('employee_initials', initials)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single();
+
+  if (latestStatus?.session_id) {
+    const { error: statusErr } = await client
+      .from('hb_acknowledgment_status')
+      .update({ pdf_url: pdfUrl, pdf_generated_at: nowISO })
+      .eq('employee_initials', initials)
+      .eq('session_id', latestStatus.session_id);
+    if (!statusErr) saved = true;
+    else console.warn('statusErr:', statusErr.message);
+  }
+
+  if (saved) {
+    alert(`✅ PDF URL saved to database for ${initials}!\nRefresh the manager portal to see the PDF button.`);
+    await loadEmployees();
+    document.getElementById('btnRunDiag').click(); // Re-run diagnostic
+  } else {
+    alert(`⚠️ Could not save PDF URL to DB. Check console for errors.`);
+  }
+};
 
 // ── FIX: Re-tag acks with correct session ──────────────────────────────────
 document.getElementById('btnFixSession').addEventListener('click', async () => {
