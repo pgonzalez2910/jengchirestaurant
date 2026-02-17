@@ -45,9 +45,11 @@
       <p class="text-gray-600 mt-2">Handbook Approvals</p>
     </div>
     <input id="managerUsername" type="text" placeholder="Username (e.g., STJG)"
-      class="w-full rounded-xl border border-gray-300 px-4 py-3 mb-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent uppercase">
+      class="w-full rounded-xl border border-gray-300 px-4 py-3 mb-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent uppercase"
+      onkeydown="if(event.key==='Enter'||event.key==='Tab'){event.preventDefault();document.getElementById('managerPassword').focus();}">
     <input id="managerPassword" type="password" placeholder="Password"
-      class="w-full rounded-xl border border-gray-300 px-4 py-3 mb-4 focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+      class="w-full rounded-xl border border-gray-300 px-4 py-3 mb-4 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+      onkeydown="if(event.key==='Enter'){document.getElementById('btnManagerLogin').click();}">
     <button id="btnManagerLogin" class="w-full bg-blue-600 text-white rounded-xl py-3 font-semibold hover:bg-blue-700 transition">
       Sign In
     </button>
@@ -733,7 +735,7 @@ function renderSubmittedList() {
               ✅ Approve
             </button>
           ` : ''}
-          ${!isHR && status.manager_approved ? `
+          ${status.manager_approved ? `
             <button onclick="regenerateSinglePDF('${emp.initials}', '${emp.full_name}')"
               class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">
               🔄 Regen PDF
@@ -805,13 +807,17 @@ document.getElementById('btnRegenerateAll').addEventListener('click', async () =
   
   for (const emp of approvedEmployees) {
     try {
-      const response = await client.functions.invoke('regenerate-handbook-pdf', {
-        body: {
-          employee_initials: emp.initials,
-          manager_username: currentManager.username,
-          manager_name: currentManager.full_name
-        }
-      });
+      const regenPayload = {
+        employee_initials: emp.initials,
+        manager_username: currentManager.username,
+        manager_name: currentManager.full_name
+      };
+      // Include HR info if already approved
+      if (emp.status?.hr_approved && emp.status?.hr_approved_by) {
+        regenPayload.hr_username = emp.status.hr_approved_by;
+        regenPayload.hr_name = emp.status.hr_approved_by === 'JTJG' ? 'Francisco Teng' : emp.status.hr_approved_by;
+      }
+      const response = await client.functions.invoke('regenerate-handbook-pdf', { body: regenPayload });
       
       if (response.error || !response.data?.ok) {
         throw new Error(response.error?.message || response.data?.error || 'Failed');
@@ -1229,11 +1235,16 @@ document.getElementById('btnPrintAll').addEventListener('click', async () => {
 // REGENERATE SINGLE PDF
 // ============================================
 window.regenerateSinglePDF = async function(employeeInitials, employeeName) {
-  if (!confirm(`Regenerate PDF for ${employeeName}?\nThis will create a new PDF with the MOST RECENT manager signature.`)) {
+  if (!confirm(`Regenerate PDF for ${employeeName}?\nThis will create a new PDF with the MOST RECENT signatures.`)) {
     return;
   }
   
   console.log('🔄 Regenerating PDF for', employeeInitials);
+
+  // Find the employee's status so we know if HR approved
+  const employee = submittedEmployees.find(e => e.initials === employeeInitials);
+  const isHRApproved = employee?.status?.hr_approved;
+  const hrApprovedBy = employee?.status?.hr_approved_by;
   
   const progressDiv = document.createElement('div');
   progressDiv.id = 'regenerateProgressDiv';
@@ -1246,13 +1257,20 @@ window.regenerateSinglePDF = async function(employeeInitials, employeeName) {
   document.body.appendChild(progressDiv);
   
   try {
-    const response = await client.functions.invoke('regenerate-handbook-pdf', {
-      body: {
-        employee_initials: employeeInitials,
-        manager_username: currentManager.username,
-        manager_name: currentManager.full_name
-      }
-    });
+    // Build payload — always include manager, include HR if already approved
+    const payload = {
+      employee_initials: employeeInitials,
+      manager_username: currentManager.username,
+      manager_name: currentManager.full_name
+    };
+
+    // If HR already approved, pass their info so signature appears in PDF
+    if (isHRApproved && hrApprovedBy) {
+      payload.hr_username = hrApprovedBy;
+      payload.hr_name = hrApprovedBy === 'JTJG' ? 'Francisco Teng' : hrApprovedBy;
+    }
+
+    const response = await client.functions.invoke('regenerate-handbook-pdf', { body: payload });
     
     if (response.error || !response.data || !response.data.ok) {
       throw new Error(response.error?.message || response.data?.error || 'PDF regeneration failed');
