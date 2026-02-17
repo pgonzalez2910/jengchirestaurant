@@ -2852,13 +2852,16 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
       
    // ─────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────
-// STEP 1: Save signature to database (OVERWRITE existing signature)
+// STEP 1: Save signature to database (FIXED: Validate UUID)
 // ─────────────────────────────────────────────────────────────
 
-// We remove 'session_id' from the conflict list. 
-// Now, if 'PG' already exists, it updates that row instead of making a new one.
+// FIX: Validate employee_id is a UUID before sending to DB
+const rawEmpId = s?.employee_id || null;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const validEmpId = (rawEmpId && UUID_RE.test(String(rawEmpId))) ? rawEmpId : null;
+
 const { error: sigError } = await client.from('hb_employee_signatures').upsert({
-    employee_id: s?.employee_id || null,
+    employee_id: validEmpId, // Use validated ID (null if 'EMP-0187')
     employee_initials: getInitials(),
     session_id: getSessionId(),
     signature_data: signatureData,
@@ -2867,9 +2870,11 @@ const { error: sigError } = await client.from('hb_employee_signatures').upsert({
     user_agent: navigator.userAgent,
     signed_at: new Date().toISOString()
 }, {
-    onConflict: 'employee_initials', // <--- CHANGED: Only conflict on Initials
+    onConflict: 'employee_initials', // Changed to just initials to overwrite old signatures
     ignoreDuplicates: false
 });
+
+
       if (sigError) {
         console.error('❌ CRITICAL: Signature save failed:', sigError);
         alert('⚠️ Signature save failed. Please contact IT support.\nError: ' + sigError.message);
@@ -2878,20 +2883,19 @@ const { error: sigError } = await client.from('hb_employee_signatures').upsert({
       
       console.log('✅ Employee signature saved successfully');
       
-      // ─────────────────────────────────────────────────────────────
-      // STEP 2: Update acknowledgment status table
-      // ─────────────────────────────────────────────────────────────
-      await client.from('hb_acknowledgment_status').upsert({
-        employee_id: s?.employee_id || null,
-        employee_initials: getInitials(),
-        session_id: getSessionId(),
-        employee_signed: true,
-        employee_signed_at: new Date().toISOString()
-      }, { 
-        onConflict: 'employee_initials,session_id',
-        ignoreDuplicates: false 
-      });
-      
+    // ─────────────────────────────────────────────────────────────
+// STEP 2: Update acknowledgment status table (FIXED: Validate UUID)
+// ─────────────────────────────────────────────────────────────
+await client.from('hb_acknowledgment_status').upsert({
+    employee_id: validEmpId, // Use the same validated ID from Step 1
+    employee_initials: getInitials(),
+    session_id: getSessionId(),
+    employee_signed: true,
+    employee_signed_at: new Date().toISOString()
+}, {
+    onConflict: 'employee_initials,session_id',
+    ignoreDuplicates: false
+});
       // ─────────────────────────────────────────────────────────────
       // STEP 3: Log submission intent to hb_ack_forms
       // ─────────────────────────────────────────────────────────────
