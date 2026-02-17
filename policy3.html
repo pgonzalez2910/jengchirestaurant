@@ -530,12 +530,12 @@ async function loadEmployees() {
   // ── Build a map of the NEWEST pdf_url per employee from ALL sources ──
   const latestPDFMap = new Map(); // initials → { pdf_url, date }
 
-  // From hb_acknowledgment_status
+  // From hb_acknowledgment_status (column is final_pdf_url)
   (statuses || []).forEach(s => {
-    if (!s.pdf_url) return;
+    if (!s.final_pdf_url) return;
     const ex = latestPDFMap.get(s.employee_initials);
     if (!ex || s.created_at > ex.date) {
-      latestPDFMap.set(s.employee_initials, { pdf_url: s.pdf_url, date: s.created_at });
+      latestPDFMap.set(s.employee_initials, { pdf_url: s.final_pdf_url, date: s.created_at });
     }
   });
 
@@ -583,7 +583,6 @@ async function loadEmployees() {
     // Also attach the most recent signature date for display
     const latestSig = (signatures || []).find(sg => sg.employee_initials === initials);
     if (latestSig?.signed_at || latestSig?.created_at) {
-      // Use the most recent signed_at across status and signature records
       const sigDate = latestSig?.signed_at || latestSig?.created_at;
       const statusDate = status.employee_signed_at || status.created_at;
       if (sigDate) status.employee_signed_at = sigDate > statusDate ? sigDate : statusDate;
@@ -1197,7 +1196,7 @@ window.printSinglePDF = async function(employeeInitials) {
       print_count: (employee.status.print_count || 0) + 1
     })
     .eq('employee_initials', employeeInitials)
-    .eq('id', employee.status.id || 0);
+    .eq('id', employee.status.id);
   
   await loadEmployees();
 };
@@ -1379,7 +1378,7 @@ document.getElementById('btnRunDiag').addEventListener('click', async () => {
           | emp_signed: ${s.employee_signed ? '✅' : '❌'} @ ${fmt(s.employee_signed_at)}
           | mgr_approved: ${s.manager_approved ? '✅' : '❌'} @ ${fmt(s.manager_approved_at)}
           | hr_approved: ${s.hr_approved ? '✅' : '❌'} @ ${fmt(s.hr_approved_at)}
-          ${s.pdf_url ? `| pdf: <a href="${s.pdf_url}" target="_blank" class="underline text-blue-600 text-xs">View PDF</a>` : '| pdf: none'}
+          ${s.final_pdf_url ? `| pdf: <a href="${s.final_pdf_url}" target="_blank" class="underline text-blue-600 text-xs">View PDF</a>` : '| pdf: none'}
         </div>`).join('')
       : '<div class="text-red-500 font-bold">❌ NO STATUS RECORDS FOUND</div>';
 
@@ -1484,21 +1483,20 @@ window.saveEmailedPDFtoDB = async function(initials, pdfUrl) {
   if (!sigErr) saved = true;
   else console.warn('sigErr:', sigErr.message);
 
-  // Update hb_acknowledgment_status (most recent record)
+  // Update hb_acknowledgment_status (most recent record) using id
   const { data: latestStatus } = await client
     .from('hb_acknowledgment_status')
-    .select('session_id')
+    .select('id')
     .eq('employee_initials', initials)
     .order('created_at', { ascending: false })
     .limit(1)
     .single();
 
-  if (latestStatus?.session_id) {
+  if (latestStatus?.id) {
     const { error: statusErr } = await client
       .from('hb_acknowledgment_status')
-      .update({ pdf_url: pdfUrl, pdf_generated_at: nowISO })
-      .eq('employee_initials', initials)
-      .eq('session_id', latestStatus.session_id);
+      .update({ final_pdf_url: pdfUrl, updated_at: nowISO })
+      .eq('id', latestStatus.id);
     if (!statusErr) saved = true;
     else console.warn('statusErr:', statusErr.message);
   }
