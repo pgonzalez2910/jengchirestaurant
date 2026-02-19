@@ -9213,7 +9213,16 @@ function renderJulioProducts() {
     categorized.get(category).push(p);
   });
 
-  const sortedCategories = Array.from(categorized.keys()).sort();
+  // Sort categories alphabetically, 'Other' always last
+  const sortedCategories = Array.from(categorized.keys()).sort((a, b) => {
+    if (a === 'Other') return 1;
+    if (b === 'Other') return -1;
+    return a.localeCompare(b);
+  });
+  // Sort products alphabetically within each category
+  sortedCategories.forEach(cat => {
+    categorized.get(cat).sort((a, b) => (a.product_name || '').localeCompare(b.product_name || ''));
+  });
 
   document.getElementById('julioProductCount').textContent = `${products.length} products`;
 
@@ -9256,6 +9265,7 @@ function renderJulioProducts() {
       'Cleaning Supplies':  { bg: '#f3e8ff', border: '#a855f7', text: '#7e22ce' },
       'Office Supplies':    { bg: '#ede9fe', border: '#8b5cf6', text: '#6d28d9' },
       'Kitchen Equipment':  { bg: '#fed7aa', border: '#ea580c', text: '#c2410c' },
+      'Supermarket':        { bg: '#fefce8', border: '#ca8a04', text: '#854d0e' },
       'Other':              { bg: '#f1f5f9', border: '#64748b', text: '#475569' }
     };
 
@@ -9301,6 +9311,7 @@ function getCategoryIcon(category) {
     'Cleaning Supplies': '🧹',
     'Office Supplies': '📎',
     'Kitchen Equipment': '🍳',
+    'Supermarket': '🛒',
     'Other': '📦'
   };
   return icons[category] || '📦';
@@ -10181,7 +10192,17 @@ function _groupByCategory(rows) {
         if (!map[cat]) map[cat] = [];
         map[cat].push(r);
     });
-    return Object.keys(map).sort().map(cat => ({ cat, rows: map[cat] }));
+    // Sort products alphabetically within each category
+    Object.keys(map).forEach(cat => {
+        map[cat].sort((a, b) => (a.product_name || '').localeCompare(b.product_name || ''));
+    });
+    // Sort categories alphabetically, but always put 'Other' last
+    const sorted = Object.keys(map).sort((a, b) => {
+        if (a === 'Other') return 1;
+        if (b === 'Other') return -1;
+        return a.localeCompare(b);
+    });
+    return sorted.map(cat => ({ cat, rows: map[cat] }));
 }
 
 function _renderCategoryGroups(groups, userType, accentColor) {
@@ -10191,17 +10212,37 @@ function _renderCategoryGroups(groups, userType, accentColor) {
         <p style="color:var(--neutral-500);margin-top:0.5rem;">No products match the selected filters</p>
       </div>`;
 
-    return groups.map(({ cat, rows }) => `
+        // Per-category accent colors for Place Order section headers
+    const catAccents = {
+        'Supermarket':       '#ca8a04',
+        'Produce':           '#16a34a',
+        'Meat & Seafood':    '#dc2626',
+        'Dairy':             '#3b82f6',
+        'Dry Goods':         '#f59e0b',
+        'Frozen':            '#0ea5e9',
+        'Beverages':         '#ec4899',
+        'Cleaning Supplies': '#a855f7',
+        'Office Supplies':   '#8b5cf6',
+        'Kitchen Equipment': '#ea580c',
+        'Other':             '#64748b'
+    };
+
+    return groups.map(({ cat, rows }) => {
+        const catColor = catAccents[cat] || accentColor;
+        const icon = getCategoryIcon(cat);
+        return `
       <div style="margin-bottom:1.5rem;">
-        <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem;padding:0.5rem 1rem;background:${accentColor}22;border-left:4px solid ${accentColor};border-radius:0 8px 8px 0;">
+        <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1rem;padding:0.6rem 1rem;background:${catColor}18;border-left:4px solid ${catColor};border-radius:0 8px 8px 0;">
+          <span style="font-size:1rem;">${icon}</span>
           <span style="font-size:0.875rem;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--neutral-800);">${cat}</span>
-          <span style="font-size:0.75rem;font-weight:600;color:var(--neutral-500);">${rows.length} item${rows.length!==1?'s':''}</span>
+          <span style="font-size:0.75rem;font-weight:600;color:var(--neutral-500);margin-left:auto;">${rows.length} item${rows.length!==1?'s':''}</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:1.5rem;">
           ${rows.map(row => renderEnhancedCard(row, userType)).join('')}
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
 }
 
 // Cached data for re-renders without DB hit
@@ -15017,9 +15058,64 @@ async function initializeEnhancedPlaceOrder() {
 
 
 // ========== ADD THIS HELPER (sync + load in one call) ==========
+
+// ═══ SUPERMARKET CATEGORY MIGRATION ═══════════════════════════════
+// Sets category = 'Supermarket' for these specific products in DB
+// Safe to run multiple times (only updates if category differs)
+const SUPERMARKET_PRODUCTS = [
+    'Madras Curry Powder',
+    'Sushi Vinegar',
+    'Soy Paste Kimlan',
+    'Original Sesame Jam',
+    'Red Curry Paste',
+    'Pixiandouban',
+    'Orient Worcestershire Sauce Kimlan',
+    'Maltose',
+    'Sichuan Yibin Suimiyacai',
+    'Coconut Milk',
+    'Sweetened Condensed Milk'
+];
+
+async function migrateSupermarketCategory() {
+    try {
+        // Check which products exist in inventory_management
+        const { data: existing, error } = await supabaseClient
+            .from('inventory_management')
+            .select('id, product_name, category')
+            .in('product_name', SUPERMARKET_PRODUCTS);
+
+        if (error) { console.warn('Supermarket migration check error:', error); return; }
+
+        const toUpdate = (existing || []).filter(p => p.category !== 'Supermarket');
+        if (toUpdate.length === 0) { console.log('✅ Supermarket categories already set'); return; }
+
+        // Update in one batch
+        const updatePromises = toUpdate.map(p =>
+            supabaseClient
+                .from('inventory_management')
+                .update({ category: 'Supermarket' })
+                .eq('id', p.id)
+        );
+        await Promise.all(updatePromises);
+        console.log(`✅ Set Supermarket category for ${toUpdate.length} products:`, toUpdate.map(p => p.product_name));
+
+        // Also update inventory_check rows (category is denormalized there)
+        await supabaseClient
+            .from('inventory_check')
+            .update({ category: 'Supermarket' })
+            .in('product_name', SUPERMARKET_PRODUCTS);
+
+    } catch(e) {
+        console.warn('Supermarket migration error:', e);
+    }
+}
+// ═══════════════════════════════════════════════════════════════════
+
 async function syncAndLoad(dateISO) {
     showLoading(true);
     try {
+        // Run Supermarket category migration (safe, idempotent)
+        await migrateSupermarketCategory();
         const synced = await syncInventoryCheck(dateISO);
         console.log('✅ Sync complete:', synced, 'rows');
         await loadEnhancedCreateOrder();
