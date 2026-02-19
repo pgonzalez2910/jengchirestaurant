@@ -9610,7 +9610,7 @@ function renderRonyProducts() {
     let totalAll = 0, hasStockAll = 0;
     ronyProductsByPosition.forEach(products => {
         totalAll += products.length;
-        hasStockAll += products.filter(p => p.current_stock != null && p.current_stock > 0).length;
+        hasStockAll += products.filter(p => p.current_stock !== null && p.current_stock !== undefined).length;
     });
     const globalPct = totalAll > 0 ? Math.round((hasStockAll / totalAll) * 100) : 0;
     const globalBar = document.getElementById('ronyGlobalProgress');
@@ -9630,7 +9630,8 @@ function renderRonyProducts() {
         if (products.length === 0) return '';
 
         const total = products.length;
-        const hasStock = products.filter(p => p.current_stock != null && p.current_stock > 0).length;
+        // ✅ 0 is a valid stock count (out of stock) — count it as entered
+        const hasStock = products.filter(p => p.current_stock !== null && p.current_stock !== undefined).length;
         const progressPct = total > 0 ? Math.round((hasStock / total) * 100) : 0;
 
         return `
@@ -9666,8 +9667,9 @@ function renderRonyProducts() {
 // ✅ UPDATED: renderRonyProductCard with DELETE button
 function renderRonyProductCard(product) {
     const imageUrl = resolveImage(product.image_url);
-    const hasStock = product.current_stock != null;  // ✅ FIXED: Show stock even if it's 0
-    const displayQty = product.current_stock != null ? product.current_stock : '';  // ✅ Display 0 if stock is 0
+    // ✅ 0 is a valid stock count (means "out of stock") — only null means "not entered yet"
+    const hasStock = product.current_stock !== null && product.current_stock !== undefined;
+    const displayQty = hasStock ? product.current_stock : '';
 
     return `
         <div style="
@@ -9733,7 +9735,7 @@ function updateRonyStock(productName, delta) {
     const currentStock = product.current_stock || 0;
     const newStock = Math.max(0, currentStock + delta);
     
-    product.current_stock = newStock === 0 ? null : parseFloat(newStock.toFixed(2));
+    product.current_stock = parseFloat(newStock.toFixed(2));  // ✅ 0 is valid out-of-stock
     
     const input = document.getElementById(`rony-stock-${productName.replace(/[^a-zA-Z0-9]/g, '_')}`);
     if (input) input.value = newStock === 0 ? '' : newStock.toFixed(2);
@@ -9746,13 +9748,18 @@ function setRonyStock(productName, value) {
     ronyProductsByPosition.forEach(products => {
         allProducts = allProducts.concat(products);
     });
-    
+
     const product = allProducts.find(p => p.product_name === productName);
     if (!product) return;
-    
-    const qty = value === '' ? null : (parseFloat(value) || 0);
-    product.current_stock = (qty === 0) ? null : qty;
-    
+
+    // ✅ Allow 0: empty string = not entered (null), any number including 0 = entered
+    if (value === '' || value === null || value === undefined) {
+        product.current_stock = null;       // blank = not yet entered
+    } else {
+        const qty = parseFloat(value);
+        product.current_stock = isNaN(qty) ? null : qty;  // 0 is valid!
+    }
+
     renderRonyProducts();
 }
 
@@ -9774,7 +9781,7 @@ async function saveRonyOrders() {
         });
         
         const stockUpdates = allProducts
-            .filter(p => p.current_stock != null && p.current_stock >= 0)
+            .filter(p => p.current_stock !== null && p.current_stock !== undefined)  // ✅ 0 is valid
             .map(p => ({
                 product_name: p.product_name,
                 quantity_in_stock: p.current_stock,
@@ -9974,8 +9981,16 @@ async function loadEnhancedCreateOrder() {
             .eq('order_date', dateISO)
             .limit(1);
         
-        // If NO submissions exist for this date, show empty state
-        if ((!ronySubmitted || ronySubmitted.length === 0) &&
+        // Check if inventory_check was populated by sync for this date
+        const { data: syncCheck } = await supabaseClient
+            .from('inventory_check')
+            .select('product_name')
+            .eq('order_date', dateISO)
+            .limit(1);
+
+        // Show empty state ONLY when there's truly nothing synced yet
+        if ((!syncCheck || syncCheck.length === 0) &&
+            (!ronySubmitted || ronySubmitted.length === 0) &&
             (!julioSubmitted || julioSubmitted.length === 0) &&
             (!officeSubmitted || officeSubmitted.length === 0)) {
             renderEmptyOrderState(dateISO);
@@ -10005,21 +10020,25 @@ async function loadEnhancedCreateOrder() {
             });
         });
         
-        // ✅ STEP 5: Load RONY's data from current_stock
-        const { data: ronyStock, error: ronyError } = await supabaseClient
-            .from('current_stock')
+        // ✅ STEP 5: Load RONY's data from inventory_check (syncInventoryCheck already populated it)
+        // This gives every assigned product a real DB id so updateTentative/vendor/itemCode work
+        const { data: ronyCheck, error: ronyError } = await supabaseClient
+            .from('inventory_check')
             .select('*')
-            .eq('stock_date', dateISO);
-        
-        let ronyData = (ronyStock || []).map(row => {
+            .eq('order_date', dateISO)
+            .eq('user', 'Rony');
+
+        let ronyData = (ronyCheck || []).map(row => {
             const mgmt = imageMap.get(row.product_name);
             return {
-                product_name: row.product_name,
+                ...row,
                 user: 'rony',
-                tentative: row.quantity_in_stock,
-                on_hand: row.quantity_in_stock,  // ✅ FIX: Add on_hand so Current Stock displays
-                image_url: mgmt?.image_url || null,
-                par: mgmt?.par || 0,
+                // on_hand = quantity Rony counted in current_stock for this date
+                on_hand: parseFloat(row.on_hand ?? 0),
+                // tentative = saved order qty (vendor selected, qty entered)
+                tentative: row.tentative ?? null,
+                image_url: mgmt?.image_url || row.image_url || null,
+                par: mgmt?.par || parseFloat(row.target || 0),
                 position: mgmt?.position || null,
                 category: mgmt?.category || 'Uncategorized'
             };
@@ -10319,8 +10338,11 @@ function renderEnhancedCard(row, userType) {
     const displayPar = parRaw;
     const displayNeeded = neededRaw;
     
-    // RONY: Empty QTY, JULIO: Pre-fill with tentative, OFFICE: Pre-fill if exists
-    const defaultQty = isRony ? '' : (isJulio ? tentative : (tentative > 0 ? tentative : ''));
+    // ✅ ALL users: pre-fill with saved tentative qty (persists across refreshes)
+    // Rony: pre-fill if tentative was saved (vendor/qty entered previously)
+    const defaultQty = (tentative !== null && tentative !== undefined && tentative !== 0)
+        ? tentative
+        : (isRony ? '' : '');
 
     const conversion = window.conversionMap?.get(productName) || { units_per_case: 1, unit_type: 'unit' };
     const hasCase = conversion.units_per_case > 1;
@@ -10627,22 +10649,32 @@ async function selectVendorAndUpdateItemCode(rowId, productName, vendor) {
                 : `<span style="color: var(--warning-600);"><i class="fas fa-exclamation-triangle"></i> No item code found for ${vendor}</span>`;
         }
         
-        // Save to database (only if rowId exists - for items already in inventory_check)
+        // Read current qty from the input field (if any)
+        const currentQtyInput = document.getElementById(`qty-${productName.replace(/[^a-zA-Z0-9]/g, '_')}`);
+        const currentQty = currentQtyInput ? (parseFloat(currentQtyInput.value) ?? null) : null;
+
+        // ✅ Auto-save vendor + item_code + tentative qty immediately
         if (rowId && rowId !== 'undefined' && rowId !== 'null') {
+            // Has real DB id — update by id
+            const updatePayload = { vendor: vendor, item_code: itemCode || null };
+            if (currentQty !== null && !isNaN(currentQty)) updatePayload.tentative = currentQty;
             const { error: updateError } = await supabaseClient
                 .from('inventory_check')
-                .update({ 
-                    vendor: vendor,
-                    item_code: itemCode || null
-                })
+                .update(updatePayload)
                 .eq('id', rowId);
-            
-            if (updateError) {
-                console.warn('⚠️ Could not update inventory_check (item may not exist yet):', updateError);
-                // Don't throw - this is okay, item will be saved when order is submitted
-            }
+            if (updateError) console.warn('⚠️ Could not update inventory_check:', updateError);
         } else {
-            console.log('ℹ️ Skipping database update (no rowId) - will save on submit');
+            // Rony rows: look up by product_name + date
+            const dateISO = document.getElementById('createOrderDate')?.value || todayYMD();
+            const updatePayload = { vendor: vendor, item_code: itemCode || null };
+            if (currentQty !== null && !isNaN(currentQty)) updatePayload.tentative = currentQty;
+            const { error: updateError } = await supabaseClient
+                .from('inventory_check')
+                .update(updatePayload)
+                .eq('order_date', dateISO)
+                .eq('product_name', productName)
+                .eq('user', 'Rony');
+            if (updateError) console.warn('⚠️ Could not update inventory_check (Rony):', updateError);
         }
         
         if (statusEl) {
@@ -10934,60 +10966,91 @@ async function updateParValue(productName, newPar) {
     }
 }
 
-// Update tentative (order quantity)
+// Update tentative (order quantity) — safe null check + product_name fallback
 async function updateTentative(rowId, value) {
-    const qty = parseFloat(value) || 0;
-    const statusEl = document.querySelector(`[data-id="${rowId}"]`).querySelector('[id^="save-status-"]');
-    
+    const qty = parseFloat(value) ?? 0;
+
+    // Safe statusEl lookup — data-id may be "undefined" for Rony rows
+    const cardEl = document.querySelector(`[data-id="${rowId}"]`);
+    const statusEl = cardEl ? cardEl.querySelector('[id^="save-status-"]') : null;
+
+    const showStatus = (html) => { if (statusEl) { statusEl.innerHTML = html; } };
+
     try {
-        const { error } = await supabaseClient
-            .from('inventory_check')
-            .update({ tentative: qty })
-            .eq('id', rowId);
-        
-        if (error) throw error;
-        
-        statusEl.innerHTML = '<span style="color: var(--success-600);">✅ Saved</span>';
-        setTimeout(() => { statusEl.innerHTML = ''; }, 2000);
+        if (!rowId || rowId === 'undefined' || rowId === 'null') {
+            // Rony rows: no inventory_check id — find by product_name from card
+            const productName = cardEl?.dataset?.product;
+            if (!productName) { console.warn('updateTentative: no rowId or productName'); return; }
+            const dateISO = document.getElementById('createOrderDate')?.value || todayYMD();
+            const { error } = await supabaseClient
+                .from('inventory_check')
+                .update({ tentative: qty })
+                .eq('order_date', dateISO)
+                .eq('product_name', productName)
+                .eq('user', 'Rony');
+            if (error) throw error;
+        } else {
+            const { error } = await supabaseClient
+                .from('inventory_check')
+                .update({ tentative: qty })
+                .eq('id', rowId);
+            if (error) throw error;
+        }
+        showStatus('<span style="color:var(--success-600);">✅ Saved</span>');
+        setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 2000);
     } catch (error) {
         console.error('Update tentative error:', error);
-        statusEl.innerHTML = '<span style="color: var(--warning-600);">❌ Error</span>';
+        showStatus('<span style="color:var(--warning-600);">❌ Error</span>');
     }
 }
 
 // Update vendor
 async function updateVendorItemCode(rowId, vendor) {
-    const statusEl = document.querySelector(`[data-id="${rowId}"]`).querySelector('[id^="save-status-"]');
-    
+    const cardEl = document.querySelector(`[data-id="${rowId}"]`);
+    const statusEl = cardEl ? cardEl.querySelector('[id^="save-status-"]') : null;
+    const showStatus = (html) => { if (statusEl) statusEl.innerHTML = html; };
     try {
-        const { error } = await supabaseClient
-            .from('inventory_check')
-            .update({ vendor: vendor || null })
-            .eq('id', rowId);
-        
-        if (error) throw error;
-        
-        statusEl.innerHTML = '<span style="color: var(--success-600);">✅ Vendor saved</span>';
-        setTimeout(() => { statusEl.innerHTML = ''; }, 2000);
+        if (!rowId || rowId === 'undefined' || rowId === 'null') {
+            const productName = cardEl?.dataset?.product;
+            if (!productName) return;
+            const dateISO = document.getElementById('createOrderDate')?.value || todayYMD();
+            const { error } = await supabaseClient.from('inventory_check')
+                .update({ vendor: vendor || null })
+                .eq('order_date', dateISO).eq('product_name', productName).eq('user', 'Rony');
+            if (error) throw error;
+        } else {
+            const { error } = await supabaseClient.from('inventory_check')
+                .update({ vendor: vendor || null }).eq('id', rowId);
+            if (error) throw error;
+        }
+        showStatus('<span style="color:var(--success-600);">✅ Vendor saved</span>');
+        setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 2000);
     } catch (error) {
         console.error('Update vendor error:', error);
-        statusEl.innerHTML = '<span style="color: var(--warning-600);">❌ Error</span>';
+        showStatus('<span style="color:var(--warning-600);">❌ Error</span>');
     }
 }
 
 // Update item code
 async function updateItemCode(rowId, itemCode) {
-    const statusEl = document.querySelector(`[data-id="${rowId}"]`).querySelector('[id^="save-status-"]');
-    
+    const cardEl = document.querySelector(`[data-id="${rowId}"]`);
+    const statusEl = cardEl ? cardEl.querySelector('[id^="save-status-"]') : null;
+    const showStatus = (html) => { if (statusEl) statusEl.innerHTML = html; };
     try {
-        const { error } = await supabaseClient
-            .from('inventory_check')
-            .update({ item_code: itemCode || null })
-            .eq('id', rowId);
-        
-        if (error) throw error;
-        
-        statusEl.innerHTML = '<span style="color: var(--success-600);">✅ Item code saved</span>';
+        if (!rowId || rowId === 'undefined' || rowId === 'null') {
+            const productName = cardEl?.dataset?.product;
+            if (!productName) return;
+            const dateISO = document.getElementById('createOrderDate')?.value || todayYMD();
+            const { error } = await supabaseClient.from('inventory_check')
+                .update({ item_code: itemCode || null })
+                .eq('order_date', dateISO).eq('product_name', productName).eq('user', 'Rony');
+            if (error) throw error;
+        } else {
+            const { error } = await supabaseClient.from('inventory_check')
+                .update({ item_code: itemCode || null }).eq('id', rowId);
+            if (error) throw error;
+        }
+        showStatus('<span style="color:var(--success-600);">✅ Item code saved</span>');
         setTimeout(() => { statusEl.innerHTML = ''; }, 2000);
     } catch (error) {
         console.error('Update item code error:', error);
@@ -11833,7 +11896,7 @@ function renderStockAlerts() {
                 <div class="alert-category-grid">`;
 
             catItems.forEach(alert => {
-                const imgSrc = alert.image_url || 'https://via.placeholder.com/80x80?text=?';
+                const imgSrc = alert.image_url || PLACEHOLDER_IMAGE;
                 const daysSince = alert.last_count_date
                     ? Math.floor((new Date() - alert.last_count_date) / 86400000)
                     : null;
@@ -11872,7 +11935,7 @@ function renderStockAlerts() {
                 html += `
                 <div class="alert-card ${alert.alert_type}">
                     <div>
-                        <img src="${imgSrc}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;box-shadow:var(--shadow-sm);" onerror="this.src='https://via.placeholder.com/72x72?text=?'">
+                        <img src="${imgSrc}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;box-shadow:var(--shadow-sm);" onerror="this.src=PLACEHOLDER_IMAGE">
                     </div>
                     <div>
                         <div style="display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;margin-bottom:0.5rem;">
@@ -14874,7 +14937,8 @@ async function syncInventoryCheck(dateISO) {
             return 0;
         }
 
-        // 6. Upsert in batches of 50 to avoid payload limits
+        // 6. Upsert in batches — INSERT new rows, skip existing ones to preserve
+        //    any saved tentative/vendor/item_code the user already entered
         const batchSize = 50;
         for (let i = 0; i < rows.length; i += batchSize) {
             const batch = rows.slice(i, i + batchSize);
@@ -14882,13 +14946,25 @@ async function syncInventoryCheck(dateISO) {
                 .from('inventory_check')
                 .upsert(batch, {
                     onConflict: 'order_date,product_name,user',
-                    ignoreDuplicates: false
+                    ignoreDuplicates: true   // ✅ NEVER overwrite saved vendor/qty/item_code
                 });
 
             if (upsertError) {
                 console.error('❌ Upsert error on batch', i, upsertError);
                 throw upsertError;
             }
+        }
+
+        // 7. Separately UPDATE on_hand for existing rows so stock counts stay fresh
+        //    but tentative/vendor/item_code are NOT touched
+        const onHandUpdates = rows.filter(r => r.on_hand !== undefined && r.on_hand !== null);
+        for (const r of onHandUpdates) {
+            await supabaseClient
+                .from('inventory_check')
+                .update({ on_hand: r.on_hand, target: r.target })
+                .eq('order_date', r.order_date)
+                .eq('product_name', r.product_name)
+                .eq('user', r.user);
         }
 
         console.log('✅ Synced', rows.length, 'rows into inventory_check');
