@@ -14955,16 +14955,36 @@ async function syncInventoryCheck(dateISO) {
             }
         }
 
-        // 7. Separately UPDATE on_hand for existing rows so stock counts stay fresh
-        //    but tentative/vendor/item_code are NOT touched
-        const onHandUpdates = rows.filter(r => r.on_hand !== undefined && r.on_hand !== null);
-        for (const r of onHandUpdates) {
-            await supabaseClient
-                .from('inventory_check')
-                .update({ on_hand: r.on_hand, target: r.target })
-                .eq('order_date', r.order_date)
-                .eq('product_name', r.product_name)
-                .eq('user', r.user);
+        // 7. Batch-update on_hand + target for rows that have REAL stock data
+        //    (i.e., came from current_stock or target_inventory — not zero placeholders)
+        //    Do this in one upsert per batch, only touching on_hand + target columns.
+        //    We split: "has real data" (upsert with update) vs "scaffold only" (already inserted above).
+        const realDataRows = rows.filter(r =>
+            (r.user === 'Rony'   && stockMap.has(r.product_name)) ||
+            (r.user === 'Julio'  && targetMap.has(r.product_name))
+        );
+
+        if (realDataRows.length > 0) {
+            // These rows definitely exist now — upsert again to refresh on_hand + target only
+            // ignoreDuplicates: false here is safe because tentative/vendor/item_code are NOT in the payload
+            const refreshRows = realDataRows.map(r => ({
+                order_date:   r.order_date,
+                product_name: r.product_name,
+                user:         r.user,
+                on_hand:      r.on_hand,
+                target:       r.target
+            }));
+            for (let i = 0; i < refreshRows.length; i += batchSize) {
+                const batch = refreshRows.slice(i, i + batchSize);
+                const { error: refreshErr } = await supabaseClient
+                    .from('inventory_check')
+                    .upsert(batch, {
+                        onConflict: 'order_date,product_name,user',
+                        ignoreDuplicates: false   // update on_hand + target, nothing else in payload
+                    });
+                if (refreshErr) console.warn('⚠️ on_hand refresh batch error:', refreshErr);
+            }
+            console.log(`✅ Refreshed on_hand for ${realDataRows.length} real-data rows`);
         }
 
         console.log('✅ Synced', rows.length, 'rows into inventory_check');
