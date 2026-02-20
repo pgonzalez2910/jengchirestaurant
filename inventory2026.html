@@ -7631,7 +7631,7 @@ async function rptFetchData(tabName) {
     status('⏳','Fetching invoice items…');
     try {
         const t=Date.now();
-        const res = await withTimeout(supabaseClient.from('invoice_items').select('id,invoice_id,product_name,unit_price,price_per_unit,quantity,has_weight,category').limit(10000),'invoice_items');
+        const res = await withTimeout(supabaseClient.from('invoice_items').select('id,invoice_id,product_name,unit_price,price_per_unit,quantity,weight,has_weight,category').limit(10000),'invoice_items');
         if (res.error) throw new Error(res.error.message);
         allItems = res.data || [];
         status('✅',`Invoice items: ${allItems.length} rows (${Date.now()-t}ms)`);
@@ -7686,7 +7686,10 @@ async function rptFetchData(tabName) {
         if (it.has_weight && ppUnit>0) price=ppUnit;
         else if (uPrice>0)             price=uPrice;
         else if (ppUnit>0)             price=ppUnit;
-        const qty = parseFloat(it.quantity||0);
+        // Weight-based items store amount in `weight`, not `quantity`
+        const qty = it.has_weight
+            ? parseFloat(it.weight||0)
+            : parseFloat(it.quantity||0);
         const invoice_date = (inv.invoice_date||'').slice(0,10);
         return { ...it, invoice_date,
             vendor:   inv.vendor||'—',
@@ -7795,8 +7798,59 @@ function rptRenderBody(tabName, cfg, d) {
             const inv = d.invDateMap.get(invoiceId) || d.allInv.find(i=>i.id===invoiceId) || {};
             const res = await supabaseClient.from('invoice_items').select('*').eq('invoice_id',invoiceId);
             const items = res.data || [];
-            const vendorColor = [44,88,136];
-            const total = items.reduce((s,it)=>{
+            const vc = [44,88,136];
+
+            // ── live-recalc helper: updates row total + invoice grand total ──
+            window._rptRecalcRow = function(itemId) {
+                const priceIn = document.getElementById('priceInput_'+itemId);
+                const qtyIn   = document.getElementById('qtyInput_'+itemId);
+                const rowTotal= document.getElementById('rowTotal_'+itemId);
+                if (!priceIn||!qtyIn||!rowTotal) return;
+                const p = parseFloat(priceIn.value)||0;
+                const q = parseFloat(qtyIn.value)||0;
+                rowTotal.textContent = '$'+(p*q).toFixed(2);
+                // recalc grand total
+                let grand = 0;
+                document.querySelectorAll('[id^="rowTotal_"]').forEach(el=>{
+                    grand += parseFloat(el.textContent.replace('$',''))||0;
+                });
+                const grandEl = document.getElementById('rptInvGrandTotal');
+                if (grandEl) grandEl.textContent = '$'+grand.toFixed(2);
+            };
+
+            const rows = items.map(it=>{
+                const p   = parseFloat(it.unit_price||it.price_per_unit||0);
+                // Weight-based items store the amount in `weight`, not `quantity`
+                const isW = it.has_weight;
+                const q   = isW ? parseFloat(it.weight||0) : parseFloat(it.quantity||0);
+                const weightBadge = isW
+                    ? `<span style="display:inline-block;margin-left:.4rem;padding:.1rem .35rem;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:4px;font-size:.62rem;font-weight:700;letter-spacing:.03em;">⚖ LB</span>`
+                    : '';
+                return `<tr id="row_${it.id}">
+                  <td><strong>${it.product_name||'—'}</strong>${weightBadge}</td>
+                  <td style="color:#6b7280;font-size:.85rem;">${it.category||'—'}</td>
+                  <td>
+                    <input id="qtyInput_${it.id}" type="number" step="${isW?'0.001':'0.01'}" min="0" value="${q.toFixed(isW?3:2)}"
+                      data-is-weight="${isW?'true':'false'}"
+                      oninput="_rptRecalcRow('${it.id}')"
+                      style="width:${isW?'78px':'65px'};padding:.3rem .4rem;border:1px solid #d1d5db;border-radius:5px;font-size:.82rem;text-align:right;">
+                    ${isW?'<span style="font-size:.7rem;color:#92400e;margin-left:.2rem;">lb</span>':''}
+                  </td>
+                  <td>$${p.toFixed(2)}</td>
+                  <td id="rowTotal_${it.id}" style="font-weight:600;">$${(p*q).toFixed(2)}</td>
+                  <td>
+                    <div style="display:flex;gap:.35rem;align-items:center;">
+                      <input id="priceInput_${it.id}" type="number" step="0.01" min="0" value="${p.toFixed(2)}"
+                        oninput="_rptRecalcRow('${it.id}')"
+                        style="width:80px;padding:.3rem .4rem;border:1px solid #d1d5db;border-radius:5px;font-size:.82rem;">
+                      <button onclick="rptUpdateItem('${it.id}','${escQ(it.product_name)}','${invoiceId}')"
+                        style="padding:.3rem .65rem;background:rgb(${vc});color:white;border:none;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600;white-space:nowrap;">💾 Save</button>
+                    </div>
+                  </td>
+                </tr>`;
+            }).join('');
+
+            const initTotal = items.reduce((s,it)=>{
                 const p=parseFloat(it.unit_price||it.price_per_unit||0);
                 return s+p*parseFloat(it.quantity||0);
             },0);
@@ -7812,33 +7866,17 @@ function rptRenderBody(tabName, cfg, d) {
                 </div>
                 <table class="data-table" style="margin:0 0 1rem;">
                   <thead><tr>
-                    <th>Product</th><th>Category</th><th>Qty</th><th>Unit Price</th><th>Total</th>
-                    <th style="width:180px;">Update Price</th>
+                    <th>Product</th>
+                    <th>Category</th>
+                    <th style="width:100px;">Qty</th>
+                    <th>Unit Price</th>
+                    <th>Total</th>
+                    <th style="width:190px;">Update Price</th>
                   </tr></thead>
-                  <tbody>
-                    ${items.map(it=>{
-                        const p=parseFloat(it.unit_price||it.price_per_unit||0);
-                        const q=parseFloat(it.quantity||0);
-                        return `<tr>
-                          <td><strong>${it.product_name||'—'}</strong></td>
-                          <td>${it.category||'—'}</td>
-                          <td>${q.toFixed(2)}</td>
-                          <td>$${p.toFixed(2)}</td>
-                          <td>$${(p*q).toFixed(2)}</td>
-                          <td>
-                            <div style="display:flex;gap:.35rem;align-items:center;">
-                              <input id="priceInput_${it.id}" type="number" step="0.01" min="0" value="${p.toFixed(2)}"
-                                style="width:80px;padding:.3rem .4rem;border:1px solid #d1d5db;border-radius:5px;font-size:.82rem;">
-                              <button onclick="rptUpdateItemPrice('${it.id}','${escQ(it.product_name)}','${invoiceId}')"
-                                style="padding:.3rem .65rem;background:rgb(${vendorColor});color:white;border:none;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600;">Save</button>
-                            </div>
-                          </td>
-                        </tr>`;
-                    }).join('')}
-                  </tbody>
+                  <tbody>${rows}</tbody>
                   <tfoot><tr>
-                    <td colspan="4" style="text-align:right;font-weight:700;padding:.75rem 1rem;">Total:</td>
-                    <td style="font-weight:800;color:rgb(${vendorColor});">$${total.toFixed(2)}</td>
+                    <td colspan="4" style="text-align:right;font-weight:700;padding:.75rem 1rem;">Grand Total:</td>
+                    <td id="rptInvGrandTotal" style="font-weight:800;color:rgb(${vc});">$${initTotal.toFixed(2)}</td>
                     <td></td>
                   </tr></tfoot>
                 </table>
@@ -7853,23 +7891,130 @@ function rptRenderBody(tabName, cfg, d) {
     window.escQ = function(s) { return (s || '').replace(/'/g, "\\'"); };
 
     // ── Price update helper ────────────────────────────────────────────
-    window.rptUpdateItemPrice = async function(itemId, productName, invoiceId) {
-        const input = document.getElementById('priceInput_'+itemId);
-        if (!input) return;
-        const newPrice = parseFloat(input.value);
+    // ── Save both price AND qty from the invoice detail modal ───────────
+    window.rptUpdateItem = async function(itemId, productName, invoiceId) {
+        const priceIn = document.getElementById('priceInput_'+itemId);
+        const qtyIn   = document.getElementById('qtyInput_'+itemId);
+        const isWt    = qtyIn && qtyIn.dataset.isWeight === 'true';
+        const btn     = document.querySelector(`button[onclick*="rptUpdateItem('${itemId}'"]`);
+        if (!priceIn) return;
+        const newPrice = parseFloat(priceIn.value);
+        const newQty   = qtyIn ? parseFloat(qtyIn.value) : null;
         if (isNaN(newPrice)||newPrice<0) { alert('Invalid price'); return; }
+        if (newQty !== null && (isNaN(newQty)||newQty<0)) { alert('Invalid quantity'); return; }
         try {
+            if (btn) { btn.disabled=true; btn.textContent='⏳'; }
             const updateData = { unit_price: newPrice, price_per_unit: newPrice };
+            if (newQty !== null) {
+                if (isWt) {
+                    // Weight-based: save to `weight` field, keep quantity=0
+                    updateData.weight = newQty;
+                    updateData.quantity = 0;
+                    // Also recalc line_total
+                    updateData.line_total = newQty * newPrice;
+                } else {
+                    updateData.quantity = newQty;
+                }
+            }
             const { error } = await supabaseClient.from('invoice_items').update(updateData).eq('id', itemId);
             if (error) throw new Error(error.message);
-            input.style.background='#d1fae5';
-            showAlert(`✅ Price updated for ${productName}: $${newPrice.toFixed(2)}`, 'success');
-            // Refresh allItems cache so next report load reflects change
+            // Flash inputs green
+            priceIn.style.background='#d1fae5';
+            if (qtyIn) qtyIn.style.background='#d1fae5';
+            if (btn) { btn.disabled=false; btn.textContent='✅ Saved'; btn.style.background='#16a34a'; }
+            setTimeout(()=>{ if(btn){btn.textContent='💾 Save';btn.style.background=`rgb(44,88,136)`;} }, 2500);
+            showAlert(`✅ Updated ${productName} — Qty: ${newQty!==null?newQty.toFixed(3):'unchanged'} · Price: $${newPrice.toFixed(2)}`, 'success');
+            // Refresh allItems cache
             const existing = d.allItems.find(it=>it.id===itemId);
-            if (existing) { existing.unit_price=newPrice; existing.price_per_unit=newPrice; }
+            if (existing) {
+                existing.unit_price=newPrice; existing.price_per_unit=newPrice;
+                if (newQty !== null) { existing.quantity=newQty; existing.qty=newQty; }
+            }
         } catch(e) {
-            input.style.background='#fee2e2';
+            priceIn.style.background='#fee2e2';
+            if (qtyIn) qtyIn.style.background='#fee2e2';
+            if (btn) { btn.disabled=false; btn.textContent='💾 Save'; }
             showAlert(`❌ Failed to update: ${e.message}`, 'error');
+        }
+    };
+
+    // ── Price-only update (kept for backward compat) ────────────────
+    window.rptUpdateItemPrice = async function(itemId, productName, invoiceId) {
+        return window.pvSaveRow(itemId, productName, invoiceId);
+    };
+
+    // ── Price History table: live recalc row total ────────────────────
+    window._pvRecalcRow = function(itemId) {
+        const priceIn = document.getElementById('pvPrice_'+itemId);
+        const qtyIn   = document.getElementById('pvQty_'+itemId);
+        const totalEl = document.getElementById('pvTotal_'+itemId);
+        if (!priceIn||!qtyIn||!totalEl) return;
+        const p = parseFloat(priceIn.value)||0;
+        const q = parseFloat(qtyIn.value)||0;
+        totalEl.textContent = '$'+(p*q).toFixed(2);
+        totalEl.style.color = '#d97706'; // gold = unsaved change
+    };
+
+    // ── Price History table: save both price + qty inline ─────────────
+    window.pvSaveRow = async function(itemId, productName, invoiceId) {
+        const priceIn = document.getElementById('pvPrice_'+itemId);
+        const qtyIn   = document.getElementById('pvQty_'+itemId);
+        const totalEl = document.getElementById('pvTotal_'+itemId);
+        const btn     = document.getElementById('pvSaveBtn_'+itemId);
+        if (!priceIn) return;
+
+        const newPrice = parseFloat(priceIn.value);
+        const newQty   = qtyIn ? parseFloat(qtyIn.value) : null;
+        const isWt     = qtyIn && qtyIn.dataset.isWeight === 'true';
+
+        if (isNaN(newPrice)||newPrice<0) { alert('Invalid price'); return; }
+        if (newQty !== null && (isNaN(newQty)||newQty<0)) { alert('Invalid quantity'); return; }
+
+        // Disable button while saving
+        if (btn) { btn.disabled=true; btn.textContent='⏳'; }
+
+        try {
+            const updateData = { unit_price: newPrice, price_per_unit: newPrice };
+            if (newQty !== null) {
+                if (isWt) {
+                    updateData.weight   = newQty;
+                    updateData.quantity = 0;
+                    updateData.line_total = newQty * newPrice;
+                } else {
+                    updateData.quantity   = newQty;
+                    updateData.line_total = newQty * newPrice;
+                }
+            }
+
+            const { error } = await supabaseClient.from('invoice_items').update(updateData).eq('id', itemId);
+            if (error) throw new Error(error.message);
+
+            // ── Flash success inline ──────────────────────────────────
+            [priceIn, qtyIn].forEach(el=>{ if(el) el.style.background='#d1fae5'; });
+            if (totalEl) { totalEl.style.color='#16a34a'; }
+            if (btn) { btn.disabled=false; btn.textContent='✅ Saved'; btn.style.background='#16a34a'; }
+            setTimeout(()=>{
+                [priceIn, qtyIn].forEach(el=>{ if(el) el.style.background=''; });
+                if (totalEl) totalEl.style.color='#374151';
+                if (btn) { btn.textContent='💾 Save'; btn.style.background=`rgb(44,88,136)`; }
+            }, 2500);
+
+            // ── Update in-memory cache so totals stay correct ──────────
+            const existing = d.allItems.find(it=>it.id===itemId);
+            if (existing) {
+                existing.unit_price     = newPrice;
+                existing.price_per_unit = newPrice;
+                if (newQty !== null) {
+                    if (isWt) { existing.weight=newQty; existing.qty=newQty; existing.quantity=0; }
+                    else       { existing.quantity=newQty; existing.qty=newQty; }
+                }
+            }
+            showAlert(`✅ Saved — ${productName}: Qty ${newQty!==null?newQty.toFixed(isWt?3:2):'—'} · Price $${newPrice.toFixed(2)}`, 'success');
+
+        } catch(e) {
+            [priceIn, qtyIn].forEach(el=>{ if(el) el.style.background='#fee2e2'; });
+            if (btn) { btn.disabled=false; btn.textContent='💾 Save'; }
+            showAlert(`❌ Failed to save: ${e.message}`, 'error');
         }
     };
 
@@ -8136,35 +8281,47 @@ function rptRenderBody(tabName, cfg, d) {
                           <div style="font-size:.75rem;font-weight:700;color:#6b7280;margin-bottom:.6rem;">Invoice History — Edit &amp; Save Price</div>
                           <table style="width:100%;font-size:.78rem;border-collapse:collapse;">
                             <thead><tr style="border-bottom:1px solid var(--neutral-100);">
-                              <th style="text-align:left;padding:.3rem .4rem;color:#6b7280;">Date</th>
-                              <th style="text-align:left;padding:.3rem .4rem;color:#6b7280;">Vendor</th>
-                              <th style="text-align:left;padding:.3rem .4rem;color:#6b7280;">#</th>
-                              <th style="text-align:right;padding:.3rem .4rem;color:#6b7280;">Qty</th>
-                              <th style="text-align:right;padding:.3rem .4rem;color:#6b7280;">Price</th>
-                              <th style="padding:.3rem .4rem;color:#6b7280;">Update</th>
+                              <th style="text-align:left;padding:.3rem .4rem;color:#6b7280;font-size:.72rem;">Date</th>
+                              <th style="text-align:left;padding:.3rem .4rem;color:#6b7280;font-size:.72rem;">Vendor</th>
+                              <th style="text-align:left;padding:.3rem .4rem;color:#6b7280;font-size:.72rem;">#</th>
+                              <th style="padding:.3rem .4rem;color:#6b7280;font-size:.72rem;">Qty</th>
+                              <th style="padding:.3rem .4rem;color:#6b7280;font-size:.72rem;">Unit Price</th>
+                              <th style="text-align:right;padding:.3rem .4rem;color:#6b7280;font-size:.72rem;">Line Total</th>
+                              <th style="padding:.3rem .4rem;color:#6b7280;font-size:.72rem;">Save</th>
                               <th style="padding:.3rem .4rem;"></th>
                             </tr></thead>
                             <tbody>
-                              ${prod.history.map(h=>`
-                                <tr style="border-bottom:1px solid var(--neutral-50);">
-                                  <td style="padding:.3rem .4rem;">${h.date}</td>
-                                  <td style="padding:.3rem .4rem;">${h.vendor}</td>
-                                  <td style="padding:.3rem .4rem;color:#6b7280;">${h.invNum||h.invoiceId?.slice(0,8)||'—'}</td>
-                                  <td style="text-align:right;padding:.3rem .4rem;">${h.qty.toFixed(2)}</td>
-                                  <td style="text-align:right;padding:.3rem .4rem;font-weight:700;color:${h.price===prod.max?'#dc2626':h.price===prod.min?'#16a34a':'#374151'};">$${h.price.toFixed(2)}</td>
+                              ${prod.history.map(h=>{
+                                const isW = d.allItems.find(it=>it.id===h.itemId)?.has_weight || false;
+                                return `
+                                <tr id="pvRow_${h.itemId}" style="border-bottom:1px solid var(--neutral-50);">
+                                  <td style="padding:.3rem .4rem;font-size:.78rem;">${h.date}</td>
+                                  <td style="padding:.3rem .4rem;font-size:.78rem;">${h.vendor}</td>
+                                  <td style="padding:.3rem .4rem;color:#6b7280;font-size:.78rem;">${h.invNum||h.invoiceId?.slice(0,8)||'—'}</td>
                                   <td style="padding:.3rem .4rem;">
-                                    <div style="display:flex;gap:.3rem;align-items:center;">
-                                      <input id="priceInput_${h.itemId}" type="number" step="0.01" min="0" value="${h.price.toFixed(2)}"
-                                        style="width:72px;padding:.25rem .35rem;border:1px solid #d1d5db;border-radius:4px;font-size:.78rem;">
-                                      <button onclick="rptUpdateItemPrice('${h.itemId}','${escQ(prod.name)}','${h.invoiceId}')}','${h.invoiceId}')"
-                                        style="padding:.25rem .5rem;background:rgba(${r},${g},${b},.1);color:rgb(${r},${g},${b});border:1px solid rgba(${r},${g},${b},.3);border-radius:4px;font-size:.7rem;cursor:pointer;font-weight:600;">Save</button>
+                                    <div style="display:flex;align-items:center;gap:.2rem;">
+                                      <input id="pvQty_${h.itemId}" type="number" step="${isW?'0.001':'0.01'}" min="0" value="${h.qty.toFixed(isW?3:2)}"
+                                        data-is-weight="${isW}"
+                                        oninput="_pvRecalcRow('${h.itemId}')"
+                                        style="width:65px;padding:.2rem .3rem;border:1px solid #d1d5db;border-radius:4px;font-size:.78rem;text-align:right;">
+                                      ${isW?'<span style="font-size:.68rem;color:#92400e;">lb</span>':''}
                                     </div>
+                                  </td>
+                                  <td style="padding:.3rem .4rem;">
+                                    <input id="pvPrice_${h.itemId}" type="number" step="0.01" min="0" value="${h.price.toFixed(2)}"
+                                      oninput="_pvRecalcRow('${h.itemId}')"
+                                      style="width:72px;padding:.2rem .3rem;border:1px solid #d1d5db;border-radius:4px;font-size:.78rem;text-align:right;font-weight:700;color:${h.price===prod.max?'#dc2626':h.price===prod.min?'#16a34a':'#374151'};">
+                                  </td>
+                                  <td id="pvTotal_${h.itemId}" style="text-align:right;padding:.3rem .4rem;font-size:.78rem;font-weight:600;color:#374151;">$${(h.price*h.qty).toFixed(2)}</td>
+                                  <td style="padding:.3rem .4rem;">
+                                    <button id="pvSaveBtn_${h.itemId}" onclick="pvSaveRow('${h.itemId}','${escQ(prod.name)}','${h.invoiceId}')"
+                                      style="padding:.25rem .55rem;background:rgb(${r},${g},${b});color:white;border:none;border-radius:4px;font-size:.72rem;cursor:pointer;font-weight:700;white-space:nowrap;">💾 Save</button>
                                   </td>
                                   <td style="padding:.3rem .4rem;">
                                     <button onclick="rptOpenInvoice('${h.invoiceId}')"
                                       style="padding:.2rem .45rem;background:#f3f4f6;border:1px solid #d1d5db;border-radius:4px;font-size:.68rem;cursor:pointer;">📄 Invoice</button>
                                   </td>
-                                </tr>`).join('')}
+                                </tr>`;}).join('')}
                             </tbody>
                           </table>
                         </div>
