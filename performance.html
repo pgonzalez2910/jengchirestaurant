@@ -439,6 +439,14 @@ button.warning { background: linear-gradient(135deg, #f59e0b, #d97706); }
           <option>Kitchen Prep</option><option>Line Cook</option><option>Fryer</option><option>Dishwasher</option>
         </select>
       </div>
+      <div class="form-group">
+        <label>📌 Status</label>
+        <select id="allTasksStatus" onchange="loadAllTasks()">
+          <option value="">All (Tasks + Untask)</option>
+          <option value="done">✅ Tasks Only (Done)</option>
+          <option value="auto">⏸ Untask / Break Only (Auto)</option>
+        </select>
+      </div>
       <div class="form-group" style="display:flex;align-items:flex-end;">
         <button onclick="loadAllTasks()" class="success" style="">🔄 Load</button>
       </div>
@@ -1178,6 +1186,7 @@ async function loadAllTasks() {
   const startDate    = document.getElementById('allTasksStartDate').value;
   const endDate      = document.getElementById('allTasksEndDate').value;
   const role         = document.getElementById('allTasksRole').value;
+  const statusFilter = (document.getElementById('allTasksStatus')?.value || '').toLowerCase();
   const tbody        = document.getElementById('allTasksTableBody');
   tbody.innerHTML    = '<tr><td colspan="10" style="text-align:center;padding:24px;">Loading...</td></tr>';
 
@@ -1205,21 +1214,21 @@ async function loadAllTasks() {
       supabaseClient.from('employee_schedules').select('employee_name, schedule_date, end_time')
     ]);
 
-    // Enrich and filter only completed tasks with valid times
+    // Enrich and filter only completed tasks
     const enriched = logs.map(l => ({
       ...l,
       _emp:  empMap[l.employee_id] || '?',
       _task: taskMap[l.task_id]    || 'N/A'
     })).filter(l => l.start_time && l.end_time);
 
-    // Sort: date DESC, then employee ASC, then start_time ASC (within same date/emp)
+    // Sort: date DESC, employee ASC, start_time ASC within same group
     enriched.sort((a, b) => {
       if (a.date !== b.date) return a.date > b.date ? -1 : 1;
       if (a._emp !== b._emp) return a._emp.localeCompare(b._emp);
       return new Date(a.start_time) - new Date(b.start_time);
     });
 
-    // Group by date+employee
+    // Group by date|emp
     const groups = new Map();
     enriched.forEach(l => {
       const key = `${l.date}|${l._emp}`;
@@ -1227,16 +1236,16 @@ async function loadAllTasks() {
       groups.get(key).push(l);
     });
 
-    // Build schedule lookup: { "empName|date": "HH:MM" }
+    // Build schedule end-time lookup
     const schedEnd = {};
     (schedules || []).forEach(s => {
-      schedEnd[`${s.employee_name}|${s.schedule_date}`] = s.end_time || DEFAULT_SHIFT_END;
+      const et = (s.end_time || DEFAULT_SHIFT_END).substring(0, 5);
+      schedEnd[`${s.employee_name}|${s.schedule_date}`] = et;
     });
 
     let html = '';
     let totalRealTasks = 0;
 
-    // Process each group (date+employee) in order
     for (const [key, group] of groups) {
       const [dateStr, empName] = key.split('|');
       group.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
@@ -1245,43 +1254,44 @@ async function loadAllTasks() {
       for (let i = 0; i < group.length; i++) {
         const log = group[i];
 
-        // ── Insert gap BEFORE this task (vs previous task end) ──
+        // ── Gap BEFORE this task ──
         if (i > 0) {
           const prev = group[i - 1];
           const gapMin = (new Date(log.start_time) - new Date(prev.end_time)) / (1000 * 60);
-          if (gapMin >= 1) {
-            const gapRows = buildGapRows(dateStr, empName, prev.end_time, log.start_time);
-            gapRows.forEach(seg => { html += renderGapRow(seg, dateStr); });
+          if (gapMin >= 1 && statusFilter !== 'done') {
+            buildGapRows(dateStr, empName, prev.end_time, log.start_time)
+              .forEach(seg => { html += renderGapRow(seg, dateStr); });
           }
         }
 
-        // ── Render the actual task row ──
-        const isOpen = !log.end_time;
-        const dur = formatTime((new Date(log.end_time) - new Date(log.start_time)) / (1000 * 60));
-        html += `<tr>
-          <td>${formatDate(log.date)}</td>
-          <td><strong>${log._emp}</strong></td>
-          <td>${log._task}</td>
-          <td><span class="badge badge-info">${log.role || '—'}</span></td>
-          <td>${formatDateTime(log.start_time)}</td>
-          <td>${formatDateTime(log.end_time)}</td>
-          <td><strong>${dur}</strong></td>
-          <td><span class="badge badge-purple">📝 Task</span></td>
-          <td><span class="badge badge-success">Done</span></td>
-          <td style="display:flex;gap:6px;">
-            <button class="secondary" onclick="openEditTaskModal('${log.id}')" style="padding:5px 10px;font-size:12px;">✏️</button>
-            <button class="danger" onclick="deleteTask('${log.id}')" style="padding:5px 10px;font-size:12px;">🗑</button>
-          </td>
-        </tr>`;
+        // ── Real task row ──
+        if (statusFilter !== 'auto') {
+          const dur = formatTime((new Date(log.end_time) - new Date(log.start_time)) / (1000 * 60));
+          html += `<tr>
+            <td>${formatDate(log.date)}</td>
+            <td><strong>${log._emp}</strong></td>
+            <td>${log._task}</td>
+            <td><span class="badge badge-info">${log.role || '—'}</span></td>
+            <td>${formatDateTime(log.start_time)}</td>
+            <td>${formatDateTime(log.end_time)}</td>
+            <td><strong>${dur}</strong></td>
+            <td><span class="badge badge-purple">📝 Task</span></td>
+            <td><span class="badge badge-success">Done</span></td>
+            <td style="display:flex;gap:6px;">
+              <button class="secondary" onclick="openEditTaskModal('${log.id}')" style="padding:5px 10px;font-size:12px;">✏️</button>
+              <button class="danger" onclick="deleteTask('${log.id}')" style="padding:5px 10px;font-size:12px;">🗑</button>
+            </td>
+          </tr>`;
+        }
 
-        // ── After LAST task: add untask to shift end ──
-        if (i === group.length - 1) {
+        // ── Gap AFTER last task → shift end ──
+        if (i === group.length - 1 && statusFilter !== 'done') {
           const shiftEndTime = schedEnd[`${empName}|${dateStr}`] || DEFAULT_SHIFT_END;
           const shiftEndISO  = toCST_ISO(dateStr, shiftEndTime);
           const afterMin     = (new Date(shiftEndISO) - new Date(log.end_time)) / (1000 * 60);
           if (afterMin >= 1) {
-            const gapRows = buildGapRows(dateStr, empName, log.end_time, shiftEndISO);
-            gapRows.forEach(seg => { html += renderGapRow(seg, dateStr); });
+            buildGapRows(dateStr, empName, log.end_time, shiftEndISO)
+              .forEach(seg => { html += renderGapRow(seg, dateStr); });
           }
         }
       }
@@ -1505,13 +1515,14 @@ async function loadAnalytics() {
       // Build schedule end-time lookup for end-of-shift gap
       const schedEndMap = {};
       (schedules || []).forEach(s => {
-        schedEndMap[`${s.employee_name}|${s.schedule_date}`] = s.end_time || DEFAULT_SHIFT_END;
+        const et = (s.end_time || DEFAULT_SHIFT_END).substring(0, 5);
+        schedEndMap[`${s.employee_name}|${s.schedule_date}`] = et;
       });
 
-      // Group by emp|date
+      // Group by date|emp (date FIRST so split [dateStr, empName] is correct)
       const analyticsGroups = new Map();
       enriched.forEach(l => {
-        const key = `${l._emp}|${l.date}`;
+        const key = `${l.date}|${l._emp}`;
         if (!analyticsGroups.has(key)) analyticsGroups.set(key, []);
         analyticsGroups.get(key).push(l);
       });
