@@ -533,6 +533,7 @@ grid-template-columns: 1fr 1fr;
 <div class="header-subtitle">Schedule vs Actual Hours Tracking with Break & Gap Analysis</div>
 </div>
 </header>
+<div id="status" class="hidden" style="margin: 16px 40px 0 40px;"></div>
 <div class="tabs">
 <button class="tab-btn active" onclick="switchTab('schedule')">📅 Manage Schedule</button>
 <button class="tab-btn" onclick="switchTab('tasks')">⏱ Task Logging</button>
@@ -767,6 +768,17 @@ Select filters and click "Load Tasks" to view all tasks
 <label for="analyticsEnd">End Date</label>
 <input type="date" id="analyticsEnd">
 </div>
+<!-- NEW EMPLOYEE FILTER -->
+<div class="form-group">
+<label for="analyticsEmployee">👤 Filter by Employee</label>
+<select id="analyticsEmployee">
+<option value="">All Employees</option>
+<option value="Julio Mejia">Julio Mejia</option>
+<option value="Leydi Diaz">Leydi Diaz</option>
+<option value="Procoro Tinoco">Procoro Tinoco</option>
+<option value="Wilson Sanchez">Wilson Sanchez</option>
+</select>
+</div>
 <button onclick="loadAnalytics()" style="width: auto; margin-bottom: 0;">📊 Load Analytics</button>
 </div>
 <div id="currentPeriodDisplay" class="current-period-display">Loading...</div>
@@ -894,6 +906,17 @@ Select filters and click "Load Tasks" to view all tasks
 <label for="gapEnd">End Date</label>
 <input type="date" id="gapEnd">
 </div>
+
+<div class="form-group">
+  <label for="gapEmployee">👤 Employee</label>
+  <select id="gapEmployee" onchange="loadGapAnalysis()">
+    <option value="">All Employees</option>
+    <option value="Julio Mejia">Julio Mejia</option>
+    <option value="Leydi Diaz">Leydi Diaz</option>
+    <option value="Procoro Tinoco">Procoro Tinoco</option>
+    <option value="Wilson Sanchez">Wilson Sanchez</option>
+  </select>
+</div>
 <button onclick="loadGapAnalysis()" style="width: auto; margin-bottom: 0;">🔍 Analyze Gaps</button>
 </div>
 </div>
@@ -958,14 +981,190 @@ Select filters and click "Load Tasks" to view all tasks
 </div>
 </div>
 <script>
+// ========== SUPABASE SETUP ==========
 const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
 const { createClient } = window.supabase;
 const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let __SUPABASE_OK__ = false;
+
+function showGlobalStatus(message, type = 'info', sticky = false) {
+  const el = document.getElementById('status');
+  if (!el) return;
+  el.textContent = message;
+  el.className = type;
+  el.classList.remove('hidden');
+  if (!sticky) {
+    clearTimeout(showGlobalStatus._t);
+    showGlobalStatus._t = setTimeout(() => {
+      el.classList.add('hidden');
+    }, 7000);
+  }
+}
+
+async function testSupabaseConnection() {
+  try {
+    // Lightweight ping query
+    const { error } = await supabaseClient
+      .from('kitchen_prep_employees')
+      .select('id')
+      .limit(1);
+
+    if (error) {
+      // Supabase returned a response, but with an error (RLS, missing table, etc.)
+      __SUPABASE_OK__ = true;
+      console.warn('Supabase query error (connection OK):', error);
+      return { ok: true, error };
+    }
+
+    __SUPABASE_OK__ = true;
+    return { ok: true, error: null };
+  } catch (e) {
+    // Network-level failure
+    __SUPABASE_OK__ = false;
+    return { ok: false, error: e };
+  }
+}
+
+function explainFetchFailure(err) {
+  const msg = (err && (err.message || err.toString())) || 'Failed to fetch';
+  if (!/Failed to fetch/i.test(msg)) return msg;
+  return [
+    'Supabase connection failed (Failed to fetch).',
+    'Fix checklist:',
+    '1) Confirm internet is working.',
+    '2) Disable ad-block/VPN/firewall rules that may block: *.supabase.co or cdn.jsdelivr.net',
+    '3) If you are on a company network, try a hotspot.',
+    '4) In Supabase dashboard: confirm the project is not paused and the URL/key are correct.',
+  ].join(' ');
+}
+
+async function initApp() {
+  showGlobalStatus('Connecting to Supabase...', 'info', true);
+
+  const ping = await testSupabaseConnection();
+  if (!ping.ok) {
+    console.error('Supabase connection error:', ping.error);
+    showGlobalStatus(explainFetchFailure(ping.error), 'error', true);
+    return;
+  }
+
+  // If ok but tables/RLS error, still allow UI to load but show message
+  if (ping.error) {
+    showGlobalStatus('Connected to Supabase, but a table/RLS error was returned. Check RLS policies + table names.', 'warning');
+  } else {
+    showGlobalStatus('✅ Connected to Supabase', 'success');
+  }
+
+  // Load initial data
+  loadSchedules();
+  loadAnalytics();
+}
+
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('Unhandled promise rejection:', e.reason);
+  showGlobalStatus(explainFetchFailure(e.reason), 'error', true);
+});
+
+window.addEventListener('error', (e) => {
+  // Only surface fetch-related runtime errors prominently
+  const msg = e?.error?.message || e?.message || '';
+  if (/Failed to fetch/i.test(msg)) {
+    showGlobalStatus(explainFetchFailure(e.error || e.message), 'error', true);
+  }
+});
 let activeTaskId = null;
 let activeTaskInterval = null;
 let activeTaskStartTime = null;
 let batchRowCount = 0;
+
+// ========== LOOKUP HELPERS (WORKS EVEN WITHOUT FK RELATIONSHIPS) ==========
+let _employeeMapCache = null;
+let _taskMapCache = null;
+
+async function getEmployeeMap(force = false) {
+  if (_employeeMapCache && !force) return _employeeMapCache;
+  const { data, error } = await supabaseClient
+    .from('kitchen_prep_employees')
+    .select('id,name');
+  if (error) throw error;
+  const map = {};
+  (data || []).forEach(r => { map[r.id] = r.name; });
+  _employeeMapCache = map;
+  return map;
+}
+
+async function getTaskMap(force = false) {
+  if (_taskMapCache && !force) return _taskMapCache;
+  const { data, error } = await supabaseClient
+    .from('kitchen_tasks')
+    .select('id,name');
+  if (error) throw error;
+  const map = {};
+  (data || []).forEach(r => { map[r.id] = r.name; });
+  _taskMapCache = map;
+  return map;
+}
+
+async function getEmployeeIdByName(name, createIfMissing = true) {
+  if (!name) return null;
+
+  // Try find existing
+  const { data: existing, error: findErr } = await supabaseClient
+    .from('kitchen_prep_employees')
+    .select('id')
+    .eq('name', name)
+    .limit(1)
+    .maybeSingle();
+
+  if (findErr) throw findErr;
+  if (existing?.id) return existing.id;
+
+  if (!createIfMissing) return null;
+
+  // Create employee if missing
+  const { data: created, error: createErr } = await supabaseClient
+    .from('kitchen_prep_employees')
+    .insert({ name })
+    .select('id')
+    .single();
+
+  if (createErr) throw createErr;
+
+  _employeeMapCache = null; // refresh cache
+  return created.id;
+}
+
+async function getTaskIdByName(name, createIfMissing = true) {
+  if (!name) return null;
+
+  const { data: existing, error: findErr } = await supabaseClient
+    .from('kitchen_tasks')
+    .select('id')
+    .eq('name', name)
+    .limit(1)
+    .maybeSingle();
+
+  if (findErr) throw findErr;
+  if (existing?.id) return existing.id;
+
+  if (!createIfMissing) return null;
+
+  const { data: created, error: createErr } = await supabaseClient
+    .from('kitchen_tasks')
+    .insert({ name, description: name })
+    .select('id')
+    .single();
+
+  if (createErr) throw createErr;
+
+  _taskMapCache = null; // refresh cache
+  return created.id;
+}
+
+// ========== TIMEZONE HELPERS (CST/CDT - America/Chicago) ==========
+
 function getCSTOffset(dateStr) {
 const probe = new Date(dateStr + 'T12:00:00Z');
 const parts = new Intl.DateTimeFormat('en-US', {
@@ -986,40 +1185,49 @@ const cstString = `${dateStr}T${timeStr}:00${offset}`;
 return new Date(cstString).toISOString();
 }
 window.onload = function() {
-const chicagoToday = new Date().toLocaleDateString('en-CA', {
-timeZone: 'America/Chicago'
-});
-document.getElementById('scheduleDate').value = chicagoToday;
-document.getElementById('analyticsDate').value = chicagoToday;
-document.getElementById('compareDate').value = chicagoToday;
-document.getElementById('gapDate').value = chicagoToday;
-document.getElementById('batchDate').value = chicagoToday;
-document.getElementById('allTasksStartDate').value = chicagoToday;
-document.getElementById('allTasksEndDate').value = chicagoToday;
-const chicagoNow = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Chicago" }));
-const weekStart = getWeekStart(chicagoNow)
-.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
-document.getElementById('analyticsWeek').value = weekStart;
-document.getElementById('compareWeek').value = weekStart;
-document.getElementById('gapWeek').value = weekStart;
-loadSchedules();
-loadAnalytics();
+  const chicagoToday = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+
+  document.getElementById('scheduleDate').value = chicagoToday;
+  document.getElementById('analyticsDate').value = chicagoToday;
+  document.getElementById('compareDate').value = chicagoToday;
+  document.getElementById('gapDate').value = chicagoToday;
+  document.getElementById('batchDate').value = chicagoToday;
+
+  document.getElementById('allTasksStartDate').value = chicagoToday;
+  document.getElementById('allTasksEndDate').value = chicagoToday;
+
+  const chicagoNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+  const weekStart = getWeekStart(chicagoNow).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+
+  document.getElementById('analyticsWeek').value = weekStart;
+  document.getElementById('compareWeek').value = weekStart;
+  document.getElementById('gapWeek').value = weekStart;
+
+  initApp();
 };
-function switchTab(tabName) {
-document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
-document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-document.getElementById(tabName).classList.add('active');
-event.target.classList.add('active');
-if (tabName === 'analytics') loadAnalytics();
-else if (tabName === 'comparison') loadComparison();
-else if (tabName === 'gaps') loadGapAnalysis();
-else if (tabName === 'allTasks') loadAllTasks();
+function switchTab(tabName, evt) {
+  document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+  document.getElementById(tabName).classList.add('active');
+
+  const e = evt || window.event;
+  if (e && e.target) e.target.classList.add('active');
+
+  if (tabName === 'analytics') loadAnalytics();
+  else if (tabName === 'comparison') loadComparison();
+  else if (tabName === 'gaps') loadGapAnalysis();
+  else if (tabName === 'allTasks') loadAllTasks();
 }
 function getWeekStart(date) {
-const d = new Date(date);
-const day = d.getDay();
-const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-return new Date(d.setDate(diff));
+  // Week starts on SUNDAY (0) -> SATURDAY (6)
+  const d = new Date(date);
+  d.setHours(12, 0, 0, 0); // stabilize DST edges
+  const day = d.getDay(); // 0 = Sunday
+  const diff = d.getDate() - day;
+  const start = new Date(d);
+  start.setDate(diff);
+  start.setHours(12, 0, 0, 0);
+  return start;
 }
 function getMonthStart(date) {
 return new Date(date.getFullYear(), date.getMonth(), 1);
@@ -1057,6 +1265,7 @@ minute: '2-digit',
 hour12: true
 });
 }
+// ========== SCHEDULE MANAGEMENT ==========
 async function addSchedule() {
 const date = document.getElementById('scheduleDate').value;
 const employee = document.getElementById('scheduleEmployee').value;
@@ -1159,71 +1368,65 @@ div.className = type;
 div.classList.remove('hidden');
 setTimeout(() => div.classList.add('hidden'), 3000);
 }
+// ========== TASK LOGGING ==========
 async function startTask() {
-const employee = document.getElementById('taskEmployee').value;
-const role = document.getElementById('taskRole').value;
-const taskName = document.getElementById('taskName').value;
-if (!employee || !taskName) {
-showTaskStatus('Please select employee and enter task name', 'error');
-return;
+  const employee = document.getElementById('taskEmployee').value;
+  const role = document.getElementById('taskRole').value;
+  const taskName = document.getElementById('taskName').value;
+
+  if (!employee || !taskName) {
+    showTaskStatus('Please select employee and enter task name', 'error');
+    return;
+  }
+
+  try {
+    const dateStr = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+    const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false, timeZone: 'America/Chicago' }).substring(0, 5);
+    const cstStartTime = toCSTISOString(dateStr, timeStr);
+
+    // ✅ Ensure employee + task exist, always use IDs (prevents "Unknown")
+    const employeeId = await getEmployeeIdByName(employee, true);
+    const taskId = await getTaskIdByName(taskName, true);
+
+    const { data: log, error } = await supabaseClient
+      .from('task_time_logs')
+      .insert({
+        employee_id: employeeId,
+        task_id: taskId,
+        role: role,
+        start_time: cstStartTime,
+        date: dateStr
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    activeTaskId = log.id;
+    activeTaskStartTime = new Date();
+
+    document.getElementById('startBtn').disabled = true;
+    document.getElementById('stopBtn').disabled = false;
+
+    document.getElementById('activeTaskDisplay').textContent = `${employee} - ${taskName} (${role})`;
+    document.getElementById('activeTaskInfo').classList.remove('hidden');
+
+    activeTaskInterval = setInterval(() => {
+      const elapsed = Math.floor((new Date() - activeTaskStartTime) / 1000);
+      const h = Math.floor(elapsed / 3600);
+      const m = Math.floor((elapsed % 3600) / 60);
+      const s = elapsed % 60;
+      document.getElementById('taskTimer').textContent =
+        `Elapsed: ${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    }, 1000);
+
+    showTaskStatus('Task started!', 'success');
+  } catch (error) {
+    console.error('Error starting task:', error);
+    showTaskStatus('Error starting task', 'error');
+  }
 }
-try {
-const now = new Date();
-const dateStr = now.toLocaleDateString('en-CA', {
-timeZone: 'America/Chicago'
-});
-const timeStr = now.toLocaleTimeString('en-US', { hour12: false, timeZone: 'America/Chicago' }).substring(0,5);
-const cstStartTime = toCSTISOString(dateStr, timeStr);
-const { data: emp } = await supabaseClient
-.from('kitchen_prep_employees')
-.select('id')
-.eq('name', employee)
-.single();
-const { data: task } = await supabaseClient
-.from('kitchen_tasks')
-.select('id')
-.eq('name', taskName)
-.single();
-let taskId = task?.id;
-if (!taskId) {
-const { data: newTask } = await supabaseClient
-.from('kitchen_tasks')
-.insert({ name: taskName, description: taskName })
-.select()
-.single();
-taskId = newTask.id;
-}
-const { data: log } = await supabaseClient
-.from('task_time_logs')
-.insert({
-employee_id: emp?.id,
-task_id: taskId,
-role: role,
-start_time: cstStartTime,
-date: dateStr
-})
-.select()
-.single();
-activeTaskId = log.id;
-activeTaskStartTime = now;
-document.getElementById('startBtn').disabled = true;
-document.getElementById('stopBtn').disabled = false;
-document.getElementById('activeTaskDisplay').textContent = `${employee} - ${taskName} (${role})`;
-document.getElementById('activeTaskInfo').classList.remove('hidden');
-activeTaskInterval = setInterval(() => {
-const elapsed = Math.floor((new Date() - activeTaskStartTime) / 1000);
-const h = Math.floor(elapsed / 3600);
-const m = Math.floor((elapsed % 3600) / 60);
-const s = elapsed % 60;
-document.getElementById('taskTimer').textContent =
-`Elapsed: ${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
-}, 1000);
-showTaskStatus('Task started!', 'success');
-} catch (error) {
-console.error('Error starting task:', error);
-showTaskStatus('Error starting task', 'error');
-}
-}
+
 async function stopTask() {
 if (!activeTaskId) return;
 try {
@@ -1256,158 +1459,177 @@ div.className = type;
 div.classList.remove('hidden');
 setTimeout(() => div.classList.add('hidden'), 3000);
 }
+// ========== 🆕 ALL TASKS MANAGEMENT ==========
 async function loadAllTasks() {
-const employee = document.getElementById('allTasksEmployee').value;
-const startDate = document.getElementById('allTasksStartDate').value;
-const endDate = document.getElementById('allTasksEndDate').value;
-const role = document.getElementById('allTasksRole').value;
-const tbody = document.getElementById('allTasksTableBody');
-tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 40px;"><div class="spinner"></div>Loading tasks...</td></tr>';
-try {
-let query = supabaseClient
-.from('task_time_logs')
-.select(`
-*,
-kitchen_prep_employees(name),
-kitchen_tasks(name)
-`)
-.order('date', { ascending: false })
-.order('start_time', { ascending: false });
-if (employee) {
-query = query.eq('kitchen_prep_employees.name', employee);
+  const employeeName = document.getElementById('allTasksEmployee').value;
+  const startDate = document.getElementById('allTasksStartDate').value;
+  const endDate = document.getElementById('allTasksEndDate').value;
+  const role = document.getElementById('allTasksRole').value;
+
+  const tbody = document.getElementById('allTasksTableBody');
+  tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 40px;"><div class="spinner"></div>Loading tasks...</td></tr>';
+
+  try {
+    let query = supabaseClient
+      .from('task_time_logs')
+      .select('*')
+      .order('date', { ascending: false })
+      .order('start_time', { ascending: false });
+
+    // Filters (use base table columns so it works even if FK relationships are missing)
+    if (startDate) query = query.gte('date', startDate);
+    if (endDate) query = query.lte('date', endDate);
+    if (role) query = query.eq('role', role);
+
+    if (employeeName) {
+      const empId = await getEmployeeIdByName(employeeName, false);
+      if (!empId) {
+        document.getElementById('allTasksCount').textContent = `0 tasks`;
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 40px; color: #718096;">No tasks found matching your filters</td></tr>';
+        return;
+      }
+      query = query.eq('employee_id', empId);
+    }
+
+    const { data: logs, error } = await query;
+    if (error) throw error;
+
+    document.getElementById('allTasksCount').textContent = `${logs?.length || 0} tasks`;
+
+    if (!logs || logs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 40px; color: #718096;">No tasks found matching your filters</td></tr>';
+      return;
+    }
+
+    const [empMap, taskMap] = await Promise.all([getEmployeeMap(), getTaskMap()]);
+
+    let html = '';
+    logs.forEach(log => {
+      const isOpen = !log.end_time;
+
+      const employeeDisplay = empMap[log.employee_id] || 'Unknown';
+      const taskDisplay = taskMap[log.task_id] || 'N/A';
+
+      const duration = log.end_time
+        ? formatTime((new Date(log.end_time) - new Date(log.start_time)) / (1000 * 60))
+        : '—';
+
+      html += `
+        <tr>
+          <td>${formatDate(log.date)}</td>
+          <td><strong>${employeeDisplay}</strong></td>
+          <td>${taskDisplay}</td>
+          <td><span class="badge info">${log.role || '—'}</span></td>
+          <td>${formatDateTime(log.start_time)}</td>
+          <td>${isOpen ? '<span class="badge warning">OPEN</span>' : formatDateTime(log.end_time)}</td>
+          <td><strong>${duration}</strong></td>
+          <td>${isOpen ? '<span class="badge warning">Active</span>' : '<span class="badge success">Completed</span>'}</td>
+          <td class="task-actions">
+            <button class="secondary" onclick="openEditTaskModal('${log.id}')">✏️ Edit</button>
+            <button class="danger" onclick="deleteTask('${log.id}')">🗑 Delete</button>
+          </td>
+        </tr>
+      `;
+    });
+
+    tbody.innerHTML = html;
+  } catch (error) {
+    console.error('Error loading all tasks:', error);
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 40px; color: #ef4444;">Error loading tasks</td></tr>';
+  }
 }
-if (startDate) {
-query = query.gte('date', startDate);
-}
-if (endDate) {
-query = query.lte('date', endDate);
-}
-if (role) {
-query = query.eq('role', role);
-}
-const { data: logs, error } = await query;
-if (error) throw error;
-document.getElementById('allTasksCount').textContent = `${logs?.length || 0} tasks`;
-if (!logs || logs.length === 0) {
-tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 40px; color: #718096;">No tasks found matching your filters</td></tr>';
-return;
-}
-let html = '';
-logs.forEach(log => {
-const isOpen = !log.end_time;
-const duration = log.end_time
-? formatTime((new Date(log.end_time) - new Date(log.start_time)) / (1000 * 60))
-: '—';
-html += `
-<tr>
-<td>${formatDate(log.date)}</td>
-<td><strong>${log.kitchen_prep_employees?.name || 'Unknown'}</strong></td>
-<td>${log.kitchen_tasks?.name || 'N/A'}</td>
-<td><span class="badge info">${log.role || '—'}</span></td>
-<td>${formatDateTime(log.start_time)}</td>
-<td>${isOpen ? '<span class="badge warning">OPEN</span>' : formatDateTime(log.end_time)}</td>
-<td><strong>${duration}</strong></td>
-<td>${isOpen ? '<span class="badge warning">Active</span>' : '<span class="badge success">Completed</span>'}</td>
-<td class="task-actions">
-<button class="secondary" onclick="openEditTaskModal('${log.id}')">✏️ Edit</button>
-<button class="danger" onclick="deleteTask('${log.id}')">🗑 Delete</button>
-</td>
-</tr>
-`;
-});
-tbody.innerHTML = html;
-} catch (error) {
-console.error('Error loading all tasks:', error);
-tbody.innerHTML = '<tr><td colspan="9" style="text-align: center; padding: 40px; color: #ef4444;">Error loading tasks</td></tr>';
-}
-}
+
 async function openEditTaskModal(taskId) {
-try {
-const { data: log, error } = await supabaseClient
-.from('task_time_logs')
-.select(`
-*,
-kitchen_prep_employees(name),
-kitchen_tasks(name)
-`)
-.eq('id', taskId)
-.single();
-if (error) throw error;
-document.getElementById('editTaskId').value = log.id;
-document.getElementById('editTaskEmployee').value = log.kitchen_prep_employees?.name || '';
-document.getElementById('editTaskDate').value = log.date || '';
-document.getElementById('editTaskRole').value = log.role || '';
-document.getElementById('editTaskName').value = log.kitchen_tasks?.name || '';
-document.getElementById('editTaskStart').value = new Date(log.start_time).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Chicago' });
-document.getElementById('editTaskEnd').value = log.end_time ? new Date(log.end_time).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Chicago' }) : '';
-document.getElementById('editTaskModal').classList.add('active');
-} catch (error) {
-console.error('Error loading task for edit:', error);
-alert('Error loading task details');
+  try {
+    const { data: log, error } = await supabaseClient
+      .from('task_time_logs')
+      .select('*')
+      .eq('id', taskId)
+      .single();
+
+    if (error) throw error;
+
+    const [empMap, taskMap] = await Promise.all([getEmployeeMap(), getTaskMap()]);
+    const employeeName = empMap[log.employee_id] || '';
+    const taskName = taskMap[log.task_id] || '';
+
+    document.getElementById('editTaskId').value = log.id;
+
+    // If we can resolve employee name, set it; otherwise keep current dropdown selection
+    if (employeeName) document.getElementById('editTaskEmployee').value = employeeName;
+
+    document.getElementById('editTaskDate').value = log.date || '';
+    document.getElementById('editTaskRole').value = log.role || '';
+    document.getElementById('editTaskName').value = taskName || '';
+
+    document.getElementById('editTaskStart').value = log.start_time
+      ? new Date(log.start_time).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Chicago' })
+      : '';
+
+    document.getElementById('editTaskEnd').value = log.end_time
+      ? new Date(log.end_time).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Chicago' })
+      : '';
+
+    document.getElementById('editTaskModal').classList.add('active');
+  } catch (error) {
+    console.error('Error loading task for edit:', error);
+    alert('Error loading task details');
+  }
 }
-}
+
 function closeEditTaskModal() {
 document.getElementById('editTaskModal').classList.remove('active');
 }
 async function saveEditedTask() {
-const taskId = document.getElementById('editTaskId').value;
-const employee = document.getElementById('editTaskEmployee').value;
-const date = document.getElementById('editTaskDate').value;
-const role = document.getElementById('editTaskRole').value;
-const taskName = document.getElementById('editTaskName').value;
-const startTime = document.getElementById('editTaskStart').value;
-const endTime = document.getElementById('editTaskEnd').value;
-if (!taskId || !employee || !date || !taskName || !startTime) {
-alert('Please fill all required fields');
-return;
+  const taskLogId = document.getElementById('editTaskId').value;
+  const employee = document.getElementById('editTaskEmployee').value;
+  const date = document.getElementById('editTaskDate').value;
+  const role = document.getElementById('editTaskRole').value;
+  const taskName = document.getElementById('editTaskName').value;
+  const startTime = document.getElementById('editTaskStart').value;
+  const endTime = document.getElementById('editTaskEnd').value;
+
+  if (!taskLogId || !employee || !date || !taskName || !startTime) {
+    alert('Please fill all required fields');
+    return;
+  }
+
+  try {
+    const employeeId = await getEmployeeIdByName(employee, true);
+    const taskIdDb = await getTaskIdByName(taskName, true);
+
+    const startDateTimeISO = toCSTISOString(date, startTime);
+
+    const updateData = {
+      employee_id: employeeId,
+      task_id: taskIdDb,
+      role: role,
+      start_time: startDateTimeISO,
+      date: date
+    };
+
+    if (endTime) {
+      updateData.end_time = toCSTISOString(date, endTime);
+    } else {
+      updateData.end_time = null;
+    }
+
+    const { error } = await supabaseClient
+      .from('task_time_logs')
+      .update(updateData)
+      .eq('id', taskLogId);
+
+    if (error) throw error;
+
+    alert('Task updated successfully!');
+    closeEditTaskModal();
+    loadAllTasks();
+  } catch (error) {
+    console.error('Error updating task:', error);
+    alert('Error updating task: ' + error.message);
+  }
 }
-try {
-const { data: emp } = await supabaseClient
-.from('kitchen_prep_employees')
-.select('id')
-.eq('name', employee)
-.single();
-const { data: task } = await supabaseClient
-.from('kitchen_tasks')
-.select('id')
-.eq('name', taskName)
-.single();
-let taskIdDb = task?.id;
-if (!taskIdDb) {
-const { data: newTask } = await supabaseClient
-.from('kitchen_tasks')
-.insert({ name: taskName, description: taskName })
-.select()
-.single();
-taskIdDb = newTask.id;
-}
-const startDateTimeISO = toCSTISOString(date, startTime);
-const updateData = {
-employee_id: emp?.id,
-task_id: taskIdDb,
-role: role,
-start_time: startDateTimeISO,
-date: date
-};
-if (endTime) {
-const endDateTimeISO = toCSTISOString(date, endTime);
-updateData.end_time = endDateTimeISO;
-} else {
-updateData.end_time = null;
-}
-const { error } = await supabaseClient
-.from('task_time_logs')
-.update(updateData)
-.eq('id', taskId);
-if (error) throw error;
-alert('Task updated successfully!');
-closeEditTaskModal();
-loadAllTasks();
-} catch (error) {
-console.error('Error updating task:', error);
-alert('Error updating task: ' + error.message);
-}
-}
+
 async function deleteTask(taskId) {
 if (!confirm('Are you sure you want to delete this task? This cannot be undone.')) return;
 try {
@@ -1423,6 +1645,7 @@ console.error('Error deleting task:', error);
 alert('Error deleting task: ' + error.message);
 }
 }
+// ========== BATCH ENTRY ==========
 function addBatchRow() {
 batchRowCount++;
 const container = document.getElementById('batchRows');
@@ -1432,7 +1655,7 @@ row.className = 'time-entry';
 row.innerHTML = `
 <input type="time" class="batchStart" placeholder="Start Time" required>
 <input type="time" class="batchEnd" placeholder="End Time" required>
-<input type="text" class="batchTask" placeholder="Task Name (e.g., Kitchen Prep)" required>
+<input type="text" class="batchTask" placeholder="Task Name" required>
 <select class="batchRole">
 <option value="Kitchen Prep">Kitchen Prep</option>
 <option value="Line Cook">Line Cook</option>
@@ -1452,63 +1675,61 @@ document.getElementById('batchRows').innerHTML = '';
 batchRowCount = 0;
 }
 async function saveBatchTasks() {
-const date = document.getElementById('batchDate').value;
-const employee = document.getElementById('batchEmployee').value;
-if (!date || !employee) {
-showBatchStatus('Please select date and employee', 'error');
-return;
+  const date = document.getElementById('batchDate').value;
+  const employee = document.getElementById('batchEmployee').value;
+
+  if (!date || !employee) {
+    showBatchStatus('Please select date and employee', 'error');
+    return;
+  }
+
+  const rows = document.querySelectorAll('#batchRows > div');
+  if (rows.length === 0) {
+    showBatchStatus('Please add at least one task', 'error');
+    return;
+  }
+
+  try {
+    const employeeId = await getEmployeeIdByName(employee, true);
+
+    let savedCount = 0;
+
+    for (const row of rows) {
+      const startTime = row.querySelector('.batchStart').value;
+      const endTime = row.querySelector('.batchEnd').value;
+      const taskName = row.querySelector('.batchTask').value;
+      const role = row.querySelector('.batchRole').value;
+
+      if (!startTime || !endTime || !taskName) continue;
+
+      const taskId = await getTaskIdByName(taskName, true);
+
+      const startDateTimeISO = toCSTISOString(date, startTime);
+      const endDateTimeISO = toCSTISOString(date, endTime);
+
+      const { error } = await supabaseClient
+        .from('task_time_logs')
+        .insert({
+          employee_id: employeeId,
+          task_id: taskId,
+          role: role,
+          start_time: startDateTimeISO,
+          end_time: endDateTimeISO,
+          date: date
+        });
+
+      if (error) throw error;
+      savedCount++;
+    }
+
+    showBatchStatus(`Saved ${savedCount} tasks successfully!`, 'success');
+    clearBatchRows();
+  } catch (error) {
+    console.error('Error saving batch tasks:', error);
+    showBatchStatus('Error saving tasks', 'error');
+  }
 }
-const rows = document.querySelectorAll('#batchRows > div');
-if (rows.length === 0) {
-showBatchStatus('Please add at least one task', 'error');
-return;
-}
-try {
-const { data: emp } = await supabaseClient
-.from('kitchen_prep_employees')
-.select('id')
-.eq('name', employee)
-.single();
-for (const row of rows) {
-const startTime = row.querySelector('.batchStart').value;
-const endTime = row.querySelector('.batchEnd').value;
-const taskName = row.querySelector('.batchTask').value;
-const role = row.querySelector('.batchRole').value;
-if (!startTime || !endTime || !taskName) continue;
-const { data: task } = await supabaseClient
-.from('kitchen_tasks')
-.select('id')
-.eq('name', taskName)
-.single();
-let taskId = task?.id;
-if (!taskId) {
-const { data: newTask } = await supabaseClient
-.from('kitchen_tasks')
-.insert({ name: taskName, description: taskName })
-.select()
-.single();
-taskId = newTask.id;
-}
-const startDateTimeISO = toCSTISOString(date, startTime);
-const endDateTimeISO = toCSTISOString(date, endTime);
-await supabaseClient
-.from('task_time_logs')
-.insert({
-employee_id: emp?.id,
-task_id: taskId,
-role: role,
-start_time: startDateTimeISO,
-end_time: endDateTimeISO,
-date: date
-});
-}
-showBatchStatus(`Saved ${rows.length} tasks successfully!`, 'success');
-clearBatchRows();
-} catch (error) {
-console.error('Error saving batch tasks:', error);
-showBatchStatus('Error saving tasks', 'error');
-}
-}
+
 function showBatchStatus(message, type) {
 const div = document.getElementById('batchStatus');
 div.textContent = message;
@@ -1516,6 +1737,7 @@ div.className = type;
 div.classList.remove('hidden');
 setTimeout(() => div.classList.add('hidden'), 3000);
 }
+// ========== ANALYTICS ==========
 function changeAnalyticsPeriod() {
 const period = document.getElementById('analyticsPeriod').value;
 document.getElementById('dailyDateGroup').style.display = period === 'daily' ? 'block' : 'none';
@@ -1526,117 +1748,170 @@ document.getElementById('customEndGroup').style.display = period === 'custom' ? 
 loadAnalytics();
 }
 async function loadAnalytics() {
-const period = document.getElementById('analyticsPeriod').value;
-let startDate, endDate, displayText;
-if (period === 'daily') {
-startDate = document.getElementById('analyticsDate').value;
-endDate = startDate;
-displayText = `Daily - ${formatDate(startDate)}`;
-} else if (period === 'weekly') {
-startDate = document.getElementById('analyticsWeek').value;
-const weekEnd = new Date(startDate);
-weekEnd.setDate(weekEnd.getDate() + 6);
-endDate = weekEnd.toISOString().split('T')[0];
-displayText = `Weekly - ${formatDate(startDate)} to ${formatDate(endDate)}`;
-} else if (period === 'monthly') {
-const month = document.getElementById('analyticsMonth').value;
-startDate = `${month}-01`;
-const lastDay = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0).getDate();
-endDate = `${month}-${lastDay.toString().padStart(2,'0')}`;
-displayText = `Monthly - ${formatDate(startDate)} to ${formatDate(endDate)}`;
-} else {
-startDate = document.getElementById('analyticsStart').value;
-endDate = document.getElementById('analyticsEnd').value;
-displayText = `${formatDate(startDate)} to ${formatDate(endDate)}`;
+  const period = document.getElementById('analyticsPeriod').value;
+  const selectedEmployee = document.getElementById('analyticsEmployee').value;
+
+  let startDate, endDate, displayText;
+
+  if (period === 'daily') {
+    startDate = document.getElementById('analyticsDate').value;
+    endDate = startDate;
+    displayText = `Daily - ${formatDate(startDate)}`;
+  } else if (period === 'weekly') {
+    startDate = document.getElementById('analyticsWeek').value;
+    const weekEnd = new Date(startDate);
+    weekEnd.setDate(weekEnd.getDate() + 6);
+    endDate = weekEnd.toISOString().split('T')[0];
+    displayText = `Weekly - ${formatDate(startDate)} to ${formatDate(endDate)}`;
+  } else if (period === 'monthly') {
+    const month = document.getElementById('analyticsMonth').value;
+    startDate = `${month}-01`;
+    const lastDay = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0).getDate();
+    endDate = `${month}-${lastDay.toString().padStart(2, '0')}`;
+    displayText = `Monthly - ${formatDate(startDate)} to ${formatDate(endDate)}`;
+  } else {
+    startDate = document.getElementById('analyticsStart').value;
+    endDate = document.getElementById('analyticsEnd').value;
+    displayText = `${formatDate(startDate)} to ${formatDate(endDate)}`;
+  }
+
+  if (selectedEmployee) {
+    displayText += ` | Employee: ${selectedEmployee}`;
+  }
+
+  document.getElementById('currentPeriodDisplay').textContent = displayText;
+
+  try {
+    let schedulesQuery = supabaseClient
+      .from('employee_schedules')
+      .select('*')
+      .gte('schedule_date', startDate)
+      .lte('schedule_date', endDate);
+
+    let logsQuery = supabaseClient
+      .from('task_time_logs')
+      .select('*')
+      .gte('date', startDate)
+      .lte('date', endDate);
+
+    if (selectedEmployee) {
+      schedulesQuery = schedulesQuery.eq('employee_name', selectedEmployee);
+
+      const empId = await getEmployeeIdByName(selectedEmployee, false);
+      if (empId) {
+        logsQuery = logsQuery.eq('employee_id', empId);
+      } else {
+        // No such employee record, force no logs
+        logsQuery = logsQuery.eq('employee_id', '00000000-0000-0000-0000-000000000000');
+      }
+    }
+
+    const [{ data: schedules, error: schedErr }, { data: logs, error: logsErr }, empMap] = await Promise.all([
+      schedulesQuery,
+      logsQuery,
+      getEmployeeMap()
+    ]);
+
+    if (schedErr) throw schedErr;
+    if (logsErr) throw logsErr;
+
+    let totalScheduledMinutes = 0;
+    let totalWorkedMinutes = 0;
+    let totalBreakMinutes = 0;
+    let totalGapMinutes = 0;
+
+    const employeeStats = {};
+
+    // Schedules
+    (schedules || []).forEach(schedule => {
+      const duration = calculateHours(schedule.start_time, schedule.end_time);
+      totalScheduledMinutes += duration;
+      totalBreakMinutes += schedule.break_minutes || 60;
+
+      if (!employeeStats[schedule.employee_name]) {
+        employeeStats[schedule.employee_name] = { scheduled: 0, worked: 0, break: 0, tasks: 0 };
+      }
+
+      employeeStats[schedule.employee_name].scheduled += duration;
+      employeeStats[schedule.employee_name].break += schedule.break_minutes || 60;
+    });
+
+    // Logs (no FK required)
+    if (logs && logs.length) {
+      const enriched = logs.map(l => ({
+        ...l,
+        _empName: empMap[l.employee_id] || 'Unknown'
+      }));
+
+      enriched.sort((a, b) => {
+        if (a._empName !== b._empName) return a._empName.localeCompare(b._empName);
+        if ((a.date || '') !== (b.date || '')) return (a.date || '').localeCompare(b.date || '');
+        return new Date(a.start_time) - new Date(b.start_time);
+      });
+
+      let lastEndTime = null;
+      let lastEmployee = null;
+      let lastDate = null;
+
+      enriched.forEach(log => {
+        if (!log.end_time) return;
+
+        const worked = (new Date(log.end_time) - new Date(log.start_time)) / (1000 * 60);
+        totalWorkedMinutes += worked;
+
+        if (!employeeStats[log._empName]) {
+          employeeStats[log._empName] = { scheduled: 0, worked: 0, break: 0, tasks: 0 };
+        }
+        employeeStats[log._empName].worked += worked;
+        employeeStats[log._empName].tasks++;
+
+        // ✅ Gap only if same employee + same date
+        if (lastEmployee === log._empName && lastDate === log.date && lastEndTime) {
+          const gap = (new Date(log.start_time) - new Date(lastEndTime)) / (1000 * 60);
+          if (gap > 0) totalGapMinutes += gap;
+        }
+
+        lastEndTime = log.end_time;
+        lastEmployee = log._empName;
+        lastDate = log.date;
+      });
+    }
+
+    const variance = totalWorkedMinutes - totalScheduledMinutes;
+    const efficiency = totalScheduledMinutes > 0 ? ((totalWorkedMinutes / totalScheduledMinutes) * 100).toFixed(1) : 0;
+
+    document.getElementById('totalScheduled').textContent = formatTime(totalScheduledMinutes);
+    document.getElementById('totalWorked').textContent = formatTime(totalWorkedMinutes);
+    document.getElementById('totalBreak').textContent = formatTime(totalBreakMinutes);
+    document.getElementById('totalVariance').textContent = (variance >= 0 ? '+' : '') + formatTime(variance);
+    document.getElementById('totalGap').textContent = formatTime(totalGapMinutes);
+    document.getElementById('efficiencyRate').textContent = efficiency + '%';
+
+    document.getElementById('totalVariance').parentElement.className =
+      'stat-card ' + (variance >= 0 ? 'positive' : 'negative');
+
+    let breakdownHtml = '<div class="stats-grid">';
+    for (const [emp, stats] of Object.entries(employeeStats)) {
+      breakdownHtml += `
+        <div class="stat-card">
+          <h3>${emp}</h3>
+          <div class="value" style="font-size: 24px;">${formatTime(stats.worked)}</div>
+          <div class="subtext">Worked / ${formatTime(stats.scheduled)} Scheduled</div>
+          <div style="margin-top: 8px; font-size: 13px;">
+            <span class="badge info">${stats.tasks} tasks</span>
+          </div>
+        </div>
+      `;
+    }
+    breakdownHtml += '</div>';
+
+    document.getElementById('employeeBreakdown').innerHTML = breakdownHtml;
+    updateHoursChart(employeeStats);
+  } catch (error) {
+    console.error('Error loading analytics:', error);
+  }
 }
-document.getElementById('currentPeriodDisplay').textContent = displayText;
-try {
-const { data: schedules } = await supabaseClient
-.from('employee_schedules')
-.select('*')
-.gte('schedule_date', startDate)
-.lte('schedule_date', endDate);
-const { data: logs } = await supabaseClient
-.from('task_time_logs')
-.select(`
-*,
-kitchen_prep_employees(name),
-kitchen_tasks(name)
-`)
-.gte('date', startDate)
-.lte('date', endDate);
-let totalScheduledMinutes = 0;
-let totalWorkedMinutes = 0;
-let totalBreakMinutes = 0;
-let totalGapMinutes = 0;
-const employeeStats = {};
-if (schedules) {
-schedules.forEach(schedule => {
-const duration = calculateHours(schedule.start_time, schedule.end_time);
-totalScheduledMinutes += duration;
-totalBreakMinutes += schedule.break_minutes || 60;
-if (!employeeStats[schedule.employee_name]) {
-employeeStats[schedule.employee_name] = {
-scheduled: 0,
-worked: 0,
-break: 0,
-tasks: 0
-};
-}
-employeeStats[schedule.employee_name].scheduled += duration;
-employeeStats[schedule.employee_name].break += schedule.break_minutes || 60;
-});
-}
-if (logs) {
-logs.sort((a, b) => new Date(a.start_time) - new Date(b.start_time));
-let lastEndTime = null;
-logs.forEach(log => {
-if (!log.end_time) return;
-const worked = (new Date(log.end_time) - new Date(log.start_time)) / (1000 * 60);
-totalWorkedMinutes += worked;
-if (employeeStats[log.kitchen_prep_employees?.name]) {
-employeeStats[log.kitchen_prep_employees.name].worked += worked;
-employeeStats[log.kitchen_prep_employees.name].tasks++;
-}
-if (lastEndTime) {
-const gap = (new Date(log.start_time) - new Date(lastEndTime)) / (1000 * 60);
-if (gap > 0) {
-totalGapMinutes += gap;
-}
-}
-lastEndTime = log.end_time;
-});
-}
-const variance = totalWorkedMinutes - totalScheduledMinutes;
-const efficiency = totalScheduledMinutes > 0 ? ((totalWorkedMinutes / totalScheduledMinutes) * 100).toFixed(1) : 0;
-document.getElementById('totalScheduled').textContent = formatTime(totalScheduledMinutes);
-document.getElementById('totalWorked').textContent = formatTime(totalWorkedMinutes);
-document.getElementById('totalBreak').textContent = formatTime(totalBreakMinutes);
-document.getElementById('totalVariance').textContent = (variance >= 0 ? '+' : '') + formatTime(variance);
-document.getElementById('totalGap').textContent = formatTime(totalGapMinutes);
-document.getElementById('efficiencyRate').textContent = efficiency + '%';
-document.getElementById('totalVariance').parentElement.className =
-'stat-card ' + (variance >= 0 ? 'positive' : 'negative');
-let breakdownHtml = '<div class="stats-grid">';
-for (const [emp, stats] of Object.entries(employeeStats)) {
-breakdownHtml += `
-<div class="stat-card">
-<h3>${emp}</h3>
-<div class="value" style="font-size: 24px;">${formatTime(stats.worked)}</div>
-<div class="subtext">Worked / ${formatTime(stats.scheduled)} Scheduled</div>
-<div style="margin-top: 8px; font-size: 13px;">
-<span class="badge info">${stats.tasks} tasks</span>
-</div>
-</div>
-`;
-}
-breakdownHtml += '</div>';
-document.getElementById('employeeBreakdown').innerHTML = breakdownHtml;
-updateHoursChart(employeeStats);
-} catch (error) {
-console.error('Error loading analytics:', error);
-}
-}
+
 let hoursChart = null;
 function updateHoursChart(employeeStats) {
 const ctx = document.getElementById('hoursChart').getContext('2d');
@@ -1681,6 +1956,7 @@ return formatTime(value);
 }
 });
 }
+// ========== COMPARISON ==========
 function changeComparePeriod() {
 const period = document.getElementById('comparePeriod').value;
 document.getElementById('compareDailyGroup').style.display = period === 'daily' ? 'block' : 'none';
@@ -1771,6 +2047,7 @@ document.getElementById('comparisonGrid').innerHTML = html || '<p style="grid-co
 console.error('Error loading comparison:', error);
 }
 }
+// ========== GAP ANALYSIS ==========
 function changeGapPeriod() {
 const period = document.getElementById('gapPeriod').value;
 document.getElementById('gapDailyGroup').style.display = period === 'daily' ? 'block' : 'none';
@@ -1781,134 +2058,213 @@ document.getElementById('gapCustomEndGroup').style.display = period === 'custom'
 loadGapAnalysis();
 }
 async function loadGapAnalysis() {
-const period = document.getElementById('gapPeriod').value;
-let startDate, endDate;
-if (period === 'daily') {
-startDate = document.getElementById('gapDate').value;
-endDate = startDate;
-} else if (period === 'weekly') {
-startDate = document.getElementById('gapWeek').value;
-const weekEnd = new Date(startDate);
-weekEnd.setDate(weekEnd.getDate() + 6);
-endDate = weekEnd.toISOString().split('T')[0];
-} else if (period === 'monthly') {
-const month = document.getElementById('gapMonth').value;
-startDate = `${month}-01`;
-endDate = `${month}-31`;
-} else {
-startDate = document.getElementById('gapStart').value;
-endDate = document.getElementById('gapEnd').value;
-}
-try {
-const { data: schedules } = await supabaseClient
-.from('employee_schedules')
-.select('employee_name, schedule_date, start_time, end_time')
-.gte('schedule_date', startDate)
-.lte('schedule_date', endDate);
-const scheduleMap = new Map();
-(schedules || []).forEach(schedule => {
-const key = `${schedule.employee_name}|${schedule.schedule_date}`;
-scheduleMap.set(key, {
-start: schedule.start_time,
-end: schedule.end_time
-});
-});
-const { data: logs } = await supabaseClient
-.from('task_time_logs')
-.select(`
-*,
-kitchen_prep_employees(name),
-kitchen_tasks(name)
-`)
-.gte('date', startDate)
-.lte('date', endDate)
-.order('start_time', { ascending: true });
-const gaps = [];
-const employeeLastEnd = {};
-logs?.forEach(log => {
-if (!log.end_time) return;
-const emp = log.kitchen_prep_employees?.name;
-const logDate = log.date || log.start_time.split('T')[0];
-const scheduleKey = `${emp}|${logDate}`;
-const schedule = scheduleMap.get(scheduleKey);
-if (!schedule) {
-if (employeeLastEnd[emp]) {
-const gapMinutes = (new Date(log.start_time) - new Date(employeeLastEnd[emp])) / (1000 * 60);
-if (gapMinutes > 5) {
-gaps.push({
-employee: emp,
-gapStart: employeeLastEnd[emp],
-gapEnd: log.start_time,
-duration: gapMinutes,
-taskBefore: log.kitchen_tasks?.name,
-date: log.date,
-withinSchedule: false
-});
-}
-}
-employeeLastEnd[emp] = log.end_time;
-return;
-}
-const scheduledStart = new Date(`${logDate}T${schedule.start}`);
-const scheduledEnd = new Date(`${logDate}T${schedule.end}`);
-const taskStart = new Date(log.start_time);
-const taskEnd = new Date(log.end_time);
-if (employeeLastEnd[emp]) {
-const previousEnd = new Date(employeeLastEnd[emp]);
-const gapStart = previousEnd;
-const gapEnd = taskStart;
-const effectiveGapStart = gapStart < scheduledStart ? scheduledStart : gapStart;
-const effectiveGapEnd = gapEnd > scheduledEnd ? scheduledEnd : gapEnd;
-if (effectiveGapStart < effectiveGapEnd) {
-const gapMinutes = (effectiveGapEnd - effectiveGapStart) / (1000 * 60);
-if (gapMinutes > 5) {
-gaps.push({
-employee: emp,
-gapStart: effectiveGapStart.toISOString(),
-gapEnd: effectiveGapEnd.toISOString(),
-duration: gapMinutes,
-taskBefore: log.kitchen_tasks?.name,
-date: log.date,
-withinSchedule: true,
-scheduledStart: schedule.start,
-scheduledEnd: schedule.end
-});
-}
-}
-}
-if (taskEnd <= scheduledEnd) {
-employeeLastEnd[emp] = log.end_time;
-} else {
-employeeLastEnd[emp] = scheduledEnd.toISOString();
-}
-});
-let html = '';
-if (gaps.length === 0) {
-html = '<p style="text-align: center; color: #718096; padding: 24px;">No significant gaps found (gaps > 5 minutes within scheduled hours)</p>';
-} else {
-html = '<table class="schedule-table"><thead><tr><th>Date</th><th>Employee</th><th>Gap Start</th><th>Gap End</th><th>Duration</th><th>Next Task</th><th>Shift</th></tr></thead><tbody>';
-gaps.forEach(gap => {
-html += `
-<tr style="${gap.withinSchedule ? '' : 'background: #fef3c7;'}">
-<td>${formatDate(gap.date)}</td>
-<td><strong>${gap.employee}</strong></td>
-<td>${new Date(gap.gapStart).toLocaleTimeString()}</td>
-<td>${new Date(gap.gapEnd).toLocaleTimeString()}</td>
-<td><span class="badge ${gap.duration > 30 ? 'danger' : 'warning'}">${formatTime(gap.duration)}</span></td>
-<td>${gap.taskBefore || 'N/A'}</td>
-<td>${gap.scheduledStart || 'N/A'} - ${gap.scheduledEnd || 'N/A'}</td>
-</tr>
-`;
-});
-html += '</tbody></table>';
-const totalGapMinutes = gaps.reduce((sum, g) => sum + g.duration, 0);
-const withinScheduleGaps = gaps.filter(g => g.withinSchedule).length;
-html += `<div class="gap-alert">⚠️ Total gap time: ${formatTime(totalGapMinutes)} across ${gaps.length} gaps (${withinScheduleGaps} within scheduled hours)</div>`;
-}
-document.getElementById('gapList').innerHTML = html;
-} catch (error) {
-console.error('Error loading gap analysis:', error);
-}
+  const period = document.getElementById('gapPeriod').value;
+  const selectedEmployee = document.getElementById('gapEmployee')?.value || '';
+
+  let startDate, endDate;
+  if (period === 'daily') {
+    startDate = document.getElementById('gapDate').value;
+    endDate = startDate;
+  } else if (period === 'weekly') {
+    startDate = document.getElementById('gapWeek').value;
+    const weekEnd = new Date(startDate);
+    weekEnd.setDate(weekEnd.getDate() + 6);
+    endDate = weekEnd.toISOString().split('T')[0];
+  } else if (period === 'monthly') {
+    const month = document.getElementById('gapMonth').value;
+    startDate = `${month}-01`;
+    endDate = `${month}-31`;
+  } else {
+    startDate = document.getElementById('gapStart').value;
+    endDate = document.getElementById('gapEnd').value;
+  }
+
+  try {
+    let schedulesQuery = supabaseClient
+      .from('employee_schedules')
+      .select('employee_name, schedule_date, start_time, end_time, break_minutes')
+      .gte('schedule_date', startDate)
+      .lte('schedule_date', endDate);
+
+    let logsQuery = supabaseClient
+      .from('task_time_logs')
+      .select(`
+        *,
+        kitchen_prep_employees(name),
+        kitchen_tasks(name)
+      `)
+      .gte('date', startDate)
+      .lte('date', endDate);
+
+    if (selectedEmployee) {
+      schedulesQuery = schedulesQuery.eq('employee_name', selectedEmployee);
+      logsQuery = logsQuery.eq('kitchen_prep_employees.name', selectedEmployee);
+    }
+
+    const { data: schedules, error: schErr } = await schedulesQuery;
+    if (schErr) throw schErr;
+
+    const scheduleMap = new Map();
+    (schedules || []).forEach(s => {
+      const key = `${s.employee_name}|${s.schedule_date}`;
+      scheduleMap.set(key, {
+        start: s.start_time,
+        end: s.end_time,
+        breakMinutes: (s.break_minutes ?? 60)
+      });
+    });
+
+    const { data: logs, error: logErr } = await logsQuery;
+    if (logErr) throw logErr;
+
+    // Sort by employee, then date, then start_time
+    (logs || []).sort((a, b) => {
+      const empA = a.kitchen_prep_employees?.name || '';
+      const empB = b.kitchen_prep_employees?.name || '';
+      if (empA !== empB) return empA.localeCompare(empB);
+
+      const dateA = a.date || '';
+      const dateB = b.date || '';
+      if (dateA !== dateB) return dateA.localeCompare(dateB);
+
+      return new Date(a.start_time) - new Date(b.start_time);
+    });
+
+    const gaps = [];
+    const lastEndByEmpDate = {};
+    const gapSumByEmpDate = {};
+
+    (logs || []).forEach(log => {
+      if (!log.end_time) return;
+
+      const emp = log.kitchen_prep_employees?.name;
+      const logDate = log.date || (log.start_time ? log.start_time.split('T')[0] : null);
+      if (!emp || !logDate) return;
+
+      const key = `${emp}|${logDate}`;
+      const schedule = scheduleMap.get(key);
+
+      // Shift window (if schedule exists) in Chicago time
+      const scheduledStart = schedule ? new Date(toCSTISOString(logDate, schedule.start)) : null;
+      const scheduledEnd = schedule ? new Date(toCSTISOString(logDate, schedule.end)) : null;
+
+      const taskStart = new Date(log.start_time);
+      const taskEnd = new Date(log.end_time);
+
+      // Clamp lastEnd to shift end if tasks spill late
+      if (!lastEndByEmpDate[key]) {
+        // First task of day: set lastEnd to min(taskEnd, scheduledEnd) if schedule exists
+        lastEndByEmpDate[key] = (scheduledEnd && taskEnd > scheduledEnd) ? scheduledEnd.toISOString() : log.end_time;
+        return;
+      }
+
+      const previousEnd = new Date(lastEndByEmpDate[key]);
+
+      // Gap candidate between previous task end and this task start
+      let gapStart = previousEnd;
+      let gapEnd = taskStart;
+
+      // Never allow cross-day gaps (key already prevents it, but keep safe)
+      if (gapEnd <= gapStart) {
+        lastEndByEmpDate[key] = (scheduledEnd && taskEnd > scheduledEnd) ? scheduledEnd.toISOString() : log.end_time;
+        return;
+      }
+
+      let withinSchedule = false;
+      let effectiveGapStart = gapStart;
+      let effectiveGapEnd = gapEnd;
+
+      if (scheduledStart && scheduledEnd) {
+        // Only count gaps inside the scheduled shift window
+        effectiveGapStart = gapStart < scheduledStart ? scheduledStart : gapStart;
+        effectiveGapEnd = gapEnd > scheduledEnd ? scheduledEnd : gapEnd;
+        withinSchedule = (effectiveGapStart < effectiveGapEnd);
+      }
+
+      if (!scheduledStart || !scheduledEnd) {
+        // No schedule: still record the raw gap for that day (but flagged)
+        withinSchedule = false;
+      }
+
+      if (effectiveGapStart < effectiveGapEnd) {
+        const gapMinutes = (effectiveGapEnd - effectiveGapStart) / (1000 * 60);
+
+        // Ignore tiny gaps (<= 5 minutes)
+        if (gapMinutes > 5) {
+          gaps.push({
+            employee: emp,
+            date: logDate,
+            gapStart: effectiveGapStart.toISOString(),
+            gapEnd: effectiveGapEnd.toISOString(),
+            duration: gapMinutes,
+            nextTask: log.kitchen_tasks?.name || 'N/A',
+            withinSchedule,
+            scheduledStart: schedule?.start || null,
+            scheduledEnd: schedule?.end || null,
+            breakMinutes: schedule?.breakMinutes ?? 60
+          });
+
+          gapSumByEmpDate[key] = (gapSumByEmpDate[key] || 0) + gapMinutes;
+        }
+      }
+
+      // Update lastEnd (clamp to shift end if needed)
+      lastEndByEmpDate[key] = (scheduledEnd && taskEnd > scheduledEnd) ? scheduledEnd.toISOString() : log.end_time;
+    });
+
+    // Compute net gap after break allowance (per employee per day)
+    const netByEmpDate = {};
+    Object.entries(gapSumByEmpDate).forEach(([key, raw]) => {
+      const schedule = scheduleMap.get(key);
+      const breakMin = schedule?.breakMinutes ?? 60;
+      netByEmpDate[key] = Math.max(0, raw - breakMin);
+    });
+
+    // Render
+    let html = '';
+    if (gaps.length === 0) {
+      html = '<p style="text-align: center; color: #718096; padding: 24px;">No significant gaps found (gaps > 5 minutes inside scheduled hours)</p>';
+    } else {
+      html = '<table class="schedule-table"><thead><tr><th>Date</th><th>Employee</th><th>Gap Start</th><th>Gap End</th><th>Duration</th><th>Next Task</th><th>Shift</th><th>In Shift?</th></tr></thead><tbody>';
+
+      gaps.forEach(g => {
+        const startLabel = new Date(g.gapStart).toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit' });
+        const endLabel = new Date(g.gapEnd).toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit' });
+
+        html += `
+          <tr style="${g.withinSchedule ? '' : 'background: #fef3c7;'}">
+            <td>${formatDate(g.date)}</td>
+            <td><strong>${g.employee}</strong></td>
+            <td>${startLabel}</td>
+            <td>${endLabel}</td>
+            <td><span class="badge ${g.duration > 30 ? 'danger' : 'warning'}">${formatTime(g.duration)}</span></td>
+            <td>${g.nextTask}</td>
+            <td>${g.scheduledStart ? `${g.scheduledStart} - ${g.scheduledEnd}` : 'No schedule'}</td>
+            <td>${g.withinSchedule ? '<span class="badge success">YES</span>' : '<span class="badge warning">NO</span>'}</td>
+          </tr>
+        `;
+      });
+
+      html += '</tbody></table>';
+
+      const rawTotal = gaps.reduce((sum, g) => sum + g.duration, 0);
+      const netTotal = Object.values(netByEmpDate).reduce((sum, v) => sum + v, 0);
+
+      html += `
+        <div class="gap-alert">
+          ⚠️ Raw gaps: ${formatTime(rawTotal)} across ${gaps.length} gaps.
+          <br>
+          ✅ Net gaps (after 60m break per day): <strong>${formatTime(netTotal)}</strong>
+          ${selectedEmployee ? '' : '<br><small>Tip: Use the Employee filter to validate one person (example: Leydi Diaz).</small>'}
+        </div>
+      `;
+    }
+
+    document.getElementById('gapList').innerHTML = html;
+  } catch (error) {
+    console.error('Error loading gap analysis:', error);
+    document.getElementById('gapList').innerHTML = '<p style="color: #ef4444; text-align: center; padding: 24px;">Error loading gap analysis</p>';
+  }
 }
 const CHICAGO_TZ = 'America/Chicago';
 function getChicagoDateStr(d = new Date()) {
