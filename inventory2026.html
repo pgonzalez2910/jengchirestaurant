@@ -7683,13 +7683,13 @@ async function rptFetchData(tabName) {
         const ppUnit = parseFloat(it.price_per_unit||0);
         const uPrice = parseFloat(it.unit_price||0);
         let price=0;
-        if (it.has_weight && ppUnit>0) price=ppUnit;
-        else if (uPrice>0)             price=uPrice;
-        else if (ppUnit>0)             price=ppUnit;
-        // Weight-based items store amount in `weight`, not `quantity`
-        const qty = it.has_weight
-            ? parseFloat(it.weight||0)
-            : parseFloat(it.quantity||0);
+        const _wv2 = parseFloat(it.weight||0);
+        const _isW2 = !!(it.has_weight || _wv2 > 0);
+        if (_isW2 && ppUnit>0)        price=ppUnit;
+        else if (uPrice>0)            price=uPrice;
+        else if (ppUnit>0)            price=ppUnit;
+        // Detect weight items by has_weight flag OR weight column > 0
+        const qty = _isW2 ? _wv2 : parseFloat(it.quantity||0);
         const invoice_date = (inv.invoice_date||'').slice(0,10);
         return { ...it, invoice_date,
             vendor:   inv.vendor||'—',
@@ -7820,9 +7820,11 @@ function rptRenderBody(tabName, cfg, d) {
 
             const rows = items.map(it=>{
                 const p   = parseFloat(it.unit_price||it.price_per_unit||0);
-                // Weight-based items store the amount in `weight`, not `quantity`
-                const isW = it.has_weight;
-                const q   = isW ? parseFloat(it.weight||0) : parseFloat(it.quantity||0);
+                // Detect weight-based: has_weight flag OR weight column has a value > 0
+                // (some items were entered without has_weight flag but still store lbs in weight)
+                const weightVal = parseFloat(it.weight||0);
+                const isW = !!(it.has_weight || weightVal > 0);
+                const q   = isW ? weightVal : parseFloat(it.quantity||0);
                 const weightBadge = isW
                     ? `<span style="display:inline-block;margin-left:.4rem;padding:.1rem .35rem;background:#fef3c7;color:#92400e;border:1px solid #fde68a;border-radius:4px;font-size:.62rem;font-weight:700;letter-spacing:.03em;">⚖ LB</span>`
                     : '';
@@ -7843,17 +7845,29 @@ function rptRenderBody(tabName, cfg, d) {
                       <input id="priceInput_${it.id}" type="number" step="0.01" min="0" value="${p.toFixed(2)}"
                         oninput="_rptRecalcRow('${it.id}')"
                         style="width:80px;padding:.3rem .4rem;border:1px solid #d1d5db;border-radius:5px;font-size:.82rem;">
-                      <button onclick="rptUpdateItem('${it.id}','${escQ(it.product_name)}','${invoiceId}')"
+                      <button id="saveBtn_${it.id}" onclick="rptUpdateItem('${it.id}','${escQ(it.product_name)}','${invoiceId}')"
                         style="padding:.3rem .65rem;background:rgb(${vc});color:white;border:none;border-radius:5px;font-size:.75rem;cursor:pointer;font-weight:600;white-space:nowrap;">💾 Save</button>
                     </div>
                   </td>
                 </tr>`;
             }).join('');
 
-            const initTotal = items.reduce((s,it)=>{
-                const p=parseFloat(it.unit_price||it.price_per_unit||0);
-                return s+p*parseFloat(it.quantity||0);
-            },0);
+            // Fetch the real invoice total from DB (includes tax if applicable)
+            let initTotal = 0;
+            try {
+                const { data: invRow } = await supabaseClient
+                    .from('invoices').select('total,amount').eq('id', invoiceId).single();
+                initTotal = parseFloat(invRow?.total || invRow?.amount || 0);
+            } catch(_) {
+                // Fallback: calculate from items if invoices fetch fails
+                initTotal = items.reduce((s,it)=>{
+                    const p  = parseFloat(it.unit_price||it.price_per_unit||0);
+                    const wv = parseFloat(it.weight||0);
+                    const isW = !!(it.has_weight || wv > 0);
+                    const q  = isW ? wv : parseFloat(it.quantity||0);
+                    return s + p * q;
+                },0);
+            }
 
             content.innerHTML=`
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:1.5rem;">
@@ -7890,57 +7904,110 @@ function rptRenderBody(tabName, cfg, d) {
     // ── Quote-escape helper (avoids regex inside template literal onclick attrs) ──
     window.escQ = function(s) { return (s || '').replace(/'/g, "\\'"); };
 
-    // ── Price update helper ────────────────────────────────────────────
-    // ── Save both price AND qty from the invoice detail modal ───────────
+    // ── Save price + qty from the invoice detail modal ──────────────
     window.rptUpdateItem = async function(itemId, productName, invoiceId) {
         const priceIn = document.getElementById('priceInput_'+itemId);
         const qtyIn   = document.getElementById('qtyInput_'+itemId);
+        const rowTotal= document.getElementById('rowTotal_'+itemId);
+        const btn     = document.getElementById('saveBtn_'+itemId);
         const isWt    = qtyIn && qtyIn.dataset.isWeight === 'true';
-        const btn     = document.querySelector(`button[onclick*="rptUpdateItem('${itemId}'"]`);
-        if (!priceIn) return;
+
+        if (!priceIn) { console.error('[rptUpdateItem] priceInput not found:', itemId); return; }
+
         const newPrice = parseFloat(priceIn.value);
         const newQty   = qtyIn ? parseFloat(qtyIn.value) : null;
-        if (isNaN(newPrice)||newPrice<0) { alert('Invalid price'); return; }
-        if (newQty !== null && (isNaN(newQty)||newQty<0)) { alert('Invalid quantity'); return; }
+
+        if (isNaN(newPrice) || newPrice < 0) { alert('Invalid price'); return; }
+        if (newQty !== null && (isNaN(newQty) || newQty < 0)) { alert('Invalid quantity'); return; }
+
+        if (btn) { btn.disabled=true; btn.textContent='⏳ Saving…'; }
+
         try {
-            if (btn) { btn.disabled=true; btn.textContent='⏳'; }
-            const updateData = { unit_price: newPrice, price_per_unit: newPrice };
-            if (newQty !== null) {
-                if (isWt) {
-                    // Weight-based: save to `weight` field, keep quantity=0
-                    updateData.weight = newQty;
-                    updateData.quantity = 0;
-                    // Also recalc line_total
-                    updateData.line_total = newQty * newPrice;
-                } else {
-                    updateData.quantity = newQty;
-                }
+            // ── Build update payload with correct columns per item type ──
+            let updateData = {};
+            if (isWt) {
+                // Weight-based: price stored in price_per_unit, amount in weight
+                const wt = newQty !== null ? newQty : parseFloat(qtyIn?.value||0);
+                updateData = {
+                    price_per_unit: newPrice,
+                    unit_price:     0,
+                    weight:         wt,
+                    quantity:       0,
+                    line_total:     wt * newPrice,
+                    has_weight:     true
+                };
+            } else {
+                // Quantity-based: price stored in unit_price, amount in quantity
+                const qt = newQty !== null ? newQty : parseFloat(qtyIn?.value||0);
+                updateData = {
+                    unit_price:     newPrice,
+                    price_per_unit: 0,
+                    quantity:       qt,
+                    weight:         0,
+                    line_total:     qt * newPrice,
+                    has_weight:     false
+                };
             }
-            const { error } = await supabaseClient.from('invoice_items').update(updateData).eq('id', itemId);
+
+            console.log('[rptUpdateItem] updating id='+itemId, updateData);
+            const { data: saved, error } = await supabaseClient
+                .from('invoice_items')
+                .update(updateData)
+                .eq('id', itemId)
+                .select();
+
             if (error) throw new Error(error.message);
-            // Flash inputs green
-            priceIn.style.background='#d1fae5';
-            if (qtyIn) qtyIn.style.background='#d1fae5';
-            if (btn) { btn.disabled=false; btn.textContent='✅ Saved'; btn.style.background='#16a34a'; }
-            setTimeout(()=>{ if(btn){btn.textContent='💾 Save';btn.style.background=`rgb(44,88,136)`;} }, 2500);
-            showAlert(`✅ Updated ${productName} — Qty: ${newQty!==null?newQty.toFixed(3):'unchanged'} · Price: $${newPrice.toFixed(2)}`, 'success');
-            // Refresh allItems cache
-            const existing = d.allItems.find(it=>it.id===itemId);
-            if (existing) {
-                existing.unit_price=newPrice; existing.price_per_unit=newPrice;
-                if (newQty !== null) { existing.quantity=newQty; existing.qty=newQty; }
+            console.log('[rptUpdateItem] saved:', saved);
+
+            // ── Update invoice totals in DB (so it matches next time you open) ──
+            if (invoiceId) {
+                await updateInvoiceTotals(invoiceId);
+                // Refresh the grand total shown in modal from DB
+                try {
+                    const { data: inv } = await supabaseClient
+                        .from('invoices').select('total,amount').eq('id', invoiceId).single();
+                    const grandEl = document.getElementById('rptInvGrandTotal');
+                    if (grandEl && inv) grandEl.textContent = '$'+parseFloat(inv.total||inv.amount||0).toFixed(2);
+                } catch(e2) { /* non-critical */ }
             }
+
+            // ── Update the row total display ──────────────────────────
+            const dispQty  = newQty !== null ? newQty : 0;
+            const lineTotal = dispQty * newPrice;
+            if (rowTotal) rowTotal.textContent = '$'+lineTotal.toFixed(2);
+
+            // ── Flash inputs green ────────────────────────────────────
+            [priceIn, qtyIn].forEach(el=>{
+                if (el) { el.style.background='#d1fae5'; el.style.borderColor='#16a34a'; }
+            });
+            if (btn) { btn.disabled=false; btn.textContent='✅ Saved!'; btn.style.background='#16a34a'; }
+            setTimeout(()=>{
+                [priceIn, qtyIn].forEach(el=>{ if(el){ el.style.background=''; el.style.borderColor=''; }});
+                if (btn) { btn.textContent='💾 Save'; btn.style.background='rgb(44,88,136)'; }
+            }, 2500);
+
+            const qtyLabel = newQty !== null ? newQty.toFixed(isWt?3:2)+(isWt?' lb':'') : '—';
+            showAlert('✅ Saved — '+productName+': Qty '+qtyLabel+' · Price $'+newPrice.toFixed(2), 'success');
+
+            // ── Sync in-memory cache ──────────────────────────────────
+            const existing = d.allItems.find(it=>it.id===itemId);
+            if (existing) Object.assign(existing, updateData, {qty: newQty??existing.qty});
+
         } catch(e) {
-            priceIn.style.background='#fee2e2';
-            if (qtyIn) qtyIn.style.background='#fee2e2';
+            console.error('[rptUpdateItem] FAILED:', e);
+            [priceIn, qtyIn].forEach(el=>{ if(el){ el.style.background='#fee2e2'; el.style.borderColor='#dc2626'; }});
             if (btn) { btn.disabled=false; btn.textContent='💾 Save'; }
-            showAlert(`❌ Failed to update: ${e.message}`, 'error');
+            showAlert('❌ Save failed: '+e.message, 'error');
         }
     };
 
     // ── Price-only update (kept for backward compat) ────────────────
+    // Routes to the right handler based on which inputs exist in DOM
     window.rptUpdateItemPrice = async function(itemId, productName, invoiceId) {
-        return window.pvSaveRow(itemId, productName, invoiceId);
+        if (document.getElementById('pvPrice_'+itemId)) {
+            return window.pvSaveRow(itemId, productName, invoiceId);
+        }
+        return window.rptUpdateItem(itemId, productName, invoiceId);
     };
 
     // ── Price History table: live recalc row total ────────────────────
@@ -7961,7 +8028,7 @@ function rptRenderBody(tabName, cfg, d) {
         const qtyIn   = document.getElementById('pvQty_'+itemId);
         const totalEl = document.getElementById('pvTotal_'+itemId);
         const btn     = document.getElementById('pvSaveBtn_'+itemId);
-        if (!priceIn) return;
+        if (!priceIn) { console.error('[pvSaveRow] pvPrice not found:', itemId); return; }
 
         const newPrice = parseFloat(priceIn.value);
         const newQty   = qtyIn ? parseFloat(qtyIn.value) : null;
@@ -7970,51 +8037,70 @@ function rptRenderBody(tabName, cfg, d) {
         if (isNaN(newPrice)||newPrice<0) { alert('Invalid price'); return; }
         if (newQty !== null && (isNaN(newQty)||newQty<0)) { alert('Invalid quantity'); return; }
 
-        // Disable button while saving
         if (btn) { btn.disabled=true; btn.textContent='⏳'; }
 
         try {
-            const updateData = { unit_price: newPrice, price_per_unit: newPrice };
-            if (newQty !== null) {
-                if (isWt) {
-                    updateData.weight   = newQty;
-                    updateData.quantity = 0;
-                    updateData.line_total = newQty * newPrice;
-                } else {
-                    updateData.quantity   = newQty;
-                    updateData.line_total = newQty * newPrice;
-                }
+            // ── Correct columns per item type (mirrors how items are inserted) ──
+            let updateData = {};
+            if (isWt) {
+                const wt = newQty !== null ? newQty : 0;
+                updateData = {
+                    price_per_unit: newPrice,
+                    unit_price:     0,
+                    weight:         wt,
+                    quantity:       0,
+                    line_total:     wt * newPrice,
+                    has_weight:     true
+                };
+            } else {
+                const qt = newQty !== null ? newQty : 0;
+                updateData = {
+                    unit_price:     newPrice,
+                    price_per_unit: 0,
+                    quantity:       qt,
+                    weight:         0,
+                    line_total:     qt * newPrice,
+                    has_weight:     false
+                };
             }
 
-            const { error } = await supabaseClient.from('invoice_items').update(updateData).eq('id', itemId);
+            console.log('[pvSaveRow] updating id='+itemId, updateData);
+            const { error } = await supabaseClient
+                .from('invoice_items')
+                .update(updateData)
+                .eq('id', itemId);
             if (error) throw new Error(error.message);
 
-            // ── Flash success inline ──────────────────────────────────
+            // ── Update invoice totals in DB ───────────────────────────
+            if (invoiceId) await updateInvoiceTotals(invoiceId);
+
+            // ── Update row total display ──────────────────────────────
+            if (totalEl && newQty !== null) {
+                totalEl.textContent = '$'+(newQty * newPrice).toFixed(2);
+                totalEl.style.color = '#16a34a';
+            }
+
+            // ── Flash inputs ──────────────────────────────────────────
             [priceIn, qtyIn].forEach(el=>{ if(el) el.style.background='#d1fae5'; });
-            if (totalEl) { totalEl.style.color='#16a34a'; }
             if (btn) { btn.disabled=false; btn.textContent='✅ Saved'; btn.style.background='#16a34a'; }
             setTimeout(()=>{
                 [priceIn, qtyIn].forEach(el=>{ if(el) el.style.background=''; });
                 if (totalEl) totalEl.style.color='#374151';
-                if (btn) { btn.textContent='💾 Save'; btn.style.background=`rgb(44,88,136)`; }
+                if (btn) { btn.textContent='💾 Save'; btn.style.background='rgb(44,88,136)'; }
             }, 2500);
 
-            // ── Update in-memory cache so totals stay correct ──────────
+            // ── Sync in-memory cache ──────────────────────────────────
             const existing = d.allItems.find(it=>it.id===itemId);
-            if (existing) {
-                existing.unit_price     = newPrice;
-                existing.price_per_unit = newPrice;
-                if (newQty !== null) {
-                    if (isWt) { existing.weight=newQty; existing.qty=newQty; existing.quantity=0; }
-                    else       { existing.quantity=newQty; existing.qty=newQty; }
-                }
-            }
-            showAlert(`✅ Saved — ${productName}: Qty ${newQty!==null?newQty.toFixed(isWt?3:2):'—'} · Price $${newPrice.toFixed(2)}`, 'success');
+            if (existing) Object.assign(existing, updateData, {qty: newQty??existing.qty});
+
+            const pvQtyLabel = newQty !== null ? newQty.toFixed(isWt?3:2)+(isWt?' lb':'') : '—';
+            showAlert('✅ Saved — '+productName+': Qty '+pvQtyLabel+' · Price $'+newPrice.toFixed(2), 'success');
 
         } catch(e) {
+            console.error('[pvSaveRow] FAILED:', e);
             [priceIn, qtyIn].forEach(el=>{ if(el) el.style.background='#fee2e2'; });
             if (btn) { btn.disabled=false; btn.textContent='💾 Save'; }
-            showAlert(`❌ Failed to save: ${e.message}`, 'error');
+            showAlert('❌ Save failed: '+e.message, 'error');
         }
     };
 
@@ -8292,7 +8378,8 @@ function rptRenderBody(tabName, cfg, d) {
                             </tr></thead>
                             <tbody>
                               ${prod.history.map(h=>{
-                                const isW = d.allItems.find(it=>it.id===h.itemId)?.has_weight || false;
+                                const _raw = d.allItems.find(it=>it.id===h.itemId);
+                                const isW = !!(_raw?.has_weight || parseFloat(_raw?.weight||0) > 0);
                                 return `
                                 <tr id="pvRow_${h.itemId}" style="border-bottom:1px solid var(--neutral-50);">
                                   <td style="padding:.3rem .4rem;font-size:.78rem;">${h.date}</td>
@@ -9879,11 +9966,12 @@ function renderSelectedInvoiceProducts() {
 
     container.innerHTML = selectedInvoiceProducts.map((product, idx) => {
         const imageUrl = resolveImage(product.image_path);
-        const hasWeight = product.has_weight && product.weight && product.weight > 0;
-        
-        const weightNum = parseFloat(product.weight) || 0;
+        // Detect weight mode: flag OR weight value > 0
+        const weightNum       = parseFloat(product.weight) || 0;
+        const hasWeight       = !!(product.has_weight || weightNum > 0);
         const pricePerUnitNum = parseFloat(product.price_per_unit) || 0;
-        const quantityNum = parseInt(product.quantity) || 1;
+        // Use actual quantity (never fall back to 1 — weight items have qty=0)
+        const quantityNum     = parseInt(product.quantity) || 0;
         const invoicePriceNum = parseFloat(product.invoice_price) || 0;
         
         const lineTotal = hasWeight 
@@ -10229,10 +10317,6 @@ function updateInvoiceProductField(index, field, value) {
                     console.log('🟡 Updating existing invoice:', editId);
                     const { error } = await supabaseClient.from('invoices').update(invoiceData).eq('id', editId);
                     if (error) throw error;
-                    
-                    console.log('🟡 Deleting old invoice items for invoice:', editId);
-                    await supabaseClient.from('invoice_items').delete().eq('invoice_id', editId);
-                    
                     showAlert('✅ Invoice updated successfully!', 'success');
                 } else {
                     console.log('🟢 Creating new invoice');
@@ -10248,42 +10332,82 @@ function updateInvoiceProductField(index, field, value) {
 
                 console.log('🔴 Preparing to save invoice items...');
                 console.log('🔴 Invoice ID:', invoiceId);
-                console.log('🔴 Number of products to save:', selectedInvoiceProducts.length);
-                
-                const invoiceItems = selectedInvoiceProducts.map(product => {
-                    const hasWeight = product.has_weight && product.weight && product.weight > 0;
-                    const lineTotal = hasWeight 
-                        ? parseFloat(product.weight) * parseFloat(product.price_per_unit)
-                        : parseFloat(product.quantity) * parseFloat(product.invoice_price);
-                    
-                    return {
-                        invoice_id: invoiceId,
-                        item_code: product.item_code,
-                        product_name: product.product_name,
-                        vendor: product.vendor,
-                        quantity: hasWeight ? null : parseInt(product.quantity),
-                        unit_price: hasWeight ? null : parseFloat(product.invoice_price),
-                        weight: hasWeight ? parseFloat(product.weight) : null,
-                        price_per_unit: hasWeight ? parseFloat(product.price_per_unit) : null,
-                        has_weight: hasWeight,
-                        line_total: lineTotal
+                console.log('🔴 Number of products:', selectedInvoiceProducts.length);
+
+                // ── Build item payloads ────────────────────────────────────────
+                // RULE: always use 0 (never null) for numeric fields
+                // Supabase RLS rejects null numerics → causes 42501 error
+                const buildItemPayload = (product, forInsert = false) => {
+                    // Detect weight mode: has_weight flag OR weight > 0
+                    const hasWeight = !!(product.has_weight || parseFloat(product.weight||0) > 0);
+                    const wt  = hasWeight ? (parseFloat(product.weight)        || 0) : 0;
+                    const ppu = hasWeight ? (parseFloat(product.price_per_unit) || 0) : 0;
+                    const qt  = hasWeight ? 0 : (parseInt(product.quantity)    || 0);
+                    const up  = hasWeight ? 0 : (parseFloat(product.invoice_price) || 0);
+                    const lineTotal = hasWeight ? (wt * ppu) : (qt * up);
+
+                    const payload = {
+                        item_code:      product.item_code,
+                        product_name:   product.product_name,
+                        vendor:         product.vendor,
+                        quantity:       qt,   // 0 for weight items — NEVER null (RLS rejects null)
+                        unit_price:     up,   // 0 for weight items — NEVER null
+                        weight:         wt,   // 0 for qty items   — NEVER null
+                        price_per_unit: ppu,  // 0 for qty items   — NEVER null
+                        has_weight:     hasWeight,
+                        line_total:     lineTotal
                     };
-                });
+                    if (forInsert) payload.invoice_id = invoiceId;
+                    return payload;
+                };
 
-                console.log('🔴 Invoice items array:', invoiceItems);
+                // ── Split: existing rows (UPDATE) vs new rows (INSERT) ─────────
+                const existingProducts = selectedInvoiceProducts.filter(p => p._dbId);
+                const newProducts      = selectedInvoiceProducts.filter(p => !p._dbId);
 
-                const { data: insertedItems, error: itemsError } = await supabaseClient
-                    .from('invoice_items')
-                    .insert(invoiceItems)
-                    .select();
-
-                if (itemsError) {
-                    console.error('❌ ERROR saving invoice items:', itemsError);
-                    throw itemsError;
+                // ── If editing: delete rows that were REMOVED from the list ─────
+                let insertedItems = [];
+                if (editId) {
+                    const keptIds = new Set(existingProducts.map(p => p._dbId));
+                    // Fetch current item IDs in DB for this invoice
+                    const { data: currentDbItems } = await supabaseClient
+                        .from('invoice_items').select('id').eq('invoice_id', editId);
+                    const toDelete = (currentDbItems || []).filter(r => !keptIds.has(r.id)).map(r => r.id);
+                    if (toDelete.length > 0) {
+                        console.log('🗑️ Deleting removed items:', toDelete);
+                        await supabaseClient.from('invoice_items').delete().in('id', toDelete);
+                    }
                 }
 
-                console.log('✅✅✅ SUCCESS! Invoice items saved:', insertedItems);
-console.log('✅ Number of items saved:', insertedItems?.length || 0);
+                // ── UPDATE existing items (avoids RLS INSERT restriction) ───────
+                for (const product of existingProducts) {
+                    const payload = buildItemPayload(product, false);
+                    console.log('🟡 Updating item:', product._dbId, payload);
+                    const { error: updErr } = await supabaseClient
+                        .from('invoice_items').update(payload).eq('id', product._dbId);
+                    if (updErr) {
+                        console.error('❌ Update failed for item', product._dbId, updErr);
+                        throw updErr;
+                    }
+                }
+
+                // ── INSERT only truly NEW items ───────────────────────────────
+                if (newProducts.length > 0) {
+                    const newPayloads = newProducts.map(p => buildItemPayload(p, true));
+                    console.log('🟢 Inserting new items:', newPayloads);
+                    const { data: inserted, error: insErr } = await supabaseClient
+                        .from('invoice_items').insert(newPayloads).select();
+                    if (insErr) {
+                        console.error('❌ Insert failed for new items:', insErr);
+                        throw insErr;
+                    }
+                    insertedItems = inserted || [];
+                }
+
+                // Combine for downstream use (on_hand update etc.)
+                const invoiceItems = selectedInvoiceProducts.map(p => buildItemPayload(p, false));
+
+                console.log('✅✅✅ SUCCESS! Items saved. Updated:', existingProducts.length, 'Inserted:', insertedItems.length);
 
 // ✅ NEW: SYNC PRICES TO PURCHASE_HISTORY TABLE
 console.log('💾 Syncing prices to purchase_history table...');
@@ -10475,34 +10599,38 @@ for (const product of selectedInvoiceProducts) {
                     document.getElementById('invoiceForm').dataset.editId = id;
                     
                   selectedInvoiceProducts = (items || []).map(item => {
-    const hasWeight = item.has_weight || false;
-    
-    // ✅ CORRECTLY DETERMINE UNIT PRICE BASED ON MODE
+    // Detect weight mode: has_weight flag OR weight column > 0
+    // (some items stored without has_weight flag but still have weight value)
+    const weightVal   = parseFloat(item.weight || 0);
+    const hasWeight   = !!(item.has_weight || weightVal > 0);
+
     let invoice_price = 0;
-    let price_per_unit = null;
+    let price_per_unit = 0;
 
     if (hasWeight) {
-        // Weight-based: unit price = price_per_unit
         price_per_unit = parseFloat(item.price_per_unit) || 0;
-        invoice_price = price_per_unit; // for UI consistency in non-weight fields
+        invoice_price  = price_per_unit;
     } else {
-        // Regular: unit price = unit_price
-        invoice_price = parseFloat(item.unit_price) || 0;
-        price_per_unit = null;
+        invoice_price  = parseFloat(item.unit_price) || 0;
+        price_per_unit = 0;
     }
 
     return {
-        item_code: item.item_code,
-        product_name: item.product_name,
-        vendor: item.vendor,
-        unit_price: item.unit_price || item.price_per_unit || 0, // reference only
-        invoice_price: invoice_price,        // ✅ CORRECT UNIT PRICE
-        quantity: item.quantity || 1,
-        weight: item.weight || null,
-        price_per_unit: price_per_unit,     // ✅ CORRECT PER-LB PRICE
-        has_weight: hasWeight,              // ✅ MUST BE SET BEFORE RENDER
-        image_path: null,
-        originalItemCode: item.item_code,
+        _dbId:               item.id,           // ✅ Preserve DB ID → UPDATE not INSERT
+        item_code:           item.item_code,
+        product_name:        item.product_name,
+        vendor:              item.vendor,
+        category:            item.category || null,
+        assigned_to:         item.assigned_to || null,
+        unit_price:          parseFloat(item.unit_price || item.price_per_unit || 0),
+        invoice_price:       invoice_price,
+        // ✅ Weight items: load actual weight (e.g. 320), NOT quantity (which is 0/null)
+        quantity:            hasWeight ? 0 : (parseInt(item.quantity) || 0),
+        weight:              weightVal,          // ✅ Always the real lb amount
+        price_per_unit:      price_per_unit,
+        has_weight:          hasWeight,          // ✅ Correct flag including weight>0 items
+        image_path:          item.image_path || null,
+        originalItemCode:    item.item_code,
         originalProductName: item.product_name
     };
 });
