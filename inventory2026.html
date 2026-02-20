@@ -3117,6 +3117,15 @@ input[id^="par-input-"]:focus {
                         <option value="2027">2027</option>
                     </select>
                 </div>
+                <div class="filter-group">
+                    <label style="color: rgba(255,255,255,0.9); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;">🔍 Invoice #</label>
+                    <input type="text"
+                           id="invoiceNumberSearch"
+                           class="search-input"
+                           placeholder="Search invoice #..."
+                           oninput="filterInvoicesByVendor()"
+                           style="background: white; border: 2px solid rgba(255,255,255,0.3); font-weight: 600; min-width: 155px;">
+                </div>
                 <div style="display: flex; gap: 0.5rem; align-items: flex-end;">
                     <button class="btn btn-primary" onclick="openAddItemFromTracking()" style="background: rgba(255,255,255,0.2); backdrop-filter: blur(10px); border: 2px solid rgba(255,255,255,0.3); color: white; font-weight: 700; transition: all 0.2s;" onmouseover="this.style.background='rgba(255,255,255,0.3)'" onmouseout="this.style.background='rgba(255,255,255,0.2)'">
                         <i class="fas fa-box"></i> Add Item
@@ -6539,8 +6548,10 @@ async function saveQuickEditInvoice(event) {
 
         function filterInvoicesByVendor() {
             const vendorFilter = document.getElementById('invoiceVendorSelect').value;
-            const monthFilter = document.getElementById('invoiceMonthSelect').value;
-            const yearFilter = document.getElementById('invoiceYearSelect').value;
+            const monthFilter  = document.getElementById('invoiceMonthSelect').value;
+            const yearFilter   = document.getElementById('invoiceYearSelect').value;
+            // ✅ NEW: Invoice number search
+            const invNumSearch = (document.getElementById('invoiceNumberSearch')?.value || '').trim().toLowerCase();
             
             let data = [...invoicesData];
             
@@ -6558,6 +6569,14 @@ async function saveQuickEditInvoice(event) {
             
             if (yearFilter) {
                 data = data.filter(i => new Date(i.invoice_date).getFullYear().toString() === yearFilter);
+            }
+
+            // ✅ Filter by invoice number (partial match, case-insensitive)
+            // Use String() to safely handle invoice_number stored as integer or string
+            if (invNumSearch) {
+                data = data.filter(i =>
+                    String(i.invoice_number || '').toLowerCase().includes(invNumSearch)
+                );
             }
             
             filteredInvoices = data;
@@ -7938,7 +7957,7 @@ function rptRenderBody(tabName, cfg, d) {
                 };
             } else {
                 // Quantity-based: price stored in unit_price, amount in quantity
-                const qt = newQty !== null ? newQty : parseFloat(qtyIn?.value||0);
+                const qt = newQty !== null ? Math.round(newQty) : Math.round(parseFloat(qtyIn?.value||0));
                 updateData = {
                     unit_price:     newPrice,
                     price_per_unit: 0,
@@ -7957,6 +7976,11 @@ function rptRenderBody(tabName, cfg, d) {
                 .select();
 
             if (error) throw new Error(error.message);
+
+            // ✅ Verify that rows were actually updated (Supabase can silently return [] if RLS blocks)
+            if (!saved || saved.length === 0) {
+                throw new Error('Save failed: no rows were updated. The record may be locked or not found.');
+            }
             console.log('[rptUpdateItem] saved:', saved);
 
             // ── Update invoice totals in DB (so it matches next time you open) ──
@@ -7990,8 +8014,9 @@ function rptRenderBody(tabName, cfg, d) {
             showAlert('✅ Saved — '+productName+': Qty '+qtyLabel+' · Price $'+newPrice.toFixed(2), 'success');
 
             // ── Sync in-memory cache ──────────────────────────────────
-            const existing = d.allItems.find(it=>it.id===itemId);
-            if (existing) Object.assign(existing, updateData, {qty: newQty??existing.qty});
+            const _rptCache = _rptData[_rptCurrentTab] || _rptData['rpt_price_variance'];
+            const existing = _rptCache?.allItems?.find(it => it.id === itemId);
+            if (existing) Object.assign(existing, updateData, {qty: newQty ?? existing.qty});
 
         } catch(e) {
             console.error('[rptUpdateItem] FAILED:', e);
@@ -8053,7 +8078,7 @@ function rptRenderBody(tabName, cfg, d) {
                     has_weight:     true
                 };
             } else {
-                const qt = newQty !== null ? newQty : 0;
+                const qt = newQty !== null ? Math.round(newQty) : 0;
                 updateData = {
                     unit_price:     newPrice,
                     price_per_unit: 0,
@@ -8065,11 +8090,16 @@ function rptRenderBody(tabName, cfg, d) {
             }
 
             console.log('[pvSaveRow] updating id='+itemId, updateData);
-            const { error } = await supabaseClient
+            const { data: pvSaved, error } = await supabaseClient
                 .from('invoice_items')
                 .update(updateData)
-                .eq('id', itemId);
+                .eq('id', itemId)
+                .select();
             if (error) throw new Error(error.message);
+            // ✅ Verify rows were actually updated (RLS can silently block without error)
+            if (!pvSaved || pvSaved.length === 0) {
+                throw new Error('Save failed: no rows were updated. The record may be locked or not found.');
+            }
 
             // ── Update invoice totals in DB ───────────────────────────
             if (invoiceId) await updateInvoiceTotals(invoiceId);
@@ -8090,8 +8120,9 @@ function rptRenderBody(tabName, cfg, d) {
             }, 2500);
 
             // ── Sync in-memory cache ──────────────────────────────────
-            const existing = d.allItems.find(it=>it.id===itemId);
-            if (existing) Object.assign(existing, updateData, {qty: newQty??existing.qty});
+            const _rptCache = _rptData[_rptCurrentTab] || _rptData['rpt_price_variance'];
+            const existing = _rptCache?.allItems?.find(it => it.id === itemId);
+            if (existing) Object.assign(existing, updateData, {qty: newQty ?? existing.qty});
 
             const pvQtyLabel = newQty !== null ? newQty.toFixed(isWt?3:2)+(isWt?' lb':'') : '—';
             showAlert('✅ Saved — '+productName+': Qty '+pvQtyLabel+' · Price $'+newPrice.toFixed(2), 'success');
@@ -10029,12 +10060,13 @@ function renderSelectedInvoiceProducts() {
                                 <div>
                                     <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Weight (lbs) ⚖️</label>
                                     <input type="number" 
+                                           id="invoiceWeight_${idx}"
                                            class="editable-field" 
                                            value="${product.weight || ''}"
                                            min="0"
                                            step="0.01"
                                            placeholder="25.5"
-                                           onchange="updateInvoiceProductField(${idx}, 'weight', this.value)"
+                                           oninput="updateInvoiceProductField(${idx}, 'weight', this.value)"
                                            style="width: 100%; font-size: 1.125rem; font-weight: 700; text-align: center;">
                                 </div>
                                 
@@ -10042,11 +10074,12 @@ function renderSelectedInvoiceProducts() {
                                     <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Price per lb 💵</label>
                                     <input type="number" 
                                            class="editable-field" 
+                                           id="invoicePPU_${idx}"
                                            value="${product.price_per_unit || ''}"
                                            min="0"
                                            step="0.01"
                                            placeholder="3.20"
-                                           onchange="updateInvoiceProductField(${idx}, 'price_per_unit', this.value)"
+                                           oninput="updateInvoiceProductField(${idx}, 'price_per_unit', this.value)"
                                            style="width: 100%; font-size: 1.125rem; font-weight: 700; font-family: var(--font-mono);">
                                     <small style="color: var(--primary-600); font-size: 0.7rem; display: block; margin-top: 0.25rem;">
                                         Last: $${product.unit_price ? parseFloat(product.unit_price).toFixed(2) : 'N/A'}
@@ -10066,10 +10099,11 @@ function renderSelectedInvoiceProducts() {
                                     <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Quantity</label>
                                     <input type="number" 
                                            class="editable-field" 
+                                           id="invoiceQty_${idx}"
                                            value="${product.quantity || 1}"
                                            min="1"
                                            step="1"
-                                           onchange="updateInvoiceProductField(${idx}, 'quantity', this.value)"
+                                           oninput="updateInvoiceProductField(${idx}, 'quantity', this.value)"
                                            style="width: 100%; font-size: 1.125rem; font-weight: 700; text-align: center;">
                                 </div>
                                 
@@ -10077,10 +10111,11 @@ function renderSelectedInvoiceProducts() {
                                     <label style="font-size: 0.75rem; color: var(--neutral-600); font-weight: 600; display: block; margin-bottom: 0.25rem;">Price Each 💰</label>
                                     <input type="number" 
                                            class="editable-field" 
+                                           id="invoicePrice_${idx}"
                                            value="${product.invoice_price || 0}"
                                            min="0"
                                            step="0.01"
-                                           onchange="updateInvoiceProductField(${idx}, 'invoice_price', this.value)"
+                                           oninput="updateInvoiceProductField(${idx}, 'invoice_price', this.value)"
                                            style="width: 100%; font-size: 1.125rem; font-weight: 700; font-family: var(--font-mono);">
                                     <small style="color: var(--primary-600); font-size: 0.7rem; display: block; margin-top: 0.25rem;">
                                         Last: $${product.unit_price ? parseFloat(product.unit_price).toFixed(2) : 'N/A'}
@@ -10199,21 +10234,29 @@ function toggleWeightMode(index, isEnabled) {
         
         if (isEnabled) {
             // Switching TO weight mode
+            // Keep weight if already set (e.g. from a previous toggle), else default to empty
             if (!product.weight) {
-                product.weight = 1.0;
+                product.weight = '';   // leave blank so user enters real lbs
             }
-            if (!product.price_per_unit) {
-                // ✅ Convert to NUMBER, not string
-                product.price_per_unit = parseFloat(product.invoice_price) || 0;
+            if (!product.price_per_unit || product.price_per_unit === 0) {
+                // Pre-fill with the existing unit price as a starting point
+                product.price_per_unit = parseFloat(product.invoice_price) || parseFloat(product.unit_price) || 0;
             }
+            // Zero out qty since this is now weight-based
+            product.quantity = 0;
         } else {
-            // Switching FROM weight mode
+            // Switching FROM weight mode back to qty mode
             if (product.weight && product.price_per_unit) {
-                // ✅ Convert to NUMBER, not string
+                // ✅ Preserve the calculated total as the new invoice price
                 product.invoice_price = parseFloat(product.weight) * parseFloat(product.price_per_unit);
             }
             product.weight = null;
             product.price_per_unit = null;
+            product.has_weight = false;
+            // ✅ FIXED: Reset quantity to 1 (was 0 from weight mode, which caused $0 totals)
+            if (!product.quantity || product.quantity <= 0) {
+                product.quantity = 1;
+            }
         }
         
         renderSelectedInvoiceProducts();
@@ -10278,6 +10321,20 @@ function updateInvoiceProductField(index, field, value) {
         showAlert('Please add at least one product to the invoice', 'error');
         return;
     }
+            // ✅ DOM SYNC: read current field values into selectedInvoiceProducts
+            // Guarantees Save captures typed values even if user clicked Save 
+            // immediately after typing (before any blur/change event could fire)
+            selectedInvoiceProducts.forEach((product, _domIdx) => {
+                const wEl   = document.getElementById('invoiceWeight_'  + _domIdx);
+                const ppuEl = document.getElementById('invoicePPU_'     + _domIdx);
+                const qEl   = document.getElementById('invoiceQty_'     + _domIdx);
+                const ipEl  = document.getElementById('invoicePrice_'   + _domIdx);
+                if (wEl   && wEl.value   !== '') product.weight        = Math.max(0, parseFloat(wEl.value)   || 0);
+                if (ppuEl && ppuEl.value !== '') product.price_per_unit = Math.max(0, parseFloat(ppuEl.value) || 0);
+                if (qEl   && qEl.value   !== '') product.quantity       = Math.max(0, parseInt(qEl.value)    || 0);
+                if (ipEl  && ipEl.value  !== '') product.invoice_price  = Math.max(0, parseFloat(ipEl.value) || 0);
+            });
+
             console.log('🔵 saveInvoice started');
             console.log('🔵 selectedInvoiceProducts:', selectedInvoiceProducts);
             
@@ -10383,12 +10440,25 @@ function updateInvoiceProductField(index, field, value) {
                 for (const product of existingProducts) {
                     const payload = buildItemPayload(product, false);
                     console.log('🟡 Updating item:', product._dbId, payload);
-                    const { error: updErr } = await supabaseClient
-                        .from('invoice_items').update(payload).eq('id', product._dbId);
+
+                    // ✅ FIXED: .select() forces Supabase to return affected rows.
+                    // Without it, RLS silently blocks the write — no error, just data:[] —
+                    // and the UI showed "✅ SUCCESS" even though nothing was saved.
+                    const { data: updData, error: updErr } = await supabaseClient
+                        .from('invoice_items').update(payload).eq('id', product._dbId).select();
+
                     if (updErr) {
                         console.error('❌ Update failed for item', product._dbId, updErr);
                         throw updErr;
                     }
+
+                    // ✅ FIXED: Catch silent RLS block (Supabase returns data:[] with no error)
+                    if (!updData || updData.length === 0) {
+                        console.error('❌ Silent RLS block for:', product.product_name, product._dbId, payload);
+                        throw new Error(`Could not save "${product.product_name}" (id: ${product._dbId.slice(0,8)}). Supabase blocked the update silently — check RLS policies on invoice_items. Payload: has_weight=${payload.has_weight}, qty=${payload.quantity}, weight=${payload.weight}`);
+                    }
+
+                    console.log('✅ Updated item:', product._dbId, updData[0]);
                 }
 
                 // ── INSERT only truly NEW items ───────────────────────────────
