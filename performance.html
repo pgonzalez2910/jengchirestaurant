@@ -376,7 +376,20 @@ button.warning { background: linear-gradient(135deg, #f59e0b, #d97706); }
     <div id="scheduleStatus" class="hidden" style="margin-top:12px;padding:10px;border-radius:8px;font-size:13px;font-weight:500;"></div>
   </div>
   <div class="card">
-    <h3 style="margin-bottom:16px;font-size:15px;">📋 Scheduled Shifts</h3>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px;">
+      <h3 style="font-size:15px;margin:0;">📋 Scheduled Shifts</h3>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <label style="margin:0;font-size:13px;font-weight:600;color:#4a5568;">👤 Filter:</label>
+        <select id="scheduleFilterEmployee" onchange="loadSchedules()" style="width:auto;min-width:160px;padding:7px 12px;font-size:13px;">
+          <option value="">All Employees</option>
+          <option>Julio Mejia</option><option>Leydi Diaz</option>
+          <option>Procoro Tinoco</option><option>Wilson Sanchez</option>
+        </select>
+        <label style="margin:0;font-size:13px;font-weight:600;color:#4a5568;">📅 Date:</label>
+        <input type="date" id="scheduleFilterDate" onchange="loadSchedules()" style="width:auto;padding:7px 12px;font-size:13px;">
+        <button onclick="clearScheduleFilters()" class="secondary" style="padding:7px 14px;font-size:12px;">✕ Clear</button>
+      </div>
+    </div>
     <div id="scheduleList"><p style="color:#718096;text-align:center;padding:24px;">Loading...</p></div>
   </div>
 </div>
@@ -643,6 +656,39 @@ button.warning { background: linear-gradient(135deg, #f59e0b, #d97706); }
     <div class="action-bar" style="margin-top:20px;">
       <button onclick="saveEditedTask()" class="success" style="flex:1;">💾 Save Changes</button>
       <button onclick="closeEditTaskModal()" class="secondary" style="flex:1;">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ EDIT SCHEDULE MODAL ═══ -->
+<div class="modal-overlay" id="editScheduleModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>✏️ Edit Schedule</h2>
+      <button class="modal-close" onclick="closeEditScheduleModal()">×</button>
+    </div>
+    <input type="hidden" id="editScheduleId">
+    <div class="form-group"><label>👤 Employee</label>
+      <select id="editScheduleEmployee">
+        <option>Julio Mejia</option><option>Leydi Diaz</option>
+        <option>Procoro Tinoco</option><option>Wilson Sanchez</option>
+      </select>
+    </div>
+    <div class="form-group"><label>📅 Date</label><input type="date" id="editScheduleDate"></div>
+    <div class="form-group"><label>🏷 Role</label>
+      <select id="editScheduleRole">
+        <option>Kitchen Prep</option><option>Line Cook</option>
+        <option>Fryer</option><option>Dishwasher</option><option>Server</option>
+      </select>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+      <div class="form-group"><label>⏰ Start Time</label><input type="time" id="editScheduleStart"></div>
+      <div class="form-group"><label>⏰ End Time</label><input type="time" id="editScheduleEnd"></div>
+    </div>
+    <div id="editScheduleStatus" class="hidden" style="margin-top:8px;padding:10px;border-radius:8px;font-size:13px;font-weight:500;"></div>
+    <div class="action-bar" style="margin-top:20px;">
+      <button onclick="saveEditedSchedule()" class="success" style="flex:1;">💾 Save Changes</button>
+      <button onclick="closeEditScheduleModal()" class="secondary" style="flex:1;">Cancel</button>
     </div>
   </div>
 </div>
@@ -1035,18 +1081,84 @@ async function addSchedule() {
 
 async function loadSchedules() {
   try {
-    const { data, error } = await supabaseClient.from('employee_schedules').select('*').order('schedule_date', { ascending: false }).limit(50);
+    const filterEmp  = (document.getElementById('scheduleFilterEmployee')?.value || '').trim();
+    const filterDate = (document.getElementById('scheduleFilterDate')?.value || '').trim();
+    let q = supabaseClient.from('employee_schedules').select('*').order('schedule_date', { ascending: false }).limit(100);
+    if (filterEmp)  q = q.eq('employee_name', filterEmp);
+    if (filterDate) q = q.eq('schedule_date', filterDate);
+    const { data, error } = await q;
     if (error) throw error;
     const container = document.getElementById('scheduleList');
-    if (!data || data.length === 0) { container.innerHTML = '<p style="color:#718096;text-align:center;padding:24px;">No schedules found</p>'; return; }
-    let html = '<table class="schedule-table"><thead><tr><th>Date</th><th>Employee</th><th>Role</th><th>Hours</th><th>Duration</th><th>Break</th><th>Action</th></tr></thead><tbody>';
+    if (!data || data.length === 0) {
+      container.innerHTML = '<p style="color:#718096;text-align:center;padding:24px;">No schedules found</p>'; return;
+    }
+    let html = '<table class="schedule-table"><thead><tr><th>Date</th><th>Employee</th><th>Role</th><th>Hours</th><th>Duration</th><th>Break</th><th>Actions</th></tr></thead><tbody>';
     data.forEach(s => {
       const dur = calculateHours(s.start_time, s.end_time);
-      html += `<tr><td>${formatDate(s.schedule_date)}</td><td><strong>${s.employee_name}</strong></td><td><span class="badge badge-info">${s.role}</span></td><td>${s.start_time} – ${s.end_time}</td><td>${formatTime(dur)}</td><td>${s.break_minutes}m</td><td><button class="danger" onclick="deleteSchedule('${s.id}')" style="padding:5px 10px;font-size:12px;">Delete</button></td></tr>`;
+      html += `<tr>
+        <td>${formatDate(s.schedule_date)}</td>
+        <td><strong>${s.employee_name}</strong></td>
+        <td><span class="badge badge-info">${s.role}</span></td>
+        <td>${s.start_time} – ${s.end_time}</td>
+        <td>${formatTime(dur)}</td>
+        <td>${s.break_minutes}m</td>
+        <td style="display:flex;gap:6px;">
+          <button class="secondary" onclick="openEditScheduleModal('${s.id}')" style="padding:5px 10px;font-size:12px;">✏️ Edit</button>
+          <button class="danger"    onclick="deleteSchedule('${s.id}')"         style="padding:5px 10px;font-size:12px;">🗑</button>
+        </td>
+      </tr>`;
     });
     html += '</tbody></table>';
     container.innerHTML = html;
   } catch (e) { document.getElementById('scheduleList').innerHTML = '<p style="color:#e53e3e;text-align:center;padding:24px;">Error loading schedules</p>'; }
+}
+
+function clearScheduleFilters() {
+  const fe = document.getElementById('scheduleFilterEmployee');
+  const fd = document.getElementById('scheduleFilterDate');
+  if (fe) fe.value = '';
+  if (fd) fd.value = '';
+  loadSchedules();
+}
+
+async function openEditScheduleModal(schedId) {
+  try {
+    const { data: s, error } = await supabaseClient.from('employee_schedules').select('*').eq('id', schedId).single();
+    if (error) throw error;
+    document.getElementById('editScheduleId').value       = s.id;
+    document.getElementById('editScheduleEmployee').value = s.employee_name;
+    document.getElementById('editScheduleDate').value     = s.schedule_date;
+    document.getElementById('editScheduleRole').value     = s.role;
+    document.getElementById('editScheduleStart').value    = s.start_time ? s.start_time.substring(0,5) : '';
+    document.getElementById('editScheduleEnd').value      = s.end_time   ? s.end_time.substring(0,5)   : '';
+    document.getElementById('editScheduleStatus').classList.add('hidden');
+    document.getElementById('editScheduleModal').classList.add('active');
+  } catch (e) { alert('Error loading schedule: ' + e.message); }
+}
+
+function closeEditScheduleModal() { document.getElementById('editScheduleModal').classList.remove('active'); }
+
+async function saveEditedSchedule() {
+  const id        = document.getElementById('editScheduleId').value;
+  const employee  = document.getElementById('editScheduleEmployee').value;
+  const date      = document.getElementById('editScheduleDate').value;
+  const role      = document.getElementById('editScheduleRole').value;
+  const startTime = document.getElementById('editScheduleStart').value;
+  const endTime   = document.getElementById('editScheduleEnd').value;
+  if (!id || !employee || !date || !startTime || !endTime) {
+    showLocalStatus('editScheduleStatus', '⚠️ Fill all fields', 'error'); return;
+  }
+  if (startTime >= endTime) {
+    showLocalStatus('editScheduleStatus', '⚠️ End must be after start', 'error'); return;
+  }
+  try {
+    const { error } = await supabaseClient.from('employee_schedules')
+      .update({ employee_name: employee, schedule_date: date, role, start_time: startTime, end_time: endTime })
+      .eq('id', id);
+    if (error) throw error;
+    showLocalStatus('editScheduleStatus', '✅ Schedule updated!', 'success');
+    setTimeout(() => { closeEditScheduleModal(); loadSchedules(); }, 800);
+  } catch (e) { showLocalStatus('editScheduleStatus', '❌ Error: ' + e.message, 'error'); }
 }
 
 async function deleteSchedule(id) {
