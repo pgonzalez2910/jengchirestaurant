@@ -4808,6 +4808,11 @@ input[id^="par-input-"]:focus {
                                     <input type="checkbox" id="invoiceTaxEnabled" checked onchange="calculateInvoiceTotals()" style="width:14px;height:14px;accent-color:var(--primary-600);cursor:pointer;">
                                     <span style="font-size:0.76rem;font-weight:700;color:var(--primary-600);">Apply</span>
                                 </label>
+                                <!-- ✅ FIX: Manual Apply Tax button for Delta / Pacific 752GO -->
+                                <button type="button" onclick="calculateInvoiceTotals(); this.textContent='✅ Applied!'; setTimeout(()=>this.textContent='🔄 Recalc Tax',1500);"
+                                    style="margin-left:0.4rem;padding:0.18rem 0.5rem;background:linear-gradient(135deg,#059669,#047857);border:none;color:white;border-radius:5px;font-size:0.68rem;font-weight:700;cursor:pointer;height:24px;">
+                                    🔄 Recalc Tax
+                                </button>
                             </div>
                         </div>
                         <div style="margin-top:0.3rem;">
@@ -6729,21 +6734,28 @@ async function saveQuickEditInvoice(event) {
             
             if (monthFilter) {
                 data = data.filter(i => {
-                    const invoiceDate = new Date(i.invoice_date);
+                    // ✅ FIX: Parse YYYY-MM-DD as local time (append T12:00 to avoid UTC midnight timezone shift)
+                    const d = i.invoice_date ? i.invoice_date.substring(0,10) : '';
+                    if (!d) return false;
+                    const invoiceDate = new Date(d + 'T12:00:00');
                     const month = String(invoiceDate.getMonth() + 1).padStart(2, '0');
                     return month === monthFilter;
                 });
             }
             
             if (yearFilter) {
-                data = data.filter(i => new Date(i.invoice_date).getFullYear().toString() === yearFilter);
+                data = data.filter(i => {
+                    const d = i.invoice_date ? i.invoice_date.substring(0,10) : '';
+                    if (!d) return false;
+                    return new Date(d + 'T12:00:00').getFullYear().toString() === yearFilter;
+                });
             }
 
             // ✅ Filter by invoice number (partial match, case-insensitive)
             // Use String() to safely handle invoice_number stored as integer or string
             if (invNumSearch) {
                 data = data.filter(i =>
-                    StringString(i.invoice_number || '').toLowerCase().includes(invNumSearch)
+                    String(i.invoice_number || '').toLowerCase().includes(invNumSearch)
                 );
             }
             
@@ -10002,6 +10014,8 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
             if (vendor) {
                 searchInvoiceProducts();
             }
+            // ✅ FIX: Recalculate tax when vendor changes (Delta = all taxed, Pacific 752GO = taxed)
+            calculateInvoiceTotals();
         }
 
        function searchInvoiceProducts() {
@@ -10166,6 +10180,7 @@ function renderSelectedInvoiceProducts(_scrollToLast = false) {
           <th style="padding:0.65rem 0.5rem;text-align:center;width:90px;">Qty / Lbs</th>
           <th style="padding:0.65rem 0.5rem;text-align:center;width:115px;">Price Each / /lb</th>
           <th style="padding:0.65rem 0.5rem;text-align:right;width:90px;">Line Total</th>
+          <th style="padding:0.65rem 0.5rem;text-align:center;width:62px;" title="Check if price matches your real invoice. Uncheck = mismatch (missing item).">✓ Match</th>
           <th style="padding:0.65rem 0.5rem;text-align:center;width:40px;"></th>
         </tr>
       </thead>
@@ -10284,6 +10299,16 @@ function renderSelectedInvoiceProducts(_scrollToLast = false) {
             </span>
           </td>
 
+          <!-- Price match checkbox -->
+          <td style="padding:0.4rem 0.35rem;text-align:center;">
+            <label title="Uncheck if this item's price does NOT match your real invoice (flags as missing/mismatch)" style="display:flex;flex-direction:column;align-items:center;gap:0.1rem;cursor:pointer;">
+              <input type="checkbox" id="invMatch_${idx}" checked
+                     onchange="togglePriceMismatch(${idx}, this.checked)"
+                     style="width:16px;height:16px;cursor:pointer;accent-color:#16a34a;">
+              <span id="invMatchLabel_${idx}" style="font-size:0.58rem;font-weight:700;color:#16a34a;">OK</span>
+            </label>
+          </td>
+
           <!-- Delete -->
           <td style="padding:0.4rem 0.5rem;text-align:center;">
             <button type="button" onclick="removeInvoiceProduct(${idx})"
@@ -10317,6 +10342,29 @@ function renderSelectedInvoiceProducts(_scrollToLast = false) {
 }
 
 // ── In-place field update — NO full re-render, NO scroll ─────────────────────
+// ✅ NEW: Toggle price mismatch flag on invoice item row
+function togglePriceMismatch(idx, matched) {
+    const row = document.getElementById('inv-row-' + idx);
+    const label = document.getElementById('invMatchLabel_' + idx);
+    if (!row || !label) return;
+    if (matched) {
+        row.style.background = idx % 2 === 0 ? '#ffffff' : '#fafafa';
+        row.style.outline = 'none';
+        label.textContent = 'OK';
+        label.style.color = '#16a34a';
+    } else {
+        // Red background = price mismatch / missing item
+        row.style.background = '#fff1f2';
+        row.style.outline = '2px solid #f87171';
+        label.textContent = '⚠ MISS';
+        label.style.color = '#dc2626';
+    }
+    // Store mismatch flag on the product object
+    if (selectedInvoiceProducts[idx]) {
+        selectedInvoiceProducts[idx]._priceMismatch = !matched;
+    }
+}
+
 function updateInvoiceProductFieldInPlace(index, field, value) {
     if (index < 0 || index >= selectedInvoiceProducts.length) return;
     const product = selectedInvoiceProducts[index];
@@ -19356,6 +19404,8 @@ async function floatConfirmAdd() {
     selectedInvoiceProducts.push(newEntry);
     const newIdx = selectedInvoiceProducts.length - 1;
     renderSelectedInvoiceProducts(true);
+    // ✅ FIX: Recalculate tax after adding item (752GO triggers Pacific Plus tax, Delta taxes all)
+    setTimeout(() => calculateInvoiceTotals(), 30);
 
     // ── AUTO-SAVE: immediately INSERT to DB if editing existing invoice ──
     const invoiceId = document.getElementById('invoiceForm')?.dataset?.editId;
@@ -19394,9 +19444,17 @@ async function floatConfirmAdd() {
     document.getElementById('floatFooter').style.display = 'block';
     // Update running total tracker
     updateFloatTracker();
-    // Re-run search to mark item as added
-    floatSearch(document.getElementById('floatSearchInput')?.value || '');
-    setTimeout(() => document.getElementById('floatSearchInput')?.focus(), 60);
+    // ✅ FIX: Clear the search input so user can immediately type a new item
+    const floatInput = document.getElementById('floatSearchInput');
+    if (floatInput) {
+        floatInput.value = '';
+        floatInput.placeholder = '✅ Item added! Search for next item…';
+        setTimeout(() => { floatInput.placeholder = 'Search product name or item code…'; }, 2000);
+    }
+    // Clear results grid and show empty state
+    const floatGrid = document.getElementById('floatResultsGrid');
+    if (floatGrid) floatGrid.innerHTML = '<div style="text-align:center;padding:1.2rem;color:#64748b;font-size:0.78rem;">Search for a product to add</div>';
+    setTimeout(() => floatInput?.focus(), 60);
 }
 
 // Close float popup when clicking outside it (but not inside invoiceModal)
