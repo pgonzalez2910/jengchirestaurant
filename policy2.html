@@ -552,6 +552,17 @@
       } catch(_) {}
     }
 
+    // ── Save last visited section to DB (cross-device resume) ─────────────────
+    async function _saveLastSectionToDB(sectionKey) {
+      try {
+        const s = getSession();
+        if (!s?.username) return;
+        await client.from('hb_handbook_access')
+          .update({ last_section: sectionKey })
+          .eq('username', s.username);
+      } catch(_) {}
+    }
+
     async function _loadSignatureFromDB() {
       try {
         const s = getSession();
@@ -4465,13 +4476,15 @@ const SECTION_ORDER = ["I","II","III","IV","V","VI","VII","VIII"];
 
       localStorage.setItem(nsKey('last_tab'), tabKey);
 
+      _saveLastSectionToDB(tabKey);
+
       renderSection(tabKey);
 
     }
 
 
 
-    const policyCardTemplate = (def,item)=>{
+    const policyCardTemplate = (def, item, isLocked = false)=>{
 
       const inputId = `init_${item.code.replace('.','_')}`;
 
@@ -4481,17 +4494,27 @@ const SECTION_ORDER = ["I","II","III","IV","V","VI","VII","VIII"];
 
       const isAcknowledged = !!val;
 
-      const btnClass = isAcknowledged ? 'bg-jc-green hover:opacity-95' : 'bg-jc-gold hover:opacity-95';
-
-      const btnText = isAcknowledged ? 'Acknowledged' : 'Acknowledge';
-
       const cleanHtml = DOMPurify.sanitize(item.html, {ADD_ATTR: ['target']});
+
+      const cardOpacity = isLocked ? 'opacity-40 pointer-events-none select-none' : '';
+
+      const btnClass    = isAcknowledged ? 'bg-jc-green hover:opacity-95'
+                        : isLocked       ? 'bg-slate-300 cursor-not-allowed'
+                        :                  'bg-jc-gold hover:opacity-95';
+
+      const btnText     = isAcknowledged ? 'Acknowledged &#10003;'
+                        : isLocked       ? '&#128274; Complete previous policy first'
+                        :                  'Acknowledge';
+
+      const lockBanner  = isLocked
+        ? `<div class="lock-banner flex items-center gap-2 mb-3 px-3 py-2 rounded-lg bg-slate-100 border border-slate-200 text-xs text-slate-500"><span>&#128274;</span><span>Acknowledge the policy above to unlock this one.</span></div>`
+        : '';
 
 
 
       return `
 
-        <article data-code="${item.code}" class="policy-card mb-6 last:mb-0 rounded-2xl border border-jc-border bg-white/80 backdrop-blur-sm shadow-soft">
+        <article data-code="${item.code}" class="policy-card mb-6 last:mb-0 rounded-2xl border border-jc-border bg-white/80 backdrop-blur-sm shadow-soft ${cardOpacity}">
 
           <div class="p-6">
 
@@ -4511,13 +4534,15 @@ const SECTION_ORDER = ["I","II","III","IV","V","VI","VII","VIII"];
 
                 <div class="rounded-xl border border-jc-border bg-white p-4 shadow-sm">
 
+                  ${lockBanner}
+
                   <label class="block text-xs text-slate-500 mb-1">Your Initials</label>
 
-                  <input id="${inputId}" class="w-full rounded-xl border border-jc-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-jc-gold/40" placeholder="Your initials" value="${val}">
+                  <input id="${inputId}" class="w-full rounded-xl border border-jc-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-jc-gold/40" placeholder="Your initials" value="${val}" ${isLocked ? 'disabled' : ''}>
 
                   <div class="mt-3 flex items-center gap-2">
 
-                    <button data-code="${item.code}" 
+                    <button data-code="${item.code}"
 
                             data-input-id="${inputId}"
 
@@ -4525,7 +4550,7 @@ const SECTION_ORDER = ["I","II","III","IV","V","VI","VII","VIII"];
 
                             class="btnAcknowledge rounded-xl text-white px-3 py-2 text-sm w-full ${btnClass}"
 
-                            ${isAcknowledged ? 'disabled' : ''}>
+                            ${(isAcknowledged || isLocked) ? 'disabled' : ''}>
 
                         ${btnText}
 
@@ -4593,7 +4618,16 @@ function findResumeSectionKey() {
 
       
 
-      policiesEl.innerHTML = def.items.map(i => policyCardTemplate(def,i)).join('');
+      // Scroll to top on every section navigation
+      sectionTitle.scrollIntoView({ behavior: "smooth", block: "start" });
+
+      // Sequential lock: each card locked until previous is acknowledged
+      policiesEl.innerHTML = def.items.map((item, idx) => {
+        const prevAllDone = def.items.slice(0, idx).every(
+          prev => !!localStorage.getItem(nsKey(def.store) + prev.code)
+        );
+        return policyCardTemplate(def, item, idx > 0 && !prevAllDone);
+      }).join("");
 
       
 
@@ -4607,7 +4641,7 @@ function findResumeSectionKey() {
 
       if(initials){
 
-          document.querySelectorAll('input[placeholder="Your initials"]').forEach(input => {
+          document.querySelectorAll('input[placeholder="Your initials"]:not([disabled])').forEach(input => {
 
               if(!input.value) input.value = initials;
 
@@ -4943,11 +4977,39 @@ function findResumeSectionKey() {
 
 
 
-  // ── Restore last_tab from most-recently-acknowledged item (works across devices) ──
+  // ── Restore last_section from DB first, then fall back to ack timestamps ──
 
   try {
 
-    if (!localStorage.getItem(nsKey('last_tab'))) {
+    const resumeFromDB = await (async () => {
+
+      try {
+
+        const _s = getSession();
+
+        if (!_s?.username) return null;
+
+        const { data: _row } = await client
+
+          .from('hb_handbook_access')
+
+          .select('last_section')
+
+          .eq('username', _s.username)
+
+          .maybeSingle();
+
+        return (_row?.last_section && SECTIONS[_row.last_section]) ? _row.last_section : null;
+
+      } catch(_) { return null; }
+
+    })();
+
+    if (resumeFromDB) {
+
+      localStorage.setItem(nsKey('last_tab'), resumeFromDB);
+
+    } else if (!localStorage.getItem(nsKey('last_tab'))) {
 
       let latestTs = null, latestSection = null;
 
@@ -5466,6 +5528,29 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
           
 
           updateProgress();
+
+          // Unlock the next policy card in sequence immediately after acknowledging
+          (function(){
+            var _def  = SECTIONS[currentTab];
+            var _idx  = _def.items.findIndex(function(i){ return i.code === code; });
+            var _next = _def.items[_idx + 1];
+            if (!_next) return;
+            var _card = document.querySelector('article[data-code="' + _next.code + '"]');
+            if (!_card) return;
+            _card.classList.remove('opacity-40','pointer-events-none','select-none');
+            var _banner = _card.querySelector('.lock-banner');
+            if (_banner) _banner.remove();
+            var _btn = _card.querySelector('.btnAcknowledge');
+            if (_btn) {
+              _btn.disabled = false;
+              _btn.classList.remove('bg-slate-300','cursor-not-allowed');
+              _btn.classList.add('bg-jc-gold');
+              _btn.textContent = 'Acknowledge';
+            }
+            var _inp = _card.querySelector('input[placeholder="Your initials"]');
+            if (_inp) { _inp.disabled = false; if (!_inp.value) _inp.value = getInitials(); }
+            setTimeout(function(){ _card.scrollIntoView({behavior:'smooth',block:'center'}); }, 200);
+          })();
 
         });
 
