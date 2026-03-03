@@ -779,15 +779,50 @@ async function loadTrackingData(){
       .select('employee_initials,policy_id,agreed')
       .eq('agreed',true);
 
-    // Build lookup maps
+    // Build employee lookup by username
     const empLookup = {};
     allEmployees.forEach(e=>{ if(e.username) empLookup[e.username.toUpperCase()]=e; });
 
+    // Build signed & ack maps keyed by whatever employee_initials is in the DB
+    // (could be 2-char old format like 'CR', or full username like 'CRV1038')
     const signedMap = {};
     (ackStatus||[]).forEach(r=>{ const k=(r.employee_initials||'').toUpperCase(); signedMap[k]=r.employee_signed; });
 
     const ackCountMap = {};
     (ackRows||[]).forEach(r=>{ const k=(r.employee_initials||'').toUpperCase(); ackCountMap[k]=(ackCountMap[k]||0)+1; });
+
+    // ── USERNAME ↔ INITIALS BRIDGE ──────────────────────────────────────────
+    // policy2.txt saves employee_initials as first-2-chars of username (e.g. 'CR' for 'CRV1038')
+    // OR as the full username for new records after the fix.
+    // The engagement log keys byUser by full username ('CRV1038').
+    // We must resolve signedMap/ackCountMap in BOTH directions so status shows correctly.
+    //
+    // Helper: resolve signed status by username, checking all possible stored key formats
+    function resolveSignedKey(uname) {
+      // 1. Direct match (new format: username stored as employee_initials)
+      if (signedMap[uname] !== undefined) return signedMap[uname];
+      // 2. First-2-chars of username (old format: toInitials(username))
+      const usrPrefix = uname.slice(0, 2);
+      if (signedMap[usrPrefix] !== undefined) return signedMap[usrPrefix];
+      // 3. Name-based initials (first char of first_name + first char of last_name)
+      const emp = empLookup[uname];
+      if (emp) {
+        const nameIni = (((emp.first_name||'')[0]||'') + ((emp.last_name||'')[0]||'')).toUpperCase();
+        if (signedMap[nameIni] !== undefined) return signedMap[nameIni];
+      }
+      return false;
+    }
+    function resolveAckCount(uname) {
+      if (ackCountMap[uname] !== undefined) return ackCountMap[uname];
+      const usrPrefix = uname.slice(0, 2);
+      if (ackCountMap[usrPrefix] !== undefined) return ackCountMap[usrPrefix];
+      const emp = empLookup[uname];
+      if (emp) {
+        const nameIni = (((emp.first_name||'')[0]||'') + ((emp.last_name||'')[0]||'')).toUpperCase();
+        if (ackCountMap[nameIni] !== undefined) return ackCountMap[nameIni];
+      }
+      return 0;
+    }
 
     // Group logs by username/initials
     const byUser = {};
@@ -819,8 +854,8 @@ async function loadTrackingData(){
       });
 
       const totalTime = Object.values(sectionTimes).reduce((a,b)=>a+b, 0);
-      const ackCount = ackCountMap[uname] || 0;
-      const signed = signedMap[uname] || false;
+      const ackCount = resolveAckCount(uname);
+      const signed = resolveSignedKey(uname);
       const sectionsVisited = Object.keys(sectionTimes).filter(k=>sectionTimes[k]>0).length;
 
       let status = 'Not Started';
