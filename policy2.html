@@ -4910,11 +4910,13 @@ function findResumeSectionKey() {
 
   // Build a flexible OR filter: include whichever identifiers we actually have.
 
+  const username = s?.username || null;
+
   const ors = [];
 
-  if (employee_id) ors.push(`employee_id.eq.${employee_id}`);
+  if (username)    ors.push(`username.eq.${username}`);       // ✅ PRIMARY: stable cross-device key
 
-  if (session_id)  ors.push(`session_id.eq.${session_id}`);
+  if (employee_id) ors.push(`employee_id.eq.${employee_id}`);
 
   if (initials)    ors.push(`employee_initials.ilike.${initials}`);
 
@@ -5171,15 +5173,45 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
 
     employee_id,
 
-    // include username if the table has the column (no-op if it doesn't)
-
-    ...(username ? { username } : {})
+    username,            // ✅ always include username — most reliable cross-device key
 
   };
 
 
 
-  // Strategy A: conflict on policy_id + employee_id (most reliable — ties to a real person)
+  // Strategy A: conflict on policy_id + username (most reliable cross-device — username never changes)
+
+  if (username) {
+
+    try {
+
+      const { error } = await client
+
+        .from('hb_acks')
+
+        .upsert(insertPayload, { onConflict: 'policy_id,username' });
+
+      if (!error) {
+
+        console.log(`[saveAckToDB] ✅ Upsert (username) saved: ${policyCode}`);
+
+        return { ok: true };
+
+      }
+
+      console.warn(`[saveAckToDB] Upsert(username) error ${policyCode}:`, error?.message);
+
+    } catch (e) {
+
+      console.warn(`[saveAckToDB] Upsert(username) threw ${policyCode}:`, e?.message);
+
+    }
+
+  }
+
+
+
+  // Strategy B: conflict on policy_id + employee_id (ties to a real person)
 
   if (employee_id) {
 
@@ -5211,7 +5243,7 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
 
 
 
-  // Strategy B: conflict on policy_id + session_id
+  // Strategy C: conflict on policy_id + session_id
 
   if (session_id) {
 
@@ -5392,8 +5424,6 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
               initSignatureCanvas();
 
             } else {
-
-              // Canvas already initialized — just restore signature if present
 
               const localSig = localStorage.getItem(nsKey('saved_signature'));
 
