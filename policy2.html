@@ -552,37 +552,20 @@
       } catch(_) {}
     }
 
-    // ── Save last visited section to DB (cross-device resume) ─────────────────
-    // Writes to TWO places so at least one always works:
-    //   1. hb_handbook_access.last_section  (needs: ALTER TABLE hb_handbook_access ADD COLUMN IF NOT EXISTS last_section TEXT;)
-    //   2. hb_engagement_log event 'section_current' — readable on any device via query
+    // ── Save last visited section via SECURITY DEFINER RPC (bypasses RLS) ──────
     async function _saveLastSectionToDB(sectionKey) {
       if (!sectionKey) return;
       const s = getSession();
       if (!s?.username) return;
-
-      // Path 1: direct column update (fast lookup at login)
       try {
-        await client.from('hb_handbook_access')
-          .update({ last_section: sectionKey })
-          .eq('username', s.username);
-      } catch(_) {}
-
-      // Path 2: log a 'section_current' engagement event (always works, no schema change needed)
-      try {
-        const uuid_re = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-        await client.from('hb_engagement_log').insert({
-          username:    s.username,
-          employee_id: uuid_re.test(String(s?.employee_id||'')) ? s.employee_id : null,
-          initials:    getInitials() || null,
-          session_id:  getSessionId() || null,
-          event_type:  'section_current',
-          section_key: sectionKey
+        await client.rpc('hb_save_last_section', {
+          p_username: s.username,
+          p_section:  sectionKey
         });
       } catch(_) {}
     }
 
-    async function _loadSignatureFromDB() {
+        async function _loadSignatureFromDB() {
       try {
         const s = getSession();
         if (!s?.username) return null;
@@ -5001,40 +4984,13 @@ function findResumeSectionKey() {
   try {
 
     const resumeFromDB = await (async () => {
-
       try {
-
         const _s = getSession();
-
         if (!_s?.username) return null;
-
-        // Path 1: hb_handbook_access.last_section (needs ALTER TABLE — run the SQL below)
-        try {
-          const { data: _row } = await client
-            .from('hb_handbook_access')
-            .select('last_section')
-            .eq('username', _s.username)
-            .maybeSingle();
-          if (_row?.last_section && SECTIONS[_row.last_section]) return _row.last_section;
-        } catch(_) {}
-
-        // Path 2: most recent section_current event in hb_engagement_log (no schema change needed)
-        try {
-          const { data: _log } = await client
-            .from('hb_engagement_log')
-            .select('section_key')
-            .eq('username', _s.username)
-            .eq('event_type', 'section_current')
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          if (_log?.section_key && SECTIONS[_log.section_key]) return _log.section_key;
-        } catch(_) {}
-
+        const { data: _sec, error: _err } = await client.rpc('hb_get_last_section', { p_username: _s.username });
+        if (!_err && _sec && SECTIONS[_sec]) return _sec;
         return null;
-
       } catch(_) { return null; }
-
     })();
 
     if (resumeFromDB) {
