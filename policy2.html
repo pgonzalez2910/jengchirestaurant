@@ -734,6 +734,17 @@
 
     };
 
+    // ── getEmployeeKey ────────────────────────────────────────────────────────
+    // Returns the FULL USERNAME as the unique DB key for all hb_* tables.
+    // Prevents initials collisions (Julian/Jet/Janelle Teng all → 'JT').
+    // UI inputs still pre-fill with the full username so the employee can
+    // see and confirm exactly who is acknowledging each policy.
+    const getEmployeeKey = () => {
+      const s = getSession();
+      if (s?.username) return String(s.username).toUpperCase();
+      return getInitials(); // fallback only if username somehow missing
+    };
+
     const getSessionId = ()=> { const sid = localStorage.getItem('hb_session_id'); return sid ? Number(sid) : null; };
 
     const getSessionStartedAt = ()=> localStorage.getItem('hb_session_started_at') || new Date().toISOString();
@@ -4491,7 +4502,9 @@ const SECTION_ORDER = ["I","II","III","IV","V","VI","VII","VIII"];
 
       const saved = localStorage.getItem(nsKey(def.store) + item.code);
 
-      const val = saved ? (JSON.parse(saved)?.initials || '') : '';
+      // Use saved initials from localStorage, or fall back to full username as the pre-fill.
+      // This ensures every new acknowledgment box shows the username (e.g. AMV9910) by default.
+      const val = saved ? (JSON.parse(saved)?.initials || getEmployeeKey()) : getEmployeeKey();
 
       const isAcknowledged = !!val;
 
@@ -4632,15 +4645,16 @@ function findResumeSectionKey() {
 
       updateProgress();
 
-      // Pre-fill initials from session if available
+      // Pre-fill acknowledgment inputs with the full USERNAME (e.g. AMV9910)
+      // so the DB record is always unique — no more 2-char collision (JT, AM, ST…)
 
-      const initials = getInitials();
+      const employeeKey = getEmployeeKey();
 
-      if(initials){
+      if(employeeKey){
 
           document.querySelectorAll('input[placeholder="Your initials"]:not([disabled])').forEach(input => {
 
-              if(!input.value) input.value = initials;
+              if(!input.value) input.value = employeeKey;
 
           });
 
@@ -4910,13 +4924,11 @@ function findResumeSectionKey() {
 
   // Build a flexible OR filter: include whichever identifiers we actually have.
 
-  const username = s?.username || null;
-
   const ors = [];
 
-  if (username)    ors.push(`username.eq.${username}`);       // ✅ PRIMARY: stable cross-device key
-
   if (employee_id) ors.push(`employee_id.eq.${employee_id}`);
+
+  if (session_id)  ors.push(`session_id.eq.${session_id}`);
 
   if (initials)    ors.push(`employee_initials.ilike.${initials}`);
 
@@ -5097,6 +5109,10 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
 
   const signedInitials = (typedInitials || ownerInitials).toUpperCase();
 
+  // Use the full username as the unique employee key stored in the DB.
+  // This avoids initials collisions (e.g. multiple employees with same 2-char prefix).
+  const ownerKey = getEmployeeKey() || ownerInitials;
+
   const username = s?.username || null;
 
   // employee_id must be a UUID string — discard if it's a number or null
@@ -5121,7 +5137,7 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
 
     const rpcPayload = {
 
-      p_initials:       ownerInitials,
+      p_initials:       ownerKey,
 
       p_employee_id:    employee_id,
 
@@ -5163,7 +5179,7 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
 
     policy_id:          policyId,
 
-    employee_initials:  signedInitials,
+    employee_initials:  ownerKey,
 
     signed_initials:    signedInitials,
 
@@ -5173,45 +5189,15 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
 
     employee_id,
 
-    username,            // ✅ always include username — most reliable cross-device key
+    // include username if the table has the column (no-op if it doesn't)
+
+    ...(username ? { username } : {})
 
   };
 
 
 
-  // Strategy A: conflict on policy_id + username (most reliable cross-device — username never changes)
-
-  if (username) {
-
-    try {
-
-      const { error } = await client
-
-        .from('hb_acks')
-
-        .upsert(insertPayload, { onConflict: 'policy_id,username' });
-
-      if (!error) {
-
-        console.log(`[saveAckToDB] ✅ Upsert (username) saved: ${policyCode}`);
-
-        return { ok: true };
-
-      }
-
-      console.warn(`[saveAckToDB] Upsert(username) error ${policyCode}:`, error?.message);
-
-    } catch (e) {
-
-      console.warn(`[saveAckToDB] Upsert(username) threw ${policyCode}:`, e?.message);
-
-    }
-
-  }
-
-
-
-  // Strategy B: conflict on policy_id + employee_id (ties to a real person)
+  // Strategy A: conflict on policy_id + employee_id (most reliable — ties to a real person)
 
   if (employee_id) {
 
@@ -5243,7 +5229,7 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
 
 
 
-  // Strategy C: conflict on policy_id + session_id
+  // Strategy B: conflict on policy_id + session_id
 
   if (session_id) {
 
@@ -5408,38 +5394,6 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
           btnFinalize.classList.remove('bg-slate-600','hover:bg-slate-700');
 
           btnFinalize.classList.add('bg-emerald-600','hover:bg-emerald-700');
-
-          // Auto-show signature section and preload saved signature when all done
-
-          const sigSection = document.getElementById('signatureSection');
-
-          if (sigSection && sigSection.classList.contains('hidden')) {
-
-            sigSection.classList.remove('hidden');
-
-            btnFinalize.classList.add('hidden');
-
-            if (!signatureCanvas) {
-
-              initSignatureCanvas();
-
-            } else {
-
-              const localSig = localStorage.getItem(nsKey('saved_signature'));
-
-              if (localSig) {
-
-                _restoreSignatureOnCanvas(localSig);
-
-              } else {
-
-                _loadSignatureFromDB().then(dataURL => { if (dataURL) _restoreSignatureOnCanvas(dataURL); });
-
-              }
-
-            }
-
-          }
 
         } else {
 
@@ -5655,6 +5609,24 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
 
   btnFinalize.addEventListener('click', async ()=>{
 
+    // ── FLUSH CURRENT SECTION TIME ──────────────────────────────────────────
+    // Section VIII (the last section) never gets a section_enter event logged
+    // for it because there is no next section to navigate to.  The time spent
+    // in Section VIII would only be captured by idle_timeout — which means it
+    // shows 7/8 in the admin dashboard even when the employee finished everything.
+    // Fix: explicitly flush whatever time has accumulated in the current section
+    // right now, before we do anything else.
+    if (_currentSectionKey && _sectionEnteredAt) {
+      const flushDur = (Date.now() - _sectionEnteredAt) / 1000;
+      if (flushDur > 0) {
+        // Log as idle_timeout so the admin parser picks it up for this section
+        await _logEngagement('idle_timeout', _currentSectionKey, flushDur, null);
+        // Reset the timer so we don't double-count if they dismiss and re-click
+        _sectionEnteredAt = Date.now();
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // Count total vs saved
 
     const totalPolicies = Object.values(SECTIONS).reduce((s, d) => s + d.items.length, 0);
@@ -5751,7 +5723,18 @@ async function saveAckToDB({ initials: typedInitials, policyCode }) {
 
     }
 
-    
+    // ── FLUSH SECTION VIII TIME (safety net) ──────────────────────────────
+    // Flush any remaining time in the current section before submitting.
+    // This ensures Section VIII shows up as visited even though there is no
+    // next section to trigger the normal section_enter log event.
+    if (_currentSectionKey && _sectionEnteredAt) {
+      const flushDur = (Date.now() - _sectionEnteredAt) / 1000;
+      if (flushDur > 0) {
+        await _logEngagement('idle_timeout', _currentSectionKey, flushDur, null);
+        _sectionEnteredAt = Date.now();
+      }
+    }
+    // ────────────────────────────────────────────────────────────────────────
 
     btn.disabled = true;
 
@@ -5857,9 +5840,9 @@ const validEmpId = (rawEmpId && UUID_RE.test(String(rawEmpId))) ? rawEmpId : nul
 
 const { error: sigError } = await client.from('hb_employee_signatures').upsert({
 
-    employee_id: validEmpId, // Use validated ID (null if 'EMP-0187')
+    employee_id: validEmpId,
 
-    employee_initials: getInitials(),
+    employee_initials: getEmployeeKey(), // Full username — unique, no collision risk
 
     session_id: getSessionId(),
 
@@ -5875,7 +5858,7 @@ const { error: sigError } = await client.from('hb_employee_signatures').upsert({
 
 }, {
 
-    onConflict: 'employee_initials', // Changed to just initials to overwrite old signatures
+    onConflict: 'employee_initials',
 
     ignoreDuplicates: false
 
@@ -5909,9 +5892,9 @@ const { error: sigError } = await client.from('hb_employee_signatures').upsert({
 
 await client.from('hb_acknowledgment_status').upsert({
 
-    employee_id: validEmpId, // Use the same validated ID from Step 1
+    employee_id: validEmpId,
 
-    employee_initials: getInitials(),
+    employee_initials: getEmployeeKey(), // Full username — unique, no collision risk
 
     session_id: getSessionId(),
 
@@ -5935,7 +5918,7 @@ await client.from('hb_acknowledgment_status').upsert({
 
       try {
 
-        await client.from('hb_ack_forms').upsert({
+        await client.from('hb_ack_forms').insert({
 
           initials: getInitials(),
 
@@ -5948,12 +5931,6 @@ await client.from('hb_acknowledgment_status').upsert({
           position: position,
 
           manager_email_to: getFinalRecipient(position).to
-
-        }, {
-
-          onConflict: 'employee_initials',
-
-          ignoreDuplicates: false
 
         });
 
@@ -6021,9 +5998,9 @@ await client.from('hb_acknowledgment_status').upsert({
 
           btn.classList.add("bg-jc-green", "hover:bg-emerald-700");
 
-          btn.textContent = "✅ Submitted — Sign Again to Update";
+          btn.textContent = "✅ Submitted Successfully";
 
-          btn.disabled = false;
+          btn.disabled = true;
 
           
 
