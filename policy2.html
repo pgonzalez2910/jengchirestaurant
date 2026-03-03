@@ -734,15 +734,11 @@
 
     };
 
-    // ── getEmployeeKey ────────────────────────────────────────────────────────
-    // Returns the FULL USERNAME as the unique DB key for all hb_* tables.
-    // Prevents initials collisions (Julian/Jet/Janelle Teng all → 'JT').
-    // UI inputs still pre-fill with the full username so the employee can
-    // see and confirm exactly who is acknowledging each policy.
+    // Returns FULL USERNAME as unique DB key - prevents JT/AM/ST collisions
     const getEmployeeKey = () => {
       const s = getSession();
       if (s?.username) return String(s.username).toUpperCase();
-      return getInitials(); // fallback only if username somehow missing
+      return getInitials();
     };
 
     const getSessionId = ()=> { const sid = localStorage.getItem('hb_session_id'); return sid ? Number(sid) : null; };
@@ -958,7 +954,7 @@
         setSession(s);
         // Clear stale last_tab from every device namespace so DB always wins
         try { Object.keys(localStorage).filter(k=>k.includes('__last_tab')).forEach(k=>localStorage.removeItem(k)); } catch(_){}
-        await startRemoteSession(s.initials);
+        await startRemoteSession(s.username || s.initials); // use full username so session is keyed correctly
 
         showApp();
 
@@ -4912,25 +4908,23 @@ function findResumeSectionKey() {
 
  async function prefillFromDB() {
 
-  const initials   = getInitials();                 // e.g. "PG"
+  const initials    = getInitials();    // 2-char fallback e.g. "CR"
+  const employeeKey = getEmployeeKey(); // full username e.g. "CRV1038" -- DB key after migration
 
-  const session_id = getSessionId();                // integer or null
-
+  const session_id = getSessionId();
   const s          = getSession();
-
   const employee_id = s?.employee_id || null;
 
-
-
-  // Build a flexible OR filter: include whichever identifiers we actually have.
-
+  // Query by ALL possible keys so old and new records both match.
+  // After the initials->username migration, acks are stored under full username.
+  // session_id and employee_id are also checked as additional fallbacks.
   const ors = [];
-
   if (employee_id) ors.push(`employee_id.eq.${employee_id}`);
-
   if (session_id)  ors.push(`session_id.eq.${session_id}`);
-
-  if (initials)    ors.push(`employee_initials.ilike.${initials}`);
+  // Full username first (new format e.g. "CRV1038")
+  if (employeeKey) ors.push(`employee_initials.ilike.${employeeKey}`);
+  // 2-char prefix fallback (old format e.g. "CR") -- catches any not-yet-migrated records
+  if (initials && initials !== employeeKey) ors.push(`employee_initials.ilike.${initials}`);
 
 
 
@@ -4974,7 +4968,7 @@ function findResumeSectionKey() {
 
         localStorage.setItem(nsKey(def.store) + item.code, JSON.stringify({
 
-          initials: (row.signed_initials || initials || '').toUpperCase(),
+          initials: (row.signed_initials || employeeKey || initials || '').toUpperCase(),
 
           ts: row.created_at
 
