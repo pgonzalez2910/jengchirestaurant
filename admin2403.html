@@ -853,22 +853,72 @@ async function loadTrackingData(){
         }
       });
 
-      const totalTime = Object.values(sectionTimes).reduce((a,b)=>a+b, 0);
       const ackCount = resolveAckCount(uname);
       const signed = resolveSignedKey(uname);
-      const sectionsVisited = Object.keys(sectionTimes).filter(k=>sectionTimes[k]>0).length;
+
+      // ── FILTER: only include employees who actually submitted ──────────────
+      if (!signed && ackCount === 0) return;
+      // ───────────────────────────────────────────────────────────────────────
 
       let status = 'Not Started';
-      if(signed || ackCount >= 55) status = 'Complete';
-      else if(ackCount > 0 || totalTime > 0) status = 'In Progress';
+      if(signed || ackCount >= 90) status = 'Complete';
+      else if(ackCount > 0) status = 'In Progress';
+
+      // ── ESTIMATE Section VIII time if employee is complete but no time logged
+      // Section VIII is the last section — the employee never navigates away so
+      // the normal section_enter event never fires to capture its time.
+      // For completed employees, estimate it as the average of all other recorded sections.
+      let sectionVIIIEstimated = false;
+      if (status === 'Complete' && !(sectionTimes['VIII'] > 0)) {
+        const recordedSections = SECTION_ORDER.filter(k => k !== 'VIII' && sectionTimes[k] > 0);
+        if (recordedSections.length > 0) {
+          const avgTime = Math.round(
+            recordedSections.reduce((sum, k) => sum + sectionTimes[k], 0) / recordedSections.length
+          );
+          sectionTimes['VIII'] = avgTime;
+          sectionVIIIEstimated = true;
+        }
+      }
+      // ───────────────────────────────────────────────────────────────────────
+
+      // ── CHAPTERS: if signed/complete, always show 8/8 ─────────────────────
+      const rawSectionsVisited = Object.keys(sectionTimes).filter(k=>sectionTimes[k]>0).length;
+      const sectionsVisited = (signed || ackCount >= 90) ? 8 : rawSectionsVisited;
+      // ───────────────────────────────────────────────────────────────────────
+
+      // Recalculate totalTime after Section VIII estimation
+      const totalTime = Object.values(sectionTimes).reduce((a,b)=>a+b, 0);
 
       const emp = empLookup[uname];
       const fullName = emp ? `${emp.first_name||''} ${emp.last_name||''}`.trim() : uname;
       const role = emp ? (emp.job_title||emp.position_title||'—') : '—';
       const dept = emp ? (emp.department||'—') : '—';
 
-      processed[uname] = { username:uname, fullName, role, dept, sectionTimes, totalTime, sessions:sessions.size, lastActive, ackCount, status, signed, sectionsVisited };
+      processed[uname] = { username:uname, fullName, role, dept, sectionTimes, totalTime, sessions:sessions.size, lastActive, ackCount, status, signed, sectionsVisited, sectionVIIIEstimated };
     });
+
+    // ── Include signed employees who have NO engagement log entries at all ───
+    Object.keys(signedMap).forEach(key => {
+      if (!signedMap[key]) return;
+      if (processed[key]) return;
+      const emp = empLookup[key] || Object.values(empLookup).find(e => {
+        const pfx = (e.username||'').toUpperCase().slice(0,2);
+        const nameIni = (((e.first_name||'')[0]||'') + ((e.last_name||'')[0]||'')).toUpperCase();
+        return pfx === key || nameIni === key;
+      });
+      const fullName = emp ? `${emp.first_name||''} ${emp.last_name||''}`.trim() : key;
+      const role = emp ? (emp.job_title||emp.position_title||'—') : '—';
+      const dept = emp ? (emp.department||'—') : '—';
+      const ackCount = resolveAckCount(key);
+      processed[key] = {
+        username: key, fullName, role, dept,
+        sectionTimes: {}, totalTime: 0, sessions: 0,
+        lastActive: null, ackCount,
+        status: 'Complete', signed: true,
+        sectionsVisited: 8, sectionVIIIEstimated: false
+      };
+    });
+    // ─────────────────────────────────────────────────────────────────────────
 
     ttMap = processed;
     ttData = Object.values(processed);
@@ -958,10 +1008,14 @@ function selectTTEmployee(uname){
   $('ttSectionBars').innerHTML = SECTION_ORDER.map(key=>{
     const t = emp.sectionTimes[key]||0;
     const pct = Math.round(t/maxT*100);
+    const isEstimated = key === 'VIII' && emp.sectionVIIIEstimated;
+    const timeLabel = t > 0
+      ? (isEstimated ? `~${fmtSec(t)} <span style="font-size:9px;opacity:.7">(est.)</span>` : fmtSec(t))
+      : '—';
     return `<div>
       <div class="flex items-center justify-between mb-1">
         <span class="text-[11px] font-medium text-slate-600 truncate" style="max-width:190px">${SECTION_NAMES[key]}</span>
-        <span class="text-[11px] font-bold ml-1 flex-shrink-0" style="color:${t>0?SECTION_COLORS[key]:'#94a3b8'}">${t>0?fmtSec(t):'—'}</span>
+        <span class="text-[11px] font-bold ml-1 flex-shrink-0" style="color:${t>0?SECTION_COLORS[key]:'#94a3b8'}">${timeLabel}</span>
       </div>
       <div class="section-bar"><div class="section-bar-fill" style="width:${t>0?pct:0}%;background:${SECTION_COLORS[key]}"></div></div>
     </div>`;
@@ -1030,10 +1084,13 @@ function singleEmpBody(emp){
       <tbody>
       ${SECTION_ORDER.map((key,idx)=>{
         const t=emp.sectionTimes[key]||0, pct=emp.totalTime>0?Math.round(t/emp.totalTime*100):0, barPct=Math.round(t/maxT*100), col=SECTION_COLORS[key];
+        const isEst = key==='VIII' && emp.sectionVIIIEstimated;
+        const timeDisplay = t>0 ? (isEst ? `~${fmtSec(t)} <span style="font-size:8px;color:#94a3b8">(est.)</span>` : fmtSec(t)) : '—';
         return `<tr><td><span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:${col};color:#fff;text-align:center;font-size:8px;font-weight:700;line-height:18px;margin-right:5px;vertical-align:middle">${idx+1}</span><strong>${SECTION_NAMES[key]}</strong></td>
-          <td style="font-weight:${t>0?700:400};color:${t>0?'#1e293b':'#94a3b8'}">${t>0?fmtSec(t):'—'}</td>
+          <td style="font-weight:${t>0?700:400};color:${t>0?'#1e293b':'#94a3b8'}">${timeDisplay}</td>
           <td><div class="bw"><div class="bf" style="width:${t>0?barPct:0}%;background:${col}"></div></div></td>
           <td style="text-align:center;font-weight:700;color:${t>0?'#1e293b':'#94a3b8'}">${t>0?pct+'%':'—'}</td></tr>`;
+      }).join('')}
       }).join('')}
       <tr><td style="background:#1e293b;color:#fff;font-weight:700;padding:10px">TOTAL HANDBOOK TIME</td><td style="background:#1e293b;color:#C0A06D;font-weight:700;font-size:13px">${fmtSec(emp.totalTime)}</td><td style="background:#1e293b"></td><td style="background:#1e293b;color:#fff;font-weight:700;text-align:center">100%</td></tr>
       </tbody>
