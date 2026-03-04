@@ -75,6 +75,12 @@
     text-justify: inter-word;
 
   }
+  /* Verification gate pulse animation */
+  @keyframes pulse-border {
+    0%, 100% { border-color: #C0A06D; }
+    50% { border-color: #10B981; }
+  }
+  .verify-pulse { animation: pulse-border 2s ease-in-out infinite; }
 
 </style>
 
@@ -252,7 +258,39 @@
 
     </section>
 
+    <!-- ===================== VERIFICATION GATE ===================== -->
+    <section id="verifyGate" class="hidden w-full max-w-[1200px] mx-auto px-6 mt-6 pb-12">
+      <div class="rounded-2xl bg-white shadow-soft border-2 verify-pulse ring-1 ring-white/40 overflow-hidden">
+        <div class="bg-amber-50 border-b-2 border-amber-200 px-6 py-4 flex items-center gap-3">
+          <span class="text-2xl">⚠️</span>
+          <div>
+            <h2 class="font-serif-head text-2xl text-amber-800">Please Verify Your Information</h2>
+            <p class="text-sm text-amber-700 mt-0.5">Before you begin, confirm that the information above is correct. You cannot proceed until you verify.</p>
+          </div>
+        </div>
+        <div class="p-8">
+          <p class="text-slate-700 text-base mb-6 leading-relaxed">
+            By clicking <strong>"Yes, My Information is Correct"</strong>, you confirm that your name, position, department, and contact details shown above are accurate. If something is wrong, please notify your manager before proceeding.
+          </p>
+          <div class="flex flex-col sm:flex-row gap-4">
+            <button id="btnVerifyInfo"
+                    class="flex-1 rounded-xl bg-emerald-600 text-white px-6 py-4 text-base font-semibold hover:bg-emerald-700 transition-colors flex items-center justify-center gap-2">
+              <span class="text-xl">✅</span>
+              Yes, My Information is Correct — Continue to Handbook
+            </button>
+            <button id="btnInfoWrong"
+                    class="flex-1 sm:flex-none rounded-xl border-2 border-red-300 text-red-600 px-6 py-4 text-base font-semibold hover:bg-red-50 transition-colors flex items-center justify-center gap-2">
+              <span class="text-xl">❌</span>
+              My Information is Incorrect
+            </button>
+          </div>
+          <div id="verifyMsg" class="mt-4 text-sm text-center min-h-[20px]"></div>
+        </div>
+      </div>
+    </section>
 
+    <!-- ===================== HANDBOOK CONTENT (hidden until verified) ===================== -->
+    <div id="handbookContent" class="hidden">
 
     <section class="w-full max-w-[1200px] mx-auto px-6 mt-6">
 
@@ -288,7 +326,7 @@
 
           <h1 id="sectionTitle" class="font-serif-head text-3xl text-jc-primary tracking-tight" tabindex="-1">Section I — Introduction</h1>
 
-          <p class="text-sm text-slate-600 mt-1">Initial each policy below and press <span class="font-medium">Acknowledge</span>. "Next Section" unlocks when all policies in this section are saved.</p>
+          <p class="text-sm text-slate-600 mt-1">Read each policy below and press <span class="font-medium">Acknowledge</span>. "Next Section" unlocks when all policies in this section are acknowledged.</p>
 
         </div>
 
@@ -335,6 +373,8 @@
       </div>
 
     </main>
+
+    </div><!-- end #handbookContent -->
 
   </div>
 
@@ -402,32 +442,11 @@
 
     const client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    /*
-       ENGAGEMENT TRACKER
-       Table: hb_engagement_log
-         CREATE TABLE hb_engagement_log (
-           id          BIGSERIAL PRIMARY KEY,
-           username    TEXT,
-           employee_id UUID,
-           initials    TEXT,
-           session_id  BIGINT,
-           event_type  TEXT,
-           section_key TEXT,
-           prev_section_key TEXT,
-           duration_seconds INTEGER,
-           created_at  TIMESTAMPTZ DEFAULT NOW()
-         );
-         ALTER TABLE hb_handbook_access ADD COLUMN IF NOT EXISTS signature_data TEXT;
-         ALTER TABLE hb_handbook_access ADD COLUMN IF NOT EXISTS signature_saved_at TIMESTAMPTZ;
-    */
-
     let _sectionEnteredAt = null;
     let _currentSectionKey = null;
     let _inactivityTimer = null;
-    const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+    const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
-    // ── Sub-section time tracking ─────────────────────────────────────────────
-    // Maps policy code → timestamp when that card was unlocked/became active
     const _subSectionEnteredAt = {};
 
     function _trackSubSectionEntry(policyCode) {
@@ -441,14 +460,10 @@
       if (!enteredAt) return;
       const dur = Math.round((Date.now() - enteredAt) / 1000);
       if (dur <= 0) return;
-      // Use the numeric code as section_key (e.g. "1.1", "2.3")
-      // The admin parser maps these to parent chapters automatically
       await _logEngagement('idle_timeout', policyCode, dur, _currentSectionKey);
-      delete _subSectionEnteredAt[policyCode]; // don't double-count
+      delete _subSectionEnteredAt[policyCode];
     }
-    // ─────────────────────────────────────────────────────────────────────────
 
-    // ── Silent engagement logger ──────────────────────────────────────────────
     async function _logEngagement(eventType, sectionKey, durationSeconds, prevSection) {
       try {
         const s = getSession();
@@ -467,7 +482,6 @@
       } catch(_) {}
     }
 
-    // ── Inactivity auto-logout ────────────────────────────────────────────────
     function _resetInactivityTimer() {
       clearTimeout(_inactivityTimer);
       _inactivityTimer = setTimeout(async () => {
@@ -491,7 +505,6 @@
       });
     }
 
-    // ── Centralised logout ────────────────────────────────────────────────────
     async function _doLogout(idleTriggered = false) {
       const sessionStart = getSessionStartedAt();
       const totalSec = sessionStart ? (Date.now() - new Date(sessionStart).getTime()) / 1000 : null;
@@ -505,7 +518,6 @@
       showLogin();
     }
 
-    // ── Signature persistence ─────────────────────────────────────────────────
     async function _saveSignatureToDB(dataURL) {
       try {
         const s = getSession();
@@ -516,7 +528,6 @@
       } catch(_) {}
     }
 
-    // ── Save last visited section via RPC ─────────────────────────────────────
     async function _saveLastSectionToDB(sectionKey) {
       if (!sectionKey) return;
       const s = getSession();
@@ -569,22 +580,22 @@
         .limit(1);
       if (error) {
         const msg = document.getElementById('loginMsg');
-        msg.textContent = error.message.includes('API key')
-          ? 'Invalid API key — paste the current anon key from Supabase Settings → API.'
-          : error.message;
-        msg.className = 'text-sm text-red-600';
+        if (msg) {
+          msg.textContent = error.message.includes('API key')
+            ? 'Invalid API key — paste the current anon key from Supabase Settings → API.'
+            : error.message;
+          msg.className = 'text-sm text-red-600';
+        }
         console.warn('Supabase connectivity test failed:', error);
       } else {
         console.log('Supabase connectivity: OK');
       }
     })();
 
-    /* --- EMAIL CONFIG --- */
     const ADMIN_EMAIL_CC = "admin@jengchirestaurant.com";
     const WITNESS_NAME = "Janelle Teng";
     const EMAIL_FUNCTION_URL = "https://kpldzwlftkvjjntgsqxx.functions.supabase.co/new-generate-ack-pdf-and-email";
 
-    /* ========= DOM ========= */
     const loginView = document.getElementById('loginView');
     const appView   = document.getElementById('appView');
     const usernameEl = document.getElementById('username');
@@ -600,14 +611,12 @@
     const progBar      = document.getElementById('progBar');
     const btnBack      = document.getElementById('btnBack');
 
-    /* ========= STATE ========= */
     let empProfile = {
       full_name: null, position: null, department: null, reports_to: null,
       reports_to_position: null,
       email: null, phone: null
     };
 
-    /* ========= UTIL ========= */
     const CODE_RE = /^(\d+\.\d+)/;
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     const safe = (v, dash='—') => (v===null || v===undefined || v==='') ? dash : v;
@@ -618,8 +627,8 @@
     const getSession = ()=> { try { return JSON.parse(localStorage.getItem('hb_session')||'{}'); } catch { return {}; } };
     const getInitials = ()=> {
       const s = getSession();
+      if (s?.username) return String(s.username).toUpperCase();
       if (s?.initials) return String(s.initials).toUpperCase();
-      if (s?.username) return toInitials(s.username);
       return '';
     };
     const getEmployeeKey = () => {
@@ -650,11 +659,53 @@
 
     const isLastSection = (tabKey) => SECTION_ORDER.indexOf(tabKey) === SECTION_ORDER.length - 1;
 
+    /* ========= VERIFICATION GATE ========= */
+    const VERIFY_KEY = () => nsKey('info_verified');
+
+    function isVerified() {
+      return localStorage.getItem(VERIFY_KEY()) === 'true';
+    }
+
+    function showVerifyGate() {
+      document.getElementById('verifyGate')?.classList.remove('hidden');
+      document.getElementById('handbookContent')?.classList.add('hidden');
+    }
+
+    function hideVerifyGate() {
+      document.getElementById('verifyGate')?.classList.add('hidden');
+      document.getElementById('handbookContent')?.classList.remove('hidden');
+    }
+
+    function wireVerifyButtons() {
+      document.getElementById('btnVerifyInfo')?.addEventListener('click', async () => {
+        const btn = document.getElementById('btnVerifyInfo');
+        const msgEl = document.getElementById('verifyMsg');
+        btn.disabled = true;
+        btn.textContent = 'Verifying...';
+        // Log the verification event
+        await _logEngagement('info_verified', null, null, null);
+        // Mark as verified for this session
+        localStorage.setItem(VERIFY_KEY(), 'true');
+        msgEl.textContent = '✅ Verified! Loading your handbook...';
+        msgEl.className = 'mt-4 text-sm text-center text-emerald-600 font-medium';
+        setTimeout(() => {
+          hideVerifyGate();
+          // Now render the handbook
+          _startHandbook();
+        }, 800);
+      });
+
+      document.getElementById('btnInfoWrong')?.addEventListener('click', () => {
+        const msgEl = document.getElementById('verifyMsg');
+        msgEl.textContent = '⚠️ Please notify your manager or HR to correct your information before continuing.';
+        msgEl.className = 'mt-4 text-sm text-center text-red-600 font-medium';
+      });
+    }
+
     /* ========= LOGIN ========= */
     function showApp(){
       loginView.classList.add('hidden');
       appView.classList.remove('hidden');
-      requestAnimationFrame(()=> document.getElementById('sectionTitle')?.focus());
     }
     function showLogin(){
       appView.classList.add('hidden');
@@ -663,7 +714,7 @@
 
     async function startRemoteSession(initials){
       try{
-        const { data, error } = await client.rpc('hb_start_session', { p_initials: initials });
+        const { data } = await client.rpc('hb_start_session', { p_initials: initials });
         const sessionId = data || null;
         const startedAt = new Date().toISOString();
         if(sessionId) localStorage.setItem('hb_session_id', String(sessionId));
@@ -698,7 +749,7 @@
         if (!data) { toast(loginMsg, 'Invalid username or PIN'); return; }
         if (data.ok === false) { toast(loginMsg, 'Invalid username or PIN'); return; }
         const s = {
-          username: u,
+          username: u.toUpperCase(),
           initials: data.initials || toInitials(u),
           employee_id: data.employee_id || null,
           full_name: data.full_name || null,
@@ -770,7 +821,6 @@
         }
         const { data } = await query;
         if (data && data.length > 0) {
-          const lowerName = name.toLowerCase();
           const best = data.find(row =>
             row.full_name &&
             searchTerms.every(term => row.full_name.toLowerCase().includes(term))
@@ -779,7 +829,7 @@
         }
       }
 
-      document.getElementById('fi_user').textContent           = safe(initials || toInitials(username));
+      document.getElementById('fi_user').textContent           = safe(username || initials);
       document.getElementById('fi_name').textContent           = safe(name);
       document.getElementById('fi_position').textContent       = safe(position);
       document.getElementById('fi_department').textContent     = safe(department);
@@ -810,7 +860,6 @@ const SECTION_II = [
   { code: "2.6", title: "Parking", html: `<p>Employees must park along Greenville Avenue or in designated employee areas past the third statue. Do not park in front of Jeng Chi or other businesses. Spaces nearest the restaurants are reserved for guests. Violations may result in corrective action.</p>` },
   { code: "2.7", title: "Required Notices and Postings", html: `<p>We post all required federal and Texas workplace notices (e.g., TWC Texas Payday/Unemployment, EEOC "Know Your Rights," FLSA minimum wage, and Workers' Compensation status).</p><ul class="list-disc pl-6"><li>HR/Owner maintains current versions and audits quarterly.</li><li>Managers ensure posters are visible and undamaged.</li><li>Employees should review posted notices and direct questions to management.</li></ul>` }
 ];
-const SECTION_II_CODES = SECTION_II.map(i => i.code);
 
     const SLING = "https://raw.githubusercontent.com/pgonzalez2910/sling/main/";
     const TOAST = "https://raw.githubusercontent.com/pgonzalez2910/toast/main/";
@@ -833,96 +882,90 @@ const SECTION_II_CODES = SECTION_II.map(i => i.code);
   { code: "3.12", title: "Tips & Gratuities Policy (Texas)", html: `<h3 class="text-lg font-semibold mb-2">Scope &amp; Purpose</h3><p>This policy applies to all tipped and non-tipped employees at Jeng Chi Restaurant (JCR) and governs tips, tip pooling, credit-card tips and associated processing fees, service charges, and required legal notices under federal law (FLSA) and Texas law.</p><h3 class="text-lg font-semibold mt-3 mb-2">Core Rules</h3><ul class="list-disc pl-6"><li>JCR does not keep employees' tips or gratuities; Managers and Back of the House are prohibited from keeping any portion of employees' tips.</li><li>Credit-card processing fee deduction not to exceed 3%.</li></ul><p><strong>Eligible Roles for Tips:</strong> Servers, Bartenders, Bussers, Hosts, Cashiers, Bartender Jr.</p>` },
   { code: "3.13", title: "Scheduling & Break Periods Policy", html: `<h3 class="text-lg font-semibold mb-2">Work Schedules</h3><p>As a restaurant operation, work schedules are based on business needs, including guest volume, staffing levels, and operational demands. The Company reserves the right to adjust start and end times, modify assigned shifts or stations, and change schedules with or without advance notice when business conditions require.</p><h3 class="text-lg font-semibold mt-4 mb-2">Break Periods</h3><p>Break periods in a restaurant setting are not guaranteed at a fixed time and may be delayed, shortened, or adjusted based on business needs, guest flow, and staffing requirements.</p>` }
 ];
-const SECTION_III_CODES = SECTION_III.map(i => i.code);
 
     const SECTION_IV = [
   { code: "4.1", title: "Zero-Tolerance Policy (Safety, Integrity & Respect)", html: `<p><strong>Purpose.</strong> To protect employees, guests, and the business, Jeng Chi Restaurant maintains zero tolerance for conduct that seriously endangers safety, violates law, or undermines trust.</p><p><strong>Zero-tolerance categories (non-exhaustive):</strong></p><ol class="list-decimal pl-6"><li>Unlawful harassment or discrimination based on any protected status; retaliation for reporting or participating in an investigation.</li><li>Violence, threats, intimidation, or weapons on premises.</li><li>Theft, fraud, or serious dishonesty.</li><li>Serious safety or food-safety endangerment.</li><li>Illicit drugs at work; sale/distribution; on-duty impairment.</li><li>Wage/timekeeping fraud; egregious cash-handling violations.</li></ol>` },
-  { code: "4.2", title: "Anti-Harassment / Anti-Discrimination & Diversity", html: `<p><strong>Policy Statement.</strong> Jeng Chi Restaurant prohibits harassment, discrimination, and retaliation based on any status protected by law (for example: race, color, religion, sex—including pregnancy—sexual orientation, gender identity, national origin, age, disability, genetic information, veteran status, and any other status protected by federal, Texas, or local law).</p>` },
-  { code: "4.3", title: "Diversity & Inclusion Commitment", html: `<p>We value a workforce that reflects many backgrounds and perspectives. We strive to: (1) hire, promote, pay, and schedule based on merit and business needs; (2) build respectful teams; (3) provide reasonable accommodations for disability and religion; and (4) offer fair processes to report and resolve concerns without fear of retaliation.</p><h3 class="text-lg font-semibold mt-4 mb-2">Definitions</h3><ul class="list-disc pl-6"><li><strong>Discrimination</strong> – An adverse job action because of a protected status.</li><li><strong>Harassment</strong> – Unwelcome conduct based on a protected characteristic that is severe or pervasive enough to create a hostile work environment.</li><li><strong>Sexual harassment</strong> – Unwelcome sexual advances, requests for sexual favors, or other verbal/physical conduct of a sexual nature.</li><li><strong>Retaliation</strong> – Any adverse action because someone reported a concern, requested accommodation, or participated in an investigation.</li></ul>` },
-  { code: "4.4", title: "Examples of Prohibited Conduct (Not Exhaustive)", html: `<ul class="list-disc pl-6"><li><strong>Verbal/Visual:</strong> slurs, epithets, insults, demeaning jokes or memes; repeated misgendering; derogatory comments about accent, disability, or religion.</li><li><strong>Physical:</strong> unwanted touching, blocking movement, assault, intimidation.</li><li><strong>Sexual:</strong> Unwelcome conduct of a sexual nature, including but not limited to sexual advances, comments about an individual's body or sex life, and quid pro quo arrangements.</li><li><strong>Electronic/Online:</strong> texts, DMs, group chats, social media, or collaboration tools that target coworkers or affect the workplace.</li><li><strong>Third Parties:</strong> customers, vendors, delivery drivers, or visitors who harass employees. We will intervene and take corrective steps.</li></ul>` },
-  { code: "4.5", title: "Speak-Up & Investigation Policy", html: `<p>Zero tolerance for unlawful harassment, discrimination, sexual harassment or retaliation.</p><p><strong>How to report:</strong> Tell any manager, your supervisor, or HR/Owner—you may bypass your supervisor.</p><p><strong>Fast response:</strong> We aim to acknowledge within 1 business day and begin review within 1–3 business days.</p><p><strong>No retaliation:</strong> Protected for reporting in good faith or participating in a review.</p>` },
-  { code: "4.6", title: "Our Investigation (What Happens Behind the Scenes)", html: `<ol class="list-decimal pl-6"><li><strong>Start:</strong> Target 1–3 business days after notice.</li><li><strong>Reviewer:</strong> HR/Owner (impartial).</li><li><strong>Evidence:</strong> Interviews of complainant, respondent, witnesses; collection of documents, chats, schedules, and available video.</li><li><strong>Standard of proof:</strong> Preponderance of the evidence.</li><li><strong>Corrective actions (as warranted):</strong> coaching/training, written or final warning, suspension, removal from guest areas, vendor or third-party restrictions, or termination.</li><li><strong>Records:</strong> Investigation files kept in a restricted HR file and retained at least 1 year.</li></ol>` },
-  { code: "4.7", title: "Anti-Retaliation (Zero Tolerance)", html: `<p>The Company prohibits retaliation against anyone who in good faith reports a concern, asks for accommodation, or participates in a review. Retaliation includes actions that could deter a reasonable person from speaking up. Report suspected retaliation immediately.</p>` },
-  { code: "4.8", title: "Professional Boundaries & No Horseplay", html: `<p><strong>Purpose:</strong> Maintain a safe, respectful, professional workplace free from harassment, distractions and preventable injuries.</p><h3 class="text-lg font-semibold mt-4 mb-2">Prohibited Conduct (Examples)</h3><ul class="list-disc pl-6"><li>No horseplay anywhere, especially near hot equipment, knives, fryers/steamers, dish area, storage rooms, or guest areas.</li><li>No touching that isn't required for work: no shoulder rubbing, massages, hair touching/grooming, hugging, lap sitting, playful shoving, or similar.</li><li>No pranks or physical jokes.</li><li>No body/appearance comments or innuendo.</li><li>No retaliation against anyone who refuses contact, sets a boundary, or reports concerns.</li></ul><h3 class="text-lg font-semibold mt-4 mb-2">Acknowledgment</h3><p>Employees are required to acknowledge receipt and understanding of the Employee Handbook by completing the Handbook Acknowledgment &amp; Receipt Form electronically.</p>` },
-  { code: "4.9", title: "Workplace Searches & Monitoring", html: `<p><strong>Right to inspect.</strong> The Company may inspect Company Property at any time, with or without notice. Employees should not expect privacy in Company Property.</p><p><strong>Electronic monitoring (notice).</strong> Company systems (POS, networks, email, business messaging) may be monitored, logged, and reviewed for business, safety, security, and legal compliance.</p>` },
-  { code: "4.10", title: "Personal Cell Phone & Earbud Policy", html: `<p><strong>Baseline rules.</strong></p><ul class="list-disc pl-6"><li>Phones silent/out of sight while working. Personal use limited to authorized breaks or manager-approved urgent matters.</li><li>No earbuds/headphones in guest areas and Back of House.</li><li>Prohibited during work: personal calls/chats, social media browsing, gaming, studying/reading for non-work purposes.</li></ul><p><strong>Safety.</strong> Never use a phone while walking in BOH, carrying hot items/knives, or operating equipment.</p>` },
-  { code: "4.11", title: "No Smoking, Vaping, Chewing Gum, Dipping", html: `<p><strong>Where prohibited.</strong> No use inside or within the posted distance of entrances/exits and guest areas.</p><p><strong>Designated area.</strong> Use only the designated outdoor spot, out of guest sight, during authorized breaks. Wash hands before returning to duty.</p>` },
-  { code: "4.12", title: "Personal Errands While on the Clock", html: `<p><strong>Not permitted.</strong> Personal errands are not allowed on Company time. For urgent matters, request manager approval to clock out and leave.</p><p><strong>Company errands.</strong> Tasks like grocery runs, storage trips, DCCC, mailbox or bank drops require manager authorization; you must be on the clock and follow timekeeping rules.</p>` },
-  { code: "4.13", title: "Employee Bar Policy", html: `<ul class="list-disc pl-6"><li>Must be 18+ to work behind the bar; 21+ to consume alcohol (off duty).</li><li>On duty: absolutely no alcohol.</li><li>Off duty: employees may patronize the bar only if off shift, 21+, out of uniform, and not interfering with operations.</li></ul>` },
-  { code: "4.14", title: "FOH Order Integrity & Guest Service", html: `<p><strong>(Applies to: Servers, Bartenders, Hosts, Cashiers)</strong></p><h3 class="text-lg font-semibold mt-3 mb-2">Core Expectations</h3><ul class="list-disc pl-6"><li>Ring before serve/pack. Every item must be entered in POS; no "free" items unless a manager-approved promo is applied in POS.</li><li>Payment verification. Follow the Company close-out process and confirm payment before moving on.</li><li>No unapproved changes. Comps/discounts/voids require manager approval.</li></ul><h3 class="text-lg font-semibold mt-4 mb-2">Prohibited Conduct</h3><ul class="list-disc pl-6"><li>Failing to ring items; serving without a POS entry; unapproved comps/discounts/voids.</li><li>Cash handling violations; manipulating tips or tip lines; altering receipts.</li></ul>` },
-  { code: "4.15", title: "Dress Code & Uniform Standards", html: `<h3 class="text-lg font-semibold mb-2">Back-of-House (BOH)</h3><ul class="list-disc pl-6"><li>Solid black jeans or dark blue jeans or Chef Pants, no caps.</li><li>Solid plain top with no logos/graphics.</li><li>Closed-toe, closed-heel, slip-resistant, non-absorbent shoes.</li><li>Company-issued items: Chef coat, Cook shirt, and white bib apron.</li><li>Hair fully restrained under hat (hairnet as needed).</li></ul><h3 class="text-lg font-semibold mt-4 mb-2">Front-of-House (FOH)</h3><ul class="list-disc pl-6"><li>Jeng Chi black logo polo; black slacks or black jeans; belt if loops; black socks; closed-toe slip-resistant shoes.</li><li>Hair: Neat, clean, and secured away from the face.</li></ul>` },
-  { code: "4.16", title: "Employee Purchase of Menu Items Policy", html: `<p><strong>Scope.</strong> This policy applies to all employees (FOH, BOH, managers, part-time, full-time).</p><ol class="list-decimal pl-6"><li>Employees are not allowed to ring up or process their own purchases. Another cashier or a manager must place and complete the order in the POS system.</li><li>All employee purchases must be paid for before consuming the item. No "pay later."</li><li>Violations will be addressed under the Corrective Action Plan (CAP).</li></ol>` }
+  { code: "4.2", title: "Anti-Harassment / Anti-Discrimination & Diversity", html: `<p><strong>Policy Statement.</strong> Jeng Chi Restaurant prohibits harassment, discrimination, and retaliation based on any status protected by law.</p>` },
+  { code: "4.3", title: "Diversity & Inclusion Commitment", html: `<p>We value a workforce that reflects many backgrounds and perspectives. We strive to: (1) hire, promote, pay, and schedule based on merit and business needs; (2) build respectful teams; (3) provide reasonable accommodations for disability and religion; and (4) offer fair processes to report and resolve concerns without fear of retaliation.</p>` },
+  { code: "4.4", title: "Examples of Prohibited Conduct (Not Exhaustive)", html: `<ul class="list-disc pl-6"><li><strong>Verbal/Visual:</strong> slurs, epithets, insults, demeaning jokes or memes.</li><li><strong>Physical:</strong> unwanted touching, blocking movement, assault, intimidation.</li><li><strong>Sexual:</strong> Unwelcome conduct of a sexual nature.</li><li><strong>Electronic/Online:</strong> texts, DMs, group chats, social media that target coworkers.</li><li><strong>Third Parties:</strong> customers, vendors, delivery drivers who harass employees.</li></ul>` },
+  { code: "4.5", title: "Speak-Up & Investigation Policy", html: `<p>Zero tolerance for unlawful harassment, discrimination, sexual harassment or retaliation.</p><p><strong>How to report:</strong> Tell any manager, your supervisor, or HR/Owner.</p><p><strong>Fast response:</strong> We aim to acknowledge within 1 business day and begin review within 1–3 business days.</p>` },
+  { code: "4.6", title: "Our Investigation (What Happens Behind the Scenes)", html: `<ol class="list-decimal pl-6"><li><strong>Start:</strong> Target 1–3 business days after notice.</li><li><strong>Reviewer:</strong> HR/Owner (impartial).</li><li><strong>Evidence:</strong> Interviews, documents, chats, schedules, and available video.</li><li><strong>Standard of proof:</strong> Preponderance of the evidence.</li><li><strong>Corrective actions:</strong> coaching, warnings, suspension, or termination.</li></ol>` },
+  { code: "4.7", title: "Anti-Retaliation (Zero Tolerance)", html: `<p>The Company prohibits retaliation against anyone who in good faith reports a concern, asks for accommodation, or participates in a review.</p>` },
+  { code: "4.8", title: "Professional Boundaries & No Horseplay", html: `<p><strong>Purpose:</strong> Maintain a safe, respectful, professional workplace.</p><ul class="list-disc pl-6"><li>No horseplay near hot equipment, knives, fryers/steamers, dish area, or guest areas.</li><li>No unauthorized touching.</li><li>No pranks or physical jokes.</li></ul>` },
+  { code: "4.9", title: "Workplace Searches & Monitoring", html: `<p><strong>Right to inspect.</strong> The Company may inspect Company Property at any time. Employees should not expect privacy in Company Property.</p><p><strong>Electronic monitoring.</strong> Company systems may be monitored, logged, and reviewed for business, safety, security, and legal compliance.</p>` },
+  { code: "4.10", title: "Personal Cell Phone & Earbud Policy", html: `<ul class="list-disc pl-6"><li>Phones silent/out of sight while working.</li><li>No earbuds/headphones in guest areas and Back of House.</li><li>Never use a phone while walking in BOH, carrying hot items/knives, or operating equipment.</li></ul>` },
+  { code: "4.11", title: "No Smoking, Vaping, Chewing Gum, Dipping", html: `<p>No use inside or within the posted distance of entrances/exits and guest areas. Use only the designated outdoor spot during authorized breaks.</p>` },
+  { code: "4.12", title: "Personal Errands While on the Clock", html: `<p><strong>Not permitted.</strong> Personal errands are not allowed on Company time. For urgent matters, request manager approval to clock out and leave.</p>` },
+  { code: "4.13", title: "Employee Bar Policy", html: `<ul class="list-disc pl-6"><li>Must be 18+ to work behind the bar; 21+ to consume alcohol (off duty).</li><li>On duty: absolutely no alcohol.</li></ul>` },
+  { code: "4.14", title: "FOH Order Integrity & Guest Service", html: `<p><strong>(Applies to: Servers, Bartenders, Hosts, Cashiers)</strong></p><ul class="list-disc pl-6"><li>Ring before serve/pack. Every item must be entered in POS.</li><li>Payment verification. Follow the Company close-out process.</li><li>No unapproved changes. Comps/discounts/voids require manager approval.</li></ul>` },
+  { code: "4.15", title: "Dress Code & Uniform Standards", html: `<h3 class="text-lg font-semibold mb-2">Back-of-House (BOH)</h3><ul class="list-disc pl-6"><li>Solid black jeans or dark blue jeans or Chef Pants, no caps.</li><li>Closed-toe, closed-heel, slip-resistant, non-absorbent shoes.</li><li>Company-issued items: Chef coat, Cook shirt, and white bib apron.</li></ul><h3 class="text-lg font-semibold mt-4 mb-2">Front-of-House (FOH)</h3><ul class="list-disc pl-6"><li>Jeng Chi black logo polo; black slacks or black jeans; belt if loops; black socks; closed-toe slip-resistant shoes.</li></ul>` },
+  { code: "4.16", title: "Employee Purchase of Menu Items Policy", html: `<ol class="list-decimal pl-6"><li>Employees are not allowed to ring up or process their own purchases.</li><li>All employee purchases must be paid for before consuming the item.</li><li>Violations will be addressed under the Corrective Action Plan (CAP).</li></ol>` }
 ];
-const SECTION_IV_CODES = SECTION_IV.map(i => i.code);
 
     const SECTION_V = [
-  { code: "5.1", title: "Standard Progressive Path", html: `<h3 class="text-lg font-semibold mb-2">Purpose &amp; Principles</h3><ol class="list-decimal pl-6"><li>Maintain a safe, respectful, and lawful workplace.</li><li>Apply standards consistently and without discrimination/retaliation.</li><li>Use progressive discipline to correct conduct and performance where appropriate.</li><li>The Company may deviate or skip steps (up to immediate termination) based on the facts and business needs.</li></ol><h3 class="text-lg font-semibold mt-4 mb-2">Progressive Steps</h3><ul class="list-disc pl-6"><li><strong>Step 1</strong> – Verbal Warning #1 + CAP → 1 week improvement window</li><li><strong>Step 2</strong> – Verbal Warning #2 + CAP → 1 week improvement window</li><li><strong>Step 3</strong> – Written Warning #1 + CAP → up to 2 weeks</li><li><strong>Step 4</strong> – Written Warning #2 (or Final Written Warning)</li><li><strong>Step 5</strong> – Termination</li></ul>` },
-  { code: "5.2", title: "Cross-Policy Progression (No Reset)", html: `<p>Warnings accumulate across policies. Breaking a different policy while on a CAP does not reset the ladder; we continue to the next step in the progression.</p>` },
-  { code: "5.3", title: "Documentation & Timelines", html: `<ol class="list-decimal pl-6"><li>Each step includes: date, policy violated, facts, expectations, improvement window, training (if any), and consequences of not improving.</li><li>Managers provide a copy to the employee and forward to HR for the restricted personnel file.</li><li>Refusal to sign an acknowledgment is noted; the warning is still effective.</li></ol>` },
-  { code: "5.4", title: "Zero-Tolerance / Immediate-Termination Offenses", html: `<p>The Company may proceed directly to termination for any of the following, even if there is no prior discipline:</p><ol class="list-decimal pl-6"><li>Violence/Fighting.</li><li>Theft, fraud, or serious dishonesty.</li><li>Harassment, discrimination, or retaliation that is severe, pervasive, or clearly violates law or policy.</li><li>Serious safety/food-safety endangerment.</li><li>Illicit drugs at work; sale/distribution on premises; impairment that creates a safety risk.</li></ol>` },
-  { code: "5.5", title: "Attendance & Punctuality – Specific Ladder", html: `<h3 class="text-lg font-semibold mt-4 mb-2">Attendance Progression</h3><ul class="list-disc pl-6"><li><strong>1st late/miss</strong> (within 60 days): Verbal #1 + 1-week improvement window + CAP</li><li><strong>2nd late/miss</strong> (within window): Verbal #2 + 1-week window + CAP</li><li><strong>3rd late/miss</strong> (within window): Written #1 + CAP</li><li><strong>4th late/miss</strong> (within window): Written #2 (or Final Written)</li><li><strong>5th late/miss:</strong> Termination</li></ul><p class="mt-3"><strong>No-call/no-show:</strong> May result in Final Written or Termination on the first occurrence.</p>` },
-  { code: "5.6", title: "Fights, Threats & Workplace Violence", html: `<ol class="list-decimal pl-6"><li><strong>Mutual fighting:</strong> Termination for both, absent credible evidence of legitimate self-defense.</li><li><strong>One employee disengages/retreats</strong> while the other continues: The hitter is terminated.</li><li><strong>Threats of violence or credible intimidation:</strong> Final Written up to Termination.</li><li>Always conduct an immediate safety response and prompt investigation.</li></ol>` },
-  { code: "5.7", title: "Dishonesty, Theft & Fraud", html: `<p><strong>Theft or attempted theft → Termination.</strong></p><p>Separate from discipline, the Company may refer matters to law enforcement or pursue civil recovery.</p><h3 class="text-lg font-semibold mt-4 mb-2">Timekeeping &amp; Wage Integrity</h3><ul class="list-disc pl-6"><li>Off-the-clock work, buddy punching → Verbal → Verbal → Written → Written → Termination.</li><li>All worked time will be paid; working without authorization may result in discipline.</li></ul>` },
-  { code: "5.8", title: "Unprofessional / Disrespectful Conduct", html: `<p><strong>Yelling, abusive language, harassment, or insubordination:</strong></p><ul class="list-disc pl-6 mt-2"><li>Verbal #1 → Verbal #2 → Written #1 (+ CAP on professional conduct) → Written #2/Final → Termination.</li><li>Severe incidents (e.g., slurs, targeted harassment) may skip steps.</li></ul>` },
-  { code: "5.9", title: "Social Media & Communications", html: `<ol class="list-decimal pl-6"><li><strong>Prohibited:</strong> Posting confidential information, doxxing, threats/harassment, discriminatory content, or misusing logos/uniforms.</li><li><strong>Protected:</strong> Nothing in this policy restricts lawful protected concerted activity.</li><li><strong>Discipline:</strong> Final Written up to Termination for violations that harass, disclose confidential business info, threaten, or materially disrupt operations.</li></ol>` },
-  { code: "5.10", title: "Drugs, Alcohol & Impairment", html: `<p>Arriving impaired or becoming impaired on duty: remove from duty, arrange safe transport home, and issue discipline per the ladder (Verbal → Written(s) → Termination) unless severity or recurrence warrants skipping steps.</p>` },
-  { code: "5.11", title: "Harassment, Discrimination & Retaliation", html: `<ol class="list-decimal pl-6"><li>Zero tolerance for unlawful harassment/discrimination/retaliation.</li><li>Discipline: Written, Final Written, or Termination, depending on severity and findings.</li><li>Retaliation for reporting or participating in an investigation is itself a stand-alone violation.</li></ol>` },
-  { code: "5.12", title: "Corrective Action Plans (CAPs)", html: `<p>Each Verbal / Written / Final Written includes a CAP with:</p><ul class="list-disc pl-6 mt-2"><li><strong>What to fix</strong> (policy, behavior, or metric)</li><li><strong>How to fix it</strong> (training, checklists, coaching)</li><li><strong>Who &amp; when</strong> (responsible manager; dates)</li><li><strong>The window for improvement</strong> (1–2 weeks unless otherwise stated)</li><li><strong>Consequences if not met</strong> (next step up to termination)</li></ul>` },
-  { code: "5.13", title: "FOH: Order Integrity & Guest Service", html: `<p><strong>Purpose:</strong> To correct issues quickly, protect revenue and guest trust, and apply standards consistently to all FOH team members.</p><h3 class="text-lg font-semibold mt-4 mb-2">Discipline Path</h3><ul class="list-disc pl-6"><li><strong>First single, non-egregious error:</strong> Coaching/Verbal + CAP.</li><li><strong>Repeating errors/pattern:</strong> Written Warning + CAP.</li><li><strong>Persistent/serious issues:</strong> Final Written/Suspension or Termination after investigation.</li></ul>` },
-  { code: "5.14", title: "Benefits & PTO on Separation", html: `<ul class="list-disc pl-6"><li>Accrued PTO payout follows the Company's PTO policy and any plan document.</li><li>Unless a plan document states otherwise, unused PTO is not paid at termination.</li></ul>` },
-  { code: "5.15", title: "Resignation (Two-Weeks' Notice) & How to Submit", html: `<p><strong>At-Will Reminder:</strong> Employment is at-will. Either the employee or the Company may end employment at any time.</p><h3 class="text-lg font-semibold mt-4 mb-2">Notice Expectation (Two Weeks)</h3><ul class="list-disc pl-6"><li>The Company requests at least two (2) weeks' written notice for most roles so we can schedule coverage and transition duties.</li></ul>` },
-  { code: "5.16", title: "Company Acceptance / Scheduling During Notice", html: `<ul class="list-disc pl-6"><li>Management will confirm your last working day in writing.</li><li>Schedules during the notice period are set by business needs. The Company may adjust, reduce, or release you earlier.</li></ul>` },
-  { code: "5.17", title: "Conduct During Notice (Discipline Still Applies)", html: `<ul class="list-disc pl-6"><li>All policies remain in force during the notice period.</li><li>If you violate policy during your notice, the Company will apply the Discipline &amp; Corrective Action process.</li><li>Performance/attendance expectations do not change during notice.</li></ul>` },
-  { code: "5.18", title: "Job Abandonment (No-Call/No-Show)", html: `<ul class="list-disc pl-6"><li>Failing to report or call in for two (2) consecutive scheduled shifts may be treated as job abandonment.</li></ul><h3 class="text-lg font-semibold mt-4 mb-2">Rehire Eligibility</h3><ul class="list-disc pl-6"><li>Rehire status depends on overall record, transition cooperation, and policy compliance during notice.</li></ul>` }
+  { code: "5.1", title: "Standard Progressive Path", html: `<h3 class="text-lg font-semibold mb-2">Purpose &amp; Principles</h3><ol class="list-decimal pl-6"><li>Maintain a safe, respectful, and lawful workplace.</li><li>Apply standards consistently and without discrimination/retaliation.</li><li>Use progressive discipline to correct conduct and performance where appropriate.</li></ol><h3 class="text-lg font-semibold mt-4 mb-2">Progressive Steps</h3><ul class="list-disc pl-6"><li><strong>Step 1</strong> – Verbal Warning #1 + CAP → 1 week improvement window</li><li><strong>Step 2</strong> – Verbal Warning #2 + CAP → 1 week improvement window</li><li><strong>Step 3</strong> – Written Warning #1 + CAP → up to 2 weeks</li><li><strong>Step 4</strong> – Written Warning #2 (or Final Written Warning)</li><li><strong>Step 5</strong> – Termination</li></ul>` },
+  { code: "5.2", title: "Cross-Policy Progression (No Reset)", html: `<p>Warnings accumulate across policies. Breaking a different policy while on a CAP does not reset the ladder.</p>` },
+  { code: "5.3", title: "Documentation & Timelines", html: `<ol class="list-decimal pl-6"><li>Each step includes: date, policy violated, facts, expectations, improvement window, and consequences of not improving.</li><li>Managers provide a copy to the employee and forward to HR.</li><li>Refusal to sign an acknowledgment is noted; the warning is still effective.</li></ol>` },
+  { code: "5.4", title: "Zero-Tolerance / Immediate-Termination Offenses", html: `<p>The Company may proceed directly to termination for any of the following:</p><ol class="list-decimal pl-6"><li>Violence/Fighting.</li><li>Theft, fraud, or serious dishonesty.</li><li>Harassment, discrimination, or retaliation that is severe or pervasive.</li><li>Serious safety/food-safety endangerment.</li><li>Illicit drugs at work.</li></ol>` },
+  { code: "5.5", title: "Attendance & Punctuality – Specific Ladder", html: `<ul class="list-disc pl-6"><li><strong>1st late/miss:</strong> Verbal #1 + 1-week improvement window + CAP</li><li><strong>2nd late/miss:</strong> Verbal #2 + 1-week window + CAP</li><li><strong>3rd late/miss:</strong> Written #1 + CAP</li><li><strong>4th late/miss:</strong> Written #2 (or Final Written)</li><li><strong>5th late/miss:</strong> Termination</li></ul><p class="mt-3"><strong>No-call/no-show:</strong> May result in Final Written or Termination on the first occurrence.</p>` },
+  { code: "5.6", title: "Fights, Threats & Workplace Violence", html: `<ol class="list-decimal pl-6"><li><strong>Mutual fighting:</strong> Termination for both, absent credible evidence of legitimate self-defense.</li><li><strong>Threats of violence or credible intimidation:</strong> Final Written up to Termination.</li></ol>` },
+  { code: "5.7", title: "Dishonesty, Theft & Fraud", html: `<p><strong>Theft or attempted theft → Termination.</strong></p><h3 class="text-lg font-semibold mt-4 mb-2">Timekeeping &amp; Wage Integrity</h3><ul class="list-disc pl-6"><li>Off-the-clock work, buddy punching → progressive discipline up to Termination.</li></ul>` },
+  { code: "5.8", title: "Unprofessional / Disrespectful Conduct", html: `<p><strong>Yelling, abusive language, harassment, or insubordination:</strong></p><ul class="list-disc pl-6 mt-2"><li>Verbal #1 → Verbal #2 → Written #1 → Written #2/Final → Termination.</li><li>Severe incidents (e.g., slurs, targeted harassment) may skip steps.</li></ul>` },
+  { code: "5.9", title: "Social Media & Communications", html: `<ol class="list-decimal pl-6"><li><strong>Prohibited:</strong> Posting confidential information, doxxing, threats/harassment, discriminatory content.</li><li><strong>Protected:</strong> Nothing restricts lawful protected concerted activity.</li><li><strong>Discipline:</strong> Final Written up to Termination for serious violations.</li></ol>` },
+  { code: "5.10", title: "Drugs, Alcohol & Impairment", html: `<p>Arriving impaired or becoming impaired on duty: remove from duty, arrange safe transport home, and issue discipline per the ladder unless severity warrants skipping steps.</p>` },
+  { code: "5.11", title: "Harassment, Discrimination & Retaliation", html: `<ol class="list-decimal pl-6"><li>Zero tolerance for unlawful harassment/discrimination/retaliation.</li><li>Discipline: Written, Final Written, or Termination, depending on severity.</li><li>Retaliation for reporting is a stand-alone violation.</li></ol>` },
+  { code: "5.12", title: "Corrective Action Plans (CAPs)", html: `<p>Each Verbal / Written / Final Written includes a CAP with: what to fix, how to fix it, who and when, the window for improvement, and consequences if not met.</p>` },
+  { code: "5.13", title: "FOH: Order Integrity & Guest Service", html: `<h3 class="text-lg font-semibold mt-4 mb-2">Discipline Path</h3><ul class="list-disc pl-6"><li><strong>First single, non-egregious error:</strong> Coaching/Verbal + CAP.</li><li><strong>Repeating errors/pattern:</strong> Written Warning + CAP.</li><li><strong>Persistent/serious issues:</strong> Final Written/Suspension or Termination.</li></ul>` },
+  { code: "5.14", title: "Benefits & PTO on Separation", html: `<ul class="list-disc pl-6"><li>Accrued PTO payout follows the Company's PTO policy.</li><li>Unless a plan document states otherwise, unused PTO is not paid at termination.</li></ul>` },
+  { code: "5.15", title: "Resignation (Two-Weeks' Notice) & How to Submit", html: `<p>Employment is at-will. The Company requests at least two (2) weeks' written notice for most roles.</p>` },
+  { code: "5.16", title: "Company Acceptance / Scheduling During Notice", html: `<ul class="list-disc pl-6"><li>Management will confirm your last working day in writing.</li><li>The Company may adjust, reduce, or release you earlier during the notice period.</li></ul>` },
+  { code: "5.17", title: "Conduct During Notice (Discipline Still Applies)", html: `<ul class="list-disc pl-6"><li>All policies remain in force during the notice period.</li><li>Performance/attendance expectations do not change during notice.</li></ul>` },
+  { code: "5.18", title: "Job Abandonment (No-Call/No-Show)", html: `<ul class="list-disc pl-6"><li>Failing to report or call in for two (2) consecutive scheduled shifts may be treated as job abandonment.</li></ul>` }
 ];
-const SECTION_V_CODES = SECTION_V.map(i => i.code);
 
     const SECTION_VI = [
-  { code: "6.1", title: "Purpose & Overview", html: `<p>Jeng Chi Restaurant ("Company") provides job-protected, unpaid leave consistent with the Family and Medical Leave Act (FMLA).</p><h3 class="text-lg font-semibold mt-4 mb-2">Eligibility (FMLA)</h3><p>An employee is FMLA-eligible if all are met:</p><ul class="list-disc pl-6"><li>Employed by the Company for 12 months (need not be consecutive);</li><li>Worked at least 1,250 hours in the 12 months before leave begins;</li><li>Company employs 50+ employees within 75 miles of the employee's worksite.</li></ul>` },
-  { code: "6.2", title: "Qualifying Reasons (FMLA)", html: `<p>Up to 12 weeks of unpaid, job-protected leave in a 12-month period for:</p><ul class="list-disc pl-6"><li>The employee's serious health condition (includes pregnancy/prenatal care and childbirth recovery);</li><li>Care for a spouse, child, or parent with a serious health condition;</li><li>Bonding with a newborn, adopted, or newly placed foster child;</li><li>Certain military exigencies.</li></ul>` },
-  { code: "6.3", title: "Pregnancy & Childbirth — How FMLA and PWFA/ADA Interact", html: `<ul class="list-disc pl-6"><li>During pregnancy/childbirth recovery: time off may be FMLA-qualifying (if eligible).</li><li>If not FMLA-eligible or after FMLA is exhausted: the Company will assess PWFA/ADA reasonable accommodations.</li><li>No Texas PDL: Do not rely on a separate PDL entitlement in Texas.</li></ul>` },
-  { code: "6.4", title: "Amount, Scheduling & Intermittent Leave", html: `<ul class="list-disc pl-6"><li>Leave may be taken continuously, intermittently, or on a reduced schedule when medically necessary.</li><li>Employees must make reasonable efforts to schedule planned treatment to avoid unduly disrupting operations.</li></ul>` },
-  { code: "6.5", title: "Pay & Benefits During Leave", html: `<p><strong>Unpaid Leave &amp; Substitution.</strong> FMLA leave is generally unpaid. THE COMPANY may require the substitution of any available, accrued PTO to cover otherwise unpaid leave hours.</p><p><strong>Health Benefits During FMLA.</strong> Group health coverage continues on the same terms as active employment; employees must continue the employee-share of premiums.</p>` },
-  { code: "6.6", title: "Employee Notice Responsibilities", html: `<ul class="list-disc pl-6"><li>Foreseeable leave (e.g., planned surgery, due date): provide 30 days' notice or as soon as practicable.</li><li>Unforeseeable leave: notify as soon as practicable and follow usual call-in rules.</li></ul>` },
-  { code: "6.7", title: "Medical Certification & Fitness-for-Duty", html: `<ul class="list-disc pl-6"><li>The Company may require medical certification supporting a serious health condition. Employees get 15 calendar days to return the certification.</li><li>The Company may require a fitness-for-duty release for return to safety-sensitive or physically demanding roles.</li></ul>` },
-  { code: "6.8", title: "Employer Notices (What You'll Receive)", html: `<ul class="list-disc pl-6"><li>Eligibility Notice &amp; Rights/Responsibilities after employee requests leave or the Company learns leave may be FMLA-qualifying.</li><li>Designation Notice stating whether the leave is designated as FMLA-qualifying.</li></ul>` },
-  { code: "6.9", title: "Performance, Conduct & Anti-Retaliation", html: `<ul class="list-disc pl-6"><li>FMLA provides leave and restoration rights, not immunity from lawful performance or conduct standards.</li><li>The Company prohibits interference, restraint, or retaliation for requesting or using FMLA or pregnancy-related accommodations.</li></ul>` },
-  { code: "6.10", title: "Fraud/Abuse", html: `<p>Knowingly misusing FMLA (e.g., false statements, improper use of leave) may result in discipline up to and including termination.</p>` },
+  { code: "6.1", title: "Purpose & Overview", html: `<p>Jeng Chi Restaurant provides job-protected, unpaid leave consistent with the Family and Medical Leave Act (FMLA).</p><h3 class="text-lg font-semibold mt-4 mb-2">Eligibility</h3><ul class="list-disc pl-6"><li>Employed by the Company for 12 months;</li><li>Worked at least 1,250 hours in the 12 months before leave begins;</li><li>Company employs 50+ employees within 75 miles of the employee's worksite.</li></ul>` },
+  { code: "6.2", title: "Qualifying Reasons (FMLA)", html: `<p>Up to 12 weeks of unpaid, job-protected leave in a 12-month period for serious health conditions, bonding with a newborn, or qualifying military exigencies.</p>` },
+  { code: "6.3", title: "Pregnancy & Childbirth — How FMLA and PWFA/ADA Interact", html: `<ul class="list-disc pl-6"><li>During pregnancy/childbirth recovery: time off may be FMLA-qualifying.</li><li>If not FMLA-eligible: the Company will assess PWFA/ADA reasonable accommodations.</li></ul>` },
+  { code: "6.4", title: "Amount, Scheduling & Intermittent Leave", html: `<ul class="list-disc pl-6"><li>Leave may be taken continuously, intermittently, or on a reduced schedule when medically necessary.</li><li>Employees must make reasonable efforts to schedule planned treatment to minimize disruption.</li></ul>` },
+  { code: "6.5", title: "Pay & Benefits During Leave", html: `<p>FMLA leave is generally unpaid. THE COMPANY may require substitution of available accrued PTO. Group health coverage continues on the same terms as active employment.</p>` },
+  { code: "6.6", title: "Employee Notice Responsibilities", html: `<ul class="list-disc pl-6"><li>Foreseeable leave: provide 30 days' notice or as soon as practicable.</li><li>Unforeseeable leave: notify as soon as practicable and follow usual call-in rules.</li></ul>` },
+  { code: "6.7", title: "Medical Certification & Fitness-for-Duty", html: `<ul class="list-disc pl-6"><li>The Company may require medical certification. Employees get 15 calendar days to return it.</li><li>The Company may require a fitness-for-duty release for safety-sensitive roles.</li></ul>` },
+  { code: "6.8", title: "Employer Notices (What You'll Receive)", html: `<ul class="list-disc pl-6"><li>Eligibility Notice &amp; Rights/Responsibilities after employee requests leave.</li><li>Designation Notice stating whether the leave is FMLA-qualifying.</li></ul>` },
+  { code: "6.9", title: "Performance, Conduct & Anti-Retaliation", html: `<ul class="list-disc pl-6"><li>FMLA provides leave and restoration rights, not immunity from lawful performance standards.</li><li>The Company prohibits interference, restraint, or retaliation for requesting or using FMLA.</li></ul>` },
+  { code: "6.10", title: "Fraud/Abuse", html: `<p>Knowingly misusing FMLA may result in discipline up to and including termination.</p>` },
   { code: "6.11", title: "Concurrent Leaves & Workers' Compensation", html: `<p>Where applicable, FMLA may run concurrently with workers' compensation or other leave types if the absence meets FMLA criteria.</p>` },
-  { code: "6.12", title: "How to Request FMLA or Pregnancy-Related Accommodation", html: `<ol class="list-decimal pl-6"><li>Notify your manager or HR as soon as possible (30 days for foreseeable).</li><li>Complete forms provided by HR (FMLA request; medical certification if required).</li><li>Return medical certification within 15 calendar days.</li><li>For pregnancy-related limitations, contact HR to explore PWFA/ADA accommodations.</li></ol>` },
+  { code: "6.12", title: "How to Request FMLA or Pregnancy-Related Accommodation", html: `<ol class="list-decimal pl-6"><li>Notify your manager or HR as soon as possible.</li><li>Complete forms provided by HR.</li><li>Return medical certification within 15 calendar days.</li></ol>` },
   { code: "6.13", title: "Administration & Questions", html: `<p>HR administers this policy. Questions or requests for forms should be directed to HR.</p>` }
 ];
-const SECTION_VI_CODES = SECTION_VI.map(i => i.code);
 
     const SECTION_VII = [
-  { code: "7.1", title: "When a Doctor's Note Is Required", html: `<p><strong>Scope.</strong> Applies to all employees. Nothing here creates a contract or alters at-will status.</p><ol class="list-decimal pl-6"><li>Short absences (1–2 days): A note is not routinely required, but may be requested for safety-sensitive roles or patterns of absence.</li><li>3+ days absent (any medical reason): A doctor's note is required to return, confirming dates unable to work and fitness for duty.</li><li>Food-safety symptoms: Vomiting, diarrhea, jaundice, sore throat with fever, or infected hand/arm lesions require exclusion from food handling and medical clearance before return.</li></ol>` },
-  { code: "7.2", title: "How to Submit Your Doctor's Note", html: `<ul class="list-disc pl-6"><li>Deliver directly to HR before your first shift back, or within 2 business days of return.</li><li>Acceptable methods: in person (sealed).</li></ul>` },
-  { code: "7.3", title: "FMLA Screening & Paperwork", html: `<p>When an absence could qualify for FMLA, HR will issue FMLA Eligibility &amp; Rights/Responsibilities (Form WH-381) within 5 business days of learning about a potential FMLA need.</p><p><strong>Job restoration.</strong> If FMLA applies, you will be restored to the same or an equivalent position.</p>` },
-  { code: "7.4", title: "Pregnancy, Childbirth & Related Conditions (PWFA/ADA)", html: `<p>We will provide reasonable accommodations for known limitations related to pregnancy/childbirth unless it causes undue hardship (examples: extra breaks, water, seating, temporary transfer away from heavy lifting, schedule changes).</p>` },
-  { code: "7.5", title: "Workers' Compensation & Work-Injury Notes", html: `<ul class="list-disc pl-6"><li>Report immediately any work injury/illness to the Manager on Duty and HR no later than end of shift.</li><li>Provide return-to-work notes and restrictions to HR only.</li></ul>` },
-  { code: "7.6", title: "Pay, PTO & Scheduling During Medical Leave", html: `<ul class="list-disc pl-6"><li>Pay: Time away is unpaid unless you use available PTO or another paid benefit.</li><li>Overtime: Only hours actually worked count toward overtime.</li><li>Scheduling: Provide restrictions/estimated return dates as soon as practicable so we can plan coverage fairly.</li></ul>` },
-  { code: "7.7", title: "If Documentation Is Not Provided", html: `<p><strong>General rule (3+ day medical absences).</strong> If you are absent three (3) or more full calendar days for a medical reason, you must provide a doctor's note/fitness-for-duty confirming you are able to return. Until HR receives required documentation, you may not work and will be placed on unpaid administrative leave.</p><p><strong>Failure to provide by the final deadline.</strong> Absent extenuating circumstances, the Company will treat the continued absence and lack of clearance as inability to return to duty and/or job abandonment.</p>` },
-  { code: "7.8", title: "Fitness-for-Duty (FFD) to Return", html: `<ul class="list-disc pl-6"><li>Required after 3+ day medical absences with potential safety impact, after certain food-safety illnesses.</li><li>FFD must confirm you're able to work (with or without restrictions).</li></ul>` },
-  { code: "7.9", title: "No Retaliation / Consistent Application", html: `<p>We prohibit retaliation against anyone who in good faith requests leave/accommodation, submits medical documentation, or participates in a related process. We apply this policy consistently and keep medical information confidential.</p>` }
+  { code: "7.1", title: "When a Doctor's Note Is Required", html: `<ol class="list-decimal pl-6"><li>Short absences (1–2 days): A note is not routinely required but may be requested.</li><li>3+ days absent: A doctor's note is required to return.</li><li>Food-safety symptoms: Vomiting, diarrhea, jaundice, sore throat with fever require exclusion and medical clearance before return.</li></ol>` },
+  { code: "7.2", title: "How to Submit Your Doctor's Note", html: `<ul class="list-disc pl-6"><li>Deliver directly to HR before your first shift back, or within 2 business days of return.</li></ul>` },
+  { code: "7.3", title: "FMLA Screening & Paperwork", html: `<p>When an absence could qualify for FMLA, HR will issue Form WH-381 within 5 business days of learning about a potential FMLA need.</p>` },
+  { code: "7.4", title: "Pregnancy, Childbirth & Related Conditions (PWFA/ADA)", html: `<p>We will provide reasonable accommodations for known limitations related to pregnancy/childbirth unless it causes undue hardship.</p>` },
+  { code: "7.5", title: "Workers' Compensation & Work-Injury Notes", html: `<ul class="list-disc pl-6"><li>Report any work injury/illness to the Manager on Duty and HR no later than end of shift.</li><li>Provide return-to-work notes and restrictions to HR only.</li></ul>` },
+  { code: "7.6", title: "Pay, PTO & Scheduling During Medical Leave", html: `<ul class="list-disc pl-6"><li>Pay: Time away is unpaid unless you use available PTO.</li><li>Overtime: Only hours actually worked count toward overtime.</li></ul>` },
+  { code: "7.7", title: "If Documentation Is Not Provided", html: `<p>If absent 3+ days for a medical reason, you must provide a doctor's note confirming ability to return. Until HR receives required documentation, you may not work and will be placed on unpaid administrative leave.</p>` },
+  { code: "7.8", title: "Fitness-for-Duty (FFD) to Return", html: `<ul class="list-disc pl-6"><li>Required after 3+ day medical absences with potential safety impact.</li><li>FFD must confirm you're able to work (with or without restrictions).</li></ul>` },
+  { code: "7.9", title: "No Retaliation / Consistent Application", html: `<p>We prohibit retaliation against anyone who in good faith requests leave/accommodation or submits medical documentation. We keep medical information confidential.</p>` }
 ];
-const SECTION_VII_CODES = SECTION_VII.map(i => i.code);
 
     const SECTION_VIII = [
-  { code: "8.1", title: "Eligibility & Waiting Period", html: `<p>Aside from benefits required by law, Jeng Chi Restaurant offers additional benefits for eligible full-time employees. Benefits may be added, modified, or discontinued at the Company's discretion.</p><p><strong>Full-time status:</strong> Regularly scheduled 30+ hours per week.</p><p><strong>Waiting period:</strong> Benefits eligibility begins after 60 calendar days of continuous employment in full-time status.</p><h3 class="text-lg font-semibold mt-3 mb-2">Medical, Dental, Vision, Life</h3><ul class="list-disc pl-6"><li>Health Insurance (medical).</li><li>Dental Insurance.</li><li>Vision Insurance.</li><li>Life Insurance.</li></ul>` },
-  { code: "8.2", title: "PTO (Paid Time Off) — Accrual Start", html: `<p><strong>Who accrues:</strong> Full-time employees (regularly scheduled 30+ hours/week).</p><p><strong>When accrual begins:</strong> After 60 calendar days of continuous employment and full-time status.</p><p>PTO accrual, caps, scheduling, carry, year-end payout, and termination rules are set out in the PTO Policy.</p>` },
-  { code: "8.3", title: "Coordination With Leave & Payroll", html: `<p>Benefit eligibility and deductions continue while you work sufficient hours and pay required employee contributions.</p><p>During unpaid leaves, you may be responsible for direct payment of your premiums to maintain coverage.</p>` },
-  { code: "8.4", title: "Payroll Advance policy", html: `<p><strong>Policy brief &amp; purpose:</strong> Our payroll advance policy describes our terms for advancing pay to our employees as an emergency short-term loan.</p><p><strong>Scope:</strong> This policy applies to all of our permanent full-time or part-time employees regardless of position.</p><p>The amount to be advanced will be based on 50% of your earned hours worked in the current payroll. Tips earned are to be included in the calculation for the advance. The Full Amount of the advance will be deducted from the next paycheck. Maximum availability 6 times in a calendar year.</p>` },
-  { code: "8.5", title: "Conditions for requesting a payroll advance", html: `<p>Employees can ask for a pay advance if they:</p><ul class="list-disc pl-6"><li>Have been with the company more than 60 days without any disciplinary action.</li><li>Are in good standing and have a satisfactory performance record.</li><li>Have emergency circumstances.</li></ul><h3 class="text-lg font-semibold mt-3 mb-2">How to Request a Payroll Advance</h3><ul class="list-disc pl-6"><li>Reach out to a manager on duty or Payroll Department to obtain the Payroll Advance Request Form.</li><li>Submit the form to the Payroll Department Monday–Friday, between 10 AM and 5 PM.</li><li>The Payroll Department will review within one business day and notify you of the outcome.</li></ul>` },
-  { code: "8.6", title: "Employee Meal (Unpaid Meal Break)", html: `<p><strong>What this is:</strong> As a courtesy, our wok chefs prepare an employee meal between 2:30–3:30 p.m. daily. Participation is voluntary and does not change the unpaid status of your meal period.</p><p><strong>Very important—unpaid status:</strong> Employee meals are taken during your unpaid meal break. Clock out at the start of your break and clock in when you return.</p><ul class="list-disc pl-6"><li>Use China plates/bowls—not to-go packaging.</li><li>Fountain beverage: $0.50 per 16oz. Other non-alcoholic beverages: 30% off.</li></ul>` },
-  { code: "8.7", title: "Worker Compensation Insurance", html: `<p><strong>Coverage status.</strong> The Company is a Workers' Compensation subscriber and carries coverage through Society Insurance. Workers' compensation is the exclusive remedy for covered work injuries/illnesses except in limited circumstances under Texas law.</p>` },
-  { code: "8.8", title: "Employee Time Off", html: `<p>While regular attendance is crucial to maintain business operations, the Company recognizes that employees may need time off from work. For all planned leaves, employees must submit a minimum of 21 days in advance.</p><h3 class="text-lg font-semibold mt-3 mb-2">Vacation Accrual</h3><p><strong>Full-Time Hourly:</strong> 1–4 years: up to 40 hours/year. 4+ years: up to 48 hours/year.</p><p><strong>Full-Time Salaried:</strong> 1–4 years: up to 50 hours/year. 4+ years: up to 60 hours/year.</p>` },
-  { code: "8.9", title: "Use and Management of PTO", html: `<ul class="list-disc pl-6"><li>All PTO is upfront — employees get all their PTO immediately at the start of the year or on their first anniversary.</li><li>PTO does not roll over to the next year.</li><li>Unused PTO is paid in full on the last paycheck of the year.</li><li>An employee who is terminated, resigns without notice or abandons their job is not eligible to receive the unpaid PTO.</li><li>PTO has a first-come, first-serve policy.</li></ul>` },
-  { code: "8.10", title: "Paid Time Off Policy (PTO)", html: `<p>It is the Policy of The Company to provide each full-time employee with vacation on a periodic basis. The amount of vacation to which an employee becomes entitled is determined by the employee's length of service as of his or her employment anniversary date.</p>` },
-  { code: "8.11", title: "Request to use PTO", html: `<ol class="list-decimal pl-6"><li>Request for PTO to use during vacation require 21 days advance notice in SLING APP.</li><li>Employees who wish to take PTO need to complete the request for time off in SLING APP plus MyToast App.</li></ol>` },
-  { code: "8.12", title: "Requesting & Scheduling PTO", html: `<ul class="list-disc pl-6"><li><strong>How to request:</strong> Submit PTO requests through Sling with at least 21 days' advance notice for vacation.</li><li><strong>Approval:</strong> PTO approval depends on business needs, coverage, posted blackout dates, and whether you have Available PTO.</li><li><strong>Coordination with leave laws:</strong> We will coordinate PTO with FMLA/ADA/PWFA when applicable.</li></ul>` },
-  { code: "8.13", title: "Pay & FLSA Guardrails", html: `<ul class="list-disc pl-6"><li><strong>Pay rate:</strong> PTO is paid at the employee's base hourly rate (for non-exempt) or salary equivalent (for exempt), excluding tips, differentials, or overtime.</li><li><strong>Overtime calculations:</strong> PTO hours do not count as "hours worked" for FLSA overtime.</li></ul>` }
+  { code: "8.1", title: "Eligibility & Waiting Period", html: `<p>Benefits eligibility begins after 60 calendar days of continuous employment in full-time status (30+ hours/week).</p><ul class="list-disc pl-6"><li>Health Insurance (medical), Dental, Vision, Life.</li></ul>` },
+  { code: "8.2", title: "PTO (Paid Time Off) — Accrual Start", html: `<p>PTO accrual begins after 60 calendar days of continuous employment for full-time employees.</p>` },
+  { code: "8.3", title: "Coordination With Leave & Payroll", html: `<p>During unpaid leaves, you may be responsible for direct payment of your premiums to maintain coverage.</p>` },
+  { code: "8.4", title: "Payroll Advance policy", html: `<p>Payroll advances are available based on 50% of earned hours worked in the current payroll. Tips are included. The full amount is deducted from the next paycheck. Maximum 6 times per calendar year.</p>` },
+  { code: "8.5", title: "Conditions for requesting a payroll advance", html: `<ul class="list-disc pl-6"><li>With the company more than 60 days without disciplinary action.</li><li>Good standing with satisfactory performance record.</li><li>Emergency circumstances.</li></ul><h3 class="text-lg font-semibold mt-3 mb-2">How to Request</h3><ul class="list-disc pl-6"><li>Contact a manager on duty or Payroll Department for the Payroll Advance Request Form.</li><li>Submit Monday–Friday, 10 AM–5 PM. Response within one business day.</li></ul>` },
+  { code: "8.6", title: "Employee Meal (Unpaid Meal Break)", html: `<p>Wok chefs prepare an employee meal between 2:30–3:30 p.m. daily. <strong>Clock out at the start of your break and clock back in when you return.</strong></p><ul class="list-disc pl-6"><li>Use China plates/bowls—not to-go packaging.</li><li>Fountain beverage: $0.50 per 16oz. Other non-alcoholic beverages: 30% off.</li></ul>` },
+  { code: "8.7", title: "Worker Compensation Insurance", html: `<p>The Company is a Workers' Compensation subscriber and carries coverage through Society Insurance.</p>` },
+  { code: "8.8", title: "Employee Time Off", html: `<p>For all planned leaves, employees must submit a minimum of 21 days in advance.</p><h3 class="text-lg font-semibold mt-3 mb-2">Vacation Accrual</h3><p><strong>Full-Time Hourly:</strong> 1–4 years: up to 40 hours/year. 4+ years: up to 48 hours/year.</p><p><strong>Full-Time Salaried:</strong> 1–4 years: up to 50 hours/year. 4+ years: up to 60 hours/year.</p>` },
+  { code: "8.9", title: "Use and Management of PTO", html: `<ul class="list-disc pl-6"><li>All PTO is upfront at the start of the year or on first anniversary.</li><li>PTO does not roll over to the next year.</li><li>Unused PTO is paid in full on the last paycheck of the year.</li><li>An employee who is terminated, resigns without notice, or abandons their job is not eligible for unpaid PTO.</li></ul>` },
+  { code: "8.10", title: "Paid Time Off Policy (PTO)", html: `<p>Each full-time employee receives vacation based on length of service as of their employment anniversary date.</p>` },
+  { code: "8.11", title: "Request to use PTO", html: `<ol class="list-decimal pl-6"><li>Request for PTO requires 21 days advance notice in SLING APP.</li><li>Complete request in both SLING APP and MyToast App.</li></ol>` },
+  { code: "8.12", title: "Requesting & Scheduling PTO", html: `<ul class="list-disc pl-6"><li>Submit PTO requests through Sling with at least 21 days' advance notice.</li><li>Approval depends on business needs, coverage, and available PTO balance.</li></ul>` },
+  { code: "8.13", title: "Pay & FLSA Guardrails", html: `<ul class="list-disc pl-6"><li>PTO is paid at the employee's base hourly rate, excluding tips, differentials, or overtime.</li><li>PTO hours do not count as "hours worked" for FLSA overtime.</li></ul>` }
 ];
-const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
 
     /* ========= SECTION MAPPING ========= */
     const SECTIONS = {
@@ -944,21 +987,15 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
     function gotoSection(tabKey) {
       const prevKey = _currentSectionKey;
       const durSec  = _sectionEnteredAt ? (Date.now() - _sectionEnteredAt) / 1000 : null;
-
-      // ── Flush last sub-section time before leaving this chapter ──────────────
-      // Find the last acknowledged (or currently active) sub-section in the prev chapter
       if (prevKey && SECTIONS[prevKey]) {
         const prevDef = SECTIONS[prevKey];
-        // Flush any sub-section that was being timed (the last unlocked card)
         for (const item of [...prevDef.items].reverse()) {
           if (_subSectionEnteredAt[item.code]) {
-            _logSubSectionTime(item.code); // fire-and-forget, no await needed here
+            _logSubSectionTime(item.code);
             break;
           }
         }
       }
-      // ─────────────────────────────────────────────────────────────────────────
-
       if (prevKey) _logEngagement('section_enter', tabKey, durSec, prevKey);
       _sectionEnteredAt  = Date.now();
       _currentSectionKey = tabKey;
@@ -967,11 +1004,13 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
       renderSection(tabKey);
     }
 
+    /* ── Policy card: initials field is LOCKED to login username ── */
     const policyCardTemplate = (def, item, isLocked = false)=>{
       const inputId = `init_${item.code.replace('.','_')}`;
       const saved = localStorage.getItem(nsKey(def.store) + item.code);
       const isAcknowledged = !!saved;
-      const val = saved ? (JSON.parse(saved)?.initials || getEmployeeKey()) : getEmployeeKey();
+      // Always use the employee's login key — cannot be changed
+      const val = getEmployeeKey();
       const cleanHtml = DOMPurify.sanitize(item.html, {ADD_ATTR: ['target']});
       const cardOpacity = isLocked ? 'opacity-40 pointer-events-none select-none' : '';
       const btnClass    = isAcknowledged ? 'bg-jc-green hover:opacity-95'
@@ -994,8 +1033,8 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
               <div class="min-w-[260px] md:w-[320px] md:sticky md:top-6 self-start">
                 <div class="rounded-xl border border-jc-border bg-white p-4 shadow-sm">
                   ${lockBanner}
-                  <label class="block text-xs text-slate-500 mb-1">Your Initials</label>
-                  <input id="${inputId}" class="w-full rounded-xl border border-jc-border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-jc-gold/40" placeholder="Your initials" value="${val}" ${isLocked ? 'disabled' : ''}>
+                  <label class="block text-xs text-slate-500 mb-1">Your ID</label>
+                  <div class="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 tracking-wide select-none cursor-not-allowed">${val}</div>
                   <div class="mt-3 flex items-center gap-2">
                     <button data-code="${item.code}"
                             data-input-id="${inputId}"
@@ -1006,7 +1045,7 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
                     </button>
                     <span id="msg_${inputId}" class="text-sm"></span>
                   </div>
-                  <div class="mt-2 text-xs text-slate-500">Acknowledging saves your initials to your record.</div>
+                  <div class="mt-2 text-xs text-slate-500">Acknowledging saves your ID to your record.</div>
                 </div>
               </div>
             </div>
@@ -1042,18 +1081,8 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
       wireSaveButtons();
       updateProgress();
 
-      // ── Start timer on the first unlocked card in this section ────────────────
-      // Find the first card that is NOT already acknowledged
       const firstUnacked = def.items.find(item => !localStorage.getItem(nsKey(def.store) + item.code));
       if (firstUnacked) _trackSubSectionEntry(firstUnacked.code);
-      // ─────────────────────────────────────────────────────────────────────────
-
-      const employeeKey = getEmployeeKey();
-      if(employeeKey){
-        document.querySelectorAll('input[placeholder="Your initials"]:not([disabled])').forEach(input => {
-          if(!input.value) input.value = employeeKey;
-        });
-      }
 
       const tabs = Array.from(tabButtons);
       const activeIdx = SECTION_ORDER.indexOf(tabKey);
@@ -1156,22 +1185,17 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
       });
       wantedCodes().forEach(c=>{ if(!meta[c]) meta[c] = { id:null, title:c }; });
       POLICY_META = meta;
-      if (Object.keys(POLICY_META).length === 0) {
-        console.warn('HB DEBUG — Policy metadata is empty.');
-        return false;
-      }
-      return true;
+      return Object.keys(POLICY_META).length > 0;
     }
 
     /* ========= SAVE / PREFILL ========= */
     async function prefillFromDB() {
-      const initials    = getInitials();
       const employeeKey = getEmployeeKey();
+      const initials    = getInitials();
       const ors = [];
       if (employeeKey) ors.push(`employee_initials.eq.${employeeKey}`);
       if (initials && initials !== employeeKey) ors.push(`employee_initials.eq.${initials}`);
       if (employeeKey) ors.push(`employee_initials.ilike.${employeeKey}`);
-      if (initials && initials !== employeeKey) ors.push(`employee_initials.ilike.${initials}`);
       if (ors.length === 0) return;
 
       const { data, error } = await client
@@ -1189,27 +1213,12 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
           const row = byId.get(pid);
           if (row && row.agreed) {
             localStorage.setItem(nsKey(def.store) + item.code, JSON.stringify({
-              initials: (row.signed_initials || employeeKey || initials || '').toUpperCase(),
+              initials: employeeKey,
               ts: row.created_at
             }));
           }
         });
       });
-
-      try {
-        const resumeFromDB = await (async () => {
-          try {
-            const _s = getSession();
-            if (!_s?.username) return null;
-            const { data: _sec, error: _err } = await client.rpc('hb_get_last_section', { p_username: _s.username });
-            if (!_err && _sec && SECTIONS[_sec]) return _sec;
-            return null;
-          } catch(_) { return null; }
-        })();
-        if (resumeFromDB) {
-          localStorage.setItem(nsKey('last_tab'), resumeFromDB);
-        }
-      } catch (_) {}
     }
 
     async function syncLocalAcksToDB() {
@@ -1220,20 +1229,16 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
           if (sv) {
             try {
               const d = JSON.parse(sv);
-              pending.push({ policyCode: item.code, initials: d.initials || getInitials() });
+              pending.push({ policyCode: item.code, initials: d.initials || getEmployeeKey() });
             } catch (_) {}
           }
         });
       });
       if (pending.length === 0) return;
       if (Object.keys(POLICY_META).length === 0) await loadPoliciesMeta();
-      let synced = 0, failed = 0;
       for (const item of pending) {
-        const res = await saveAckToDB(item);
-        if (res.ok) synced++; else failed++;
+        await saveAckToDB(item);
       }
-      if (synced > 0) console.log(`[syncLocalAcksToDB] ✅ Synced ${synced} ack(s) to DB.`);
-      if (failed > 0) console.warn(`[syncLocalAcksToDB] ⚠️ ${failed} ack(s) still could not reach DB.`);
     }
 
     async function saveAckToDB({ initials: typedInitials, policyCode }) {
@@ -1245,9 +1250,9 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
       const policyId = meta?.id != null ? Number(meta.id) : null;
       const session_id = getSessionId() || null;
       const s = getSession();
-      const ownerInitials = getInitials() || '';
-      const signedInitials = (typedInitials || ownerInitials).toUpperCase();
-      const ownerKey = getEmployeeKey() || ownerInitials;
+      // Always use the login key — never the typed value from a now-removed input
+      const ownerKey = getEmployeeKey();
+      const signedInitials = ownerKey;
       const username = s?.username || null;
       const employee_id = UUID_RE.test(String(s?.employee_id || '')) ? s.employee_id : null;
 
@@ -1265,12 +1270,9 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
           p_session_id:      session_id,
           p_agreed:          true
         };
-        const { data: rpcData, error: rpcErr } = await client.rpc('hb_ack_policy_api', rpcPayload);
+        const { error: rpcErr } = await client.rpc('hb_ack_policy_api', rpcPayload);
         if (!rpcErr) { return { ok: true }; }
-        console.warn(`[saveAckToDB] RPC error for ${policyCode}:`, rpcErr?.message);
-      } catch (e) {
-        console.warn(`[saveAckToDB] RPC threw for ${policyCode}:`, e?.message);
-      }
+      } catch (e) {}
 
       const insertPayload = {
         policy_id:         policyId,
@@ -1300,10 +1302,7 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
         const { error } = await client.from('hb_acks').insert(insertPayload);
         if (!error) { return { ok: true }; }
         if (error?.code === '23505') { return { ok: true }; }
-        console.error(`[saveAckToDB] ❌ All strategies failed for ${policyCode}:`, error?.message);
-      } catch (e) {
-        console.error(`[saveAckToDB] ❌ Insert threw for ${policyCode}:`, e?.message);
-      }
+      } catch (e) {}
       return { ok: false, message: 'DB not ready — saved locally' };
     }
 
@@ -1344,15 +1343,9 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
           btnFinalize.classList.add('bg-slate-600','hover:bg-slate-700');
           btnFinalize.classList.remove('bg-emerald-600','hover:bg-emerald-700');
         }
-        document.querySelectorAll('.tabbtn').forEach((tab, i)=>{
-          tab.disabled = !allDone && (i !== SECTION_ORDER.indexOf(currentTab));
-        });
       } else {
         btnFinalize.classList.add('hidden');
         btnNext.classList.remove('hidden');
-        document.querySelectorAll('.tabbtn').forEach((tab, i)=>{
-          tab.disabled = (i !== SECTION_ORDER.indexOf(currentTab));
-        });
       }
     }
 
@@ -1362,23 +1355,19 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
           const def = SECTIONS[currentTab];
           const code = btn.getAttribute('data-code');
           const inputId = btn.getAttribute('data-input-id');
-          const input = document.getElementById(inputId);
           const msgEl = document.getElementById(`msg_${inputId}`);
-          const typed = (input?.value || '').trim().toUpperCase();
-          if(!typed){ toast(msgEl, 'Enter initials.'); return; }
+          // Always use the login key — no user input needed
+          const employeeKey = getEmployeeKey();
 
           btn.disabled = true;
           btn.textContent = 'Saving...';
           btn.classList.remove('bg-jc-gold','bg-jc-green');
           btn.classList.add('bg-slate-500');
 
-          // 1. Save locally FIRST
-          localStorage.setItem(nsKey(def.store) + code, JSON.stringify({ initials: typed, ts: new Date().toISOString() }));
+          localStorage.setItem(nsKey(def.store) + code, JSON.stringify({ initials: employeeKey, ts: new Date().toISOString() }));
 
-          // 2. Attempt DB sync
-          const res = await saveAckToDB({ initials: typed, policyCode: code });
+          const res = await saveAckToDB({ initials: employeeKey, policyCode: code });
 
-          // 3. Always show Acknowledged
           btn.textContent = 'Acknowledged ✓';
           btn.classList.remove('bg-slate-500','bg-jc-gold');
           btn.classList.add('bg-jc-green');
@@ -1392,12 +1381,8 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
 
           updateProgress();
           _saveLastSectionToDB(currentTab);
-
-          // ── Log time spent on this sub-section ─────────────────────────────
           await _logSubSectionTime(code);
-          // ───────────────────────────────────────────────────────────────────
 
-          // ── Unlock next card + start its timer ─────────────────────────────
           (function(){
             var _def  = SECTIONS[currentTab];
             var _idx  = _def.items.findIndex(function(i){ return i.code === code; });
@@ -1415,13 +1400,9 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
               _btn.classList.add('bg-jc-gold');
               _btn.textContent = 'Acknowledge';
             }
-            var _inp = _card.querySelector('input[placeholder="Your initials"]');
-            if (_inp) { _inp.disabled = false; if (!_inp.value) _inp.value = getInitials(); }
-            // ✅ Start timer for the next card immediately when it unlocks
             _trackSubSectionEntry(_next.code);
             setTimeout(function(){ _card.scrollIntoView({behavior:'smooth',block:'center'}); }, 200);
           })();
-          // ───────────────────────────────────────────────────────────────────
 
         });
       });
@@ -1445,13 +1426,11 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
         if(btnNext.disabled) return;
         const idx = SECTION_ORDER.indexOf(currentTab);
         if(idx >=0 && idx < SECTION_ORDER.length-1){
-          const nextTabKey = SECTION_ORDER[idx+1];
-          gotoSection(nextTabKey);
+          gotoSection(SECTION_ORDER[idx+1]);
         }
       });
 
       btnFinalize.addEventListener('click', async ()=>{
-        // ── FLUSH CURRENT SECTION TIME ──────────────────────────────────────
         if (_currentSectionKey && _sectionEnteredAt) {
           const flushDur = (Date.now() - _sectionEnteredAt) / 1000;
           if (flushDur > 0) {
@@ -1459,7 +1438,6 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
             _sectionEnteredAt = Date.now();
           }
         }
-        // ── FLUSH LAST SUB-SECTION TIME ─────────────────────────────────────
         if (_currentSectionKey && SECTIONS[_currentSectionKey]) {
           const lastDef = SECTIONS[_currentSectionKey];
           for (const item of [...lastDef.items].reverse()) {
@@ -1469,7 +1447,6 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
             }
           }
         }
-        // ────────────────────────────────────────────────────────────────────
 
         const missing = [];
         for (const [key, def] of Object.entries(SECTIONS)) {
@@ -1501,7 +1478,6 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
           toast(msgEl, '❌ Please sign before submitting.');
           return;
         }
-        // ── FLUSH SECTION VIII TIME (safety net) ────────────────────────────
         if (_currentSectionKey && _sectionEnteredAt) {
           const flushDur = (Date.now() - _sectionEnteredAt) / 1000;
           if (flushDur > 0) {
@@ -1518,7 +1494,6 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
             }
           }
         }
-        // ────────────────────────────────────────────────────────────────────
 
         btn.disabled = true;
         btn.textContent = 'Submitting...';
@@ -1558,10 +1533,11 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
 
           const rawEmpId = s?.employee_id || null;
           const validEmpId = (rawEmpId && UUID_RE.test(String(rawEmpId))) ? rawEmpId : null;
+          const employeeKey = getEmployeeKey();
 
           const { error: sigError } = await client.from('hb_employee_signatures').upsert({
             employee_id: validEmpId,
-            employee_initials: getEmployeeKey(),
+            employee_initials: employeeKey,
             session_id: getSessionId(),
             signature_data: signatureData,
             signature_type: 'canvas',
@@ -1575,12 +1551,11 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
             alert('⚠️ Signature save failed. Please contact IT support.\nError: ' + sigError.message);
             return;
           }
-          console.log('✅ Employee signature saved successfully');
           await _saveSignatureToDB(signatureData);
 
           await client.from('hb_acknowledgment_status').upsert({
             employee_id: validEmpId,
-            employee_initials: getEmployeeKey(),
+            employee_initials: employeeKey,
             session_id: getSessionId(),
             employee_signed: true,
             employee_signed_at: new Date().toISOString()
@@ -1588,7 +1563,7 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
 
           try {
             await client.from('hb_ack_forms').insert({
-              initials: getInitials(),
+              initials: employeeKey,
               session_id: getSessionId() || null,
               employee_id: s?.employee_id || null,
               status: 'Finalized - Sending with Signature',
@@ -1605,10 +1580,9 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
             });
             let data;
             try { data = await resp.json(); } catch { data = {}; }
-            console.log("📬 Edge Function Response:", resp.status, data);
             if (resp.ok && data.ok) {
               btn.classList.remove("bg-emerald-600", "opacity-70", "cursor-wait");
-              btn.classList.add("bg-jc-green", "hover:bg-emerald-700");
+              btn.classList.add("bg-jc-green");
               btn.textContent = "✅ Submitted Successfully";
               btn.disabled = true;
               toast(msgEl, `✅ Your signed acknowledgment has been submitted and emailed.`, true);
@@ -1616,13 +1590,11 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
                 await client.from('hb_ack_forms')
                   .update({ status: 'Finalized - Email Sent with Signature' })
                   .eq('session_id', getSessionId() || null)
-                  .eq('initials', getInitials() || '');
+                  .eq('initials', employeeKey || '');
               } catch {}
-              setTimeout(() => { document.getElementById('signatureCanvas')?.classList.add('opacity-50'); }, 1000);
             } else {
-              console.error("❌ Email submission failed:", data.error || resp.statusText);
               btn.classList.remove("bg-emerald-600", "opacity-70", "cursor-wait");
-              btn.classList.add("bg-red-600", "hover:bg-red-700");
+              btn.classList.add("bg-red-600");
               btn.textContent = "❌ Submission Failed - Retry";
               btn.disabled = false;
               toast(msgEl, `❌ Submission failed: ${data.error || resp.status}. Please try again or contact admin@jengchirestaurant.com`);
@@ -1630,7 +1602,7 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
           } else {
             btn.classList.add("bg-jc-green");
             btn.textContent = "✅ Submitted (Mock Mode)";
-            toast(msgEl, 'Signature saved locally (Email function not configured)', true);
+            toast(msgEl, 'Signature saved (Email function not configured)', true);
           }
         } catch (e) {
           console.error("⚠️ Submission error:", e);
@@ -1644,9 +1616,20 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
     }
 
     /* ========= BOOT ========= */
+
+    // Called after verification is confirmed
+    async function _startHandbook() {
+      _currentSectionKey = currentTab;
+      _sectionEnteredAt  = Date.now();
+      renderSection(currentTab);
+      _saveLastSectionToDB(currentTab);
+      document.getElementById('sectionTitle')?.focus();
+    }
+
     async function bootApp(){
       await fillEmployeeCard();
       wireNavigationButtons();
+      wireVerifyButtons();
       await loadPoliciesMeta();
       await prefillFromDB();
       syncLocalAcksToDB().catch(e => console.warn('[boot] syncLocalAcksToDB error:', e));
@@ -1668,16 +1651,21 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
         currentTab = findResumeSectionKey();
       }
 
-      _currentSectionKey = currentTab;
-      _sectionEnteredAt  = Date.now();
-      renderSection(currentTab);
-      _saveLastSectionToDB(currentTab);
-
-      if (alreadySubmitted) {
-        document.getElementById('signatureSection')?.classList.remove('hidden');
-        btnFinalize?.classList.add('hidden');
-        if (!signatureCanvas) { initSignatureCanvas(); }
+      // ── VERIFICATION GATE ──────────────────────────────────────────────────
+      // Skip gate if already submitted OR already verified this session
+      if (alreadySubmitted || isVerified()) {
+        hideVerifyGate();
+        _startHandbook();
+        if (alreadySubmitted) {
+          document.getElementById('signatureSection')?.classList.remove('hidden');
+          btnFinalize?.classList.add('hidden');
+          if (!signatureCanvas) { initSignatureCanvas(); }
+        }
+      } else {
+        // Show verification gate — handbook stays hidden
+        showVerifyGate();
       }
+      // ──────────────────────────────────────────────────────────────────────
 
       _startInactivityWatcher();
       _loadSignatureFromDB().then(dataURL => {
@@ -1686,13 +1674,6 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
           requestAnimationFrame(() => _restoreSignatureOnCanvas(dataURL));
         }
       });
-
-      console.group('HB DEBUG — POLICY META');
-      console.log('Wanted codes:', wantedCodes());
-      console.log('Meta map:', POLICY_META);
-      const missing = wantedCodes().filter(c => !POLICY_META?.[c]?.id);
-      if (missing.length) { console.warn('These codes have NO policy_id in DB:', missing); }
-      console.groupEnd();
     }
 
     (async function init(){
@@ -1763,15 +1744,13 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
     function handleTouchStart(e) {
       e.preventDefault();
       const touch = e.touches[0];
-      const mouseEvent = new MouseEvent('mousedown', { clientX: touch.clientX, clientY: touch.clientY });
-      signatureCanvas.dispatchEvent(mouseEvent);
+      signatureCanvas.dispatchEvent(new MouseEvent('mousedown', { clientX: touch.clientX, clientY: touch.clientY }));
     }
 
     function handleTouchMove(e) {
       e.preventDefault();
       const touch = e.touches[0];
-      const mouseEvent = new MouseEvent('mousemove', { clientX: touch.clientX, clientY: touch.clientY });
-      signatureCanvas.dispatchEvent(mouseEvent);
+      signatureCanvas.dispatchEvent(new MouseEvent('mousemove', { clientX: touch.clientX, clientY: touch.clientY }));
     }
 
     function clearSignature() {
