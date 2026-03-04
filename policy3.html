@@ -341,9 +341,13 @@ let submittedMap = new Map();
 // Priority: exact match first, then prefix match.
 // ============================================
 function getSubmittedStatus(emp) {
-  // 1. Exact match (handles old 2-char records)
+  // 1. Exact match on full username (e.g. "CRV1038") — most reliable
+  if (emp.username && submittedMap.has(emp.username.toUpperCase()))
+    return submittedMap.get(emp.username.toUpperCase());
+  // 2. Exact match on 2-char initials (handles old pre-migration records)
   if (submittedMap.has(emp.initials)) return submittedMap.get(emp.initials);
-  // 2. Full username starts with the 2-char initials (e.g. "CRV1038".startsWith("CR"))
+  // 3. Prefix match: submittedMap key starts with emp.initials (e.g. "CRV1038" starts with "CR")
+  //    Only used if username lookup failed (e.g. employee not yet in hb_handbook_access)
   for (const [key, val] of submittedMap) {
     if (key.toUpperCase().startsWith(emp.initials.toUpperCase())) return val;
   }
@@ -599,39 +603,65 @@ async function loadEmployees() {
   pendingEmployees = [];
   submittedEmployees = [];
   
-  const employeeQuery = client
+  const { data: rawEmployees, error: empError } = await client
     .from('employees2025')
     .select('employee_id, first_name, last_name, job_title, department, email, phone, report_to, status')
     .eq('status', 'Active')
     .order('first_name', { ascending: true });
-  
-  const { data: rawEmployees, error: empError } = await employeeQuery;
   
   if (empError) {
     console.error('❌ Error loading employees:', empError);
     alert('Failed to load employees: ' + empError.message);
     return;
   }
-  
-  let allEmps = (rawEmployees || []).map(emp => ({
-    id: emp.employee_id,
-    initials: (emp.first_name?.charAt(0) + emp.last_name?.charAt(0) || '??').toUpperCase(),
-    full_name: `${emp.first_name || ''} ${emp.last_name || ''}`.trim(),
-    position: emp.job_title,
-    department: emp.department,
-    email: emp.email,
-    phone: emp.phone,
-    report_to: emp.report_to,
-    status: emp.status
-  }));
+
+  // ✅ FIX: Fetch full usernames from hb_handbook_access so we can match
+  // each employee to their unique username (e.g. CRV1038, CR0332).
+  // employees2025 only gives us first+last initial (2 chars) which is ambiguous
+  // when multiple employees share the same initials (e.g. CR = Craig Reeves AND Cesar Ramirez).
+  const { data: accessRows } = await client
+    .from('hb_handbook_access')
+    .select('username, employee_name');
+
+  // Build name → username map (lowercased for case-insensitive matching)
+  const nameToUsername = new Map();
+  (accessRows || []).forEach(row => {
+    if (row.employee_name && row.username) {
+      nameToUsername.set(row.employee_name.trim().toLowerCase(), row.username.trim().toUpperCase());
+    }
+  });
+
+  let allEmps = (rawEmployees || []).map(emp => {
+    const fullName = `${emp.first_name || ''} ${emp.last_name || ''}`.trim();
+    // Look up the full username — try exact name match first
+    const username = nameToUsername.get(fullName.toLowerCase()) || null;
+    return {
+      id: emp.employee_id,
+      initials: (emp.first_name?.charAt(0) + emp.last_name?.charAt(0) || '??').toUpperCase(),
+      username: username, // full unique key e.g. "CRV1038" — null if not in hb_handbook_access yet
+      full_name: fullName,
+      position: emp.job_title,
+      department: emp.department,
+      email: emp.email,
+      phone: emp.phone,
+      report_to: emp.report_to,
+      status: emp.status
+    };
+  });
   
   let filteredEmps = allEmps;
   
   if (!currentManager.can_see_all_employees) {
     if (currentManager.allowed_employee_initials && currentManager.allowed_employee_initials.length > 0) {
-      filteredEmps = filteredEmps.filter(emp =>
-        currentManager.allowed_employee_initials.includes(emp.initials)
-      );
+      const allowed = currentManager.allowed_employee_initials.map(a => a.toUpperCase());
+      filteredEmps = filteredEmps.filter(emp => {
+        // ✅ PRIMARY: match on full username (e.g. "CRV1038") — unambiguous
+        if (emp.username && allowed.includes(emp.username.toUpperCase())) return true;
+        // FALLBACK: if username not resolved yet, match on 2-char initials
+        // (only safe if allowed list also still has 2-char entries)
+        if (allowed.includes(emp.initials.toUpperCase())) return true;
+        return false;
+      });
     } else if (currentManager.allowed_positions && currentManager.allowed_positions.length > 0) {
       filteredEmps = filteredEmps.filter(emp =>
         emp.position && currentManager.allowed_positions.includes(emp.position)
@@ -743,8 +773,8 @@ async function loadEmployees() {
   
   console.log('✅ Submitted employees (most recent only):', submittedMap.size);
   
-  // ✅ FIX: Use getSubmittedStatus() so both 2-char keys ("CR") AND full
-  // username keys ("CRV1038") match correctly against employees2025 initials.
+  // Separate pending vs submitted
+  // ✅ FIX: Use getSubmittedStatus() — handles both 2-char keys and full usernames
   pendingEmployees = allEmployees.filter(e => !getSubmittedStatus(e));
   submittedEmployees = allEmployees.filter(e => !!getSubmittedStatus(e));
   
