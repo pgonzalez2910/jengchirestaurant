@@ -6125,8 +6125,26 @@ await client.from('hb_acknowledgment_status').upsert({
 
 
       // ⬇️ choose where to land
+      // ✅ FIX: Query hb_acknowledgment_status FIRST — if employee_signed = true in DB,
+      // they already submitted. Go straight to Section VIII + show signature.
+      // Do NOT rely on localStorage counts (can be 94/96 on a new device / cleared cache).
+      const employeeKey = getEmployeeKey();
+      let alreadySubmitted = false;
+      try {
+        const { data: ackStatus } = await client
+          .from('hb_acknowledgment_status')
+          .select('employee_signed')
+          .eq('employee_initials', employeeKey)
+          .maybeSingle();
+        alreadySubmitted = !!ackStatus?.employee_signed;
+      } catch(_) {}
 
-      currentTab = findResumeSectionKey();
+      if (alreadySubmitted) {
+        // Force Section VIII — they're done, show signature section immediately
+        currentTab = SECTION_ORDER[SECTION_ORDER.length - 1];
+      } else {
+        currentTab = findResumeSectionKey();
+      }
 
       _currentSectionKey = currentTab;
 
@@ -6137,13 +6155,10 @@ await client.from('hb_acknowledgment_status').upsert({
       // Always write the landed section back to DB so ANY device picks it up next login
       _saveLastSectionToDB(currentTab);
 
-      // ✅ FIX: If employee already completed all sections, show the signature section
-      // immediately so they see it on re-login with their saved signature preloaded.
-      const allSectionsComplete = SECTION_ORDER.every(k => sectionIsComplete(k));
-      if (allSectionsComplete) {
+      // If already submitted, reveal the signature section and initialize the canvas
+      if (alreadySubmitted) {
         document.getElementById('signatureSection')?.classList.remove('hidden');
         btnFinalize?.classList.add('hidden');
-        // Must init the canvas NOW so _restoreSignatureOnCanvas can draw onto it below
         if (!signatureCanvas) {
           initSignatureCanvas();
         }
