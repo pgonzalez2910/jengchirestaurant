@@ -569,11 +569,25 @@
       try {
         const s = getSession();
         if (!s?.username) return null;
+
+        // Primary: hb_handbook_access (updated after each stroke via _saveSignatureToDB)
         const { data } = await client.from('hb_handbook_access')
           .select('signature_data')
           .eq('username', s.username)
           .maybeSingle();
-        return data?.signature_data || null;
+        if (data?.signature_data) return data.signature_data;
+
+        // ✅ FIX: Fallback to hb_employee_signatures — this is where the
+        // final submission upsert writes the signature (keyed by full username
+        // e.g. "CRV1038"). If hb_handbook_access row is missing or the UPDATE
+        // silently failed, we still get the saved signature from here.
+        const { data: sigData } = await client.from('hb_employee_signatures')
+          .select('signature_data')
+          .eq('employee_initials', s.username)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        return sigData?.signature_data || null;
       } catch(_) { return null; }
     }
 
