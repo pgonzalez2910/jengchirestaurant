@@ -1530,10 +1530,107 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
       document.getElementById('btnSubmitWithSignature')?.addEventListener('click', async () => {
         const btn = document.getElementById('btnSubmitWithSignature');
         const msgEl = document.getElementById('signatureMsg');
+        const isResubmit = btn?.dataset?.resubmit === 'true';
+
         if (!hasSignature || isSignatureEmpty()) {
           toast(msgEl, '❌ Please sign before submitting.');
           return;
         }
+
+        // ── RESUBMIT FLOW ─────────────────────────────────────────────────
+        if (isResubmit) {
+          btn.disabled = true;
+          btn.textContent = '⏳ Resubmitting...';
+          btn.classList.add('opacity-70', 'cursor-wait');
+          try {
+            const signatureData = getSignatureDataURL();
+            const s = getSession();
+            const rawEmpId = s?.employee_id || null;
+            const UUID_RE2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            const validEmpId = (rawEmpId && UUID_RE2.test(String(rawEmpId))) ? rawEmpId : null;
+
+            // 1. Update signature record with new signature
+            await client.from('hb_employee_signatures').upsert({
+              employee_id: validEmpId,
+              employee_initials: getEmployeeKey(),
+              session_id: getSessionId(),
+              signature_data: signatureData,
+              signature_type: 'canvas',
+              signed_at: new Date().toISOString()
+            }, { onConflict: 'employee_initials', ignoreDuplicates: false });
+
+            // 2. Update acknowledgment status — re-mark as signed with new timestamp
+            await client.from('hb_acknowledgment_status').upsert({
+              employee_id: validEmpId,
+              employee_initials: getEmployeeKey(),
+              session_id: getSessionId(),
+              employee_signed: true,
+              employee_signed_at: new Date().toISOString()
+            }, { onConflict: 'employee_initials,session_id', ignoreDuplicates: false });
+
+            // 3. Save to local DB copy
+            await _saveSignatureToDB(signatureData);
+
+            // 4. Call edge function to regenerate PDF with new signature
+            const position = s?.position || 'N/A';
+            const allAcks = getAllAcksFromLocalStorage();
+            const payload = {
+              employee: {
+                fullName: s?.full_name || 'N/A',
+                initials: getInitials(),
+                position,
+                department: s?.department || 'N/A',
+                reportsTo: s?.reports_to || 'N/A',
+                email: s?.email || '',
+                phone: s?.phone || '',
+                sessionId: getSessionId(),
+                date: new Date().toISOString(),
+                signature: signatureData
+              },
+              policies: allAcks,
+              card: {
+                user: document.getElementById('fi_user')?.textContent || '',
+                name: document.getElementById('fi_name')?.textContent || '',
+                position: document.getElementById('fi_position')?.textContent || '',
+                department: document.getElementById('fi_department')?.textContent || '',
+                reports_to: document.getElementById('fi_reports_to')?.textContent || '',
+                email: document.getElementById('fi_email')?.textContent || '',
+                phone: document.getElementById('fi_phone')?.textContent || '',
+                session_started: document.getElementById('fi_session_started')?.textContent || ''
+              }
+            };
+
+            const resp = await fetch(EMAIL_FUNCTION_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_ANON_KEY },
+              body: JSON.stringify(payload)
+            });
+            let respData;
+            try { respData = await resp.json(); } catch { respData = {}; }
+
+            if (resp.ok && respData.ok) {
+              btn.textContent = '✅ Resubmitted Successfully';
+              btn.disabled = true;
+              btn.classList.remove('opacity-70','cursor-wait');
+              delete btn.dataset.resubmit;
+              const sigMsg = document.getElementById('sigStatusMsg');
+              if (sigMsg) {
+                sigMsg.textContent = '✅ Your signature has been resubmitted and a new PDF has been generated.';
+                sigMsg.className = 'text-xs text-emerald-600 mb-4 font-medium';
+              }
+              toast(msgEl, '✅ Resubmitted! New PDF generated and emailed.', true);
+            } else {
+              throw new Error(respData.error || 'Resubmit failed');
+            }
+          } catch(e) {
+            btn.disabled = false;
+            btn.textContent = '🔄 Resubmit Signature & Regenerate PDF';
+            btn.classList.remove('opacity-70','cursor-wait');
+            toast(msgEl, `❌ Resubmit failed: ${e.message}`);
+          }
+          return; // ← don't fall through to original submit flow
+        }
+        // ── END RESUBMIT FLOW ─────────────────────────────────────────────
         // ── FLUSH SECTION VIII TIME (safety net) ────────────────────────────
         if (_currentSectionKey && _sectionEnteredAt) {
           const flushDur = (Date.now() - _sectionEnteredAt) / 1000;
@@ -1715,19 +1812,23 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
         document.getElementById('signatureSection')?.classList.remove('hidden');
         btnFinalize?.classList.add('hidden');
         if (!signatureCanvas) { initSignatureCanvas(); }
-        // Show status message for returning employee
+
+        // Show status message — already submitted but can resubmit
         const sigMsg = document.getElementById('sigStatusMsg');
         if (sigMsg) {
-          sigMsg.textContent = '✅ You have already completed and submitted this handbook. Your signature is shown below.';
+          sigMsg.innerHTML = '✅ You have already submitted. Your previous signature is loaded below. You can <strong>resubmit</strong> to regenerate your PDF.';
           sigMsg.className = 'text-xs text-emerald-600 mb-4 font-medium';
         }
-        // Lock the submit button — already done
+
+        // Change button to Resubmit mode — stays enabled
         const submitBtn = document.getElementById('btnSubmitWithSignature');
         if (submitBtn) {
-          submitBtn.textContent = '✅ Already Submitted';
-          submitBtn.disabled = true;
-          submitBtn.classList.remove('bg-emerald-600','hover:bg-emerald-700');
-          submitBtn.classList.add('bg-slate-300','cursor-not-allowed');
+          submitBtn.textContent = '🔄 Resubmit Signature & Regenerate PDF';
+          submitBtn.disabled = false;
+          submitBtn.classList.remove('bg-slate-300','cursor-not-allowed');
+          submitBtn.classList.add('bg-emerald-600','hover:bg-emerald-700');
+          // Mark as resubmit so the click handler knows
+          submitBtn.dataset.resubmit = 'true';
         }
       }
 
@@ -1882,4 +1983,3 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
 </body>
 
 </html>
-
