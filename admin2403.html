@@ -2207,14 +2207,33 @@ async function executeReset(){
       msg.textContent='⚠️ Some errors: '+errors.join(' | ');
       msg.style.color='#d97706';
     } else {
-      msg.textContent=`✅ ${name} has been fully reset. They can now start the handbook from scratch.`;
-      msg.style.color='#16a34a';
-      // Refresh previews to show 0
-      $('previewAcks').textContent='0'; $('previewLogs').textContent='0';
-      $('previewSigned').textContent='No'; $('previewSig').textContent='None';
-      $('previewSigned').style.color='#94a3b8';
+      // ── VERIFY rows were actually deleted (RLS can silently block) ──
+      const [chkA, chkL] = await Promise.all([
+        client.from('hb_acks').select('id',{count:'exact',head:true}).eq('employee_initials',uname),
+        client.from('hb_engagement_log').select('id',{count:'exact',head:true}).eq('username',uname)
+      ]);
+      const remA = chkA.count ?? 0;
+      const remL = chkL.count ?? 0;
+      if(remA > 0 || remL > 0){
+        msg.innerHTML = `⚠️ <strong>Reset blocked by Supabase RLS.</strong><br>
+          ${remA} ack rows and ${remL} log rows still exist.<br>
+          Run these policies in <strong>Supabase → SQL Editor</strong>:<br>
+          <code style="display:block;background:#1e293b;color:#34d399;padding:8px 12px;border-radius:8px;font-size:11px;margin-top:6px;text-align:left">
+CREATE POLICY "admin_delete_acks" ON hb_acks FOR DELETE TO anon USING (true);<br>
+CREATE POLICY "admin_delete_ack_status" ON hb_acknowledgment_status FOR DELETE TO anon USING (true);<br>
+CREATE POLICY "admin_delete_logs" ON hb_engagement_log FOR DELETE TO anon USING (true);<br>
+CREATE POLICY "admin_delete_sigs" ON hb_employee_signatures FOR DELETE TO anon USING (true);
+          </code>`;
+        msg.style.color='#d97706';
+      } else {
+        msg.textContent=`✅ ${name} has been fully reset. They can now start the handbook from scratch.`;
+        msg.style.color='#16a34a';
+        $('previewAcks').textContent='0'; $('previewLogs').textContent='0';
+        $('previewSigned').textContent='No'; $('previewSig').textContent='None';
+        $('previewSigned').style.color='#94a3b8';
+        toast(`✅ ${name} reset successfully`);
+      }
       $('resetConfirmCheck').checked=false;
-      toast(`✅ ${name} reset successfully`);
     }
   } catch(e){
     msg.textContent='❌ Reset failed: '+e.message;
@@ -2288,6 +2307,7 @@ async function executeEmpResetAck(){
   btn.textContent = 'Resetting…'; btn.disabled = true; btn.style.opacity = '0.7';
   msg.textContent = ''; msg.style.color = '#64748b';
   try {
+    // Run all deletes
     const {error:e1} = await client.from('hb_acks').delete().eq('employee_initials',uname);
     if(e1) throw new Error('hb_acks: '+e1.message);
     const {error:e2} = await client.from('hb_acknowledgment_status').delete().eq('employee_initials',uname);
@@ -2296,11 +2316,34 @@ async function executeEmpResetAck(){
     if(e3) throw new Error('hb_engagement_log: '+e3.message);
     const {error:e4} = await client.from('hb_employee_signatures').delete().eq('employee_initials',uname);
     if(e4) throw new Error('hb_employee_signatures: '+e4.message);
-    // Clear signature from handbook access (non-fatal — column may not exist)
     await client.from('hb_handbook_access').update({signature_data:null,signature_saved_at:null}).eq('username',uname);
-    msg.textContent = `✅ ${name} has been fully reset. They can start the handbook from scratch.`;
-    msg.style.color = '#059669';
-    toast(`✅ ${name} reset successfully`);
+
+    // ── VERIFY: re-query counts to confirm rows were actually deleted ──
+    const [checkAcks, checkLog] = await Promise.all([
+      client.from('hb_acks').select('id',{count:'exact',head:true}).eq('employee_initials',uname),
+      client.from('hb_engagement_log').select('id',{count:'exact',head:true}).eq('username',uname)
+    ]);
+    const remainAcks = checkAcks.count ?? 0;
+    const remainLog  = checkLog.count  ?? 0;
+
+    if(remainAcks > 0 || remainLog > 0){
+      // Deletes ran but rows still exist — Supabase RLS is blocking
+      msg.innerHTML = `⚠️ <strong>Reset blocked by Supabase RLS.</strong><br>
+        The delete commands ran but <strong>${remainAcks} ack rows</strong> and 
+        <strong>${remainLog} log rows</strong> still exist.<br><br>
+        To fix, run this SQL in <strong>Supabase → SQL Editor</strong>:<br>
+        <code style="display:block;background:#1e293b;color:#34d399;padding:8px 12px;border-radius:8px;font-size:11px;margin-top:6px;text-align:left">
+CREATE POLICY "admin_delete_acks" ON hb_acks FOR DELETE TO anon USING (true);<br>
+CREATE POLICY "admin_delete_ack_status" ON hb_acknowledgment_status FOR DELETE TO anon USING (true);<br>
+CREATE POLICY "admin_delete_logs" ON hb_engagement_log FOR DELETE TO anon USING (true);<br>
+CREATE POLICY "admin_delete_sigs" ON hb_employee_signatures FOR DELETE TO anon USING (true);
+        </code>`;
+      msg.style.color = '#d97706';
+    } else {
+      msg.textContent = `✅ ${name} has been fully reset. They can start the handbook from scratch.`;
+      msg.style.color = '#059669';
+      toast(`✅ ${name} reset successfully`);
+    }
     $('empResetAckCheck').checked = false;
     await loadEmpResetAckPreview();
   } catch(e){
