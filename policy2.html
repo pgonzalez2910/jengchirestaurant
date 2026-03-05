@@ -1284,6 +1284,13 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
       const username = s?.username || null;
       const employee_id = UUID_RE.test(String(s?.employee_id || '')) ? s.employee_id : null;
 
+      // ✅ GUARD: session not loaded yet — don't write a blank employee_initials to DB
+      // This happens when syncLocalAcksToDB fires before session is fully hydrated
+      if (!ownerKey || ownerKey.length < 2) {
+        console.warn(`[saveAckToDB] ⚠️ Skipping ${policyCode} — session not ready (ownerKey="${ownerKey}"). Will retry on next boot.`);
+        return { ok: false, message: 'Session not ready' };
+      }
+
       if (!policyId) {
         console.warn(`[saveAckToDB] No policyId for code "${policyCode}".`);
         return { ok: false, message: `Policy ${policyCode} not in DB — saved locally` };
@@ -1779,7 +1786,20 @@ const SECTION_VIII_CODES = SECTION_VIII.map(i => i.code);
       wireNavigationButtons();
       await loadPoliciesMeta();
       await prefillFromDB();
-      syncLocalAcksToDB().catch(e => console.warn('[boot] syncLocalAcksToDB error:', e));
+      // ✅ FIX: Defer syncLocalAcksToDB until session is confirmed loaded
+      // Running it immediately could fire before getEmployeeKey() is available,
+      // writing blank employee_initials to DB (DB rejects it with the "must be full username" error)
+      const _sessionKey = getEmployeeKey();
+      if (_sessionKey) {
+        syncLocalAcksToDB().catch(e => console.warn('[boot] syncLocalAcksToDB error:', e));
+      } else {
+        console.warn('[boot] syncLocalAcksToDB deferred — session not ready yet');
+        setTimeout(() => {
+          if (getEmployeeKey()) {
+            syncLocalAcksToDB().catch(e => console.warn('[boot:deferred] syncLocalAcksToDB error:', e));
+          }
+        }, 1500);
+      }
 
       // ── Show info verification modal FIRST ───────────────────────────────
       await showVerifyModal();
