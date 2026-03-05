@@ -206,6 +206,7 @@ function toCSTTimeString(d) {
 
 // ─── STATE ──────────────────────────────────────────────────────
 let currentManager = null;
+let managerHandbookUsername = '';
 let managerSignatureData = null;
 let allEmployees = [], pendingEmployees = [], submittedEmployees = [];
 let submittedMap = new Map();
@@ -224,62 +225,48 @@ let submittedMap = new Map();
 // This means JTJG as HR sees everyone EXCEPT CRV1038, ST3764, AM9910, PG9367
 // (those 4 managers are only visible in Manager mode)
 //
-function applyRoleFilter(allEmps) {
+function applyRoleFilter(allEmps, managerHandbookUsername) {
   const isHR        = currentManager.selectedRole === 'hr';
   const allowedList = (currentManager.allowed_employee_initials || []).map(a => a.toUpperCase());
   const managerPos  = (currentManager.allowed_positions || []);
   const hrPos       = (currentManager.hr_allowed_positions || []);
+  // selfUsername = handbook username (PG9367), NOT login username (PGJG)
+  const selfUsername = (managerHandbookUsername || currentManager.username).toUpperCase();
 
+  // Helper: does this emp match a key in a list (username match only)
+  const inList = (emp, list) => !!(emp.username && list.includes(emp.username.toUpperCase()));
+
+  let base;
   if (!isHR) {
     // ── MANAGER MODE ──
     if (allowedList.length > 0) {
-      // Exact full username match — the only safe way with duplicate 2-char initials
-      return allEmps.filter(emp =>
-        (emp.username && allowedList.includes(emp.username)) ||
-        allowedList.includes(emp.initials)
-      );
+      base = allEmps.filter(emp => inList(emp, allowedList));
+    } else if (managerPos.length > 0) {
+      base = allEmps.filter(emp => emp.position && managerPos.includes(emp.position));
+    } else {
+      base = currentManager.can_see_all_employees ? [...allEmps] : [];
     }
-    if (managerPos.length > 0) {
-      return allEmps.filter(emp => emp.position && managerPos.includes(emp.position));
-    }
-    return currentManager.can_see_all_employees ? allEmps : [];
-  }
-
-  // ── HR MODE ──
-  // Step 1: decide base pool
-  let base;
-  if (hrPos.includes('*')) {
-    base = allEmps;                  // JTJG HR: everyone
-  } else if (hrPos.length > 0) {
-    base = allEmps.filter(emp => emp.position && hrPos.includes(emp.position));
-  } else if (managerPos.length > 0) {
-    // No hr_allowed_positions set → fall back to same positions as manager role
-    base = allEmps.filter(emp => emp.position && managerPos.includes(emp.position));
   } else {
-    base = allEmps;
-  }
-
-  // Step 2: ALWAYS remove the manager's direct reports (allowed_employee_initials)
-  // These people are reviewed in Manager mode, not HR mode.
-  if (allowedList.length > 0) {
-    base = base.filter(emp =>
-      !(emp.username && allowedList.includes(emp.username)) &&
-      !allowedList.includes(emp.initials)
-    );
+    // ── HR MODE ──
+    if (hrPos.includes('*')) {
+      base = [...allEmps];
+    } else if (hrPos.length > 0) {
+      base = allEmps.filter(emp => emp.position && hrPos.includes(emp.position));
+    } else if (managerPos.length > 0) {
+      base = allEmps.filter(emp => emp.position && managerPos.includes(emp.position));
+    } else {
+      base = [...allEmps];
+    }
+    // Remove direct reports (they're managed in Manager mode)
+    if (allowedList.length > 0) {
+      base = base.filter(emp => !inList(emp, allowedList));
+    }
   }
 
   // ── Always include the logged-in manager themselves ──
-  // Without this, PG9367 / any manager can never see their own submission.
-  const selfUsername = currentManager.username.toUpperCase();
-  const alreadyIn = base.some(e =>
-    (e.username && e.username.toUpperCase() === selfUsername) ||
-    e.initials.toUpperCase() === selfUsername
-  );
+  const alreadyIn = base.some(e => e.username && e.username.toUpperCase() === selfUsername);
   if (!alreadyIn) {
-    const selfEmp = allEmps.find(e =>
-      (e.username && e.username.toUpperCase() === selfUsername) ||
-      e.initials.toUpperCase() === selfUsername
-    );
+    const selfEmp = allEmps.find(e => e.username && e.username.toUpperCase() === selfUsername);
     if (selfEmp) base.push(selfEmp);
   }
 
@@ -289,10 +276,9 @@ function applyRoleFilter(allEmps) {
 // ─── SUBMITTED STATUS LOOKUP — EXACT MATCH ONLY ─────────────────
 // No prefix fallback. "JT2316".startsWith("JT") would wrongly match Julian/Jet Teng.
 function getSubmittedStatus(emp) {
-  if (emp.username && submittedMap.has(emp.username.toUpperCase()))
-    return submittedMap.get(emp.username.toUpperCase());
-  if (submittedMap.has(emp.initials.toUpperCase()))
-    return submittedMap.get(emp.initials.toUpperCase());
+  // emp.initials is now the full username (SG5288 etc.) — use it directly
+  const key = (emp.initials || emp.username || '').toUpperCase();
+  if (key && submittedMap.has(key)) return submittedMap.get(key);
   return null;
 }
 
@@ -365,6 +351,7 @@ document.getElementById('btnBackToLogin').addEventListener('click', () => {
   document.getElementById('roleSelectionView').classList.add('hidden');
   document.getElementById('loginView').classList.remove('hidden');
   currentManager = null;
+  managerHandbookUsername = '';
 });
 
 // ─── SHOW DASHBOARD ──────────────────────────────────────────────
@@ -413,17 +400,28 @@ async function loadEmployees() {
   // Build name → full username map (hb_handbook_access has the unique usernames)
   const { data: accessRows } = await client.from('hb_handbook_access').select('username, employee_name');
   const nameToUsername = new Map();
+  // Also build 2-char initials → full username map for resolving hb_ack_forms records
+  const initialsToUsername = new Map();
   (accessRows || []).forEach(row => {
-    if (row.employee_name && row.username)
-      nameToUsername.set(row.employee_name.trim().toLowerCase(), row.username.trim().toUpperCase());
+    if (row.employee_name && row.username) {
+      const nm = row.employee_name.trim();
+      const un = row.username.trim().toUpperCase();
+      nameToUsername.set(nm.toLowerCase(), un);
+      // Build 2-char initials key e.g. "Saul Garcia" → "SG"
+      const parts = nm.split(' ');
+      const twoChar = ((parts[0]?.charAt(0)||'') + (parts[parts.length-1]?.charAt(0)||'')).toUpperCase();
+      if (twoChar && !initialsToUsername.has(twoChar)) initialsToUsername.set(twoChar, un);
+    }
   });
 
   const allEmps = (rawEmployees || []).map(emp => {
     const fullName = `${emp.first_name||''} ${emp.last_name||''}`.trim();
     return {
       id: emp.employee_id,
-      initials: ((emp.first_name?.charAt(0)||'') + (emp.last_name?.charAt(0)||'')).toUpperCase(),
+      avatarInitials: ((emp.first_name?.charAt(0)||'') + (emp.last_name?.charAt(0)||'')).toUpperCase(),
       username: nameToUsername.get(fullName.toLowerCase()) || null,
+      // initials = full username (SG5288, PG9367…) — used as the DB key everywhere
+      get initials() { return this.username || this.avatarInitials; },
       full_name: fullName,
       position: emp.job_title,
       department: emp.department,
@@ -434,7 +432,11 @@ async function loadEmployees() {
     };
   });
 
-  allEmployees = applyRoleFilter(allEmps);
+  // Resolve login username (PGJG) to handbook username (PG9367)
+  managerHandbookUsername = nameToUsername.get((currentManager.full_name||'').toLowerCase()) || currentManager.username;
+  console.log(`👤 Manager login: ${currentManager.username} -> handbook: ${managerHandbookUsername}`);
+
+  allEmployees = applyRoleFilter(allEmps, managerHandbookUsername);
   console.log(`📋 After filter: ${allEmployees.length} employees`);
 
   // Fetch statuses + signatures + ack forms
@@ -442,25 +444,31 @@ async function loadEmployees() {
   const { data: signatures } = await client.from('hb_employee_signatures').select('employee_initials, pdf_url, signed_at, created_at, session_id').order('created_at', { ascending:false });
   const { data: ackForms } = await client.from('hb_ack_forms').select('initials, pdf_url, created_at, status').not('pdf_url','is',null).order('created_at', { ascending:false });
 
-  // Build best PDF map per employee
-  // Keyed by BOTH the raw key AND its 2-char prefix so mismatches between
-  // hb_employee_signatures ("SG") and hb_acknowledgment_status ("SG5288") resolve.
+  // Build best PDF map — indexed by full username AND 2-char prefix
+  // hb_acknowledgment_status stores "SG5288"; hb_employee_signatures may store old "SG"
+  // Index both so they always resolve to the same PDF
   const latestPDFMap = new Map();
   const updatePDF = (key, url, date) => {
     if (!url || !key) return;
     const k = key.trim().toUpperCase();
     const ex = latestPDFMap.get(k);
     if (!ex || date > ex.date) latestPDFMap.set(k, { pdf_url: url, date });
-    // Also store under 2-char prefix so short keys match long keys and vice-versa
-    const short = k.substring(0, 2);
-    if (short !== k) {
+    // Also store under 2-char prefix so "SG5288" and "SG" always find the same PDF
+    if (k.length > 2) {
+      const short = k.substring(0, 2);
       const ex2 = latestPDFMap.get(short);
       if (!ex2 || date > ex2.date) latestPDFMap.set(short, { pdf_url: url, date });
     }
   };
   (statuses||[]).forEach(s => updatePDF(s.employee_initials, s.final_pdf_url, s.created_at));
   (signatures||[]).forEach(s => updatePDF(s.employee_initials, s.pdf_url, s.created_at));
-  (ackForms||[]).forEach(af => updatePDF(af.initials, af.pdf_url, af.created_at));
+  (ackForms||[]).forEach(af => {
+    // hb_ack_forms stores 2-char initials ("SG") — resolve to full username ("SG5288")
+    const resolvedKey = initialsToUsername.get((af.initials||'').toUpperCase()) || af.initials;
+    updatePDF(resolvedKey, af.pdf_url, af.created_at);
+    // Also index under the original 2-char key as fallback
+    if (resolvedKey !== af.initials) updatePDF(af.initials, af.pdf_url, af.created_at);
+  });
 
   // Build submittedMap — most recent signed record per employee
   submittedMap = new Map();
@@ -470,17 +478,9 @@ async function loadEmployees() {
     if (!ex || new Date(s.created_at) > new Date(ex.created_at)) submittedMap.set(s.employee_initials, s);
   });
   submittedMap.forEach((status, initials) => {
-    // Try exact key first, then 2-char prefix, then any key starting with 2-char
     const k = (initials||'').toUpperCase();
-    let best = latestPDFMap.get(k)
-            || latestPDFMap.get(k.substring(0,2));
-    if (!best) {
-      // Last resort: scan for any key that starts with same 2 chars
-      const prefix = k.substring(0,2);
-      for (const [mk, mv] of latestPDFMap) {
-        if (mk.startsWith(prefix)) { best = mv; break; }
-      }
-    }
+    // Try exact key ("SG5288"), then 2-char prefix ("SG") for legacy records
+    const best = latestPDFMap.get(k) || latestPDFMap.get(k.substring(0, 2));
     if (best) status.pdf_url = best.pdf_url;
     const latestSig = (signatures||[]).find(sg => sg.employee_initials === initials);
     if (latestSig) {
@@ -514,7 +514,7 @@ function renderPendingList() {
   container.innerHTML = pendingEmployees.map(emp => `
     <div class="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50">
       <div class="flex items-center gap-4">
-        <div class="w-12 h-12 bg-gray-200 rounded-full flex items-center justify-center font-bold text-gray-700">${emp.initials||'??'}</div>
+        <div class="w-12 h-12 bg-gray-200 rounded-full flex items-center justify-center font-bold text-gray-700">${emp.avatarInitials||'??'}</div>
         <div>
           <div class="font-semibold text-gray-900">${emp.full_name||'Unknown'}</div>
           <div class="text-sm text-gray-600">${emp.position||'N/A'} • ${emp.department||'N/A'}</div>
@@ -531,13 +531,12 @@ function renderSubmittedList() {
   document.getElementById('submittedCount').textContent = `${submittedEmployees.length} submitted`;
   if (!submittedEmployees.length) { container.innerHTML='<p class="text-center text-gray-500 py-8">No submissions yet</p>'; return; }
   const isHR = currentManager.selectedRole === 'hr';
-  const selfUsername = currentManager.username.toUpperCase();
+  // Resolve locally — never rely on outer-scope managerHandbookUsername being set
+  const _selfKey = (managerHandbookUsername || currentManager?.username || '').toUpperCase();
   container.innerHTML = submittedEmployees.map(emp => {
     const s = emp.status||{};
     const hasPDF = !!s.pdf_url;
-    // Manager cannot approve themselves
-    const isSelf = (emp.username && emp.username.toUpperCase() === selfUsername) ||
-                   (emp.initials && emp.initials.toUpperCase() === selfUsername);
+    const isSelf = !!(_selfKey && emp.username && emp.username.toUpperCase() === _selfKey);
     const signedDate = s.employee_signed_at ? toCSTDateString(s.employee_signed_at) : 'Unknown';
     const signedTime = s.employee_signed_at ? toCSTTimeString(s.employee_signed_at) : '';
     let statusBadge='', sigBadge='';
@@ -554,7 +553,7 @@ function renderSubmittedList() {
     return `
       <div class="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:bg-gray-50">
         <div class="flex items-center gap-4">
-          <div class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center font-bold text-blue-700">${emp.initials||'??'}</div>
+          <div class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center font-bold text-blue-700">${emp.avatarInitials||'??'}</div>
           <div>
             <div class="flex items-center gap-2">
               <div class="font-semibold text-gray-900">${emp.full_name||'Unknown'}</div>${sigBadge}
@@ -567,7 +566,7 @@ function renderSubmittedList() {
         <div class="flex items-center gap-2 flex-wrap justify-end">
           ${statusBadge}
           ${hasPDF?`<button onclick="printSinglePDF('${emp.initials}')" class="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 text-sm">📄 View PDF</button>`:'<span class="px-3 py-1 bg-gray-100 text-gray-500 rounded text-xs">No PDF yet</span>'}
-          ${!isHR&&!s.manager_approved&&!isSelf?`<button onclick="approveSingleEmployee('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold">✅ Approve</button>`:(!isHR&&!s.manager_approved&&isSelf?'<span class="px-3 py-1 bg-gray-100 text-gray-400 rounded text-xs">Self — needs HR</span>':'')}
+          ${!isHR&&!s.manager_approved&&!isSelf?`<button onclick="approveSingleEmployee('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold">✅ Approve</button>`:(!isHR&&!s.manager_approved&&isSelf?'<span class="px-3 py-1 bg-gray-100 text-gray-400 rounded text-xs italic">Needs HR approval</span>':'')}
           ${s.manager_approved?`<button onclick="regenerateSinglePDF('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">🔄 Regen PDF</button>`:''}
           ${isHR&&s.manager_approved&&!s.hr_approved?`<button onclick="hrApproveSingle('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm">✅ HR Approve</button>`:''}
         </div>
@@ -843,7 +842,7 @@ document.getElementById('btnFixSession').addEventListener('click', async () => {
 // ─── SIGN OUT ────────────────────────────────────────────────────
 document.getElementById('btnSignOut').addEventListener('click', () => {
   if (confirm('Sign out?')) {
-    currentManager=null; managerSignatureData=null;
+    currentManager=null; managerHandbookUsername=''; managerSignatureData=null;
     document.getElementById('dashboardView').classList.add('hidden');
     document.getElementById('loginView').classList.remove('hidden');
     document.getElementById('managerUsername').value='';
