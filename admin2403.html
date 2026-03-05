@@ -445,6 +445,55 @@ body > *:not(#printContainer) { display: none !important; }
 </div>
 </div>
 
+<!-- FOH SUBSECTION GRID -->
+<div class="db-section mt-5">
+<div class="db-section-head">
+<div>
+<span class="db-section-title">🟢 FOH — Front of House · Subsection Time Grid</span>
+<div class="text-[10px] text-slate-400 mt-0.5">Time spent per sub-section per employee · columns = 1.1, 1.2 … 8.x · hover cell for exact time</div>
+</div>
+<div class="flex items-center gap-3 text-[10px] text-slate-400">
+<span class="flex items-center gap-1.5"><span style="width:11px;height:11px;border-radius:3px;background:#10B981;display:inline-block"></span>More time</span>
+<span class="flex items-center gap-1.5"><span style="width:11px;height:11px;border-radius:3px;background:#10B98133;display:inline-block"></span>Less time</span>
+<span class="flex items-center gap-1.5"><span style="width:11px;height:11px;border-radius:3px;background:#f1f5f9;display:inline-block"></span>Not visited</span>
+</div>
+</div>
+<div class="p-4 overflow-x-auto" id="dbSubMatrixFOH">
+<p class="text-xs text-slate-400 text-center py-8">Loading…</p>
+</div>
+</div>
+
+<!-- BOH SUBSECTION GRID -->
+<div class="db-section mt-5">
+<div class="db-section-head">
+<div>
+<span class="db-section-title">🔴 BOH — Back of House · Subsection Time Grid</span>
+<div class="text-[10px] text-slate-400 mt-0.5">Time spent per sub-section per employee · columns = 1.1, 1.2 … 8.x · hover cell for exact time</div>
+</div>
+<div class="flex items-center gap-3 text-[10px] text-slate-400">
+<span class="flex items-center gap-1.5"><span style="width:11px;height:11px;border-radius:3px;background:#EF4444;display:inline-block"></span>More time</span>
+<span class="flex items-center gap-1.5"><span style="width:11px;height:11px;border-radius:3px;background:#EF444433;display:inline-block"></span>Less time</span>
+<span class="flex items-center gap-1.5"><span style="width:11px;height:11px;border-radius:3px;background:#f1f5f9;display:inline-block"></span>Not visited</span>
+</div>
+</div>
+<div class="p-4 overflow-x-auto" id="dbSubMatrixBOH">
+<p class="text-xs text-slate-400 text-center py-8">Loading…</p>
+</div>
+</div>
+
+<!-- LEGACY COMPLETIONS -->
+<div class="db-section mt-5">
+<div class="db-section-head">
+<span class="db-section-title">🏅 Legacy Completions — Pre-Tracking System</span>
+<span class="text-xs text-slate-400 italic">Completed before tracking was enabled · excluded from live stats</span>
+</div>
+<div class="p-4">
+<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3" id="dbLegacyCards"></div>
+</div>
+</div>
+
+</div>
+
 <!-- TIME TRACKING TAB -->
 <div id="viewTracking" class="hidden max-w-screen-2xl mx-auto px-5 py-5" style="min-height:calc(100vh - 56px)">
 <div class="grid grid-cols-4 gap-4 mb-5">
@@ -637,6 +686,7 @@ let currentStatusTab = 'active';
 let ttData = [], ttMap = {}, ttSelected = null;
 let dbRefreshTimer = null, dbCountdownVal = 5;
 const SECTION_ORDER = ['I','II','III','IV','V','VI','VII','VIII'];
+const EXCLUDED_USERNAMES = new Set(['CRV1039','AMV9910','ST3764','JT2316','PG9367']);
 const SECTION_NAMES = {
 'I':'Section I – Introduction','II':'Section II – Employment Policies',
 'III':'Section III – Hours & Payroll Practices','IV':'Section IV – Standards of Conduct',
@@ -951,7 +1001,10 @@ if(emp.sessions>=6 && emp.status!=='Complete') return true;
 return false;
 }
 function renderDashboard(){
-if(!ttData.length){ return; }
+if(!ttData.length){ 
+console.log('⚠️ No tracking data available');
+return; 
+}
 const deptF=$('dbDeptFilter').value;
 const empLookup={};
 allEmployees.forEach(e=>{ if(e.username) empLookup[e.username.toUpperCase()]=e; });
@@ -961,28 +1014,12 @@ return true;
 });
 const total=data.length;
 const complete=data.filter(e=>e.status==='Complete');
-const inProg=data.filter(e=>e.status==='In Progress');
-
-// ── AT RISK (60% THRESHOLD) ──
-const totalActive = allEmployees.filter(e=>(e.status||e.employment_status||'').toLowerCase()==='active').length;
-const submittedCount = data.filter(e=>e.ackCount>0||e.sectionsVisited>0).length;
-const submissionRate = totalActive>0 ? submittedCount/totalActive : 0;
-let atRisk;
-if(submissionRate >= 0.60){
-atRisk = data.filter(e=>e.ackCount===0 && e.sectionsVisited===0).length;
-}else{
-atRisk = data.filter(isAtRisk).length;
-}
-
-// Avg time across ALL employees with any time
+const inProg=data.filter(e=>e.status==='In Progress' && e.ackCount>0);
+const atRisk=data.filter(isAtRisk);
 const allWithTime=data.filter(e=>e.totalTime>0);
 const avgTime=allWithTime.length>0?allWithTime.reduce((a,b)=>a+b.totalTime,0)/allWithTime.length:0;
-
-// Fastest = shortest time among all with time
 const sorted=[...allWithTime].sort((a,b)=>a.totalTime-b.totalTime);
 const fastest=sorted[0];
-const slowest=sorted[sorted.length-1];
-
 $('dbKpiTotal').textContent=total;
 
 // ── KPI CALCULATION (FIXED) ──
@@ -994,19 +1031,15 @@ $('dbKpi'+dept).textContent=rate+'%';
 $('dbKpi'+dept+'Sub').textContent=`${startedCount} of ${activeTotal} started`;
 });
 
-// ── MGMT RATE (4 SPECIFIC USERS ONLY) ──
-const MGMT_USERNAMES = ['CRV1038','AMV9910','PG9367','ST3764'];
-const mgmtTotal = 4;
-const mgmtStarted = data.filter(e=>
-MGMT_USERNAMES.includes(e.username) &&
-(e.ackCount>0||e.sectionsVisited>0||e.status!=='Not Started')
-).length;
-const mgmtRate = Math.round(mgmtStarted/mgmtTotal*100);
-$('dbKpiGen').textContent = mgmtRate + '%';
-$('dbKpiGenSub').textContent = `${mgmtStarted} of ${mgmtTotal} started`;
+// Mgmt Rate — Manager + Logistic Coordinator roles only (4 people)
+const MGMT_ROLES = ['Manager','Logistic Coordinator'];
+const mgmtActiveTotal = allEmployees.filter(e=>MGMT_ROLES.includes(e.job_title||e.position_title||'') && (e.status||e.employment_status||'').toLowerCase()==='active').length || 4;
+const genStarted=data.filter(e=>MGMT_ROLES.includes(e.role)&&(e.ackCount>0||e.sectionsVisited>0||e.status!=='Not Started')).length;
+$('dbKpiGen').textContent=(mgmtActiveTotal>0?Math.round(genStarted/mgmtActiveTotal*100):0)+'%';
+$('dbKpiGenSub').textContent=`${genStarted} of ${mgmtActiveTotal} started`;
 
 $('dbKpiProgress').textContent=inProg.length;
-$('dbKpiRisk').textContent=atRisk;
+$('dbKpiRisk').textContent=atRisk.length;
 $('dbKpiAvg').textContent=fmtSec(avgTime)||'—';
 $('dbKpiFastest').textContent=fastest?fmtSec(fastest.totalTime):'—';
 $('dbKpiFastestName').textContent=fastest?fastest.fullName:'No completions yet';
@@ -1051,7 +1084,7 @@ return `<tr class="border-b border-slate-50 hover:bg-slate-50 ${rowClass}">
 </tr>`;
 }).join('');
 
-$('dbRiskCount').textContent=atRisk.length?`${atRisk} flagged`:'';
+$('dbRiskCount').textContent=atRisk.length?`${atRisk.length} flagged`:'';
 if(!atRisk.length){
 $('dbRiskList').innerHTML=`<div class="text-center py-8"><div class="text-3xl mb-2">✅</div><p class="text-xs text-emerald-600 font-semibold">All employees on track</p></div>`;
 } else {
@@ -1146,7 +1179,7 @@ return `<div>
 }).join('<div style="height:1px;background:#f1f5f9;margin:4px 0"></div>')
 :'<p class="text-xs text-slate-400 text-center py-8">No data</p>';
 
-// ── LIVE NOW GRID ──
+// ── LIVE NOW GRID (FIXED) ──
 const searchQ=($('dbSearchLive').value||'').toLowerCase();
 const liveData=data.filter(emp=>!searchQ||emp.fullName.toLowerCase().includes(searchQ)||emp.username.toLowerCase().includes(searchQ)||emp.role.toLowerCase().includes(searchQ));
 
@@ -1231,19 +1264,217 @@ ${elapsedLabel?`<div style="margin-top:4px">${elapsedLabel}</div>`:''}
 }).join(''):'<p class="text-xs text-slate-400 text-center py-8">No employee data yet</p>';
 
 renderLiveEmpCards();
+renderSubsectionMatrix('FOH');
+renderSubsectionMatrix('BOH');
+renderLegacyCards();
+}
+
+// ── SUBSECTION MATRIX (per dept) ──
+function renderSubsectionMatrix(dept){
+const containerId = dept==='FOH' ? 'dbSubMatrixFOH' : 'dbSubMatrixBOH';
+const container = $(containerId);
+if(!container) return;
+
+const deptColor = dept==='FOH' ? '#10B981' : '#EF4444';
+const chColors = {'1':'#C0A06D','2':'#3B82F6','3':'#10B981','4':'#8B5CF6','5':'#EF4444','6':'#F59E0B','7':'#06B6D4','8':'#EC4899'};
+const chToRoman = {'1':'I','2':'II','3':'III','4':'IV','5':'V','6':'VI','7':'VII','8':'VIII'};
+
+// Build employee lookup
+const empLookup = {};
+allEmployees.forEach(e=>{ if(e.username) empLookup[e.username.toUpperCase()]=e; });
+
+// Filter ttData to only this dept
+const deptData = ttData.filter(emp=>{
+const e = empLookup[emp.username] || {};
+return (e.department||emp.dept||'') === dept;
+});
+
+if(!deptData.length){
+container.innerHTML=`<div class="text-center py-10"><div class="text-2xl mb-2">${dept==='FOH'?'🟢':'🔴'}</div><p class="text-sm text-slate-400">No engagement data available for ${dept} employees yet.</p></div>`;
+return;
+}
+
+// Build subsection map: username -> subKey -> total seconds (already filtered <600 at source)
+const empSubMap = {};
+const allSubKeys = new Set();
+
+deptData.forEach(emp=>{
+empSubMap[emp.username] = {};
+SECTION_ORDER.forEach(ch=>{
+((emp.subSections||{})[ch]||[]).forEach(sub=>{
+if(!sub.label) return;
+const lbl = sub.label;
+empSubMap[emp.username][lbl] = (empSubMap[emp.username][lbl]||0) + sub.time;
+allSubKeys.add(lbl);
+});
+});
+});
+
+if(!allSubKeys.size){
+container.innerHTML=`<p class="text-sm text-slate-400 text-center py-10">No subsection data yet for ${dept} employees — they need to start reading the handbook.</p>`;
+return;
+}
+
+// Sort keys: 1.1, 1.2 ... 8.x
+const sortedKeys = [...allSubKeys].sort((a,b)=>{
+const [ac,as2] = String(a).split('.').map(Number);
+const [bc,bs2] = String(b).split('.').map(Number);
+return ac!==bc ? ac-bc : as2-bs2;
+});
+
+// Group by chapter for header spans
+const chGroups = {};
+sortedKeys.forEach(k=>{ const ch=String(k).split('.')[0]; if(!chGroups[ch])chGroups[ch]=[]; chGroups[ch].push(k); });
+
+const maxTime = Math.max(...deptData.flatMap(emp=>sortedKeys.map(k=>empSubMap[emp.username][k]||0)), 1);
+
+function fmtShort(sec){
+if(!sec||sec<=0) return '';
+const s=Math.round(sec);
+if(s<60) return s+'s';
+if(s<3600) return Math.floor(s/60)+'m';
+return Math.floor(s/3600)+'h';
+}
+
+// Chapter color header row
+const chHeaderRow = Object.entries(chGroups).map(([ch,keys])=>{
+const c = chColors[ch]||'#94a3b8';
+return `<th colspan="${keys.length}" style="background:${c}18;color:${c};font-size:9px;font-weight:800;text-align:center;padding:6px 2px;border-bottom:2px solid ${c};white-space:nowrap;letter-spacing:.5px">${chToRoman[ch]||ch}</th>`;
+}).join('');
+
+// Sub-key header row
+const subHeaderRow = sortedKeys.map(k=>{
+const ch = String(k).split('.')[0];
+const c = chColors[ch]||'#94a3b8';
+return `<th style="font-size:8px;font-weight:700;text-align:center;padding:3px 1px 6px;color:${c};min-width:36px;white-space:nowrap">${k}</th>`;
+}).join('');
+
+// Sort employees: most total time first
+const sorted = [...deptData].sort((a,b)=>{
+const aTotal = sortedKeys.reduce((s,k)=>s+(empSubMap[a.username][k]||0),0);
+const bTotal = sortedKeys.reduce((s,k)=>s+(empSubMap[b.username][k]||0),0);
+return bTotal - aTotal;
+});
+
+// Employee rows
+const bodyRows = sorted.map(emp=>{
+const e = empLookup[emp.username]||{};
+const firstName = e.first_name || emp.fullName.split(' ')[0] || '';
+const lastName  = e.last_name  || emp.fullName.split(' ').slice(1).join(' ') || '';
+const av = (firstName[0]||'')+(lastName[0]||'');
+const rowTotal = sortedKeys.reduce((s,k)=>s+(empSubMap[emp.username][k]||0),0);
+const statusDot = emp.status==='Complete'?'#34d399':emp.status==='In Progress'?'#fbbf24':'#e2e8f0';
+
+const cells = sortedKeys.map(k=>{
+const t = empSubMap[emp.username][k]||0;
+const ch = String(k).split('.')[0];
+const baseColor = chColors[ch]||deptColor;
+let bg,tc,dv;
+if(t>0){
+const intensity = Math.max(0.18, Math.min(1, t/maxTime));
+const r=parseInt(baseColor.slice(1,3),16), g=parseInt(baseColor.slice(3,5),16), b2=parseInt(baseColor.slice(5,7),16);
+bg = `rgba(${r},${g},${b2},${intensity.toFixed(2)})`;
+tc = intensity>0.5 ? '#fff' : baseColor;
+dv = fmtShort(t)||'✓';
+} else {
+bg='#f8fafc'; tc='#d1d5db'; dv='—';
+}
+return `<td style="padding:2px;text-align:center" title="${firstName} ${lastName} · ${k}: ${t>0?fmtSec(t):'Not visited'}">
+<div style="width:34px;height:26px;border-radius:5px;background:${bg};color:${tc};font-size:8px;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto;cursor:default">${dv}</div>
+</td>`;
+}).join('');
+
+return `<tr style="border-bottom:1px solid #f8fafc" onmouseover="this.style.background='#fafafa'" onmouseout="this.style.background=''">
+<td style="padding:5px 0;white-space:nowrap;position:sticky;left:0;background:#fff;z-index:2">
+<div style="display:flex;align-items:center;gap:8px;padding-right:14px;border-right:2px solid #f1f5f9">
+<div style="width:30px;height:30px;border-radius:50%;background:${avatarBg(emp.fullName)};color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:2px solid ${statusDot}">${av.toUpperCase()}</div>
+<div>
+<div style="font-size:12px;font-weight:700;color:#1e293b">${firstName} <span style="color:#334155">${lastName}</span></div>
+<div style="font-size:9px;color:#94a3b8;font-family:monospace">${emp.username}</div>
+</div>
+</div>
+</td>
+${cells}
+<td style="padding:2px 0 2px 8px;font-size:10px;font-weight:700;color:${rowTotal>0?'#1e293b':'#94a3b8'};white-space:nowrap">${fmtSec(rowTotal)||'—'}</td>
+</tr>`;
+}).join('');
+
+container.innerHTML = `
+<table style="border-collapse:separate;border-spacing:2px;min-width:max-content;width:100%">
+<thead>
+<tr>
+<th style="position:sticky;left:0;background:#fff;z-index:3;padding:4px 14px 4px 0;text-align:left;min-width:200px;font-size:11px;font-weight:700;color:#475569;vertical-align:bottom">
+<div style="padding-bottom:4px;border-bottom:2px solid #e2e8f0">Employee</div>
+</th>
+${chHeaderRow}
+<th style="font-size:9px;font-weight:700;color:#475569;padding:4px 0 4px 8px;white-space:nowrap;vertical-align:bottom">Total</th>
+</tr>
+<tr>
+<th style="position:sticky;left:0;background:#fff;z-index:3;padding:2px 0 6px;border-bottom:1px solid #f1f5f9">
+<div style="font-size:9px;color:#94a3b8;font-weight:500;padding-top:2px">First Name &nbsp; Last Name</div>
+</th>
+${subHeaderRow}
+<th></th>
+</tr>
+</thead>
+<tbody>${bodyRows}</tbody>
+</table>`;
+}
+
+// ── LEGACY CARDS ──
+function renderLegacyCards(){
+const container=$('dbLegacyCards'); if(!container) return;
+const LEGACY={
+'CRV1039':'Craig Reeves','AMV9910':'Anh Mai Vu',
+'ST3764':'Shoko Teng','JT2316':'Janelle Teng','PG9367':'Pablo Gonzalez'
+};
+const empLookup={};
+allEmployees.forEach(e=>{ if(e.username) empLookup[e.username.toUpperCase()]=e; });
+container.innerHTML=Object.entries(LEGACY).map(([uname,fallback])=>{
+const emp=empLookup[uname];
+const fullName=emp?`${emp.first_name||''} ${emp.last_name||''}`.trim():fallback;
+const role=emp?(emp.job_title||emp.position_title||'—'):'—';
+const av=getInitialsFromName(fullName)||uname.slice(0,2);
+return `<div style="background:#fff;border:1.5px solid #e2e8f0;border-radius:14px;padding:14px 12px;box-shadow:0 1px 4px rgba(0,0,0,.04)">
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+<div style="width:32px;height:32px;border-radius:50%;background:${avatarBg(fullName)};color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${av}</div>
+<div><div style="font-size:12px;font-weight:700;color:#1e293b">${fullName}</div>
+<div style="font-size:10px;color:#94a3b8">${role} · <span style="font-family:monospace">${uname}</span></div></div>
+</div>
+<div style="display:inline-flex;align-items:center;gap:4px;padding:2px 10px;border-radius:999px;background:#d1fae5;font-size:10px;font-weight:700;color:#065f46">✓ Complete</div>
+<div style="font-size:9px;color:#94a3b8;margin-top:6px">Pre-tracking completion</div>
+</div>`;
+}).join('');
 }
 
 // ── TIME TRACKING ──
 async function loadTrackingDataInternal(){
+console.log('🔄 Starting loadTrackingDataInternal...');
 try {
+// Fetch engagement logs
+console.log('📡 Fetching engagement logs...');
 const { data: logs, error: logErr } = await client.from('hb_engagement_log').select('username,employee_id,initials,session_id,event_type,section_key,prev_section_key,duration_seconds,created_at').in('event_type',['section_enter','idle_timeout','login']).order('created_at',{ascending:false});
-if(logErr) throw logErr;
-const { data: ackStatus } = await client.from('hb_acknowledgment_status').select('employee_initials,employee_signed,employee_signed_at');
-const { data: ackRows } = await client.from('hb_acks').select('employee_initials,policy_id,agreed,created_at').eq('agreed',true).order('created_at',{ascending:true});
+if(logErr){ console.error('❌ Engagement log error:', logErr); throw logErr; }
+console.log('✅ Engagement logs fetched:', logs?.length || 0, 'rows');
+
+// Fetch acknowledgment status
+console.log('📡 Fetching acknowledgment status...');
+const { data: ackStatus, error: ackStatusErr } = await client.from('hb_acknowledgment_status').select('employee_initials,employee_signed,employee_signed_at');
+if(ackStatusErr){ console.error('❌ Ack status error:', ackStatusErr); }
+console.log('✅ Ack status fetched:', ackStatus?.length || 0, 'rows');
+
+// Fetch acknowledgments
+console.log('📡 Fetching acknowledgments...');
+const { data: ackRows, error: ackRowsErr } = await client.from('hb_acks').select('employee_initials,policy_id,agreed,created_at').eq('agreed',true).order('created_at',{ascending:true});
+if(ackRowsErr){ console.error('❌ Ack rows error:', ackRowsErr); }
+console.log('✅ Ack rows fetched:', ackRows?.length || 0, 'rows');
+
 const empLookup = {};
 allEmployees.forEach(e=>{ if(e.username) empLookup[e.username.toUpperCase()]=e; });
+
 const signedMap = {};
 (ackStatus||[]).forEach(r=>{ const k=(r.employee_initials||'').toUpperCase(); signedMap[k]=r.employee_signed; });
+
 const ackCountMap = {};
 const ackDetailMap = {};
 (ackRows||[]).forEach(r=>{
@@ -1255,25 +1486,30 @@ if(!ackDetailMap[k].startedAt) ackDetailMap[k].startedAt=r.created_at;
 ackDetailMap[k].currentSection=r.policy_id;
 ackDetailMap[k].allSections.push(r.policy_id);
 });
+
 function resolveSignedKey(uname){
 if(signedMap[uname]!==undefined) return signedMap[uname];
 const usrPrefix=uname.slice(0,2); if(signedMap[usrPrefix]!==undefined) return signedMap[usrPrefix];
 const emp=empLookup[uname]; if(emp){const nameIni=(((emp.first_name||'')[0]||'')+((emp.last_name||'')[0]||'')).toUpperCase();if(signedMap[nameIni]!==undefined) return signedMap[nameIni];}
 return false;
 }
+
 function resolveAckCount(uname){
 if(ackCountMap[uname]!==undefined) return ackCountMap[uname];
 const usrPrefix=uname.slice(0,2); if(ackCountMap[usrPrefix]!==undefined) return ackCountMap[usrPrefix];
 const emp=empLookup[uname]; if(emp){const nameIni=(((emp.first_name||'')[0]||'')+((emp.last_name||'')[0]||'')).toUpperCase();if(ackCountMap[nameIni]!==undefined) return ackCountMap[nameIni];}
 return 0;
 }
+
 function resolveAckDetail(uname){
 if(ackDetailMap[uname]) return ackDetailMap[uname];
 const usrPrefix=uname.slice(0,2); if(ackDetailMap[usrPrefix]) return ackDetailMap[usrPrefix];
 const emp=empLookup[uname]; if(emp){const nameIni=(((emp.first_name||'')[0]||'')+((emp.last_name||'')[0]||'')).toUpperCase();if(ackDetailMap[nameIni]) return ackDetailMap[nameIni];}
 return null;
 }
+
 const NUM_TO_ROM={'1':'I','2':'II','3':'III','4':'IV','5':'V','6':'VI','7':'VII','8':'VIII'};
+
 function keyToChapter(k){
 if(!k) return null;
 const u=k.toUpperCase().trim();
@@ -1282,6 +1518,7 @@ for(const ch of SECTION_ORDER){ if(u.startsWith(ch+'.')||u.startsWith(ch+'-')||u
 const nm=u.match(/^(\d+)/); if(nm&&NUM_TO_ROM[nm[1]]) return NUM_TO_ROM[nm[1]];
 return null;
 }
+
 function subLabel(k){
 for(let i=0;i<SECTION_ORDER.length;i++){
 const ch=SECTION_ORDER[i], u=k.toUpperCase().trim();
@@ -1292,14 +1529,18 @@ const suffix=u.slice(ch.length+1); return `${i+1}.${suffix}`;
 const nm=k.match(/^(\d+[\.\-]\d+)/i); if(nm) return nm[1];
 return k;
 }
+
 const byUser={};
 (logs||[]).forEach(row=>{ const key=(row.username||row.initials||'').toUpperCase(); if(!key) return; if(!byUser[key]) byUser[key]={rows:[],sessions:new Set()}; byUser[key].rows.push(row); if(row.session_id) byUser[key].sessions.add(row.session_id); });
+
+// ✅ FIXED: Declare processed variable HERE
 const processed={};
+
 Object.entries(byUser).forEach(([uname,{rows,sessions}])=>{
 const sectionTimes={}, rawKeyTimes={};let lastActive=null;
 rows.forEach(row=>{
 if(!lastActive||row.created_at>lastActive) lastActive=row.created_at;
-const dur=row.duration_seconds||0; if(dur<=0) return;
+const dur=row.duration_seconds||0; if(dur<=0||dur>=600) return;
 let rk=null;
 if(row.event_type==='section_enter'&&row.prev_section_key) rk=row.prev_section_key;
 else if(row.event_type==='idle_timeout'&&row.section_key) rk=row.section_key;
@@ -1308,8 +1549,10 @@ rawKeyTimes[rk]=(rawKeyTimes[rk]||0)+dur;
 const ch=keyToChapter(rk)||rk;
 sectionTimes[ch]=(sectionTimes[ch]||0)+dur;
 });
+
 const subSections={};
 SECTION_ORDER.forEach(ch=>{ subSections[ch]=[]; });
+
 Object.entries(rawKeyTimes).forEach(([rk,t])=>{
 const ch=keyToChapter(rk);
 if(ch&&rk.toUpperCase().trim()!==ch){
@@ -1317,25 +1560,34 @@ if(!subSections[ch]) subSections[ch]=[];
 subSections[ch].push({key:rk,label:subLabel(rk),time:t});
 }
 });
+
 SECTION_ORDER.forEach(ch=>{ subSections[ch].sort((a,b)=>a.label.localeCompare(b.label,undefined,{numeric:true})); });
+
 const ackCount=resolveAckCount(uname),signed=resolveSignedKey(uname);
 const ackDetail=resolveAckDetail(uname);
 const hasTimes=Object.values(sectionTimes).some(t=>t>0);
+
 if(!signed&&ackCount===0&&!hasTimes) return;
+
 let status='Not Started';
 if(signed||ackCount>=90) status='Complete';
 else if(ackCount>0||hasTimes) status='In Progress';
+
 let sectionVIIIEstimated=false;
 if(status==='Complete'&&!(sectionTimes['VIII']>0)){const rs=SECTION_ORDER.filter(k=>k!=='VIII'&&sectionTimes[k]>0);if(rs.length>0){const avgTime=Math.round(rs.reduce((sum,k)=>sum+sectionTimes[k],0)/rs.length);sectionTimes['VIII']=avgTime;sectionVIIIEstimated=true;}}
+
 const rawSectionsVisited=Object.keys(sectionTimes).filter(k=>sectionTimes[k]>0).length;
 const sectionsVisited=(signed||ackCount>=90)?8:rawSectionsVisited;
 const totalTime=Object.values(sectionTimes).reduce((a,b)=>a+b,0);
+
 const emp=empLookup[uname];
 const fullName=emp?`${emp.first_name||''} ${emp.last_name||''}`.trim():uname;
 const role=emp?(emp.job_title||emp.position_title||'—'):'—';
 const dept=emp?(emp.department||'—'):'—';
+
 processed[uname]={username:uname,fullName,role,dept,sectionTimes,subSections,totalTime,sessions:sessions.size,lastActive,ackCount,ackDetail,status,signed,sectionsVisited,sectionVIIIEstimated};
 });
+
 Object.keys(signedMap).forEach(key=>{
 if(!signedMap[key]) return; if(processed[key]) return;
 const emp=empLookup[key]||Object.values(empLookup).find(e=>{const pfx=(e.username||'').toUpperCase().slice(0,2);const nameIni=(((e.first_name||'')[0]||'')+((e.last_name||'')[0]||'')).toUpperCase();return pfx===key||nameIni===key;});
@@ -1343,11 +1595,20 @@ const fullName=emp?`${emp.first_name||''} ${emp.last_name||''}`.trim():key;
 const role=emp?(emp.job_title||emp.position_title||'—'):'—';
 const dept=emp?(emp.department||'—'):'—';
 const ackCount=resolveAckCount(key);
-processed[key]={username:key,fullName,role,dept,sectionTimes:{},totalTime:0,sessions:0,lastActive:null,ackCount,status:'Complete',signed:true,sectionsVisited:8,sectionVIIIEstimated:false};
+processed[key]={username:key,fullName,role,dept,sectionTimes:{},subSections:{},totalTime:0,sessions:0,lastActive:null,ackCount,status:'Complete',signed:true,sectionsVisited:8,sectionVIIIEstimated:false};
 });
-ttMap=processed; ttData=Object.values(processed);
-} catch(err){ console.error('Tracking data error:',err); }
+
+ttMap=processed; 
+ttData=Object.values(processed);
+
+console.log('✅ Processing complete! ttData has', ttData.length, 'employees');
+
+} catch(err){ 
+console.error('❌ Tracking data error:', err);
+console.error('Stack:', err.stack);
 }
+}
+
 async function loadTrackingData(){
 $('ttTableBody').innerHTML=`<tr><td colspan="6" class="text-center py-16 text-slate-400 text-sm">⏳ Loading engagement data…</td></tr>`;
 ['ttStatTotal','ttStatComplete','ttStatProgress','ttStatAvg'].forEach(id=>$(id).textContent='…');
@@ -1356,6 +1617,7 @@ const total=ttData.length,complete=ttData.filter(e=>e.status==='Complete').lengt
 $('ttStatTotal').textContent=total; $('ttStatComplete').textContent=complete; $('ttStatProgress').textContent=inProg; $('ttStatAvg').textContent=fmtSec(avgTime);
 renderTTTable();
 }
+
 function renderTTTable(filter=''){
 const q=filter.toLowerCase();
 let rows=q?ttData.filter(e=>e.fullName.toLowerCase().includes(q)||e.username.toLowerCase().includes(q)||e.role.toLowerCase().includes(q)):[...ttData];
@@ -1378,6 +1640,7 @@ return `<tr class="tt-row border-b border-slate-100 ${isSel?'selected':''}" data
 }).join('');
 $('ttTableBody').querySelectorAll('.tt-row').forEach(row=>row.addEventListener('click',()=>selectTTEmployee(row.dataset.uname)));
 }
+
 function selectTTEmployee(uname){
 ttSelected=uname; renderTTTable($('ttSearch').value);
 const emp=ttMap[uname]; if(!emp) return;
@@ -1400,6 +1663,7 @@ $('ttAckSummary').innerHTML=`
 <div class="flex items-center justify-between py-2 border-b border-slate-100"><span class="text-slate-500">Chapters Visited</span><span class="font-bold text-slate-800">${emp.sectionsVisited} / 8</span></div>
 <div class="flex items-center justify-between py-2"><span class="text-slate-500">Overall Status</span><span class="font-bold" style="color:${emp.status==='Complete'?'#065f46':emp.status==='In Progress'?'#92400e':'#475569'}">${emp.status}</span></div>`;
 }
+
 $('ttSearch').addEventListener('input',e=>renderTTTable(e.target.value));
 $('ttBtnRefresh').addEventListener('click',loadTrackingData);
 
@@ -1536,6 +1800,7 @@ return `<div onclick="openEmpPopup('${emp.username}')" style="background:#fff;bo
 </div>`;
 }).join('');
 }
+
 function openEmpPopup(uname){
 const emp=ttMap[uname]; if(!emp) return;
 $('popupAvatar').textContent=getInitialsFromName(emp.fullName)||emp.username.slice(0,2).toUpperCase();
@@ -1571,8 +1836,10 @@ $('popupAckSummary').innerHTML=`
 <div style="display:flex;justify-content:space-between;padding:6px 0"><span style="color:#64748b">Total Reading Time</span><span style="font-weight:700;color:#1e293b">${fmtSec(emp.totalTime)||'—'}</span></div>`;
 $('empPopupOverlay').classList.remove('hidden');
 }
+
 function closeEmpPopup(){
 $('empPopupOverlay').classList.add('hidden');
 }
+
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeEmpPopup();});
 </script></body></html>
