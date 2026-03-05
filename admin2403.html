@@ -2250,18 +2250,16 @@ async function loadEmpResetAckPreview(){
   infoEl.innerHTML = `<strong>Loading data for ${name} (${uname})…</strong>`;
   prevEl.classList.add('hidden'); actEl.classList.add('hidden');
   try {
-    const [acksRes, logRes, statusRes, sigRes, accessRes] = await Promise.all([
-      client.from('hb_acks').select('id',{count:'exact',head:true}).ilike('username',uname),
-      client.from('hb_engagement_log').select('id',{count:'exact',head:true}).ilike('username',uname),
-      client.from('hb_acknowledgment_status').select('handbook_signed').ilike('username',uname).maybeSingle(),
-      client.from('hb_employee_signatures').select('id',{count:'exact',head:true}).ilike('username',uname),
-      client.from('hb_handbook_access').select('signature_data').ilike('username',uname).maybeSingle()
+    const [acksRes, logRes, statusRes, sigRes] = await Promise.all([
+      client.from('hb_acks').select('id',{count:'exact',head:true}).eq('employee_initials',uname),
+      client.from('hb_engagement_log').select('id',{count:'exact',head:true}).eq('username',uname),
+      client.from('hb_acknowledgment_status').select('employee_signed').eq('employee_initials',uname).maybeSingle(),
+      client.from('hb_employee_signatures').select('id',{count:'exact',head:true}).eq('employee_initials',uname)
     ]);
-    const ackCount  = acksRes.count  ?? 0;
-    const logCount  = logRes.count   ?? 0;
-    const signed    = statusRes.data?.handbook_signed ?? false;
-    const hasSig    = (sigRes.count ?? 0) > 0;
-    const hasAccess = !!(accessRes.data?.signature_data);
+    const ackCount = acksRes.count ?? 0;
+    const logCount = logRes.count  ?? 0;
+    const signed   = statusRes.data?.employee_signed ?? false;
+    const hasSig   = (sigRes.count ?? 0) > 0;
     infoEl.innerHTML = `<strong class="text-red-700">${name}</strong> <span class="text-slate-500 font-mono text-xs">(${uname})</span><br><span class="text-xs text-slate-600 mt-1 block">The following records will be permanently removed:</span>`;
     cardsEl.innerHTML = [
       {label:'Policy Acknowledgments', val:`${ackCount} rows`, table:'hb_acks'},
@@ -2290,15 +2288,16 @@ async function executeEmpResetAck(){
   btn.textContent = 'Resetting…'; btn.disabled = true; btn.style.opacity = '0.7';
   msg.textContent = ''; msg.style.color = '#64748b';
   try {
-    const ops = await Promise.all([
-      client.from('hb_acks').delete().ilike('username',uname),
-      client.from('hb_acknowledgment_status').delete().ilike('username',uname),
-      client.from('hb_engagement_log').delete().ilike('username',uname),
-      client.from('hb_employee_signatures').delete().ilike('username',uname),
-      client.from('hb_handbook_access').update({signature_data:null,signed_at:null,handbook_signed:false}).ilike('username',uname)
-    ]);
-    const errs = ops.map(r=>r.error).filter(Boolean);
-    if(errs.length){ throw new Error(errs.map(e=>e.message).join('; ')); }
+    const {error:e1} = await client.from('hb_acks').delete().eq('employee_initials',uname);
+    if(e1) throw new Error('hb_acks: '+e1.message);
+    const {error:e2} = await client.from('hb_acknowledgment_status').delete().eq('employee_initials',uname);
+    if(e2) throw new Error('hb_acknowledgment_status: '+e2.message);
+    const {error:e3} = await client.from('hb_engagement_log').delete().eq('username',uname);
+    if(e3) throw new Error('hb_engagement_log: '+e3.message);
+    const {error:e4} = await client.from('hb_employee_signatures').delete().eq('employee_initials',uname);
+    if(e4) throw new Error('hb_employee_signatures: '+e4.message);
+    // Clear signature from handbook access (non-fatal — column may not exist)
+    await client.from('hb_handbook_access').update({signature_data:null,signature_saved_at:null}).eq('username',uname);
     msg.textContent = `✅ ${name} has been fully reset. They can start the handbook from scratch.`;
     msg.style.color = '#059669';
     toast(`✅ ${name} reset successfully`);
