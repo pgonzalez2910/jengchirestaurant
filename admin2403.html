@@ -1528,6 +1528,16 @@ const { data: ackRows, error: ackRowsErr } = await client.from('hb_acks').select
 if(ackRowsErr){ console.error('❌ Ack rows error:', ackRowsErr); }
 console.log('✅ Ack rows fetched:', ackRows?.length || 0, 'rows');
 
+// Fetch policy codes — maps numeric id → human code (e.g. 222 → "1.1")
+console.log('📡 Fetching policy codes...');
+let policyIdToCode = {};
+try {
+  const { data: policies } = await client.from('hb_policies').select('id,code,sort_order').eq('is_active',true).order('sort_order',{ascending:true});
+  (policies||[]).forEach(p=>{ if(p.id && p.code) policyIdToCode[String(p.id)]=p.code; });
+  console.log('✅ Policy codes loaded:', Object.keys(policyIdToCode).length, 'policies');
+} catch(e){ console.warn('⚠️ Could not load policy codes:', e); }
+window._policyIdToCode = policyIdToCode; // make globally accessible
+
 
 // ── 3-strategy employee lookup: exact username → letter-prefix → name initials ──
 const empLookup={};
@@ -1546,8 +1556,12 @@ allEmployees.forEach(e=>{
 Object.assign(_gEmpLookup, empLookup);
 Object.assign(_gEmpByPrefix, empByPrefix);
 Object.assign(_gEmpByNI, empByNI);
-// Save ackRows globally for subsection matrix
-allAckRows = ackRows || [];
+// Save ackRows globally — translate numeric policy_id to human code (e.g. 222 → "1.1")
+allAckRows = (ackRows||[]).map(r=>{
+  const rawId = String(r.policy_id||'').trim();
+  const code = policyIdToCode[rawId] || rawId; // fallback to raw if no mapping
+  return {...r, policy_id: code};
+});
 // resolvEmp: call with any key (username, prefix, or initials) — returns employee or null
 function resolvEmpLocal(key){
   const k=(key||'').toUpperCase().trim();
