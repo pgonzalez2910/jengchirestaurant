@@ -268,6 +268,21 @@ function applyRoleFilter(allEmps) {
     );
   }
 
+  // ── Always include the logged-in manager themselves ──
+  // Without this, PG9367 / any manager can never see their own submission.
+  const selfUsername = currentManager.username.toUpperCase();
+  const alreadyIn = base.some(e =>
+    (e.username && e.username.toUpperCase() === selfUsername) ||
+    e.initials.toUpperCase() === selfUsername
+  );
+  if (!alreadyIn) {
+    const selfEmp = allEmps.find(e =>
+      (e.username && e.username.toUpperCase() === selfUsername) ||
+      e.initials.toUpperCase() === selfUsername
+    );
+    if (selfEmp) base.push(selfEmp);
+  }
+
   return base;
 }
 
@@ -428,11 +443,20 @@ async function loadEmployees() {
   const { data: ackForms } = await client.from('hb_ack_forms').select('initials, pdf_url, created_at, status').not('pdf_url','is',null).order('created_at', { ascending:false });
 
   // Build best PDF map per employee
+  // Keyed by BOTH the raw key AND its 2-char prefix so mismatches between
+  // hb_employee_signatures ("SG") and hb_acknowledgment_status ("SG5288") resolve.
   const latestPDFMap = new Map();
   const updatePDF = (key, url, date) => {
-    if (!url) return;
-    const ex = latestPDFMap.get(key);
-    if (!ex || date > ex.date) latestPDFMap.set(key, { pdf_url: url, date });
+    if (!url || !key) return;
+    const k = key.trim().toUpperCase();
+    const ex = latestPDFMap.get(k);
+    if (!ex || date > ex.date) latestPDFMap.set(k, { pdf_url: url, date });
+    // Also store under 2-char prefix so short keys match long keys and vice-versa
+    const short = k.substring(0, 2);
+    if (short !== k) {
+      const ex2 = latestPDFMap.get(short);
+      if (!ex2 || date > ex2.date) latestPDFMap.set(short, { pdf_url: url, date });
+    }
   };
   (statuses||[]).forEach(s => updatePDF(s.employee_initials, s.final_pdf_url, s.created_at));
   (signatures||[]).forEach(s => updatePDF(s.employee_initials, s.pdf_url, s.created_at));
@@ -446,7 +470,17 @@ async function loadEmployees() {
     if (!ex || new Date(s.created_at) > new Date(ex.created_at)) submittedMap.set(s.employee_initials, s);
   });
   submittedMap.forEach((status, initials) => {
-    const best = latestPDFMap.get(initials);
+    // Try exact key first, then 2-char prefix, then any key starting with 2-char
+    const k = (initials||'').toUpperCase();
+    let best = latestPDFMap.get(k)
+            || latestPDFMap.get(k.substring(0,2));
+    if (!best) {
+      // Last resort: scan for any key that starts with same 2 chars
+      const prefix = k.substring(0,2);
+      for (const [mk, mv] of latestPDFMap) {
+        if (mk.startsWith(prefix)) { best = mv; break; }
+      }
+    }
     if (best) status.pdf_url = best.pdf_url;
     const latestSig = (signatures||[]).find(sg => sg.employee_initials === initials);
     if (latestSig) {
@@ -497,9 +531,13 @@ function renderSubmittedList() {
   document.getElementById('submittedCount').textContent = `${submittedEmployees.length} submitted`;
   if (!submittedEmployees.length) { container.innerHTML='<p class="text-center text-gray-500 py-8">No submissions yet</p>'; return; }
   const isHR = currentManager.selectedRole === 'hr';
+  const selfUsername = currentManager.username.toUpperCase();
   container.innerHTML = submittedEmployees.map(emp => {
     const s = emp.status||{};
     const hasPDF = !!s.pdf_url;
+    // Manager cannot approve themselves
+    const isSelf = (emp.username && emp.username.toUpperCase() === selfUsername) ||
+                   (emp.initials && emp.initials.toUpperCase() === selfUsername);
     const signedDate = s.employee_signed_at ? toCSTDateString(s.employee_signed_at) : 'Unknown';
     const signedTime = s.employee_signed_at ? toCSTTimeString(s.employee_signed_at) : '';
     let statusBadge='', sigBadge='';
@@ -529,7 +567,7 @@ function renderSubmittedList() {
         <div class="flex items-center gap-2 flex-wrap justify-end">
           ${statusBadge}
           ${hasPDF?`<button onclick="printSinglePDF('${emp.initials}')" class="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 text-sm">📄 View PDF</button>`:'<span class="px-3 py-1 bg-gray-100 text-gray-500 rounded text-xs">No PDF yet</span>'}
-          ${!isHR&&!s.manager_approved?`<button onclick="approveSingleEmployee('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold">✅ Approve</button>`:''}
+          ${!isHR&&!s.manager_approved&&!isSelf?`<button onclick="approveSingleEmployee('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold">✅ Approve</button>`:(!isHR&&!s.manager_approved&&isSelf?'<span class="px-3 py-1 bg-gray-100 text-gray-400 rounded text-xs">Self — needs HR</span>':'')}
           ${s.manager_approved?`<button onclick="regenerateSinglePDF('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">🔄 Regen PDF</button>`:''}
           ${isHR&&s.manager_approved&&!s.hr_approved?`<button onclick="hrApproveSingle('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm">✅ HR Approve</button>`:''}
         </div>
