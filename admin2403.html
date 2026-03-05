@@ -435,12 +435,30 @@ body > *:not(#printContainer) { display: none !important; }
 <option value="time_desc">Most Time ↓</option>
 <option value="time_asc">Least Time ↑</option>
 <option value="name">Name A–Z</option>
-<option value="status">By Status</option>
 </select>
 </div>
 </div>
-<div class="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3" id="dbLiveEmpCards">
-<p class="text-xs text-slate-400 col-span-5 text-center py-8">Loading…</p>
+<!-- IN PROGRESS GROUP -->
+<div class="px-4 pt-4 pb-1">
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+<span style="width:9px;height:9px;border-radius:50%;background:#fbbf24;display:inline-block;flex-shrink:0"></span>
+<span id="dbInProgressLabel" style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:.6px">In Progress</span>
+</div>
+<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3" id="dbLiveEmpCardsInProgress">
+<p class="text-xs text-slate-400 col-span-5 text-center py-4">Loading…</p>
+</div>
+</div>
+<!-- DIVIDER -->
+<div style="border-top:1px solid #f1f5f9;margin:8px 16px"></div>
+<!-- COMPLETE GROUP -->
+<div class="px-4 pb-4 pt-1">
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+<span style="width:9px;height:9px;border-radius:50%;background:#34d399;display:inline-block;flex-shrink:0"></span>
+<span id="dbCompleteLabel" style="font-size:11px;font-weight:700;color:#065f46;text-transform:uppercase;letter-spacing:.6px">Complete</span>
+</div>
+<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3" id="dbLiveEmpCardsComplete">
+<p class="text-xs text-slate-400 col-span-5 text-center py-4">Loading…</p>
+</div>
 </div>
 </div>
 </div>
@@ -698,6 +716,12 @@ let selectedEmp = null, pendingChanges = {}, autoTimers = {}, isNew = false;
 let currentStatusTab = 'active';
 let ttData = [], ttMap = {}, ttSelected = null;
 let dbRefreshTimer = null, dbCountdownVal = 5;
+let allAckRows = []; // global — used by renderSubsectionMatrix
+let _gEmpLookup = {}, _gEmpByPrefix = {}, _gEmpByNI = {};
+function resolvEmp(key){
+  const k=(key||'').toUpperCase().trim();
+  return _gEmpLookup[k]||_gEmpByPrefix[k]||_gEmpByNI[k]||null;
+}
 const SECTION_ORDER = ['I','II','III','IV','V','VI','VII','VIII'];
 const EXCLUDED_USERNAMES = new Set(['CRV1039','AMV9910','ST3764','JT2316','PG9367']);
 const SECTION_NAMES = {
@@ -981,30 +1005,37 @@ $('loginUser').value=''; $('loginPin').value=''; $('loginMsg').textContent='';
 
 // ── DASHBOARD ──
 function startDashboardCountdown(){
-clearInterval(dbRefreshTimer);
-dbCountdownVal = 5;
-$('dbCountdown').textContent = 5;
-dbRefreshTimer = setInterval(() => {
-dbCountdownVal--;
-$('dbCountdown').textContent = dbCountdownVal;
-if(dbCountdownVal <= 0){ refreshDashboard(); }
-}, 1000);
+  clearInterval(dbRefreshTimer);
+  dbRefreshTimer = null;
+  dbCountdownVal = 30;
+  $('dbCountdown').textContent = 30;
+  dbRefreshTimer = setInterval(() => {
+    dbCountdownVal--;
+    $('dbCountdown').textContent = Math.max(0, dbCountdownVal);
+    if(dbCountdownVal <= 0){
+      clearInterval(dbRefreshTimer);
+      dbRefreshTimer = null;
+      refreshDashboard();
+    }
+  }, 1000);
 }
 async function refreshDashboard(){
-const btn = $('dbRefreshBtn');
-if(btn) {
-btn.textContent = '⏳ Refreshing…';
-btn.disabled = true;
-}
-await loadTrackingDataInternal();
-renderDashboard();
-const now = new Date();
-$('dbLastRefresh').textContent = `Last updated ${now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
-if(btn) {
-btn.textContent = '🔄 Refresh Now';
-btn.disabled = false;
-}
-startDashboardCountdown();
+  clearInterval(dbRefreshTimer); // stop timer immediately
+  dbRefreshTimer = null;
+  $('dbCountdown').textContent = '…';
+  const btn = $('dbRefreshBtn');
+  if(btn){ btn.textContent = '⏳ Refreshing…'; btn.disabled = true; }
+  try {
+    await loadTrackingDataInternal();
+    renderDashboard();
+    const now = new Date();
+    const el = $('dbLastRefresh');
+    if(el) el.textContent = `Last updated ${now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
+  } catch(e){ console.error('Refresh error:', e); }
+  finally {
+    if(btn){ btn.textContent = '🔄 Refresh Now'; btn.disabled = false; }
+    startDashboardCountdown(); // restart only after fully done
+  }
 }
 function isAtRisk(emp){
 if(emp.status==='Complete') return false;
@@ -1282,7 +1313,7 @@ renderSubsectionMatrix('BOH');
 renderLegacyCards();
 }
 
-// ── SUBSECTION MATRIX — FOH or BOH ──
+// ── SUBSECTION MATRIX — policy acknowledgment grid per dept ──
 function renderSubsectionMatrix(dept){
 const containerId=dept==='FOH'?'dbSubMatrixFOH':'dbSubMatrixBOH';
 const container=$(containerId); if(!container) return;
@@ -1290,7 +1321,7 @@ const deptAccent=dept==='FOH'?'#10B981':'#EF4444';
 const chColors={'1':'#C0A06D','2':'#3B82F6','3':'#10B981','4':'#8B5CF6','5':'#EF4444','6':'#F59E0B','7':'#06B6D4','8':'#EC4899'};
 const chToRoman={'1':'I','2':'II','3':'III','4':'IV','5':'V','6':'VI','7':'VII','8':'VIII'};
 
-// Filter ttData to this department — use resolvEmp to fix any stale dept values
+// Filter employees to this dept
 const deptData=ttData.filter(emp=>{
   if(emp.dept===dept) return true;
   const e=resolvEmp(emp.username); return (e?.department||'')===dept;
@@ -1298,107 +1329,144 @@ const deptData=ttData.filter(emp=>{
 console.log(`🏢 ${dept} grid: ${deptData.length} employees`);
 
 if(!deptData.length){
-  container.innerHTML=`<div style="text-align:center;padding:40px;font-size:12px;color:#94a3b8">No ${dept} employees with engagement data yet — fix RLS above then wait for refresh.</div>`;
+  container.innerHTML=`<div style="text-align:center;padding:40px;font-size:12px;color:#94a3b8">No ${dept} employees with data yet.</div>`;
   return;
 }
 
-// Build subsection map: username → subKey → totalSeconds
-const empSubMap={};
-const allSubKeys=new Set();
-deptData.forEach(emp=>{
-  empSubMap[emp.username]={};
-  SECTION_ORDER.forEach(ch=>{
-    ((emp.subSections||{})[ch]||[]).forEach(sub=>{
-      if(!sub||!sub.label) return;
-      empSubMap[emp.username][sub.label]=(empSubMap[emp.username][sub.label]||0)+sub.time;
-      allSubKeys.add(sub.label);
-    });
-  });
+// Build policy acknowledgment map: username → Set of policy_ids they acknowledged
+const empAckMap={};
+deptData.forEach(emp=>{ empAckMap[emp.username.toUpperCase()]=new Set(); });
+
+// Use allAckRows (global) — policy_id is "1.1", "2.3" etc.
+allAckRows.forEach(row=>{
+  const k=(row.employee_initials||'').toUpperCase();
+  if(!k||!row.policy_id) return;
+  // Match to an employee in this dept
+  const matchKey=Object.keys(empAckMap).find(u=>u===k)||null;
+  if(matchKey) empAckMap[matchKey].add(String(row.policy_id).trim());
 });
 
-if(!allSubKeys.size){
-  container.innerHTML=`<div style="text-align:center;padding:40px;font-size:12px;color:#94a3b8">No subsection data yet for ${dept} employees — fix RLS above then wait for refresh.</div>`;
+// Collect all policy_ids seen for this dept
+const allPolicies=new Set();
+Object.values(empAckMap).forEach(s=>s.forEach(p=>allPolicies.add(p)));
+
+// If no ack data, fall back to chapter-level display using sectionTimes
+if(!allPolicies.size){
+  // Build from sectionTimes (chapter-level: I, II...)
+  const hasAnyTime=deptData.some(emp=>Object.values(emp.sectionTimes||{}).some(t=>t>0));
+  if(!hasAnyTime){
+    container.innerHTML=`<div style="text-align:center;padding:40px;font-size:12px;color:#94a3b8">No acknowledgment data yet for ${dept} employees.</div>`;
+    return;
+  }
+  // Chapter-level fallback table
+  const bodyRows=deptData.map(emp=>{
+    const e=resolvEmp(emp.username)||{};
+    const fn=e.first_name||emp.fullName.split(' ')[0]||emp.username;
+    const ln=e.last_name||emp.fullName.split(' ').slice(1).join(' ')||'';
+    const av=((fn[0]||'')+(ln[0]||'')).toUpperCase()||emp.username.slice(0,2);
+    const statusDot=emp.status==='Complete'?'#34d399':emp.status==='In Progress'?'#fbbf24':'#e2e8f0';
+    const cells=SECTION_ORDER.map(ch=>{
+      const t=emp.sectionTimes[ch]||0;
+      const c=SECTION_COLORS[ch];
+      const bg=t>0?c+'22':'#f8fafc', border=t>0?c:'#e2e8f0', tc=t>0?c:'#d1d5db';
+      return `<td style="padding:3px;text-align:center" title="${SECTION_NAMES[ch]}: ${t>0?fmtSec(t):'Not visited'}">
+<div style="width:36px;height:30px;border-radius:6px;background:${bg};border:1.5px solid ${border};color:${tc};font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto">${t>0?'✓':'—'}</div></td>`;
+    }).join('');
+    const total=Object.values(emp.sectionTimes).reduce((a,b)=>a+b,0);
+    return `<tr onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
+<td style="padding:5px 0;white-space:nowrap;position:sticky;left:0;background:#fff;z-index:2;border-right:2px solid #f1f5f9">
+  <div style="display:flex;align-items:center;gap:8px;padding-right:14px">
+    <div style="width:30px;height:30px;border-radius:50%;background:${avatarBg(emp.fullName)};color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:2px solid ${statusDot}">${av}</div>
+    <div>
+      <div style="font-size:12px;font-weight:700;color:#1e293b">${fn} <span style="color:#64748b">${ln}</span></div>
+      <div style="font-size:9px;color:#94a3b8;font-family:monospace">${emp.username}</div>
+    </div>
+  </div>
+</td>${cells}
+<td style="padding:2px 0 2px 10px;font-size:10px;font-weight:700;color:${total>0?'#1e293b':'#94a3b8'};white-space:nowrap">${fmtSec(total)||'—'}</td>
+</tr>`;
+  }).join('');
+  const hdrCells=SECTION_ORDER.map(ch=>{
+    const c=SECTION_COLORS[ch];
+    return `<th style="font-size:9px;font-weight:800;text-align:center;padding:6px 2px;color:${c};border-bottom:2px solid ${c};min-width:40px">${ch}</th>`;
+  }).join('');
+  container.innerHTML=`<table style="border-collapse:separate;border-spacing:2px;min-width:max-content;width:100%">
+<thead><tr>
+<th style="position:sticky;left:0;background:#fff;z-index:3;min-width:200px;padding:4px 14px 4px 0;border-bottom:2px solid #e2e8f0;text-align:left">
+  <div style="font-size:11px;font-weight:700;color:#475569">Employee</div>
+  <div style="font-size:9px;color:#94a3b8">Chapters I–VIII · time spent</div>
+</th>${hdrCells}
+<th style="font-size:9px;font-weight:700;color:#475569;padding:4px 0 4px 10px;white-space:nowrap;vertical-align:bottom">Total</th>
+</tr></thead><tbody>${bodyRows}</tbody></table>`;
   return;
 }
 
-const sortedKeys=[...allSubKeys].sort((a,b)=>{
+// ── POLICY-LEVEL grid (1.1, 1.2 ... 8.x) ──
+const sortedPolicies=[...allPolicies].sort((a,b)=>{
   const [ac,as_]=[...String(a).split('.').map(Number)];
   const [bc,bs_]=[...String(b).split('.').map(Number)];
-  return ac!==bc?ac-bc:as_-bs_;
+  return ac!==bc?ac-bc:(as_||0)-(bs_||0);
 });
-const chGroups={};
-sortedKeys.forEach(k=>{const ch=String(k).split('.')[0]; if(!chGroups[ch])chGroups[ch]=[]; chGroups[ch].push(k);});
-const maxTime=Math.max(...deptData.flatMap(emp=>sortedKeys.map(k=>empSubMap[emp.username][k]||0)),1);
 
-function fmtShort(sec){
-  if(!sec||sec<=0)return''; const s=Math.round(sec);
-  return s<60?s+'s':s<3600?Math.floor(s/60)+'m':Math.floor(s/3600)+'h';
-}
+// Group by chapter for header
+const chGroups={};
+sortedPolicies.forEach(p=>{ const ch=String(p).split('.')[0]; if(!chGroups[ch])chGroups[ch]=[]; chGroups[ch].push(p); });
+
+// Sort employees: most policies acknowledged first
+const sorted=[...deptData].sort((a,b)=>(empAckMap[b.username.toUpperCase()]?.size||0)-(empAckMap[a.username.toUpperCase()]?.size||0));
 
 const chHeaderRow=Object.entries(chGroups).map(([ch,keys])=>{
   const c=chColors[ch]||'#94a3b8';
   return `<th colspan="${keys.length}" style="background:${c}18;color:${c};font-size:9px;font-weight:800;text-align:center;padding:6px 2px;border-bottom:2px solid ${c};white-space:nowrap">${chToRoman[ch]||ch}</th>`;
 }).join('');
 
-const subHeaderRow=sortedKeys.map(k=>{
-  const c=chColors[String(k).split('.')[0]]||'#94a3b8';
-  return `<th style="font-size:8px;font-weight:700;text-align:center;padding:3px 1px 6px;color:${c};min-width:36px">${k}</th>`;
+const subHeaderRow=sortedPolicies.map(p=>{
+  const c=chColors[String(p).split('.')[0]]||'#94a3b8';
+  return `<th style="font-size:8px;font-weight:700;text-align:center;padding:3px 1px 6px;color:${c};min-width:34px">${p}</th>`;
 }).join('');
-
-// Sort employees: most total time first
-const sorted=[...deptData].sort((a,b)=>{
-  const ta=sortedKeys.reduce((s,k)=>s+(empSubMap[a.username][k]||0),0);
-  const tb=sortedKeys.reduce((s,k)=>s+(empSubMap[b.username][k]||0),0);
-  return tb-ta;
-});
 
 const bodyRows=sorted.map(emp=>{
   const e=resolvEmp(emp.username)||{};
-  const firstName=e.first_name||emp.fullName.split(' ')[0]||emp.username;
-  const lastName=e.last_name||emp.fullName.split(' ').slice(1).join(' ')||'';
-  const av=((firstName[0]||'')+(lastName[0]||'')).toUpperCase()||emp.username.slice(0,2);
-  const rowTotal=sortedKeys.reduce((s,k)=>s+(empSubMap[emp.username][k]||0),0);
-  const dotColor=emp.status==='Complete'?'#34d399':emp.status==='In Progress'?'#fbbf24':'#e2e8f0';
+  const fn=e.first_name||emp.fullName.split(' ')[0]||emp.username;
+  const ln=e.last_name||emp.fullName.split(' ').slice(1).join(' ')||'';
+  const av=((fn[0]||'')+(ln[0]||'')).toUpperCase()||emp.username.slice(0,2);
+  const myAcks=empAckMap[emp.username.toUpperCase()]||new Set();
+  const statusDot=emp.status==='Complete'?'#34d399':emp.status==='In Progress'?'#fbbf24':'#e2e8f0';
+  const pct=Math.round(myAcks.size/Math.max(sortedPolicies.length,1)*100);
 
-  const cells=sortedKeys.map(k=>{
-    const t=empSubMap[emp.username][k]||0;
-    const ch=String(k).split('.')[0];
-    const base=chColors[ch]||deptAccent;
-    let bg,tc,dv;
-    if(t>0){
-      const intensity=Math.max(0.18,Math.min(1,t/maxTime));
-      const r=parseInt(base.slice(1,3),16),g=parseInt(base.slice(3,5),16),b2=parseInt(base.slice(5,7),16);
-      bg=`rgba(${r},${g},${b2},${intensity.toFixed(2)})`;
-      tc=intensity>0.5?'#fff':base; dv=fmtShort(t)||'✓';
-    } else { bg='#f8fafc'; tc='#d1d5db'; dv='—'; }
-    return `<td style="padding:2px;text-align:center" title="${firstName} ${lastName} · ${k}: ${t>0?fmtSec(t):'Not visited'}">
-<div style="width:34px;height:26px;border-radius:5px;background:${bg};color:${tc};font-size:8px;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto">${dv}</div></td>`;
+  const cells=sortedPolicies.map(p=>{
+    const done=myAcks.has(String(p));
+    const ch=String(p).split('.')[0];
+    const c=chColors[ch]||deptAccent;
+    const bg=done?c+'22':'#f8fafc', border=done?c:'#e2e8f0', tc=done?c:'#d1d5db';
+    return `<td style="padding:2px;text-align:center" title="${p}: ${done?'✓ Acknowledged':'Not yet'}">
+<div style="width:32px;height:24px;border-radius:5px;background:${bg};border:1.5px solid ${border};color:${tc};font-size:9px;font-weight:800;display:flex;align-items:center;justify-content:center;margin:0 auto">${done?'✓':'—'}</div></td>`;
   }).join('');
 
   return `<tr onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
 <td style="padding:5px 0;white-space:nowrap;position:sticky;left:0;background:#fff;z-index:2;border-right:2px solid #f1f5f9">
   <div style="display:flex;align-items:center;gap:8px;padding-right:14px">
-    <div style="width:30px;height:30px;border-radius:50%;background:${avatarBg(emp.fullName)};color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:2px solid ${dotColor}">${av}</div>
+    <div style="width:30px;height:30px;border-radius:50%;background:${avatarBg(emp.fullName)};color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:2px solid ${statusDot}">${av}</div>
     <div>
-      <div style="font-size:12px;font-weight:700;color:#1e293b">${firstName} <span style="color:#64748b">${lastName}</span></div>
-      <div style="font-size:9px;color:#94a3b8;font-family:monospace">${emp.username}</div>
+      <div style="font-size:12px;font-weight:700;color:#1e293b">${fn} <span style="color:#64748b">${ln}</span></div>
+      <div style="font-size:9px;font-family:monospace;color:#94a3b8">${emp.username} · <span style="color:${deptAccent};font-weight:700">${myAcks.size}/${sortedPolicies.length} (${pct}%)</span></div>
     </div>
   </div>
 </td>
 ${cells}
-<td style="padding:2px 0 2px 10px;font-size:10px;font-weight:700;color:${rowTotal>0?'#1e293b':'#94a3b8'};white-space:nowrap">${fmtSec(rowTotal)||'—'}</td>
+<td style="padding:2px 0 2px 10px;font-size:10px;font-weight:700;color:${myAcks.size>0?'#1e293b':'#94a3b8'};white-space:nowrap">${myAcks.size}/${sortedPolicies.length}</td>
 </tr>`;
 }).join('');
 
 container.innerHTML=`<table style="border-collapse:separate;border-spacing:2px;min-width:max-content;width:100%">
 <thead>
 <tr>
-<th style="position:sticky;left:0;background:#fff;z-index:3;min-width:200px;padding:4px 14px 4px 0;border-bottom:2px solid #e2e8f0;text-align:left">
+<th style="position:sticky;left:0;background:#fff;z-index:3;min-width:220px;padding:4px 14px 4px 0;border-bottom:2px solid #e2e8f0;text-align:left">
   <div style="font-size:11px;font-weight:700;color:#475569">Employee</div>
-  <div style="font-size:9px;color:#94a3b8">First Name · Last Name · username</div>
+  <div style="font-size:9px;color:#94a3b8">username · policies acknowledged</div>
 </th>
 ${chHeaderRow}
-<th style="font-size:9px;font-weight:700;color:#475569;padding:4px 0 4px 10px;white-space:nowrap;vertical-align:bottom">Total</th>
+<th style="font-size:9px;font-weight:700;color:#475569;padding:4px 0 4px 10px;white-space:nowrap;vertical-align:bottom">Done</th>
 </tr>
 <tr>
 <th style="position:sticky;left:0;background:#fff;z-index:3;padding:2px 0 6px;border-bottom:1px solid #f1f5f9"></th>
@@ -1462,21 +1530,26 @@ console.log('✅ Ack rows fetched:', ackRows?.length || 0, 'rows');
 
 
 // ── 3-strategy employee lookup: exact username → letter-prefix → name initials ──
-// This handles legacy data that may have stored initials instead of full username
-const empLookup={};      // 'RC5288' → emp
-const empByPrefix={};    // 'RC'     → emp  (letters from 'RC5288')
-const empByNI={};        // 'RC'     → emp  (first+last initial from 'Rony Carranza')
+const empLookup={};
+const empByPrefix={};
+const empByNI={};
 allEmployees.forEach(e=>{
   if(!e.username) return;
   const u=e.username.toUpperCase();
   empLookup[u]=e;
-  const lp=u.replace(/\d/g,'').slice(0,2); // strip digits → 'RC'
+  const lp=u.replace(/\d/g,'').slice(0,2);
   if(lp.length>=2 && !empByPrefix[lp]) empByPrefix[lp]=e;
   const ni=(((e.first_name||'')[0]||'')+((e.last_name||'')[0]||'')).toUpperCase();
   if(ni.length===2 && !empByNI[ni]) empByNI[ni]=e;
 });
+// Sync to globals so renderSubsectionMatrix and other global functions can use resolvEmp()
+Object.assign(_gEmpLookup, empLookup);
+Object.assign(_gEmpByPrefix, empByPrefix);
+Object.assign(_gEmpByNI, empByNI);
+// Save ackRows globally for subsection matrix
+allAckRows = ackRows || [];
 // resolvEmp: call with any key (username, prefix, or initials) — returns employee or null
-function resolvEmp(key){
+function resolvEmpLocal(key){
   const k=(key||'').toUpperCase().trim();
   return empLookup[k]||empByPrefix[k]||empByNI[k]||null;
 }
@@ -1796,33 +1869,51 @@ const sortMode=($('dbLiveEmpSort')||{}).value||'time_desc';
 if(sortMode==='time_desc') data.sort((a,b)=>b.totalTime-a.totalTime);
 else if(sortMode==='time_asc') data.sort((a,b)=>a.totalTime-b.totalTime);
 else if(sortMode==='name') data.sort((a,b)=>a.fullName.localeCompare(b.fullName));
-else if(sortMode==='status'){const o={'In Progress':0,'Complete':1,'Not Started':2};data.sort((a,b)=>o[a.status]-o[b.status]);}
-const container=$('dbLiveEmpCards');
-$('dbLiveEmpCount').textContent=`${data.length} employees`;
-if(!data.length){container.innerHTML='<p class="text-xs text-slate-400 col-span-5 text-center py-8">No data yet</p>';return;}
-const statusColor={Complete:'#d1fae5','In Progress':'#fef3c7','Not Started':'#f1f5f9'};
-const statusText={Complete:'#065f46','In Progress':'#92400e','Not Started':'#94a3b8'};
-const statusIcon={Complete:'✓','In Progress':'●','Not Started':'○'};
-container.innerHTML=data.map(emp=>{
+
+const inProgress=data.filter(e=>e.status!=='Complete');
+const complete=data.filter(e=>e.status==='Complete');
+
+$('dbLiveEmpCount').textContent=`${data.length} employees · ${inProgress.length} in progress · ${complete.length} complete`;
+$('dbInProgressLabel').textContent=`⏳ In Progress — ${inProgress.length}`;
+$('dbCompleteLabel').textContent=`✅ Complete — ${complete.length}`;
+
+function buildCard(emp){
 const av=getInitialsFromName(emp.fullName)||emp.username.slice(0,2).toUpperCase();
 const pct=Math.round(emp.sectionsVisited/8*100);
 const timeLabel=emp.totalTime>0?fmtSec(emp.totalTime):'No time yet';
-return `<div onclick="openEmpPopup('${emp.username}')" style="background:#fff;border:1.5px solid #e2e8f0;border-radius:14px;padding:14px 12px;cursor:pointer;transition:all .15s;box-shadow:0 1px 4px rgba(0,0,0,.04)" onmouseover="this.style.borderColor='#C0A06D';this.style.boxShadow='0 4px 14px rgba(192,160,109,.18)'" onmouseout="this.style.borderColor='#e2e8f0';this.style.boxShadow='0 1px 4px rgba(0,0,0,.04)'">
-<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-<div style="width:32px;height:32px;border-radius:50%;background:${avatarBg(emp.fullName)};color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${av}</div>
-<div style="min-width:0;flex:1">
-<div style="font-size:12px;font-weight:700;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.fullName}</div>
-<div style="font-size:10px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.role}</div>
-</div>
+const isComplete=emp.status==='Complete';
+const borderAccent=isComplete?'#34d399':'#fbbf24';
+const statusBg=isComplete?'#d1fae5':'#fef3c7';
+const statusText=isComplete?'#065f46':'#92400e';
+const statusIcon=isComplete?'✓':'●';
+const barColor=isComplete?'#34d399':'#fbbf24';
+const deptBadge=emp.dept?`<span style="font-size:9px;padding:1px 7px;border-radius:999px;background:${emp.dept==='FOH'?'#d1fae5':'#fee2e2'};color:${emp.dept==='FOH'?'#065f46':'#991b1b'};font-weight:700;margin-left:4px">${emp.dept}</span>`:'';
+return `<div onclick="openEmpPopup('${emp.username}')"
+  style="background:#fff;border:1.5px solid #e2e8f0;border-top:3px solid ${borderAccent};border-radius:14px;padding:14px 12px;cursor:pointer;transition:all .15s;box-shadow:0 1px 4px rgba(0,0,0,.04)"
+  onmouseover="this.style.borderColor='${borderAccent}';this.style.boxShadow='0 4px 14px rgba(0,0,0,.12)'"
+  onmouseout="this.style.borderColor='#e2e8f0';this.style.borderTopColor='${borderAccent}';this.style.boxShadow='0 1px 4px rgba(0,0,0,.04)'">
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+  <div style="width:32px;height:32px;border-radius:50%;background:${avatarBg(emp.fullName)};color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${av}</div>
+  <div style="min-width:0;flex:1">
+    <div style="font-size:12px;font-weight:700;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.fullName}</div>
+    <div style="font-size:10px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.role}${deptBadge}</div>
+  </div>
 </div>
 <div style="font-size:20px;font-weight:800;color:${emp.totalTime>0?'#1e293b':'#cbd5e1'};margin-bottom:4px;line-height:1">${timeLabel}</div>
 <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
-<div style="flex:1;height:5px;border-radius:3px;background:#f1f5f9;overflow:hidden"><div style="height:100%;width:${pct}%;border-radius:3px;background:${emp.status==='Complete'?'#34d399':emp.status==='In Progress'?'#fbbf24':'#94a3b8'};transition:width .4s"></div></div>
-<span style="font-size:10px;font-weight:700;color:#64748b">${emp.sectionsVisited}/8</span>
+  <div style="flex:1;height:5px;border-radius:3px;background:#f1f5f9;overflow:hidden">
+    <div style="height:100%;width:${pct}%;border-radius:3px;background:${barColor};transition:width .4s"></div>
+  </div>
+  <span style="font-size:10px;font-weight:700;color:#64748b">${emp.sectionsVisited}/8</span>
 </div>
-<div style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;background:${statusColor[emp.status]};font-size:10px;font-weight:700;color:${statusText[emp.status]}">${statusIcon[emp.status]} ${emp.status}</div>
+<div style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;background:${statusBg};font-size:10px;font-weight:700;color:${statusText}">${statusIcon} ${emp.status}</div>
 </div>`;
-}).join('');
+}
+
+const ipContainer=$('dbLiveEmpCardsInProgress');
+const cContainer=$('dbLiveEmpCardsComplete');
+ipContainer.innerHTML=inProgress.length?inProgress.map(buildCard).join(''):`<p style="font-size:12px;color:#94a3b8;text-align:center;padding:16px 0;grid-column:span 5">No employees in progress right now</p>`;
+cContainer.innerHTML=complete.length?complete.map(buildCard).join(''):`<p style="font-size:12px;color:#94a3b8;text-align:center;padding:16px 0;grid-column:span 5">No completions yet</p>`;
 }
 
 function openEmpPopup(uname){
