@@ -8328,7 +8328,7 @@ input[id^="par-input-"]:focus {
 
         <div style="background: white; padding: 1.5rem; border-radius: 12px; box-shadow: var(--shadow-md); margin-bottom: 1.5rem;">
 
-            <div style="display: grid; grid-template-columns: 1fr auto; gap: 1rem; align-items: end;">
+            <div style="display: grid; grid-template-columns: 1fr auto auto; gap: 1rem; align-items: end;">
 
                 <div>
 
@@ -8338,11 +8338,23 @@ input[id^="par-input-"]:focus {
 
                 </div>
 
-                <button class="btn btn-primary" onclick="loadEditOrder()">
+                <button class="btn btn-primary" onclick="loadEditOrder()" style="white-space:nowrap;">
 
-                    <i class="fas fa-sync"></i> Load Order
+                    <i class="fas fa-sync"></i> Reload
 
                 </button>
+
+                <button class="btn btn-secondary" onclick="switchOrderTab('placeOrder');document.querySelectorAll('.order-sub-tab')[0]?.click();" style="white-space:nowrap;">
+
+                    <i class="fas fa-arrow-left"></i> Back to Place Order
+
+                </button>
+
+            </div>
+
+            <div style="margin-top:0.75rem;padding:0.75rem 1rem;background:#eff6ff;border-radius:8px;border:1px solid #bfdbfe;font-size:0.8rem;color:#1d4ed8;">
+
+                <i class="fas fa-info-circle"></i> Showing submitted orders — edit qty or vendor directly in the table. Changes save automatically.
 
             </div>
 
@@ -27861,6 +27873,15 @@ function switchOrderTab(tabName, evt) {
 
     document.getElementById(tabName).classList.add('active');
 
+    // ✅ Auto-load Edit Order when tab is switched to
+    if (tabName === 'editOrder') {
+
+        const editDateEl = document.getElementById('editOrderDate');
+        if (editDateEl && !editDateEl.value) editDateEl.value = todayYMD();
+        loadEditOrder();
+
+    }
+
 }
 
 
@@ -35217,33 +35238,64 @@ async function loadEditOrder() {
 
     try {
 
+        // Load images from inventory_management for enriched display
+        const { data: mgmtData } = await supabaseClient
+            .from('inventory_management')
+            .select('product_name, image_url, category, par');
+
+        const imageMap = new Map();
+        (mgmtData || []).forEach(m => imageMap.set(m.product_name, m));
+
         const { data, error } = await supabaseClient
 
             .from('inventory_check')
 
             .select('*')
 
-            .eq('order_date', dateISO);
+            .eq('order_date', dateISO)
+
+            .order('product_name');
 
         if (error) throw error;
 
+        // Enrich rows with image_url from inventory_management
+        const enriched = (data || []).map(row => ({
+            ...row,
+            image_url: imageMap.get(row.product_name)?.image_url || row.image_url || null
+        }));
 
+        // ✅ Items with qty>0 AND vendor = fully submitted
+        // Items with ONLY vendor (no qty) = vendor set but qty missing
+        // Items with ONLY qty>0 (no vendor) = qty set but vendor missing
+        // Items with neither = not touched
+        const submitted   = enriched.filter(r => (parseFloat(r.tentative) > 0) || r.vendor);
+        const unsubmitted = enriched.filter(r => !(parseFloat(r.tentative) > 0) && !r.vendor);
 
-        const submitted = (data || []).filter(r => r.tentative > 0 || r.vendor);
-
-        const unsubmitted = (data || []).filter(r => !r.tentative && !r.vendor);
-
-
+        // Sort submitted: complete first (has both qty + vendor), then partial
+        submitted.sort((a, b) => {
+            const aComplete = (parseFloat(a.tentative) > 0) && a.vendor ? 0 : 1;
+            const bComplete = (parseFloat(b.tentative) > 0) && b.vendor ? 0 : 1;
+            return aComplete - bComplete || (a.product_name||'').localeCompare(b.product_name||'');
+        });
 
         document.getElementById('submittedCount').textContent = submitted.length;
-
         document.getElementById('unsubmittedCount').textContent = unsubmitted.length;
 
+        if (submitted.length === 0 && unsubmitted.length === 0) {
 
+            document.getElementById('submittedOrdersBody').innerHTML =
+                `<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--neutral-500);">
+                    <i class="fas fa-inbox" style="font-size:2rem;display:block;margin-bottom:0.5rem;"></i>
+                    No order data for ${dateISO}.<br>
+                    <small>Go to the Place Order tab, fill in quantities and vendors, then click Submit Order.</small>
+                </td></tr>`;
 
-        renderEditOrderTable('submittedOrdersBody', submitted);
+        } else {
 
-        renderEditOrderTable('unsubmittedProductsBody', unsubmitted);
+            renderEditOrderTable('submittedOrdersBody', submitted);
+            renderEditOrderTable('unsubmittedProductsBody', unsubmitted);
+
+        }
 
     } catch (error) {
 
@@ -35277,9 +35329,12 @@ function renderEditOrderTable(tbodyId, rows) {
 
         const productId = (row.product_name || '').replace(/[^a-zA-Z0-9]/g, '_');
 
+        const vendorOpts = (typeof ALLOWED_VENDORS !== 'undefined' ? ALLOWED_VENDORS : ['Pacific Plus','Formosa Foods','North Food Group','BakeMark','Autochlor','Delta Office Products','HMart','SAMS Club','Home Depot','Costco','Restaurant Depot'])
+            .map(v => `<option value="${v}" ${row.vendor===v?'selected':''}>${v}</option>`).join('');
+
         return `
 
-            <tr>
+            <tr style="border-left:4px solid ${(parseFloat(row.tentative)>0 && row.vendor)?'var(--success-500)':(parseFloat(row.tentative)>0||row.vendor)?'#f59e0b':'var(--neutral-300)'};">
 
                 <td><img src="${imageUrl}" onerror="this.src='${PLACEHOLDER_IMAGE}'"
 
@@ -35287,15 +35342,32 @@ function renderEditOrderTable(tbodyId, rows) {
 
                 <td><span class="item-number">${row.item_code || '—'}</span></td>
 
-                <td style="font-weight:600;">${row.product_name}</td>
+                <td style="font-weight:600;">
+                    ${row.product_name}
+                    <div style="font-size:0.7rem;margin-top:3px;display:flex;align-items:center;gap:4px;">
+                        <span style="color:var(--neutral-500);">${row.user||''}</span>
+                        ${(parseFloat(row.tentative)>0 && row.vendor)
+                            ? '<span style="background:#dcfce7;color:#15803d;padding:1px 6px;border-radius:10px;font-size:0.65rem;font-weight:700;">✓ Complete</span>'
+                            : (parseFloat(row.tentative)>0)
+                                ? '<span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:10px;font-size:0.65rem;font-weight:700;">⚠ Needs vendor</span>'
+                                : (row.vendor)
+                                    ? '<span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:10px;font-size:0.65rem;font-weight:700;">⚠ Needs qty</span>'
+                                    : ''
+                        }
+                    </div>
+                </td>
 
                 <td>
 
-                    <input type="number" value="${row.tentative || ''}" min="0" step="0.01"
+                    <input type="number" value="${row.tentative != null && row.tentative !== '' ? row.tentative : ''}" min="0" step="0.01"
 
                            placeholder="0"
 
-                           onblur="updateTentative('${row.id}', this.value)"
+                           data-row-id="${row.id}"
+
+                           oninput="(function(el){clearTimeout(el._t);el._t=setTimeout(function(){updateTentative(el.dataset.rowId,el.value);},400);})(this)"
+
+                           onblur="updateTentative(this.dataset.rowId, this.value)"
 
                            class="search-input" style="width:90px;text-align:center;font-family:var(--font-mono);font-weight:700;">
 
@@ -35303,15 +35375,15 @@ function renderEditOrderTable(tbodyId, rows) {
 
                 <td>
 
-                    <select onchange="selectVendorAndUpdateItemCode('${row.id}','${(row.product_name||'').replace(/'/g,"&#39;")}',this.value)"
+                    <select data-row-id="${row.id}" data-product="${escAttr(row.product_name)}"
+
+                            onchange="selectVendorAndUpdateItemCode(this.dataset.rowId, this.dataset.product, this.value)"
 
                             class="search-input" style="min-width:160px;">
 
                         <option value="">— Select —</option>
 
-                        ${['Pacific Plus','Formosa Foods','North Food Group','BakeMark','Autochlor','Delta Office Products']
-
-                            .map(v => `<option value="${v}" ${row.vendor===v?'selected':''}>${v}</option>`).join('')}
+                        ${vendorOpts}
 
                     </select>
 
@@ -36272,15 +36344,15 @@ async function submitAndMarkOrder() {
 
         const userType    = card.dataset.user;
 
-        const productId   = (productName || '').replace(/[^a-zA-Z0-9]/g, '_');
+        // ✅ Use card.querySelector() — avoids duplicate-ID collision when two
+        //    product names produce the same sanitized productId (e.g. "Rice Cake"
+        //    and "Rice-Cake" both → "Rice_Cake"). getElementById always returns
+        //    the first match, so the second product's qty would be lost.
+        const qtyInput    = card.querySelector('input[type="number"][id^="qty-"]');
 
+        const vendorInput = card.querySelector('select[id^="vendor-"]');
 
-
-        const qtyInput    = document.getElementById(`qty-${productId}`);
-
-        const vendorInput = document.getElementById(`vendor-${productId}`);
-
-        const codeInput   = document.getElementById(`itemcode-input-${productId}`);
+        const codeInput   = card.querySelector('input[type="text"][id^="itemcode-input-"]');
 
 
 
@@ -36332,37 +36404,36 @@ async function submitAndMarkOrder() {
 
     try {
 
-        // ── STEP 1: Save / update every item in inventory_check ──────────
+        // ── STEP 1: UPSERT every item into inventory_check ──────────────
+        // Using upsert so it creates the row if missing AND updates if exists
+        // This prevents silent failures when a product wasn't in inventory_check yet
 
-        for (const item of orderItems) {
+        const upsertRows = orderItems.map(item => ({
+            order_date:   dateISO,
+            product_name: item.product_name,
+            user:         item.user === 'rony'   ? 'Rony'
+                        : item.user === 'julio'  ? 'Julio'
+                        : item.user === 'office' ? 'Office'
+                        : item.user,
+            tentative:    item.quantity,
+            vendor:       item.vendor,
+            item_code:    item.item_code
+        }));
 
-            await supabaseClient
+        // Batch upsert — creates row if not found, updates tentative/vendor/item_code if found
+        const { error: upsertError } = await supabaseClient
+            .from('inventory_check')
+            .upsert(upsertRows, {
+                onConflict: 'order_date,product_name,user',
+                ignoreDuplicates: false   // always update tentative/vendor/item_code
+            });
 
-                .from('inventory_check')
-
-                .update({
-
-                    tentative:  item.quantity,
-
-                    vendor:     item.vendor,
-
-                    item_code:  item.item_code
-
-                })
-
-                .eq('order_date',    dateISO)
-
-                .eq('product_name',  item.product_name)
-
-                .eq('user',          item.user   === 'rony' ? 'Rony'
-
-                                   : item.user   === 'julio' ? 'Julio'
-
-                                   : item.user   === 'office' ? 'Office'
-
-                                   : item.user);
-
+        if (upsertError) {
+            console.error('❌ inventory_check upsert error:', upsertError);
+            throw upsertError;
         }
+
+        console.log(`✅ Upserted ${upsertRows.length} rows into inventory_check`);
 
 
 
@@ -36394,11 +36465,15 @@ async function submitAndMarkOrder() {
 
 
 
+        // UPSERT submitted_orders — same-day resubmit updates instead of duplicating
         const { error: insertError } = await supabaseClient
 
             .from('submitted_orders')
 
-            .insert(submissionRows);
+            .upsert(submissionRows, {
+                onConflict: 'order_date,product_name,user_section',
+                ignoreDuplicates: false
+            });
 
 
 
@@ -36406,7 +36481,7 @@ async function submitAndMarkOrder() {
 
             // Table may not exist yet — log but don't block
 
-            console.warn('submitted_orders insert warning:', insertError.message);
+            console.warn('submitted_orders upsert warning:', insertError.message);
 
         }
 
@@ -36514,21 +36589,107 @@ async function submitAndMarkOrder() {
 
 
 
-        // ── STEP 5: Success message ───────────────────────────────────────
+        // ── STEP 5: Show prominent success modal, then switch to Edit Order ─
+        showLoading(false); // hide spinner so modal is visible
 
-        showAlert(
+        await new Promise(resolve => {
+            // Build modal overlay
+            const overlay = document.createElement('div');
+            overlay.id = 'orderSuccessOverlay';
+            overlay.style.cssText = `
+                position:fixed;inset:0;background:rgba(0,0,0,0.55);
+                z-index:999999;display:flex;align-items:center;justify-content:center;
+            `;
 
-            `✅ Order submitted successfully! ${orderItems.length} items saved for ${formatDate(dateISO)}.${emailMsg}`,
+            const emailLine = emailMsg
+                ? `<div style="margin-top:0.4rem;font-size:0.85rem;color:#065f46;">${emailMsg}</div>`
+                : '';
 
-            'success'
+            overlay.innerHTML = `
+              <div style="
+                background:white;border-radius:18px;padding:2.5rem 2.75rem;
+                max-width:480px;width:92%;text-align:center;
+                box-shadow:0 24px 60px rgba(0,0,0,0.35);
+                border-top:6px solid #16a34a;
+                font-family:var(--font-display);
+              ">
+                <div style="width:72px;height:72px;border-radius:50%;background:#dcfce7;
+                            display:flex;align-items:center;justify-content:center;
+                            margin:0 auto 1.25rem;font-size:2.2rem;">✅</div>
 
-        );
+                <h2 style="margin:0 0 0.5rem;font-size:1.5rem;font-weight:800;color:#14532d;">
+                  Order Submitted Successfully!
+                </h2>
 
+                <p style="margin:0;font-size:1rem;color:#374151;">
+                  <strong>${orderItems.length} item${orderItems.length!==1?'s':''}</strong>
+                  saved for <strong>${formatDate(dateISO)}</strong>.
+                </p>
+                ${emailLine}
 
+                <div style="margin-top:1.75rem;padding-top:1.25rem;border-top:1px solid #e5e7eb;
+                            font-size:0.8rem;color:#6b7280;">
+                  Redirecting to Edit Order in <span id="successCountdown">4</span>s…
+                </div>
 
-        // Reload the cards to reflect saved state
+                <button id="successOkBtn" style="
+                  margin-top:1rem;padding:0.6rem 2.5rem;
+                  background:linear-gradient(135deg,#16a34a,#15803d);
+                  color:white;border:none;border-radius:8px;
+                  font-size:1rem;font-weight:700;cursor:pointer;
+                  box-shadow:0 4px 12px rgba(22,163,74,0.35);
+                ">
+                  View Submitted Order →
+                </button>
+              </div>
+            `;
 
-        await loadEnhancedCreateOrder();
+            document.body.appendChild(overlay);
+
+            // Countdown timer
+            let secs = 4;
+            const tick = setInterval(() => {
+                secs--;
+                const el = document.getElementById('successCountdown');
+                if (el) el.textContent = secs;
+                if (secs <= 0) { clearInterval(tick); cleanup(); }
+            }, 1000);
+
+            function cleanup() {
+                clearInterval(tick);
+                const o = document.getElementById('orderSuccessOverlay');
+                if (o) o.remove();
+                resolve();
+            }
+
+            document.getElementById('successOkBtn').addEventListener('click', cleanup);
+        });
+
+        // ✅ Switch to Edit Order tab — set date first so auto-load picks it up
+        const editDateEl = document.getElementById('editOrderDate');
+        if (editDateEl) editDateEl.value = dateISO;
+
+        // Highlight Edit Order sub-tab
+        document.querySelectorAll('.order-sub-tab').forEach(tab => {
+            const oc = tab.getAttribute('onclick') || '';
+            if (oc.includes('editOrder')) {
+                tab.classList.add('active');
+                tab.style.background = 'linear-gradient(135deg, var(--primary-700) 0%, var(--primary-600) 100%)';
+                tab.style.color = 'white';
+            } else {
+                tab.classList.remove('active');
+                tab.style.background = 'transparent';
+                tab.style.color = 'var(--neutral-600)';
+            }
+        });
+
+        // Show editOrder section, hide others
+        document.querySelectorAll('.order-content-section').forEach(s => s.classList.remove('active'));
+        const editSection = document.getElementById('editOrder');
+        if (editSection) editSection.classList.add('active');
+
+        // Now load the edit order data fresh from DB
+        await loadEditOrder();
 
 
 
