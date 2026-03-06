@@ -72,29 +72,7 @@ input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; }
 .at-risk-row { border-left:3px solid #ef4444; }
 .progress-track { height:6px; border-radius:3px; background:#E2E8F0; overflow:hidden; flex:1; }
 .progress-fill { height:100%; border-radius:3px; transition:width .5s ease; }
-@media print {
-@page { margin: 0.55in; size: letter; }
-body { background: #fff !important; color: #000 !important; font-family: 'Inter', system-ui, sans-serif !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-body > *:not(#printContainer) { display: none !important; }
-#printContainer { display: block !important; position: static !important; width: 100%; background: #fff; color: #000; }
-.print-page { page-break-after: always; }
-.print-page:last-child { page-break-after: avoid; }
-.ph { display:flex; align-items:flex-start; justify-content:space-between; border-bottom:3px solid #C0A06D; padding-bottom:12px; margin-bottom:20px; }
-.ph-logo { font-family: Georgia, serif; font-size:21px; font-weight:700; color:#1e293b; }
-.ph-sub { font-size:10px; color:#64748b; margin-top:2px; }
-.ph-meta { text-align:right; font-size:10px; color:#475569; line-height:1.5; }
-.pt { font-size:15px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:#1e293b; margin:0 0 3px; }
-.ps { font-size:13px; font-weight:600; color:#334155; margin:0 0 14px; }
-.pt2 { width:100%; border-collapse:collapse; font-size:11px; margin-bottom:14px; }
-.pt2 th { background:#1e293b !important; color:#fff !important; padding:8px 10px; text-align:left; font-weight:600; text-transform:uppercase; letter-spacing:.3px; border:1px solid #334155; }
-.pt2 td { padding:8px 10px; border:1px solid #e2e8f0; color:#1e293b; vertical-align:middle; }
-.pt2 tr:nth-child(even) td { background:#f8fafc; }
-.pf { margin-top:18px; padding-top:10px; border-top:1px solid #e2e8f0; font-size:9px; color:#64748b; text-align:center; }
-.pbadge { display:inline-block; padding:2px 9px; border-radius:999px; font-size:9px; font-weight:700; }
-.pbadge-c { background:#d1fae5; color:#065f46; }
-.pbadge-p { background:#fef3c7; color:#92400e; }
-.pbadge-n { background:#f1f5f9; color:#475569; }
-}
+@media print { body { display:none; } }
 </style>
 </head>
 <body class="min-h-screen bg-slate-50 text-slate-800">
@@ -1915,90 +1893,768 @@ $('btnPrintReport')?.addEventListener('click',()=>{$('printModal').classList.rem
 $('printBackdrop')?.addEventListener('click',()=>$('printModal').classList.add('hidden'));
 $('btnCancelPrint')?.addEventListener('click',()=>$('printModal').classList.add('hidden'));
 
-$('btnGeneratePrint').addEventListener('click', async () => {
-const dept = $('printDepartment').value;
-const includePIN = $('printIncludePIN').checked;
-const activeOnly = $('printShowActiveOnly').checked;
-const includeHandbook = $('printIncludeHandbook').checked;
+// ── SHARED PRINT HELPERS ──
+const PRINT_GOLD = '#C0A06D';
+const PRINT_DARK = '#1e293b';
 
-let query = client.from('employees2025')
-.select('username,pin,first_name,last_name,department,job_title,status');
+function printBaseCSS(){
+return `
+  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@300;400;500;600;700;800&display=swap');
+  @page { margin: 0.45in 0.5in 0.55in; size: letter; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: #fff; color: #1e293b; -webkit-print-color-adjust: exact; print-color-adjust: exact; font-size: 11px; }
+  .page { page-break-after: always; padding-bottom: 32px; position: relative; }
+  .page:last-child { page-break-after: avoid; }
 
-if(activeOnly) query = query.eq('status', 'Active');
-if(dept) query = query.eq('department', dept);
-query = query.order('username', {ascending: true});
+  /* ── DEPT DIVIDER ── */
+  .dept-header { display: flex; align-items: center; gap: 10px; margin: 20px 0 10px; page-break-inside: avoid; }
+  .dept-header-line { flex: 1; height: 1px; background: #e2e8f0; }
+  .dept-header-label { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.2px; padding: 3px 12px; border-radius: 999px; }
+  .dept-foh  { background: #d1fae5; color: #065f46; }
+  .dept-boh  { background: #fee2e2; color: #991b1b; }
+  .dept-mgmt { background: #dbeafe; color: #1e40af; }
+  .dept-admin{ background: #f1f5f9; color: #475569; }
+  .dept-other{ background: #f8fafc; color: #64748b; }
 
-const {data, error} = await query;
-if(error){toast('Print failed: '+error.message, false); return;}
+  /* ── EMPLOYEE TABLE ── */
+  .emp-table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
+  .emp-table thead tr { background: ${PRINT_DARK} !important; }
+  .emp-table th { padding: 8px 10px; text-align: left; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #fff !important; border: none; }
+  .emp-table td { padding: 8px 10px; border-bottom: 1px solid #f1f5f9; color: ${PRINT_DARK}; vertical-align: middle; }
+  .emp-table tbody tr:nth-child(even) td { background: #fafafa; }
+  .emp-table .uname { font-family: 'Courier New', monospace; font-weight: 700; font-size: 11px; letter-spacing: 0.5px; color: ${PRINT_DARK}; }
+  .emp-table .emp-name { font-weight: 700; font-size: 11px; }
 
-const unique = [...new Map(data.map(e => [e.username, e])).values()];
+  /* ── PIN BADGE ── */
+  .pin-badge { display: inline-block; font-family: 'Courier New', monospace; font-size: 12px; font-weight: 700; letter-spacing: 3px; padding: 3px 10px; border-radius: 6px; border: 1.5px solid ${PRINT_GOLD}; color: ${PRINT_DARK}; background: #fffbf2; }
+  .pin-none { color: #cbd5e1; font-style: italic; font-size: 10px; }
 
-let printHtml = `
-<div id="printContainer">
-<div class="ph">
-<div class="ph-logo">Jeng Chi Restaurant</div>
-<div class="ph-meta">
-Generated: ${new Date().toLocaleString()}<br/>
-Department: ${dept || 'All'}<br/>
-Total: ${unique.length} employees
-</div>
-</div>
-<table class="pt2">
-<thead>
-<tr>
-<th>Username</th>
-${includePIN ? '<th>PIN</th>' : ''}
-<th>Name</th>
-<th>Department</th>
-<th>Job Title</th>
-<th>Status</th>
-</tr>
-</thead>
-<tbody>
-${unique.map(e => `
-<tr>
-<td style="font-family:monospace;font-weight:700">${e.username}</td>
-${includePIN ? `<td style="font-family:monospace">${e.pin || '—'}</td>` : ''}
-<td>${e.first_name} ${e.last_name}</td>
-<td>${e.department || '—'}</td>
-<td>${e.job_title || '—'}</td>
-<td>${e.status}</td>
-</tr>
-`).join('')}
-</tbody>
-</table>
-<div class="pf">🔐 PINs are confidential. Keep secure.</div>
-</div>`;
+  /* ── STATUS BADGE ── */
+  .s-active { display:inline-block; padding:2px 8px; border-radius:999px; font-size:8.5px; font-weight:700; background:#d1fae5; color:#065f46; }
+  .s-term   { display:inline-block; padding:2px 8px; border-radius:999px; font-size:8.5px; font-weight:700; background:#fee2e2; color:#991b1b; }
+  .s-other  { display:inline-block; padding:2px 8px; border-radius:999px; font-size:8.5px; font-weight:700; background:#f1f5f9; color:#64748b; }
 
-if(includeHandbook && ttData.length > 0) {
-ttData.forEach(emp => {
-printHtml += `
-<div class="print-page">
-<h2 class="pt">${emp.fullName} — Handbook Time Report</h2>
-<p class="ps">Username: ${emp.username} | Department: ${emp.dept} | Status: ${emp.status}</p>
-<table class="pt2">
-<thead><tr><th>Chapter</th><th>Time Spent</th><th>Status</th></tr></thead>
-<tbody>
-${SECTION_ORDER.map(ch => `
-<tr>
-<td>${SECTION_NAMES[ch]}</td>
-<td>${fmtSec(emp.sectionTimes[ch]||0)}</td>
-<td>${emp.sectionTimes[ch]>0?'✓ Completed':'—'}</td>
-</tr>
-`).join('')}
-</tbody>
-</table>
-<p><strong>Total Reading Time:</strong> ${fmtSec(emp.totalTime)} | <strong>Sessions:</strong> ${emp.sessions}</p>
-</div>`;
-});
+  /* ── SUMMARY BOX ── */
+  .summary-row { display: flex; gap: 10px; margin-bottom: 18px; }
+  .summary-card { flex: 1; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px; text-align: center; background: #fafafa; }
+  .summary-card .sv { font-size: 20px; font-weight: 800; color: ${PRINT_DARK}; line-height: 1; }
+  .summary-card .sl { font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #94a3b8; margin-top: 3px; }
+  .summary-card.gold { border-color: ${PRINT_GOLD}; background: #fffbf2; }
+  .summary-card.gold .sv { color: ${PRINT_GOLD}; }
+
+  /* ── PAGE FOOTER (non-overlapping) ── */
+  .pg-footer {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    border-top: 1.5px solid #e2e8f0;
+    padding: 6px 0 0;
+    display: flex; align-items: center; justify-content: space-between;
+    background: #fff;
+  }
+  .pg-footer-left  { display:flex; align-items:center; gap:6px; }
+  .pg-footer-conf  { font-size:7px; font-weight:800; color:#ef4444; text-transform:uppercase; letter-spacing:1px; }
+  .pg-footer-legal { font-size:7px; color:#94a3b8; }
+  .pg-footer-right { font-size:7px; color:#94a3b8; font-family:monospace; text-align:right; }
+`;
 }
 
-const printWindow = window.open('', '_blank');
-printWindow.document.write(printHtml);
-printWindow.document.close();
-printWindow.print();
+function openPrintWindow(htmlBody, title='Jeng Chi — Report'){
+  const css = printBaseCSS();
+  const full = `<!DOCTYPE html><html><head>
+    <meta charset="utf-8"/>
+    <title>${title}</title>
+    <style>${css}</style>
+  </head><body>${htmlBody}
+  <script>window.onload=()=>{ setTimeout(()=>window.print(),400); }<\/script>
+  </body></html>`;
+  const w = window.open('','_blank');
+  w.document.write(full);
+  w.document.close();
+}
 
-$('printModal').classList.add('hidden');
+function deptClass(dept){
+  const d=(dept||'').toUpperCase();
+  if(d==='FOH') return 'dept-foh';
+  if(d==='BOH') return 'dept-boh';
+  if(d==='MANAGEMENT') return 'dept-mgmt';
+  if(d==='ADMIN') return 'dept-admin';
+  return 'dept-other';
+}
+
+function statusBadgeHtml(s){
+  const v=(s||'').toLowerCase();
+  if(v==='active') return `<span class="s-active">Active</span>`;
+  if(v==='terminated'||v==='inactive') return `<span class="s-term">${s}</span>`;
+  return `<span class="s-other">${s||'—'}</span>`;
+}
+
+function initCircleColor(name){
+  const c=['#C0A06D','#6B7280','#10B981','#3B82F6','#8B5CF6','#EF4444','#F59E0B'];
+  let h=0; for(const ch of(name||'')) h=ch.charCodeAt(0)+((h<<5)-h);
+  return c[Math.abs(h)%c.length];
+}
+
+// ── BUILD EMPLOYEE LIST / PIN SHEET ──
+function buildEmployeeListHtml(employees, {includePIN, deptLabel, generatedBy}){
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
+  const timeStr = now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+
+  // Group by department
+  const deptMap = {};
+  const DEPT_ORDER = ['Management','FOH','BOH','Admin'];
+  employees.forEach(e=>{
+    const d = e.department || 'Other';
+    if(!deptMap[d]) deptMap[d]=[];
+    deptMap[d].push(e);
+  });
+  // Sort each dept by last name
+  Object.values(deptMap).forEach(arr=>arr.sort((a,b)=>`${a.last_name}${a.first_name}`.localeCompare(`${b.last_name}${b.first_name}`)));
+
+  const totalActive = employees.filter(e=>(e.status||'').toLowerCase()==='active').length;
+  const depts = [...DEPT_ORDER.filter(d=>deptMap[d]), ...Object.keys(deptMap).filter(d=>!DEPT_ORDER.includes(d))];
+
+  const summaryHtml = `
+  <div class="summary-row">
+    <div class="summary-card gold"><div class="sv">${employees.length}</div><div class="sl">Total Employees</div></div>
+    <div class="summary-card"><div class="sv" style="color:#10B981">${totalActive}</div><div class="sl">Active</div></div>
+    <div class="summary-card"><div class="sv" style="color:#ef4444">${employees.length - totalActive}</div><div class="sl">Inactive / Term.</div></div>
+    <div class="summary-card"><div class="sv">${depts.length}</div><div class="sl">Departments</div></div>
+  </div>`;
+
+  let tableHtml = '';
+  depts.forEach((dept, di) => {
+    const rows = deptMap[dept];
+    const dc = deptClass(dept);
+    tableHtml += `
+    ${di > 0 ? '' : ''}
+    <div class="dept-header">
+      <div class="dept-header-line"></div>
+      <span class="dept-header-label ${dc}">${dept} — ${rows.length} employee${rows.length!==1?'s':''}</span>
+      <div class="dept-header-line"></div>
+    </div>
+    <table class="emp-table">
+      <thead>
+        <tr>
+          <th style="width:100px">Username</th>
+          ${includePIN ? '<th style="width:110px">Portal PIN</th>' : ''}
+          <th>Employee Name</th>
+          <th>Job Title</th>
+          <th style="width:80px">Type</th>
+          <th style="width:70px">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((e,i) => `
+        <tr>
+          <td><span class="uname">${(e.username||'—').toUpperCase()}</span></td>
+          ${includePIN ? `<td>${e.pin ? `<span class="pin-badge">${e.pin}</span>` : '<span class="pin-none">No PIN</span>'}</td>` : ''}
+          <td>
+            <div class="emp-name">${e.last_name||''}, ${e.first_name||''}</div>
+          </td>
+          <td style="color:#475569;font-size:10px">${e.job_title||'—'}</td>
+          <td style="color:#475569;font-size:10px">${e.employment_type||'—'}</td>
+          <td>${statusBadgeHtml(e.status)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  });
+
+  return `
+  <div class="page">
+    <div class="lh">
+      <div class="lh-brand">
+        <div class="lh-logo">Jeng Chi Restaurant</div>
+        <div class="lh-tagline">Employee Directory${includePIN ? ' · Credential Sheet' : ''}</div>
+      </div>
+      <div class="lh-meta">
+        <strong>${dateStr}</strong><br/>
+        Generated at ${timeStr}${generatedBy ? ` · By ${generatedBy}` : ''}<br/>
+        Department: <strong>${deptLabel || 'All Departments'}</strong>${includePIN ? '<br/><span style="color:#ef4444;font-weight:700">⚑ CONTAINS SENSITIVE PINs — HANDLE SECURELY</span>' : ''}
+      </div>
+    </div>
+    ${summaryHtml}
+    ${tableHtml}
+    <div class="footer">
+      ${includePIN ? '<span class="footer-conf">🔐 Confidential — PINs must not be shared or posted</span>' : '<span class="footer-conf">Jeng Chi Restaurant · HR Administration</span>'}
+      <span class="footer-pg">Printed ${dateStr} · ${employees.length} employees</span>
+    </div>
+  </div>`;
+}
+
+// ── BUILD HANDBOOK TIME REPORT — EXECUTIVE DOSSIER (LIGHT) ──
+function buildHandbookPageHtml(emp, idx, total){
+  const SC = {'I':'#C0A06D','II':'#3B82F6','III':'#10B981','IV':'#8B5CF6','V':'#EF4444','VI':'#F59E0B','VII':'#06B6D4','VIII':'#EC4899'};
+  const SC_LIGHT = {'I':'#fff8ee','II':'#eff6ff','III':'#f0fdf4','IV':'#f5f3ff','V':'#fff1f2','VI':'#fffbeb','VII':'#ecfeff','VIII':'#fdf2f8'};
+  const SC_MED   = {'I':'#f5e8d0','II':'#dbeafe','III':'#dcfce7','IV':'#ede9fe','V':'#fecdd3','VI':'#fef3c7','VII':'#cffafe','VIII':'#fce7f3'};
+
+  const maxT    = Math.max(...SECTION_ORDER.map(k=>emp.sectionTimes[k]||0), 1);
+  const totalT  = SECTION_ORDER.reduce((s,k)=>s+(emp.sectionTimes[k]||0), 0);
+  const av      = getInitialsFromName(emp.fullName) || emp.username.slice(0,2).toUpperCase();
+  const bgAv    = initCircleColor(emp.fullName);
+  const isComplete = emp.status==='Complete';
+  const isProgress = emp.status==='In Progress';
+  const isLegacy   = isComplete && emp.ackCount>0 && Object.values(emp.sectionTimes).every(t=>!t);
+
+  const now      = new Date();
+  const dateStr  = now.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+  const timeStr  = now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+  const pct      = Math.round(emp.sectionsVisited/8*100);
+  const avgSess  = emp.sessions>0 && totalT>0 ? fmtSec(Math.round(totalT/emp.sessions)) : '—';
+
+  const statusColor  = isComplete ? '#065f46' : isProgress ? '#92400e' : '#64748b';
+  const statusBg     = isComplete ? '#d1fae5' : isProgress ? '#fef3c7' : '#f8fafc';
+  const statusBorder = isComplete ? '#6ee7b7' : isProgress ? '#fde68a' : '#e2e8f0';
+  const statusBand   = isComplete ? '#10b981' : isProgress ? '#f59e0b' : '#94a3b8';
+  const statusLabel  = isComplete ? '✓ COMPLETE' : isProgress ? '● IN PROGRESS' : '○ NOT STARTED';
+
+  const deptColors = {'FOH':['#d1fae5','#065f46','#10b981'],'BOH':['#fee2e2','#991b1b','#ef4444'],'Management':['#dbeafe','#1e40af','#3b82f6'],'Admin':['#f1f5f9','#475569','#94a3b8']};
+  const [dBg, dFg, dAccent] = deptColors[emp.dept] || ['#f8fafc','#64748b','#94a3b8'];
+
+  // ── ACK data: build per-chapter acknowledgment map ──
+  // Try to parse policy IDs like "1.1", "2.3", etc.
+  const ackByChapter = {};
+  const ackSubsByChapter = {};
+  SECTION_ORDER.forEach(k=>{ ackByChapter[k]=0; ackSubsByChapter[k]=[]; });
+
+  const allAckSections = ((emp.ackDetail||{}).allSections||[]).map(s=>String(s));
+  const hasSubData = allAckSections.some(s=>/^\d+[.\-]\d+$/.test(s));
+
+  if(hasSubData){
+    allAckSections.forEach(pid=>{
+      const m = String(pid).match(/^(\d+)[.\-](\d+)$/);
+      if(m){
+        const roman=['I','II','III','IV','V','VI','VII','VIII'];
+        const ci = parseInt(m[1])-1;
+        const si = m[2];
+        if(roman[ci]){
+          ackByChapter[roman[ci]]++;
+          ackSubsByChapter[roman[ci]].push(`${m[1]}.${si}`);
+        }
+      }
+    });
+  }
+
+  // Merge subsection timing data into the ack map
+  SECTION_ORDER.forEach(key=>{
+    const subs = (emp.subSections||{})[key]||[];
+    subs.forEach(sub=>{
+      const lid = sub.label||sub.key||'';
+      if(lid && !ackSubsByChapter[key].includes(lid)){
+        // If complete, treat all timed subs as acknowledged
+        if(isComplete) ackSubsByChapter[key].push(lid);
+      }
+    });
+  });
+
+  // ── Subsection full checklist per chapter ──
+  // Collect ALL known subsections from either source
+  const allSubsByChapter = {};
+  SECTION_ORDER.forEach(key=>{
+    const fromTiming = ((emp.subSections||{})[key]||[]).map(s=>s.label||s.key||'').filter(Boolean);
+    const fromAcks   = ackSubsByChapter[key];
+    const merged     = [...new Set([...fromTiming, ...fromAcks])].sort((a,b)=>{
+      const [ac,as_]=[...String(a).split('.').map(Number)];
+      const [bc,bs_]=[...String(b).split('.').map(Number)];
+      return ac!==bc?ac-bc:(as_||0)-(bs_||0);
+    });
+    allSubsByChapter[key] = merged;
+  });
+
+  const hasAnySubsections = SECTION_ORDER.some(k=>allSubsByChapter[k].length>0);
+  const ackSet = new Set(allAckSections);
+
+  // ── SVG progress ring ──
+  const dashArr    = 2 * Math.PI * 28; // r=28
+  const dashOffset = dashArr * (1 - pct/100);
+
+  // ── CHAPTER ROWS ──
+  const chapterRows = SECTION_ORDER.map((key, ki) => {
+    const t      = emp.sectionTimes[key]||0;
+    const pctBar = maxT>0 ? Math.round(t/maxT*100) : 0;
+    const pctShare = totalT>0 && t>0 ? Math.round(t/totalT*100) : 0;
+    const c      = SC[key];
+    const cl     = SC_LIGHT[key];
+    const cm     = SC_MED[key];
+    const isEst  = key==='VIII' && emp.sectionVIIIEstimated;
+    const done   = t>0 || isComplete;
+    const tLabel = t>0 ? (isEst ? `~${fmtSec(t)}` : fmtSec(t)) : (isComplete ? 'Completed' : 'Not visited');
+    const shortName = SECTION_NAMES[key].replace(/^Section [IVX]+ [–-] /,'');
+    const ackCnt = ackByChapter[key] || 0;
+    const subs   = allSubsByChapter[key];
+
+    // Subsection checklist items (1.1, 1.2, 1.3 …)
+    let subsHtml = '';
+    if(subs.length > 0){
+      const items = subs.map(lid=>{
+        const timed = ((emp.subSections||{})[key]||[]).find(s=>(s.label||s.key)===lid);
+        const acked = ackSet.has(lid) || isComplete;
+        const subTime = timed ? timed.time : 0;
+        return `<div style="display:flex;align-items:center;gap:5px;padding:2px 0">
+          <div style="width:14px;height:14px;border-radius:3px;background:${acked?c:cm};border:1.5px solid ${acked?c+'88':'#d1d5db'};display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <span style="font-size:7px;font-weight:800;color:${acked?'#fff':'#94a3b8'}">${acked?'✓':''}</span>
+          </div>
+          <span style="font-size:8.5px;font-weight:${acked?'600':'400'};color:${acked?'#1e293b':'#94a3b8'};font-family:'Courier New',monospace;letter-spacing:0.3px">${lid}</span>
+          ${subTime>0?`<span style="font-size:7.5px;color:${c};font-weight:600;margin-left:auto">${fmtSec(subTime)}</span>`:''}
+        </div>`;
+      }).join('');
+
+      subsHtml = `<div style="margin-top:6px;padding:8px 10px;background:${cl};border-radius:6px;border:1px solid ${cm}">
+        <div style="font-size:7px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:${c};margin-bottom:5px">
+          Policy Checklist — ${subs.length} section${subs.length!==1?'s':''}
+          ${ackCnt>0?` · ${ackCnt} acknowledged`:''}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:2px">
+          ${items}
+        </div>
+      </div>`;
+    } else if(isComplete && !hasSubData){
+      // Legacy complete — no sub data, show a "legacy" note
+      subsHtml = `<div style="margin-top:5px;padding:5px 8px;background:#fffbf2;border:1px solid #f5e8d0;border-radius:5px;font-size:7.5px;color:#92400e;font-style:italic">
+        ✓ Completed — detailed policy data recorded before subsection tracking was enabled
+      </div>`;
+    }
+
+    return `
+    <div style="display:grid;grid-template-columns:40px 1fr;gap:0;border-bottom:1px solid #f1f5f9;background:${ki%2===0?'#fff':'#fafbfc'};page-break-inside:avoid">
+      <!-- Left: chapter badge + number -->
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:10px 0 10px;gap:4px">
+        <div style="width:30px;height:30px;border-radius:8px;background:${done?c:SC_MED[key]};display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:${done?'#fff':'#94a3b8'};letter-spacing:0.3px">${key}</div>
+        ${done?`<div style="width:2px;height:calc(100% - 38px);min-height:8px;background:${c}22;border-radius:1px;margin-top:2px"></div>`:''}
+      </div>
+      <!-- Right: chapter detail -->
+      <div style="padding:10px 10px 10px 6px">
+        <!-- Chapter header row -->
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <div style="font-size:11px;font-weight:700;color:${done?'#1e293b':'#94a3b8'};flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${shortName}</div>
+          <!-- time + share -->
+          <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+            ${pctShare>0?`<div style="font-size:8px;font-weight:700;color:#94a3b8;padding:1px 5px;background:#f1f5f9;border-radius:3px">${pctShare}% of total</div>`:''}
+            <div style="font-size:11px;font-weight:800;color:${done?c:'#cbd5e1'};min-width:48px;text-align:right">${tLabel}${isEst?' *':''}</div>
+            <div style="width:20px;height:20px;border-radius:50%;background:${done?c+'18':'#f1f5f9'};border:2px solid ${done?c:'#e2e8f0'};display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;color:${done?c:'#e2e8f0'}">${done?'✓':''}</div>
+          </div>
+        </div>
+        <!-- Progress bar — NOTE: width is RELATIVE to longest chapter, not 100% completion -->
+        <div style="margin-bottom:${subs.length>0||subsHtml?'6px':'0'}">
+          <div style="height:5px;border-radius:3px;background:#f1f5f9;overflow:hidden">
+            <div style="height:100%;width:${t>0?pctBar:isComplete?100:0}%;background:linear-gradient(90deg,${c}cc,${c});border-radius:3px"></div>
+          </div>
+          ${t>0?`<div style="font-size:7px;color:#94a3b8;margin-top:2px">Bar width = relative time spent (${pctBar}% of longest chapter)</div>`:''}
+        </div>
+        ${subsHtml}
+      </div>
+    </div>`;
+  }).join('');
+
+  // ── COMPLETION MATRIX — visual grid of all subsections ──
+  const matrixCols = 12; // fixed columns for visual alignment
+  const matrixHtml = hasAnySubsections ? `
+  <div style="margin-bottom:10px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div style="width:3px;height:14px;background:#C0A06D;border-radius:2px"></div>
+      <div style="font-size:8px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:#475569">Subsection Completion Dashboard</div>
+      <div style="flex:1;height:1px;background:#e2e8f0"></div>
+      <div style="font-size:7.5px;color:#94a3b8">
+        <span style="display:inline-flex;align-items:center;gap:3px;margin-right:8px"><span style="width:10px;height:10px;background:#C0A06D;border-radius:2px;display:inline-block"></span>Acknowledged</span>
+        <span style="display:inline-flex;align-items:center;gap:3px"><span style="width:10px;height:10px;background:#e2e8f0;border-radius:2px;display:inline-block"></span>Not confirmed</span>
+      </div>
+    </div>
+    <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">
+      ${SECTION_ORDER.filter(k=>allSubsByChapter[k].length>0).map(key=>{
+        const c   = SC[key];
+        const cl  = SC_LIGHT[key];
+        const subs = allSubsByChapter[key];
+        const doneCount = isComplete ? subs.length : subs.filter(s=>ackSet.has(s)).length;
+        const pctDone = subs.length>0 ? Math.round(doneCount/subs.length*100) : 0;
+        const shortName = SECTION_NAMES[key].replace(/^Section [IVX]+ [–-] /,'');
+        return `
+        <div style="display:flex;align-items:center;gap:0;padding:0;border-bottom:1px solid #f1f5f9;background:#fff">
+          <!-- chapter label -->
+          <div style="width:130px;flex-shrink:0;padding:8px 10px;background:${cl};border-right:1px solid #f1f5f9">
+            <div style="display:flex;align-items:center;gap:6px">
+              <div style="width:22px;height:22px;border-radius:5px;background:${c};display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:800;color:#fff;flex-shrink:0">${key}</div>
+              <div>
+                <div style="font-size:8.5px;font-weight:700;color:#1e293b;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:88px">${shortName}</div>
+                <div style="font-size:7px;color:${c};font-weight:700;margin-top:1px">${doneCount}/${subs.length} · ${pctDone}%</div>
+              </div>
+            </div>
+          </div>
+          <!-- subsection dots -->
+          <div style="flex:1;padding:8px 10px;display:flex;flex-wrap:wrap;gap:3px;align-items:center">
+            ${subs.map(lid=>{
+              const acked = ackSet.has(lid)||isComplete;
+              const timed = ((emp.subSections||{})[key]||[]).find(s=>(s.label||s.key)===lid);
+              const tt = timed?fmtSec(timed.time):'';
+              return `<div style="display:inline-flex;flex-direction:column;align-items:center;gap:1px">
+                <div style="width:22px;height:22px;border-radius:4px;background:${acked?c:SC_MED[key]};border:1.5px solid ${acked?c+'aa':'#d1d5db'};display:flex;align-items:center;justify-content:center;font-size:6.5px;font-weight:800;color:${acked?'#fff':'#94a3b8'}">
+                  ${acked?'✓':''}
+                </div>
+                <span style="font-size:6px;color:#94a3b8;font-family:'Courier New',monospace;line-height:1">${lid}</span>
+              </div>`;
+            }).join('')}
+          </div>
+          <!-- mini bar -->
+          <div style="width:50px;flex-shrink:0;padding:8px 10px 8px 0;text-align:center">
+            <div style="font-size:11px;font-weight:800;color:${c}">${pctDone}%</div>
+            <div style="height:4px;background:#f1f5f9;border-radius:2px;margin-top:3px;overflow:hidden">
+              <div style="height:100%;width:${pctDone}%;background:${c};border-radius:2px"></div>
+            </div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>` : '';
+
+  return `
+  <div class="page">
+
+    <!-- ═══ TOP STRIPE ═══ -->
+    <div style="height:5px;background:linear-gradient(90deg,#C0A06D 0%,#e8c97a 40%,#C0A06D 100%);margin:-0.45in -0.5in 0;width:calc(100% + 1in);margin-bottom:0"></div>
+
+    <!-- ═══ LETTERHEAD ═══ -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0 10px;border-bottom:2px solid #f1f5f9;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:4px;height:34px;background:linear-gradient(180deg,#C0A06D,#e8c97a);border-radius:2px;flex-shrink:0"></div>
+        <div>
+          <div style="font-family:'Playfair Display',Georgia,serif;font-size:17px;font-weight:700;color:#1e293b;line-height:1">Jeng Chi Restaurant</div>
+          <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:#C0A06D;margin-top:2px">Employee Handbook · Engagement Dossier</div>
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div style="display:inline-flex;align-items:center;gap:5px;margin-bottom:3px">
+          <span style="font-size:7px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#ef4444;border:1px solid #fecaca;padding:2px 7px;border-radius:4px">Confidential</span>
+          <span style="font-size:7px;color:#94a3b8">Report ${idx+1} of ${total}</span>
+        </div>
+        <div style="font-size:7.5px;color:#64748b;line-height:1.6">${dateStr} · ${timeStr}<br/>HR Administration · Internal Use Only</div>
+      </div>
+    </div>
+
+    <!-- ═══ EMPLOYEE IDENTITY CARD (LIGHT) ═══ -->
+    <div style="display:grid;grid-template-columns:1fr auto;gap:12px;padding:14px 16px;background:#f8fafc;border:1.5px solid #e2e8f0;border-left:5px solid ${dAccent};border-radius:10px;margin-bottom:12px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <!-- Avatar -->
+        <div style="width:52px;height:52px;border-radius:12px;background:${bgAv};display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;color:#fff;flex-shrink:0;letter-spacing:1px;box-shadow:0 2px 8px ${bgAv}44">${av}</div>
+        <!-- Info -->
+        <div style="min-width:0">
+          <div style="font-family:'Playfair Display',Georgia,serif;font-size:18px;font-weight:700;color:#1e293b;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${emp.fullName}</div>
+          <div style="font-size:9px;color:#64748b;margin-top:3px">${emp.role||'—'} &nbsp;·&nbsp; <span style="font-family:monospace;background:#e2e8f0;padding:1px 5px;border-radius:3px;color:#475569">@${emp.username}</span></div>
+          <div style="display:flex;gap:5px;margin-top:7px;flex-wrap:wrap">
+            <span style="font-size:8px;font-weight:700;padding:2px 8px;border-radius:999px;background:${dBg};color:${dFg}">${emp.dept||'—'}</span>
+            <span style="font-size:8px;font-weight:700;padding:2px 8px;border-radius:999px;background:${statusBg};color:${statusColor};border:1px solid ${statusBorder}">${statusLabel}</span>
+            ${emp.signed?`<span style="font-size:8px;font-weight:700;padding:2px 8px;border-radius:999px;background:#d1fae5;color:#065f46">✍ Signed</span>`:''}
+            ${isLegacy?`<span style="font-size:8px;font-weight:700;padding:2px 8px;border-radius:999px;background:#fef3c7;color:#92400e">📋 Legacy Record</span>`:''}
+          </div>
+        </div>
+      </div>
+      <!-- Total time + ring -->
+      <div style="display:flex;align-items:center;gap:10px;flex-shrink:0;border-left:1px solid #e2e8f0;padding-left:14px">
+        <div style="position:relative;width:64px;height:64px;flex-shrink:0">
+          <svg width="64" height="64" viewBox="0 0 64 64" style="transform:rotate(-90deg)">
+            <circle cx="32" cy="32" r="28" fill="none" stroke="#e2e8f0" stroke-width="7"/>
+            <circle cx="32" cy="32" r="28" fill="none" stroke="${statusBand}" stroke-width="7"
+              stroke-dasharray="${dashArr.toFixed(1)}" stroke-dashoffset="${dashOffset.toFixed(1)}"
+              stroke-linecap="round"/>
+          </svg>
+          <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
+            <div style="font-size:13px;font-weight:800;color:${statusColor};line-height:1">${pct}%</div>
+          </div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:22px;font-weight:800;color:#C0A06D;line-height:1">${emp.totalTime>0?fmtSec(emp.totalTime):'—'}</div>
+          <div style="font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#94a3b8;margin-top:2px">Total Reading</div>
+          <div style="font-size:8px;color:#64748b;margin-top:2px">~${avgSess}/session</div>
+          <div style="font-size:8px;color:#94a3b8;margin-top:1px">Last: ${fmtDate(emp.lastActive)}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ KPI ROW ═══ -->
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-bottom:12px">
+      ${[
+        {v:fmtSec(emp.totalTime)||'—', l:'Total Time',        c:'#C0A06D', bc:'#fffbf2', bb:'#C0A06D'},
+        {v:`${emp.sectionsVisited}/8`, l:'Chapters Visited',  c:'#3B82F6', bc:'#eff6ff', bb:'#3B82F6'},
+        {v:emp.sessions,               l:'Login Sessions',    c:'#8B5CF6', bc:'#f5f3ff', bb:'#8B5CF6'},
+        {v:emp.ackCount,               l:'Policies Confirmed',c:'#10B981', bc:'#f0fdf4', bb:'#10B981'},
+        {v:emp.signed?'✓ Yes':'✗ No',  l:'Handbook Signed',   c:emp.signed?'#10B981':'#ef4444', bc:emp.signed?'#f0fdf4':'#fff5f5', bb:emp.signed?'#10B981':'#ef4444'}
+      ].map(k=>`
+        <div style="background:${k.bc};border:1px solid ${k.bb}33;border-top:3px solid ${k.bb};border-radius:8px;padding:8px 10px;text-align:center">
+          <div style="font-size:17px;font-weight:800;color:${k.c};line-height:1">${k.v}</div>
+          <div style="font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:#94a3b8;margin-top:3px">${k.l}</div>
+        </div>`).join('')}
+    </div>
+
+    <!-- ═══ NOTE: BAR WIDTH EXPLANATION ═══ -->
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-left:3px solid #C0A06D;border-radius:6px;padding:6px 10px;margin-bottom:10px;display:flex;align-items:flex-start;gap:8px">
+      <span style="font-size:11px;flex-shrink:0">ℹ️</span>
+      <div style="font-size:7.5px;color:#64748b;line-height:1.6">
+        <strong style="color:#1e293b">How to read the chapter bars:</strong>
+        Bar width is <em>relative</em> — the longest chapter = full bar width. A short bar means less time in that chapter <em>compared to the longest one</em>, not incomplete.
+        The <strong>% ring (${pct}%)</strong> = chapters visited out of 8.
+        ${isLegacy?'<br/><strong style="color:#92400e">📋 Legacy record:</strong> This employee completed the handbook before per-subsection tracking was enabled. The 94+ acknowledged policies are confirmed but individual policy IDs (1.1, 1.2…) were not captured at that time.':''}
+      </div>
+    </div>
+
+    <!-- ═══ CHAPTER-BY-CHAPTER BREAKDOWN ═══ -->
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <div style="width:3px;height:14px;background:#C0A06D;border-radius:2px"></div>
+      <div style="font-size:8px;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;color:#475569">Chapter-by-Chapter Engagement</div>
+      <div style="flex:1;height:1px;background:#e2e8f0"></div>
+      <div style="font-size:7.5px;color:#94a3b8">${emp.sectionsVisited}/8 visited · ${fmtSec(totalT)} total</div>
+    </div>
+    <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:10px">
+      <!-- column headers -->
+      <div style="display:grid;grid-template-columns:40px 1fr;background:#1e293b">
+        <div style="padding:5px 0;text-align:center">
+          <span style="font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#64748b">Ch.</span>
+        </div>
+        <div style="padding:5px 10px 5px 6px;display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#64748b">Chapter &amp; Policy Checklist (1.1, 1.2, 1.3 …)</span>
+          <div style="display:flex;gap:16px">
+            <span style="font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#64748b">Time Spent</span>
+            <span style="font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#64748b">✓</span>
+          </div>
+        </div>
+      </div>
+      ${chapterRows}
+    </div>
+    ${emp.sectionVIIIEstimated?`<div style="font-size:7px;color:#94a3b8;margin:-6px 0 8px;padding-left:4px">* Chapter VIII time estimated from average of other chapters (no session exit recorded)</div>`:''}
+
+    <!-- ═══ SUBSECTION COMPLETION DASHBOARD ═══ -->
+    ${matrixHtml}
+
+    <!-- ═══ STATUS VERDICT BAND ═══ -->
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:${statusBg};border:1.5px solid ${statusBorder};border-radius:8px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:32px;height:32px;border-radius:50%;background:${statusBand};display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;flex-shrink:0">${isComplete?'✓':isProgress?'●':'○'}</div>
+        <div>
+          <div style="font-size:10px;font-weight:800;color:${statusColor};text-transform:uppercase;letter-spacing:.5px">${isComplete?'Handbook Complete':isProgress?'Reading In Progress':'Not Yet Started'}</div>
+          <div style="font-size:8.5px;color:${statusColor};opacity:.8;margin-top:1px">${isComplete?`${emp.ackCount} policies acknowledged · Handbook ${emp.signed?'signed ✓':'pending signature'}`:isProgress?`${emp.sectionsVisited} of 8 chapters visited · ${emp.ackCount} policies acknowledged`:'Employee has not yet accessed the handbook portal'}</div>
+        </div>
+      </div>
+      <div style="text-align:center;border-left:1px solid ${statusBorder};padding-left:14px">
+        <div style="font-size:20px;font-weight:800;color:${statusColor}">${pct}%</div>
+        <div style="font-size:7px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:${statusColor};opacity:.75">Progress</div>
+      </div>
+    </div>
+
+    <!-- ═══ DISCLAIMER FOOTER ═══ -->
+    <div class="pg-footer">
+      <div class="pg-footer-left">
+        <div style="width:14px;height:2px;background:#C0A06D;border-radius:1px"></div>
+        <span class="pg-footer-conf">Confidential</span>
+        <span class="pg-footer-legal">· This document contains private HR data. Unauthorized disclosure is prohibited. · Jeng Chi Restaurant · HR Administration</span>
+      </div>
+      <div class="pg-footer-right">
+        <span style="font-family:monospace">@${emp.username}</span> · ${dateStr} · Page ${idx+1}/${total}
+      </div>
+    </div>
+
+  </div>`; // end .page
+}
+
+// ── GENERATE & PRINT (from Print Report modal) ──
+$('btnGeneratePrint').addEventListener('click', async () => {
+const dept           = $('printDepartment').value;
+const includePIN     = $('printIncludePIN').checked;
+const activeOnly     = $('printShowActiveOnly').checked;
+const includeHandbook= $('printIncludeHandbook').checked;
+const selectedTitles = [...document.querySelectorAll('.job-title-checkbox:checked')].map(c=>c.value);
+
+const btn = $('btnGeneratePrint');
+btn.textContent = '⏳ Preparing…'; btn.disabled = true;
+
+try {
+  // If handbook reports needed, ensure tracking data is loaded
+  if(includeHandbook && !ttData.length){
+    btn.textContent = '⏳ Loading engagement data…';
+    await loadTrackingDataInternal();
+  }
+
+  let query = client.from('employees2025')
+    .select('username,pin,first_name,last_name,department,job_title,position_title,status,employment_type,employment_status');
+  if(activeOnly) query = query.eq('status','Active');
+  if(dept)       query = query.eq('department',dept);
+  query = query.order('last_name',{ascending:true});
+  const {data,error} = await query;
+  if(error){toast('Print failed: '+error.message,false);return;}
+
+  let employees = [...new Map(data.map(e=>[e.username,e])).values()];
+  if(selectedTitles.length){
+    employees = employees.filter(e=>selectedTitles.includes(e.job_title||e.position_title));
+  }
+  if(!employees.length){toast('No employees match the selected filters.',false);return;}
+
+  const adminName = currentAdmin ? `${currentAdmin.first_name||''} ${currentAdmin.last_name||''}`.trim() : null;
+  const deptLabel  = dept ? (dept==='FOH'?'Front of House':dept==='BOH'?'Back of House':dept) : null;
+
+  btn.textContent = '⏳ Building report…';
+
+  // Page 1: employee directory / PIN sheet
+  let htmlBody = buildEmployeeListHtml(employees, {includePIN, deptLabel, generatedBy: adminName});
+
+  // Pages 2-N: one handbook dossier per employee
+  if(includeHandbook){
+    const empUsernames = new Set(employees.map(e=>(e.username||'').toUpperCase()));
+    // Sort by status (In Progress first, then Complete, then Not Started), then name
+    const hbEmps = ttData
+      .filter(e=>empUsernames.has(e.username.toUpperCase()))
+      .sort((a,b)=>{
+        const o={'In Progress':0,'Complete':1,'Not Started':2};
+        return (o[a.status]-o[b.status])||a.fullName.localeCompare(b.fullName);
+      });
+    // Also include employees who have a record but no tracking data yet
+    const trackedSet = new Set(hbEmps.map(e=>e.username.toUpperCase()));
+    const untrackedEmps = employees
+      .filter(e=>!trackedSet.has((e.username||'').toUpperCase()))
+      .map(e=>({
+        username:(e.username||'').toUpperCase(), fullName:`${e.first_name||''} ${e.last_name||''}`.trim(),
+        role:e.job_title||e.position_title||'—', dept:e.department||'—',
+        sectionTimes:{}, subSections:{}, totalTime:0, sessions:0, lastActive:null,
+        ackCount:0, ackDetail:{}, status:'Not Started', signed:false, sectionsVisited:0, sectionVIIIEstimated:false
+      }));
+    const allHbEmps = [...hbEmps, ...untrackedEmps];
+    allHbEmps.forEach((emp, i) => { htmlBody += buildHandbookPageHtml(emp, i, allHbEmps.length); });
+  }
+
+  openPrintWindow(htmlBody, `Jeng Chi — Employee Report ${new Date().toLocaleDateString()}`);
+  $('printModal').classList.add('hidden');
+} catch(err){
+  toast('Print error: '+err.message, false);
+  console.error('Print error:', err);
+} finally {
+  btn.textContent = '🖨️ Generate & Print'; btn.disabled = false;
+}
+});
+
+// ── PRINT ALL TIME REPORTS ──
+$('ttBtnPrintAll')?.addEventListener('click', async () => {
+  const btn = $('ttBtnPrintAll');
+  btn.textContent = '⏳ Loading…'; btn.disabled = true;
+  try {
+    if(!ttData.length) await loadTrackingDataInternal();
+    if(!ttData.length){toast('No engagement data found.',false);return;}
+
+    const sorted = [...ttData].sort((a,b)=>{
+      const o={'In Progress':0,'Complete':1,'Not Started':2};
+      return (o[a.status]-o[b.status])||a.fullName.localeCompare(b.fullName);
+    });
+    const now = new Date();
+    const dateStr  = now.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+    const complete = sorted.filter(e=>e.status==='Complete').length;
+    const inProg   = sorted.filter(e=>e.status==='In Progress').length;
+    const notStart = sorted.filter(e=>e.status==='Not Started').length;
+    const totalTime= sorted.reduce((s,e)=>s+e.totalTime,0);
+    const avgTime  = sorted.filter(e=>e.totalTime>0).length > 0
+      ? Math.round(sorted.filter(e=>e.totalTime>0).reduce((s,e)=>s+e.totalTime,0)/sorted.filter(e=>e.totalTime>0).length) : 0;
+
+    const coverPage = `
+    <div class="page" style="position:relative">
+      <div style="height:6px;background:linear-gradient(90deg,#C0A06D,#e8c97a,#C0A06D);margin:-0.5in -0.5in 0;width:calc(100% + 1in)"></div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;padding:16px 0 14px;border-bottom:1px solid #e2e8f0;margin-bottom:0">
+        <div>
+          <div style="font-family:'Playfair Display',Georgia,serif;font-size:22px;font-weight:700;color:#1e293b;line-height:1">Jeng Chi Restaurant</div>
+          <div style="font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:2px;color:#C0A06D;margin-top:3px">Handbook Engagement · All Employees Report</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:#ef4444;border:1px solid #fecaca;padding:2px 8px;border-radius:4px;display:inline-block;margin-bottom:4px">Confidential</div>
+          <div style="font-size:8px;color:#64748b;line-height:1.7">Generated ${dateStr}<br/>HR Administration · Internal Use Only</div>
+        </div>
+      </div>
+
+      <!-- BIG HERO NUMBERS -->
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:20px 0">
+        <div style="background:#1e293b;border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:32px;font-weight:800;color:#C0A06D;line-height:1">${sorted.length}</div>
+          <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#64748b;margin-top:4px">Total Employees</div>
+        </div>
+        <div style="background:#1e293b;border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:32px;font-weight:800;color:#10B981;line-height:1">${complete}</div>
+          <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#64748b;margin-top:4px">Complete</div>
+          <div style="font-size:9px;color:#34d399;margin-top:2px">${sorted.length>0?Math.round(complete/sorted.length*100):0}%</div>
+        </div>
+        <div style="background:#1e293b;border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:32px;font-weight:800;color:#F59E0B;line-height:1">${inProg}</div>
+          <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#64748b;margin-top:4px">In Progress</div>
+        </div>
+        <div style="background:#1e293b;border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:32px;font-weight:800;color:#94a3b8;line-height:1">${notStart}</div>
+          <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#64748b;margin-top:4px">Not Started</div>
+        </div>
+        <div style="background:#1e293b;border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:26px;font-weight:800;color:#38bdf8;line-height:1">${fmtSec(avgTime)||'—'}</div>
+          <div style="font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#64748b;margin-top:4px">Avg. Reading Time</div>
+        </div>
+      </div>
+
+      <!-- INDEX TABLE -->
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <div style="width:3px;height:14px;background:#C0A06D;border-radius:2px"></div>
+        <div style="font-size:8px;font-weight:800;text-transform:uppercase;letter-spacing:1.6px;color:#475569">Employee Index</div>
+        <div style="flex:1;height:1px;background:#e2e8f0;margin-left:4px"></div>
+        <div style="font-size:8px;color:#94a3b8">${sorted.length} employees · ${sorted.length} individual reports follow</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:10px">
+        <thead>
+          <tr style="background:#1e293b">
+            <th style="padding:6px 8px;text-align:left;font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8;white-space:nowrap">#</th>
+            <th style="padding:6px 8px;text-align:left;font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8">Employee</th>
+            <th style="padding:6px 8px;text-align:left;font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8">Dept</th>
+            <th style="padding:6px 8px;text-align:left;font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8">Ch.</th>
+            <th style="padding:6px 8px;text-align:left;font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8">Total Time</th>
+            <th style="padding:6px 8px;text-align:left;font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8">Sessions</th>
+            <th style="padding:6px 8px;text-align:left;font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8">Policies</th>
+            <th style="padding:6px 8px;text-align:left;font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8">Last Active</th>
+            <th style="padding:6px 8px;text-align:left;font-size:7.5px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94a3b8">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sorted.map((e,i)=>{
+            const sc=e.status==='Complete'?['#d1fae5','#065f46']:e.status==='In Progress'?['#fef3c7','#92400e']:['#f1f5f9','#64748b'];
+            return `<tr style="${i%2===1?'background:#fafafa':''}">
+              <td style="padding:5px 8px;color:#94a3b8;font-size:9px">${i+1}</td>
+              <td style="padding:5px 8px">
+                <div style="font-weight:700;font-size:10px;color:#1e293b">${e.fullName}</div>
+                <div style="font-family:monospace;font-size:8px;color:#94a3b8">${e.username}</div>
+              </td>
+              <td style="padding:5px 8px;font-size:9px;color:#475569">${e.dept||'—'}</td>
+              <td style="padding:5px 8px;font-weight:800;font-size:10px;color:#1e293b">${e.sectionsVisited}/8</td>
+              <td style="padding:5px 8px;font-weight:800;font-size:10px;color:#C0A06D">${fmtSec(e.totalTime)||'—'}</td>
+              <td style="padding:5px 8px;font-size:9px;color:#475569">${e.sessions}</td>
+              <td style="padding:5px 8px;font-size:9px;color:#475569">${e.ackCount}</td>
+              <td style="padding:5px 8px;font-size:9px;color:#64748b">${fmtDate(e.lastActive)}</td>
+              <td style="padding:5px 8px"><span style="font-size:8px;font-weight:700;padding:2px 7px;border-radius:999px;background:${sc[0]};color:${sc[1]}">${e.status}</span></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding-top:10px;border-top:1px solid #e2e8f0;margin-top:14px">
+        <span style="font-size:7.5px;font-weight:700;color:#ef4444;text-transform:uppercase;letter-spacing:.8px">Confidential · Internal Use Only</span>
+        <span style="font-size:7.5px;color:#94a3b8">Jeng Chi Restaurant · HR Administration · ${dateStr}</span>
+      </div>
+    </div>`;
+
+    let htmlBody = coverPage;
+    sorted.forEach((emp, i) => { htmlBody += buildHandbookPageHtml(emp, i, sorted.length); });
+    openPrintWindow(htmlBody, `Jeng Chi — All Handbook Reports · ${dateStr}`);
+  } catch(err){
+    toast('Print error: '+err.message, false);
+    console.error('Print All error:', err);
+  } finally {
+    btn.textContent = '🖨️ Print All Reports'; btn.disabled = false;
+  }
+});
+
+// ── PRINT SELECTED TIME REPORT ──
+$('ttBtnPrintOne')?.addEventListener('click', async () => {
+  if(!ttSelected||!ttMap[ttSelected]){toast('Select an employee first.',false);return;}
+  const btn = $('ttBtnPrintOne');
+  btn.textContent = '⏳ Building…'; btn.disabled = false;
+  try {
+    const emp = ttMap[ttSelected];
+    const htmlBody = buildHandbookPageHtml(emp, 0, 1);
+    openPrintWindow(htmlBody, `Jeng Chi — ${emp.fullName} · Handbook Dossier`);
+  } finally {
+    btn.textContent = '🖨️ Print Selected'; btn.disabled = false;
+  }
 });
 
 // ── LIVE EMPLOYEE CARDS ──
