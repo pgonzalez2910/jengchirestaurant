@@ -211,6 +211,29 @@ let managerSignatureData = null;
 let allEmployees = [], pendingEmployees = [], submittedEmployees = [];
 let submittedMap = new Map();
 
+// ─── MANAGER NAME LOOKUP ─────────────────────────────────────────
+// Maps login username → full name so PDFs always show the real name,
+// not the username code (e.g. "Janelle Teng" not "JTJG").
+const MANAGER_FULL_NAMES = {
+  'JTJG': 'Janelle Teng',
+  'FTJG': 'Francisco Teng',
+  'SKTG': 'Shoko Teng',
+  'PGJG': 'Pablo Gonzalez',
+  'MVJG': 'Anh Mai Vu',
+  'CRJG': 'Craig Reeves',
+  'SKTG': 'Shoko Teng',
+};
+// Dynamically add the current manager when they log in
+function registerManagerName(username, fullName) {
+  if (username && fullName) MANAGER_FULL_NAMES[username.toUpperCase()] = fullName;
+}
+// Always returns a proper full name — never a bare username code
+function getManagerFullName(username) {
+  if (!username) return '';
+  const key = username.toUpperCase();
+  return MANAGER_FULL_NAMES[key] || username;
+}
+
 // ─── ROLE-BASED FILTER ──────────────────────────────────────────
 //
 // MANAGER role:
@@ -330,6 +353,7 @@ document.getElementById('btnManagerLogin').addEventListener('click', async () =>
     const { data, error } = await client.rpc('hb_manager_login', { p_username: username, p_password: password });
     if (error || !data?.ok) { errorDiv.textContent='Invalid username or password'; errorDiv.classList.remove('hidden'); return; }
     currentManager = data;
+    registerManagerName(currentManager.username, currentManager.full_name);
     // Dual-role users select their role
     if (['PGJG','JTJG'].includes(currentManager.username)) { showRoleSelection(); return; }
     // FTJG = HR only; everyone else = Manager
@@ -681,7 +705,7 @@ document.getElementById('btnHRApproveAll').addEventListener('click', async () =>
       const hrNow = new Date().toISOString();
       const {error:se} = await client.from('hb_acknowledgment_status').update({ hr_approved:true, hr_approved_by:currentManager.username, hr_approved_at:hrNow }).eq('employee_initials',emp.initials).eq('id',emp.status.id);
       if(se) throw se;
-      const r = await client.functions.invoke('regenerate-handbook-pdf',{body:{employee_initials:emp.initials,hr_username:currentManager.username,hr_name:currentManager.full_name,hr_approved_at:hrNow,manager_username:emp.status.manager_approved_by,manager_name:emp.status.manager_approved_by,manager_approved_at:emp.status.manager_approved_at}});
+      const r = await client.functions.invoke('regenerate-handbook-pdf',{body:{employee_initials:emp.initials,hr_username:currentManager.username,hr_name:currentManager.full_name,hr_approved_at:hrNow,manager_username:emp.status.manager_approved_by,manager_name:getManagerFullName(emp.status.manager_approved_by),manager_approved_at:emp.status.manager_approved_at}});
       if(r.error) throw new Error(r.error.message);
       done++; prog.update(done);
     } catch(e){errors.push(`${emp.full_name}: ${e.message}`);}
@@ -717,7 +741,7 @@ window.hrApproveSingle = async function(initials, name) {
     const hrNow = new Date().toISOString();
     const {error:se} = await client.from('hb_acknowledgment_status').update({ hr_approved:true, hr_approved_by:currentManager.username, hr_approved_at:hrNow }).eq('employee_initials',initials).eq('id',emp.status.id);
     if(se) throw se;
-    const r = await client.functions.invoke('regenerate-handbook-pdf',{body:{employee_initials:initials,hr_username:currentManager.username,hr_name:currentManager.full_name,hr_approved_at:hrNow,manager_username:emp.status.manager_approved_by,manager_name:emp.status.manager_approved_by,manager_approved_at:emp.status.manager_approved_at}});
+    const r = await client.functions.invoke('regenerate-handbook-pdf',{body:{employee_initials:initials,hr_username:currentManager.username,hr_name:currentManager.full_name,hr_approved_at:hrNow,manager_username:emp.status.manager_approved_by,manager_name:getManagerFullName(emp.status.manager_approved_by),manager_approved_at:emp.status.manager_approved_at}});
     if(r.error) throw new Error(r.error.message);
     alert(`✅ HR approval added for ${name}!`); await loadEmployees();
   } catch(e){ alert(`❌ Failed:\n${e.message}`); }
@@ -748,8 +772,8 @@ document.getElementById('btnRegenerateAll').addEventListener('click', async () =
   let done=0; const errors=[];
   for (const emp of approved) {
     try {
-      const payload = { employee_initials:emp.initials, manager_username:currentManager.username, manager_name:currentManager.full_name, manager_approved_at:emp.status?.manager_approved_at };
-      if (emp.status?.hr_approved&&emp.status?.hr_approved_by) { payload.hr_username=emp.status.hr_approved_by; payload.hr_name=emp.status.hr_approved_by; payload.hr_approved_at=emp.status.hr_approved_at; }
+      const payload = { employee_initials:emp.initials, manager_username:emp.status?.manager_approved_by||currentManager.username, manager_name:getManagerFullName(emp.status?.manager_approved_by||currentManager.username)||currentManager.full_name, manager_approved_at:emp.status?.manager_approved_at };
+      if (emp.status?.hr_approved&&emp.status?.hr_approved_by) { payload.hr_username=emp.status.hr_approved_by; payload.hr_name=getManagerFullName(emp.status.hr_approved_by); payload.hr_approved_at=emp.status.hr_approved_at; }
       const r = await client.functions.invoke('regenerate-handbook-pdf',{body:payload});
       if(r.error||!r.data?.ok) throw new Error(r.error?.message||'Failed');
       done++; prog.update(done);
@@ -769,7 +793,8 @@ window.regenerateSinglePDF = async function(initials, name) {
     // CRITICAL FIX: use the ORIGINAL approver (manager_approved_by), NOT the currently
     // logged-in user. If JTJG approved but FTJG is logged in, the PDF must use JTJG's signature.
     const originalManagerUsername = emp?.status?.manager_approved_by || currentManager.username;
-    const originalManagerName     = emp?.status?.manager_approved_by || currentManager.full_name;
+    // ✅ FIX: always resolve username code → full name (e.g. "JTJG" → "Janelle Teng")
+    const originalManagerName = getManagerFullName(originalManagerUsername) || currentManager.full_name;
     const payload = {
       employee_initials:  initials,
       manager_username:   originalManagerUsername,
@@ -778,7 +803,8 @@ window.regenerateSinglePDF = async function(initials, name) {
     };
     if (emp?.status?.hr_approved && emp?.status?.hr_approved_by) {
       payload.hr_username   = emp.status.hr_approved_by;
-      payload.hr_name       = emp.status.hr_approved_by;
+      // ✅ FIX: resolve HR username code → full name
+      payload.hr_name       = getManagerFullName(emp.status.hr_approved_by);
       payload.hr_approved_at = emp.status.hr_approved_at;
     }
     const r = await client.functions.invoke('regenerate-handbook-pdf',{body:payload});
@@ -817,7 +843,7 @@ window.reSignEmployee = async function(initials, name) {
     };
     if (emp?.status?.hr_approved && emp?.status?.hr_approved_by) {
       payload.hr_username    = emp.status.hr_approved_by;
-      payload.hr_name        = emp.status.hr_approved_by;
+      payload.hr_name        = getManagerFullName(emp.status.hr_approved_by);
       payload.hr_approved_at = emp.status.hr_approved_at;
     }
     const r = await client.functions.invoke('regenerate-handbook-pdf',{body:payload});
