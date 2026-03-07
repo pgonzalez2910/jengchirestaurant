@@ -1428,8 +1428,18 @@ deptData.forEach(emp=>{ empAckMap[emp.username.toUpperCase()]=new Set(); });
 allAckRows.forEach(row=>{
   const k=(row.employee_initials||'').toUpperCase();
   if(!k||!row.policy_id) return;
-  // Match to an employee in this dept
-  const matchKey=Object.keys(empAckMap).find(u=>u===k)||null;
+  // ✅ FIX: try exact match first, then resolve via employee lookup
+  // (handles old 2-char keys like "JD" that belong to "JD5626")
+  let matchKey = null;
+  if(empAckMap[k]) {
+    matchKey = k;
+  } else {
+    const resolved = resolvEmp(k);
+    if(resolved && resolved.username) {
+      const ru = resolved.username.toUpperCase();
+      if(empAckMap[ru]) matchKey = ru;
+    }
+  }
   if(matchKey) empAckMap[matchKey].add(String(row.policy_id).trim());
 });
 
@@ -1529,14 +1539,18 @@ const bodyRows=sorted.map(emp=>{
   const av=((fn[0]||'')+(ln[0]||'')).toUpperCase()||emp.username.slice(0,2);
   const myAcks=empAckMap[emp.username.toUpperCase()]||new Set();
   const statusDot=emp.status==='Complete'?'#34d399':emp.status==='In Progress'?'#fbbf24':'#e2e8f0';
-  const pct=Math.round(myAcks.size/Math.max(sortedPolicies.length,1)*100);
+  // ✅ FIX: if employee has signed/submitted PDF, treat ALL policies as done
+  // hb_acks may be stored under an old 2-char key — don't penalise signed employees
+  const isFullyComplete = emp.signed === true || emp.status === 'Complete';
+  const displayCount = isFullyComplete ? sortedPolicies.length : myAcks.size;
+  const pct = Math.round(displayCount / Math.max(sortedPolicies.length, 1) * 100);
 
   const cells=sortedPolicies.map(p=>{
-    const done=myAcks.has(String(p));
+    // Fully completed → every cell is green ✓
+    const done = isFullyComplete || myAcks.has(String(p));
     const ch=String(p).split('.')[0];
     const c=chColors[ch]||deptAccent;
     const bg=done?c+'22':'#f8fafc', border=done?c:'#e2e8f0', tc=done?c:'#d1d5db';
-    // Reading time for this policy from engagement logs
     const t=(empTimeMap[emp.username.toUpperCase()]||{})[String(p)]||0;
     function fmtCellTime(s){ if(!s||s<=0) return ''; s=Math.round(s); if(s<60) return s+'s'; return Math.floor(s/60)+'m'+(s%60?''+(s%60)+'s':''); }
     const timeStr = t>0 ? fmtCellTime(t) : '';
@@ -1553,12 +1567,12 @@ const bodyRows=sorted.map(emp=>{
     <div style="width:30px;height:30px;border-radius:50%;background:${avatarBg(emp.fullName)};color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:2px solid ${statusDot}">${av}</div>
     <div>
       <div style="font-size:12px;font-weight:700;color:#1e293b">${fn} <span style="color:#64748b">${ln}</span></div>
-      <div style="font-size:9px;font-family:monospace;color:#94a3b8">${emp.username} · <span style="color:${deptAccent};font-weight:700">${myAcks.size}/${sortedPolicies.length} (${pct}%)</span></div>
+      <div style="font-size:9px;font-family:monospace;color:#94a3b8">${emp.username} · <span style="color:${deptAccent};font-weight:700">${displayCount}/${sortedPolicies.length} (${pct}%)</span></div>
     </div>
   </div>
 </td>
 ${cells}
-<td style="padding:2px 0 2px 10px;font-size:10px;font-weight:700;color:${myAcks.size>0?'#1e293b':'#94a3b8'};white-space:nowrap">${myAcks.size}/${sortedPolicies.length}</td>
+<td style="padding:2px 0 2px 10px;font-size:10px;font-weight:700;color:${displayCount>0?'#1e293b':'#94a3b8'};white-space:nowrap">${displayCount}/${sortedPolicies.length}</td>
 </tr>`;
 }).join('');
 
@@ -1784,13 +1798,17 @@ const hasTimes=Object.values(sectionTimes).some(t=>t>0);
 if(!signed&&ackCount===0&&!hasTimes) return;
 
 let status='Not Started';
-if(signed||ackCount>=90) status='Complete';
+// ✅ FIX: if employee signed the PDF, they are Complete regardless of ackCount
+// (acks may be stored under old 2-char key not matching current username)
+if(signed) status='Complete';
+else if(ackCount>=90) status='Complete';
 else if(ackCount>0||hasTimes) status='In Progress';
 
 let sectionVIIIEstimated=false;
 if(status==='Complete'&&!(sectionTimes['VIII']>0)){const rs=SECTION_ORDER.filter(k=>k!=='VIII'&&sectionTimes[k]>0);if(rs.length>0){const avgTime=Math.round(rs.reduce((sum,k)=>sum+sectionTimes[k],0)/rs.length);sectionTimes['VIII']=avgTime;sectionVIIIEstimated=true;}}
 
 const rawSectionsVisited=Object.keys(sectionTimes).filter(k=>sectionTimes[k]>0).length;
+// ✅ FIX: signed = fully completed, always 8/8 chapters
 const sectionsVisited=(signed||ackCount>=90)?8:rawSectionsVisited;
 const totalTime=Object.values(sectionTimes).reduce((a,b)=>a+b,0);
 
@@ -1811,6 +1829,32 @@ const role=emp?(emp.job_title||emp.position_title||'—'):'—';
 const dept=emp?(emp.department||'—'):'—';
 const ackCount=resolveAckCount(key);
 processed[key]={username:key,fullName,role,dept,sectionTimes:{},subSections:{},totalTime:0,sessions:0,lastActive:null,ackCount,status:'Complete',signed:true,sectionsVisited:8,sectionVIIIEstimated:false};
+});
+
+// ✅ FIX: Add ALL active employees not already in processed — show as Not Started
+// Without this, employees who never opened the handbook are invisible in the dashboard
+allEmployees.forEach(emp=>{
+  if(!emp.username) return;
+  const empStatus = (emp.status || emp.employment_status || '').toLowerCase();
+  if(empStatus !== 'active') return;
+  const uname = emp.username.toUpperCase();
+  // Skip if already in processed (exact or prefix match)
+  if(processed[uname]) return;
+  const letterPrefix = uname.replace(/\d/g,'').slice(0,2);
+  const alreadyIn = Object.keys(processed).some(k=> k===uname || k.replace(/\d/g,'').slice(0,2)===letterPrefix);
+  if(alreadyIn) return;
+  const fullName = `${emp.first_name||''} ${emp.last_name||''}`.trim();
+  const role = emp.job_title || emp.position_title || '—';
+  const dept = emp.department || '—';
+  const ackCount = resolveAckCount(uname);
+  const signed = resolveSignedKey(uname);
+  const status = signed ? 'Complete' : ackCount > 0 ? 'In Progress' : 'Not Started';
+  processed[uname] = {
+    username: uname, fullName, role, dept,
+    sectionTimes:{}, subSections:{}, totalTime:0, sessions:0,
+    lastActive:null, ackCount, ackDetail:resolveAckDetail(uname),
+    status, signed, sectionsVisited: signed ? 8 : 0, sectionVIIIEstimated:false
+  };
 });
 
 ttMap=processed; 
