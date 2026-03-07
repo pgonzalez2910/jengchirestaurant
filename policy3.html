@@ -574,6 +574,7 @@ function renderSubmittedList() {
           ${hasPDF?`<button onclick="printSinglePDF('${emp.initials}')" class="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 text-sm">📄 View PDF</button>`:'<span class="px-3 py-1 bg-gray-100 text-gray-500 rounded text-xs">No PDF yet</span>'}
           ${!isHR&&!s.manager_approved&&!isSelf?`<button onclick="approveSingleEmployee('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-semibold">✅ Approve</button>`:(!isHR&&!s.manager_approved&&isSelf?'<span class="px-3 py-1 bg-gray-100 text-gray-400 rounded text-xs italic">Needs HR approval</span>':'')}
           ${s.manager_approved?`<button onclick="regenerateSinglePDF('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">🔄 Regen PDF</button>`:''}
+          ${s.manager_approved&&!isHR?`<button onclick="reSignEmployee('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 text-sm" title="Replace manager signature with yours">✏️ Re-sign</button>`:''}
           ${isHR&&s.manager_approved&&!s.hr_approved?`<button onclick="hrApproveSingle('${emp.initials}','${emp.full_name.replace(/'/g,"\\'")}')\" class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm">✅ HR Approve</button>`:''}
         </div>
       </div>`;
@@ -765,17 +766,70 @@ window.regenerateSinglePDF = async function(initials, name) {
   const emp = submittedEmployees.find(e=>e.initials===initials);
   const prog = showProgress(`🔄 Regenerating ${name}...`, 1, 'blue');
   try {
-    const payload = { employee_initials:initials, manager_username:currentManager.username, manager_name:currentManager.full_name, manager_approved_at:emp?.status?.manager_approved_at };
-    if (emp?.status?.hr_approved&&emp?.status?.hr_approved_by) { payload.hr_username=emp.status.hr_approved_by; payload.hr_name=emp.status.hr_approved_by; payload.hr_approved_at=emp.status.hr_approved_at; }
+    // CRITICAL FIX: use the ORIGINAL approver (manager_approved_by), NOT the currently
+    // logged-in user. If JTJG approved but FTJG is logged in, the PDF must use JTJG's signature.
+    const originalManagerUsername = emp?.status?.manager_approved_by || currentManager.username;
+    const originalManagerName     = emp?.status?.manager_approved_by || currentManager.full_name;
+    const payload = {
+      employee_initials:  initials,
+      manager_username:   originalManagerUsername,
+      manager_name:       originalManagerName,
+      manager_approved_at: emp?.status?.manager_approved_at
+    };
+    if (emp?.status?.hr_approved && emp?.status?.hr_approved_by) {
+      payload.hr_username   = emp.status.hr_approved_by;
+      payload.hr_name       = emp.status.hr_approved_by;
+      payload.hr_approved_at = emp.status.hr_approved_at;
+    }
     const r = await client.functions.invoke('regenerate-handbook-pdf',{body:payload});
     if(r.error||!r.data?.ok) throw new Error(r.error?.message||r.data?.error||'Failed');
     prog.remove();
     const sd = document.createElement('div');
     sd.className='fixed top-4 right-4 bg-green-600 text-white px-6 py-4 rounded-lg shadow-xl z-50';
-    sd.innerHTML=`<div class="font-bold">✅ PDF Regenerated!</div><div class="text-xs mt-1"><a href="${r.data.pdf_url}" target="_blank" class="underline">View PDF</a></div>`;
+    sd.innerHTML=`<div class="font-bold">✅ PDF Regenerated!</div><div class="text-sm mt-1">Signed by: <b>${originalManagerUsername}</b></div><div class="text-xs mt-1"><a href="${r.data.pdf_url}" target="_blank" class="underline">View PDF</a></div>`;
     document.body.appendChild(sd); setTimeout(()=>document.body.removeChild(sd),5000);
     await loadEmployees();
   } catch(e){ prog.remove(); alert(`❌ Failed:\n${e.message}`); }
+};
+
+// ─── RE-SIGN: Replace the manager signature with the currently logged-in manager ──
+window.reSignEmployee = async function(initials, name) {
+  if (!managerSignatureData) { alert('⚠️ Save your signature first in Step 1!'); return; }
+  if (!confirm(`Re-sign for ${name}?\n\nThis will replace the current manager signature with YOUR signature (${currentManager.username}).\nThe PDF will be regenerated with your name.`)) return;
+  const emp = submittedEmployees.find(e=>e.initials===initials);
+  if (!emp?.status?.id) { alert('Could not find status record.'); return; }
+  const prog = showProgress(`✏️ Re-signing for ${name}...`, 2, 'yellow');
+  try {
+    // Step 1: Update manager_approved_by to current manager
+    const nowISO = new Date().toISOString();
+    const {error:ue} = await client.from('hb_acknowledgment_status')
+      .update({ manager_approved_by: currentManager.username, manager_approved_at: nowISO })
+      .eq('id', emp.status.id);
+    if (ue) throw new Error('Status update failed: ' + ue.message);
+    prog.update(1);
+
+    // Step 2: Regenerate PDF with new manager info
+    const payload = {
+      employee_initials:  initials,
+      manager_username:   currentManager.username,
+      manager_name:       currentManager.full_name,
+      manager_approved_at: nowISO
+    };
+    if (emp?.status?.hr_approved && emp?.status?.hr_approved_by) {
+      payload.hr_username    = emp.status.hr_approved_by;
+      payload.hr_name        = emp.status.hr_approved_by;
+      payload.hr_approved_at = emp.status.hr_approved_at;
+    }
+    const r = await client.functions.invoke('regenerate-handbook-pdf',{body:payload});
+    if(r.error||!r.data?.ok) throw new Error(r.error?.message||r.data?.error||'Failed');
+    prog.update(2); prog.remove();
+
+    const sd = document.createElement('div');
+    sd.className='fixed top-4 right-4 bg-yellow-600 text-white px-6 py-4 rounded-lg shadow-xl z-50';
+    sd.innerHTML=`<div class="font-bold">✏️ Re-signed!</div><div class="text-sm mt-1">Now signed by: <b>${currentManager.username}</b></div><div class="text-xs mt-1"><a href="${r.data.pdf_url}" target="_blank" class="underline">View PDF</a></div>`;
+    document.body.appendChild(sd); setTimeout(()=>document.body.removeChild(sd),6000);
+    await loadEmployees();
+  } catch(e){ prog.remove(); alert(`❌ Re-sign failed:\n${e.message}`); }
 };
 
 // ─── PROGRESS HELPER ─────────────────────────────────────────────
