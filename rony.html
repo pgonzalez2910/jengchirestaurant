@@ -2407,398 +2407,844 @@ function escAttr(str) {
         .replace(/>/g, '&gt;');
 }
 
-// Rony functions
+// ========== RONY TAB — EDITABLE STOCK INPUT ==========
+
+
+
 async function loadRonyOrders() {
+
     try {
+
         // Get selected date or use today
+
         const dateInput = document.getElementById('ronyOrderDate');
+
         const selectedDate = dateInput ? dateInput.value : todayYMD();
+
         
+
         // Set default date if not set
+
         if (dateInput && !dateInput.value) {
+
             dateInput.value = todayYMD();
+
         }
+
         
+
         const { data: products, error: prodError } = await supabaseClient
+
             .from('inventory_management')
-            .select('product_name, image_url, position, assigned_to')
+
+            .select('product_name, image_url, position, assigned_to, vendors, category')
+
             .order('position', { ascending: true });
+
         
+
         if (prodError) throw prodError;
+
         
+
         const uniqueProducts = new Map();
+
         (products || []).forEach(p => {
+
             const name = (p.product_name || '').trim();
+
             const assigned = String(p.assigned_to || '').toLowerCase();
+
             if (!name || !assigned.includes('rony')) return;
+
             
+
             if (!uniqueProducts.has(name)) {
+
                 uniqueProducts.set(name, {
+
                     product_name: name,
+
                     image_url: p.image_url,
+
                     position: p.position,
-                    current_stock: null,
-                    wasUpdated: false
+
+                    vendor: p.vendors || null,
+
+                    category: p.category || null,
+
+                    current_stock: null
+
                 });
+
             }
+
         });
+
         
+
         // ✅ Load stock levels for the selected date
+
         const { data: stock, error: stockError } = await supabaseClient
+
             .from('current_stock')
+
             .select('*')
+
             .eq('stock_date', selectedDate);
+
         
+
         if (!stockError && stock) {
+
             stock.forEach(s => {
+
                 const name = (s.product_name || '').trim();
+
                 if (uniqueProducts.has(name)) {
+
                     uniqueProducts.get(name).current_stock = s.quantity_in_stock;
-                    // Mark as already existing (blue checkmark)
-                    uniqueProducts.get(name).wasUpdated = true;
+
                 }
+
             });
+
         }
+
         
+
         // Group by position
+
         ronyProductsByPosition.clear();
+
         uniqueProducts.forEach(product => {
+
             const pos = product.position || 'Uncategorized';
+
             if (!ronyProductsByPosition.has(pos)) {
+
                 ronyProductsByPosition.set(pos, []);
+
             }
+
             ronyProductsByPosition.get(pos).push(product);
+
         });
+
         
+
         renderRonyProducts();
+
         
+
     } catch (error) {
+
         console.error('Load Rony stock error:', error);
+
         showAlert('Error loading Rony stock', 'error');
+
     }
+
 }
+
+
+
+
 
 
 
 function renderRonyProducts() {
+
     const container = document.getElementById('ronyProductContainer');
+
     const searchTerm = document.getElementById('ronySearchInput')?.value.toLowerCase() || '';
 
+
+
     const positions = Array.from(ronyProductsByPosition.keys()).sort((a, b) => {
+
         const numA = parseInt(a);
+
         const numB = parseInt(b);
+
         if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+
         return String(a).localeCompare(String(b));
+
     });
+
+
 
     // ✅ UPDATE GLOBAL PROGRESS BAR
+
     let totalAll = 0, hasStockAll = 0;
+
     ronyProductsByPosition.forEach(products => {
+
         totalAll += products.length;
-        hasStockAll += products.filter(p => p.current_stock != null && p.current_stock > 0).length;
+
+        hasStockAll += products.filter(p => p.current_stock !== null && p.current_stock !== undefined).length;
+
     });
+
     const globalPct = totalAll > 0 ? Math.round((hasStockAll / totalAll) * 100) : 0;
+
     const globalBar = document.getElementById('ronyGlobalProgress');
+
     const globalLabel = document.getElementById('ronyGlobalLabel');
+
     if (globalBar) globalBar.style.width = globalPct + '%';
+
     if (globalLabel) globalLabel.textContent = `${globalPct}% (${hasStockAll}/${totalAll})`;
 
+
+
     container.innerHTML = positions.map(position => {
+
         let products = ronyProductsByPosition.get(position);
 
+
+
         if (searchTerm) {
+
             products = products.filter(p =>
+
                 (p.product_name || '').toLowerCase().includes(searchTerm)
+
             );
+
         }
+
+
 
         if (products.length === 0) return '';
 
+
+
         const total = products.length;
-        const hasStock = products.filter(p => p.current_stock != null && p.current_stock > 0).length;
+
+        // ✅ 0 is a valid stock count (out of stock) — count it as entered
+
+        const hasStock = products.filter(p => p.current_stock !== null && p.current_stock !== undefined).length;
+
         const progressPct = total > 0 ? Math.round((hasStock / total) * 100) : 0;
 
+
+
         return `
+
             <div style="background: white; border-radius: 12px; padding: 1.5rem; box-shadow: var(--shadow-md); margin-bottom: 2rem;">
+
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 2px solid var(--neutral-200); flex-wrap: wrap; gap: 1rem;">
+
                     <h2 style="font-size: 1.25rem; font-weight: 700; color: var(--neutral-900);">
+
                         📍 Position ${position}
+
                         <span style="font-size: 0.875rem; font-weight: 500; color: ${hasStock === total ? 'var(--success-600)' : 'var(--neutral-500)'}; margin-left: 0.75rem;">
+
                             ${hasStock === total ? '✅ All entered' : `${hasStock}/${total} entered`}
+
                         </span>
+
                     </h2>
+
                     <div style="flex: 0 0 200px; min-width: 150px;">
+
                         <div style="height: 8px; background: var(--neutral-200); border-radius: 999px; overflow: hidden; margin-bottom: 0.5rem;">
+
                             <div style="height: 100%; width: ${progressPct}%; background: ${progressPct === 100 ? 'var(--success-600)' : 'var(--primary-600)'}; transition: width 0.3s;"></div>
+
                         </div>
+
                         <div style="font-size: 0.75rem; color: var(--neutral-600); text-align: right;">
+
                             ${hasStock}/${total} have stock entered
+
                         </div>
+
                     </div>
+
                 </div>
 
+
+
                 <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem;">
+
                     ${products.map(product => renderRonyProductCard(product)).join('')}
+
                 </div>
+
             </div>
+
         `;
+
     }).join('');
+
 }
+
+
+
+
 
 
 
 // ✅ FIXED: renderRonyProductCard function
+
 // ✅ UPDATED: renderRonyProductCard with DELETE button
+
 function renderRonyProductCard(product) {
+
     const imageUrl = resolveImage(product.image_url);
-    const hasStock = product.current_stock != null && product.current_stock > 0;
+
+    // ✅ 0 is a valid stock count (means "out of stock") — only null means "not entered yet"
+
+    const hasStock = product.current_stock !== null && product.current_stock !== undefined;
+
     const displayQty = hasStock ? product.current_stock : '';
-    
-    // Determine badge color: green for new save, blue for update
-    const isUpdated = product.wasUpdated || false;
-    const badgeColor = isUpdated ? '#3b82f6' : 'var(--success-600)'; // Blue or Green
-    const badgeLabel = isUpdated ? 'UPDATED' : 'SAVED';
+
+
 
     return `
+
         <div style="
-            background: ${hasStock ? (isUpdated ? 'rgba(59, 130, 246, 0.05)' : 'rgba(16,185,129,0.05)') : 'var(--neutral-50)'};
+
+            background: ${hasStock ? 'rgba(16,185,129,0.05)' : 'var(--neutral-50)'};
+
             border-radius: 12px;
+
             padding: 1rem;
+
             text-align: center;
-            border: 2px solid ${hasStock ? (isUpdated ? '#3b82f6' : 'var(--success-600)') : 'var(--neutral-300)'};
+
+            border: 2px solid ${hasStock ? 'var(--success-600)' : 'var(--neutral-300)'};
+
             transition: all 0.3s;
+
             position: relative;
+
         ">
+
             <!-- DELETE BUTTON -->
+
             <button data-product="${escAttr(product.product_name)}"
+
                     onclick="deleteProductFromRony(this.dataset.product)"
+
                     class="btn btn-danger btn-icon"
-                    style="position: absolute; top: 8px; right: 8px; width: 30px; height: 30px; padding: 0; font-size: 0.75rem; z-index: 10;"
+
+                    style="position: absolute; top: 8px; right: 8px; width: 30px; height: 30px; padding: 0; font-size: 0.75rem;"
+
                     title="Delete Product">
+
                 <i class="fas fa-trash"></i>
+
             </button>
 
-            <!-- ✅ SAVED/UPDATED BADGE -->
-            ${hasStock ? `<div style="position:absolute;top:8px;left:8px;background:${badgeColor};color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.75rem;z-index:10;">✓</div>` : ''}
+
+
+            <!-- ✅ SAVED BADGE -->
+
+            ${hasStock ? `<div style="position:absolute;top:8px;left:8px;background:var(--success-600);color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.75rem;">✓</div>` : ''}
+
+
 
             <img src="${imageUrl}"
+
                  onerror="this.src='${PLACEHOLDER_IMAGE}'"
+
                  style="width: 100%; max-width: 100px; height: 100px; object-fit: contain; border-radius: 8px; margin-bottom: 0.75rem;">
 
+
+
             <div style="font-weight: 700; font-size: 0.9rem; margin-bottom: 0.75rem; color: var(--neutral-900); min-height: 2.5rem; display: flex; align-items: center; justify-content: center; word-wrap: break-word;">
+
                 ${product.product_name}
+
             </div>
+
+
 
             <div style="margin-bottom: 0.5rem;">
-                <label for="rony-stock-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}" style="display: block; font-size: 0.7rem; font-weight: 600; color: ${hasStock ? (isUpdated ? '#3b82f6' : 'var(--success-700)') : 'var(--neutral-600)'}; margin-bottom: 0.25rem;">
-                    ${hasStock ? `✅ ${badgeLabel}` : 'CURRENT STOCK'}
+
+                <label style="display: block; font-size: 0.7rem; font-weight: 600; color: ${hasStock ? 'var(--success-700)' : 'var(--neutral-600)'}; margin-bottom: 0.25rem;">
+
+                    ${hasStock ? '✅ STOCK (SAVED)' : 'CURRENT STOCK'}
+
                 </label>
+
             </div>
 
-            <!-- SIMPLE INPUT BOX - AUTO-SAVES ON CHANGE -->
-            <input type="number"
-                   id="rony-stock-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}"
-                   value="${displayQty}"
-                   min="0"
-                   step="0.1"
-                   placeholder="0"
-                   onchange="autoSaveRonyStock('${escAttr(product.product_name)}', this.value)"
-                   style="width: 100%; max-width: 120px; text-align: center; padding: 0.75rem; border: 2px solid ${hasStock ? (isUpdated ? '#3b82f6' : 'var(--success-600)') : 'var(--primary-400)'}; border-radius: 6px; font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); background: ${hasStock ? (isUpdated ? 'rgba(59, 130, 246, 0.05)' : 'rgba(16,185,129,0.05)') : 'white'};">
+
+
+            <!-- ✅ REMOVED +/- BUTTONS - Just the input field -->
+
+            <div style="display: flex; justify-content: center;">
+
+                <input type="number"
+
+                       id="rony-stock-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}"
+
+                       value="${displayQty}"
+
+                       min="0"
+
+                       step="0.1"
+
+                       inputmode="decimal"
+
+                       placeholder="0"
+
+                       data-pname="${escAttr(product.product_name)}"
+                       onchange="setRonyStock(this.dataset.pname, this.value)" 
+
+                       style="width: 100px; text-align: center; padding: 0.6rem; border: 2px solid ${hasStock ? 'var(--success-600)' : 'var(--primary-400)'}; border-radius: 6px; font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); background: ${hasStock ? 'rgba(16,185,129,0.05)' : 'white'};">
+
+            </div>
+
+            <!-- ✅ AUTOCHLOR DATE TRACKING -->
+            ${(product.category || '').toLowerCase().includes('autochlor') || (product.vendor || '').toLowerCase().includes('autochlor') || (product.product_name || '').toLowerCase().includes('autochlor') || (product.position || '').toLowerCase().includes('autochlor') ? `
+            <div style="margin-top:0.75rem;padding:0.75rem;background:#fef3c7;border-radius:8px;border:2px solid #f59e0b;">
+                <div style="font-size:0.65rem;font-weight:800;color:#92400e;margin-bottom:0.4rem;text-transform:uppercase;">
+                    📅 Date Used / Changed <span style="color:#dc2626;">*required</span>
+                </div>
+                <input type="date"
+                    id="autochlor-date-${product.product_name.replace(/[^a-zA-Z0-9]/g, '_')}"
+                    value="${product.date_used || ''}"
+                    data-pname="${escAttr(product.product_name)}"
+                    onchange="setAutochlorDate(this.dataset.pname, this.value)"
+                    style="width:100%;font-size:0.85rem;padding:0.4rem;border:2px solid #f59e0b;border-radius:6px;background:white;font-weight:600;">
+                <div style="font-size:0.6rem;color:#92400e;margin-top:0.3rem;font-style:italic;">Enter date before saving — tracks how long each product lasts</div>
+            </div>` : ''}
         </div>
     `;
+
 }
 
-// ✅ AUTO-SAVE: Saves to database immediately when user enters/changes stock
-async function autoSaveRonyStock(productName, value) {
+
+
+function updateRonyStock(productName, delta) {
+
+    let allProducts = [];
+
+    ronyProductsByPosition.forEach(products => {
+
+        allProducts = allProducts.concat(products);
+
+    });
+
+    
+
+    const product = allProducts.find(p => p.product_name === productName);
+
+    if (!product) return;
+
+    
+
+    const currentStock = product.current_stock || 0;
+
+    const newStock = Math.max(0, currentStock + delta);
+
+    
+
+    product.current_stock = parseFloat(newStock.toFixed(2));  // ✅ 0 is valid out-of-stock
+
+    
+
+    const input = document.getElementById(`rony-stock-${productName.replace(/[^a-zA-Z0-9]/g, '_')}`);
+
+    if (input) input.value = newStock === 0 ? '' : newStock.toFixed(2);
+
+    
+
+    renderRonyProducts();
+
+}
+
+
+
+
+// ════════════════════════════════════════════════════════
+// CREDIT PENDING / RETURN SYSTEM
+// ════════════════════════════════════════════════════════
+
+async function showCreditBalance() {
+    const vendor = document.getElementById('invoiceVendorDropdown')?.value;
+    if (!vendor) { showAlert('Select a vendor first', 'warning'); return; }
     try {
-        const qty = value === '' ? null : (parseFloat(value) || 0);
-        const stockDate = document.getElementById('ronyOrderDate')?.value || todayYMD();
-        const submissionDate = new Date().toISOString();
-        
-        // Update in memory
-        let allProducts = [];
-        ronyProductsByPosition.forEach(products => {
-            allProducts = allProducts.concat(products);
-        });
-        
-        const product = allProducts.find(p => p.product_name === productName);
-        if (!product) return;
-        
-        // Check if this is an update (product already had stock) or new save
-        const wasAlreadySaved = product.current_stock != null && product.current_stock > 0;
-        
-        product.current_stock = (qty === 0) ? null : qty;
-        
-        // Save to database immediately (UPSERT)
-        if (qty !== null && qty > 0) {
-            // Check if record exists in database
-            const { data: existing } = await supabaseClient
-                .from('current_stock')
-                .select('id')
-                .eq('product_name', productName)
-                .eq('stock_date', stockDate)
-                .single();
-            
-            // Set wasUpdated flag: true if record exists, false if new
-            product.wasUpdated = existing ? true : false;
-            
-            const { error } = await supabaseClient
-                .from('current_stock')
-                .upsert({
-                    product_name: productName,
-                    quantity_in_stock: qty,
-                    stock_date: stockDate,
-                    last_updated: submissionDate
-                }, { 
-                    onConflict: 'product_name,stock_date',
-                    ignoreDuplicates: false 
-                });
-            
-            if (error) throw error;
-            
-            // Log to submissions table
-            await supabaseClient
-                .from('inventory_submissions')
-                .insert({
-                    submission_date: submissionDate,
-                    submitted_by: 'rony',
-                    product_name: productName,
-                    quantity: qty,
-                    submission_type: 'current_stock',
-                    notes: product.wasUpdated ? `Updated stock for ${stockDate}` : `New stock entry for ${stockDate}`
-                });
-            
-            console.log(`${product.wasUpdated ? '🔵 Updated' : '🟢 Saved'} ${productName}: ${qty}`);
-        } else if (qty === null || qty === 0) {
-            // Delete from database if value is cleared or 0
-            await supabaseClient
-                .from('current_stock')
-                .delete()
-                .eq('product_name', productName)
-                .eq('stock_date', stockDate);
-            
-            product.wasUpdated = false;
-            console.log(`🗑️ Cleared ${productName}`);
+        const sb = getSupabaseClient();
+        // Sum all return_amounts minus credit_applied for this vendor
+        const { data: invs } = await sb.from('invoices')
+            .select('vendor, credit_applied, return_amount')
+            .eq('vendor', vendor);
+        if (invs) {
+            const totalReturns = invs.reduce((s,i) => s + parseFloat(i.return_amount||0), 0);
+            const totalApplied = invs.reduce((s,i) => s + parseFloat(i.credit_applied||0), 0);
+            const balance = Math.max(0, totalReturns - totalApplied);
+            const lbl = document.getElementById('creditBalanceLabel');
+            if (lbl) lbl.textContent = `Available Credit: $${balance.toFixed(2)}`;
+            const applyEl = document.getElementById('invoiceCreditApplied');
+            if (applyEl && balance > 0) {
+                const msg = `Available credit for ${vendor}: $${balance.toFixed(2)}. Apply this credit to current invoice?`;
+                if (confirm(msg)) {
+                    applyEl.value = balance.toFixed(2);
+                    calculateInvoiceTotals();
+                }
+            } else {
+                showAlert(`No credit balance for ${vendor}`, 'info');
+            }
         }
-        
-        // Refresh display to show green/blue checkmark
-        renderRonyProducts();
-        
-    } catch (error) {
-        console.error('Auto-save error:', error);
-        showAlert('⚠️ Auto-save failed: ' + error.message, 'error');
+    } catch(e) {
+        showAlert(`Credit balance: check console`, 'info');
+        console.error('Credit balance error:', e);
     }
 }
+
+async function loadCreditBalanceForVendor(vendor) {
+    if (!vendor) return;
+    try {
+        const sb = getSupabaseClient();
+        const { data: invs } = await sb.from('invoices')
+            .select('credit_applied, return_amount')
+            .eq('vendor', vendor);
+        if (invs) {
+            const totalReturns = invs.reduce((s,i) => s + parseFloat(i.return_amount||0), 0);
+            const totalApplied = invs.reduce((s,i) => s + parseFloat(i.credit_applied||0), 0);
+            const balance = Math.max(0, totalReturns - totalApplied);
+            const lbl = document.getElementById('creditBalanceLabel');
+            if (lbl) lbl.textContent = `Available Credit: $${balance.toFixed(2)}`;
+        }
+    } catch(e) { console.warn('Credit load error:', e); }
+}
+
+async function setAutochlorDate(productName, dateValue) {
+    // Save autochlor date to a dedicated tracking table
+    try {
+        const { error } = await supabaseClient
+            .from('autochlor_date_tracking')
+            .upsert({
+                product_name: productName,
+                date_changed: dateValue,
+                recorded_at: new Date().toISOString()
+            }, { onConflict: 'product_name,date_changed' });
+        if (error) {
+            // Table might not exist yet - show the SQL to create it
+            console.warn('autochlor_date_tracking table may not exist:', error.message);
+        }
+        showAlert(`📅 Date recorded for ${productName}: ${dateValue}`, 'success');
+    } catch(e) {
+        showAlert(`📅 Date ${dateValue} noted for ${productName}`, 'info');
+    }
+}
+
+function setRonyStock(productName, value) {
+
+    let allProducts = [];
+
+    ronyProductsByPosition.forEach(products => {
+
+        allProducts = allProducts.concat(products);
+
+    });
+
+
+
+    const product = allProducts.find(p => p.product_name === productName);
+
+    if (!product) return;
+
+
+
+    // ✅ Allow 0: empty string = not entered (null), any number including 0 = entered
+
+    if (value === '' || value === null || value === undefined) {
+
+        product.current_stock = null;
+
+    } else {
+
+        const qty = parseFloat(value);
+
+        product.current_stock = isNaN(qty) ? null : qty;
+
+    }
+
+
+
+    // ✅ AUTOCHLOR: If qty entered, require date before proceeding
+    const isAutochlor = (product.category || '').toLowerCase().includes('autochlor')
+        || (product.vendor || '').toLowerCase().includes('autochlor')
+        || (product.product_name || '').toLowerCase().includes('autochlor')
+        || (product.position || '').toLowerCase().includes('autochlor');
+
+    if (isAutochlor && product.current_stock !== null) {
+
+        const safeId = productName.replace(/[^a-zA-Z0-9]/g, '_');
+        const dateInput = document.getElementById('autochlor-date-' + safeId);
+        const hasDate = dateInput && dateInput.value;
+
+        if (!hasDate) {
+
+            setTimeout(() => {
+
+                if (!dateInput) return;
+                dateInput.style.border = '2px solid #dc2626';
+                dateInput.style.boxShadow = '0 0 0 3px rgba(220,38,38,0.3)';
+                dateInput.focus();
+
+                const bannerId = 'autochlor-banner-' + safeId;
+                if (!document.getElementById(bannerId)) {
+
+                    const banner = document.createElement('div');
+                    banner.id = bannerId;
+                    banner.style.cssText = 'background:#fee2e2;border:2px solid #dc2626;border-radius:6px;padding:0.5rem;margin-top:0.4rem;font-size:0.7rem;font-weight:700;color:#b91c1c;text-align:center;';
+                    banner.innerHTML = '⚠️ Please enter the date used / changed before saving';
+                    dateInput.parentElement.insertBefore(banner, dateInput);
+
+                }
+
+                dateInput.addEventListener('change', function handler() {
+
+                    dateInput.style.border = '2px solid #f59e0b';
+                    dateInput.style.boxShadow = '';
+                    const b = document.getElementById(bannerId);
+                    if (b) b.remove();
+                    dateInput.removeEventListener('change', handler);
+
+                }, { once: true });
+
+            }, 80);
+
+        }
+
+    }
+
+
+
+    renderRonyProducts();
+
+}
+
+
 
 function filterRonyProducts() {
+
     renderRonyProducts();
+
 }
 
 
-// ✅ SUBMIT FINAL COUNT: Confirms all auto-saved data and sends email notification
-async function saveRonyOrders() {
-    showLoading(true);
-    try {
-        const submissionDate = new Date().toISOString();
-        const stockDate = document.getElementById('ronyOrderDate')?.value || todayYMD();
-        
-        let allProducts = [];
-        ronyProductsByPosition.forEach(products => {
-            allProducts = allProducts.concat(products);
-        });
-        
-        const stockUpdates = allProducts
-            .filter(p => p.current_stock != null && p.current_stock >= 0)
-            .map(p => ({
-                product_name: p.product_name,
-                quantity_in_stock: p.current_stock,
-                stock_date: stockDate,
-                last_updated: submissionDate
-            }));
-        
-        if (stockUpdates.length === 0) {
-            showAlert('❌ No stock quantities entered', 'error');
-            return;
-        }
-        
-        // Final UPSERT to ensure everything is saved
-        const { error: stockError } = await supabaseClient
-            .from('current_stock')
-            .upsert(stockUpdates, { 
-                onConflict: 'product_name,stock_date',
-                ignoreDuplicates: false 
-            });
 
-        if (stockError) throw stockError;
+
+
+// ✅ SAVE RONY STOCK (NOW EDITABLE)
+
+async function saveRonyOrders() {
+
+    showLoading(true);
+
+    try {
+
+        const submissionDate = new Date().toISOString();
+
+        const stockDate = document.getElementById('ronyOrderDate')?.value || todayYMD();
+
         
-        // ✅ Send email notification to admin
-        const emailItems = stockUpdates.map(s => ({
+
+        let allProducts = [];
+
+        ronyProductsByPosition.forEach(products => {
+
+            allProducts = allProducts.concat(products);
+
+        });
+
+        
+
+        const stockUpdates = allProducts
+
+            .filter(p => p.current_stock !== null && p.current_stock !== undefined)  // ✅ 0 is valid
+
+            .map(p => ({
+
+                product_name: p.product_name,
+
+                quantity_in_stock: p.current_stock,
+
+                stock_date: stockDate,
+
+                last_updated: submissionDate
+
+            }));
+
+        
+
+        if (stockUpdates.length === 0) {
+
+            showAlert('❌ No stock quantities entered', 'error');
+
+            return;
+
+        }
+
+        
+
+      // UPSERT - insert or update if already exists
+
+const { error: stockError } = await supabaseClient
+
+    .from('current_stock')
+
+    .upsert(stockUpdates, { 
+
+        onConflict: 'product_name,stock_date',
+
+        ignoreDuplicates: false 
+
+    });
+
+
+
+if (stockError) throw stockError;
+
+        
+
+        // Save to historical submissions table
+
+        const submissions = stockUpdates.map(s => ({
+
+            submission_date: submissionDate,
+
+            submitted_by: 'rony',
+
             product_name: s.product_name,
+
             quantity: s.quantity_in_stock,
-            notes: `Current stock`
+
+            submission_type: 'current_stock',
+
+            notes: `Stock count for ${stockDate}`
+
         }));
 
+        
+
+        const { error: historyError } = await supabaseClient
+
+            .from('inventory_submissions')
+
+            .insert(submissions);
+
+        
+
+        if (historyError) {
+
+            console.error('Error saving submission history:', historyError);
+
+        }
+
+        
+
+        // ✅ NEW: Send email notification to admin
+
+        const emailItems = stockUpdates.map(s => ({
+
+            product_name: s.product_name,
+
+            quantity: s.quantity_in_stock,
+
+            notes: `Current stock`
+
+        }));
+
+
+
         const emailResponse = await fetch(`${SUPABASE_URL}/functions/v1/send-order-notification`, {
+
             method: 'POST',
+
             headers: {
+
                 'Content-Type': 'application/json',
+
                 'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+
             },
+
             body: JSON.stringify({
+
                 submittedBy: 'rony',
+
                 orderDate: stockDate,
+
                 items: emailItems
+
             })
+
         });
+
+
 
         const emailResult = await emailResponse.json();
+
         
+
         if (emailResult.success) {
-            showAlert(`✅ Final count submitted! ${stockUpdates.length} items confirmed for ${stockDate}. 📧 Admin notified.`, 'success');
+
+            showAlert(`✅ Saved ${stockUpdates.length} stock levels for ${stockDate}! 📧 Admin notified via email.`, 'success');
+
         } else {
-            showAlert(`✅ Final count submitted (${stockUpdates.length} items), but email notification failed.`, 'warning');
+
+            showAlert(`✅ Saved ${stockUpdates.length} stock levels, but email notification failed: ${emailResult.error}`, 'warning');
+
         }
+
         
+
     } catch (error) {
-        console.error('Submit final count error:', error);
-        showAlert('Error submitting final count: ' + error.message, 'error');
+
+        console.error('Save Rony stock error:', error);
+
+        showAlert('Error saving stock: ' + error.message, 'error');
+
     } finally {
+
         showLoading(false);
+
     }
+
 }
 
+
+
 async function clearRonyOrders() {
-    if (!confirm('⚠️ Clear all stock levels?\n\nThis will delete all saved data for today!')) return;
+
+    if (!confirm('Clear all stock levels?')) return;
+
     
-    showLoading(true);
-    try {
-        const stockDate = document.getElementById('ronyOrderDate')?.value || todayYMD();
-        
-        // Clear from memory
-        ronyProductsByPosition.forEach(products => {
-            products.forEach(p => {
-                p.current_stock = null;
-            });
+
+    ronyProductsByPosition.forEach(products => {
+
+        products.forEach(p => {
+
+            p.current_stock = null;
+
         });
-        
-        // Delete from database
-        const { error } = await supabaseClient
-            .from('current_stock')
-            .delete()
-            .eq('stock_date', stockDate);
-        
-        if (error) throw error;
-        
-        renderRonyProducts();
-        showAlert('✅ All stock levels cleared from database', 'success');
-        
-    } catch (error) {
-        console.error('Clear error:', error);
-        showAlert('⚠️ Error clearing stock: ' + error.message, 'error');
-    } finally {
-        showLoading(false);
-    }
+
+    });
+
+    
+
+    renderRonyProducts();
+
+    showAlert('All stock levels cleared', 'success');
+
 }
+
+
+
+
+
 
 async function deleteProductFromRony(productName) {
     if (!confirm(`Remove "${productName}" from Rony's list?\n\nThis will unassign it from Rony but keep the product in the system.`)) return;
