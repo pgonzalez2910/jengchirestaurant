@@ -1285,17 +1285,115 @@ const PROGRESS_TEMPLATE = [
   }
 ];
 
+// ═══════════════════════════════════════════════
+//  DISHWASHER-SPECIFIC BOH TEMPLATE (per spec)
+//  Focus: sanitation, equipment, chemical handling,
+//  temperature control, cross-contamination, throughput
+// ═══════════════════════════════════════════════
+const DISHWASHER_TEMPLATE = [
+  { id:'sanitation_standards', title:'Sanitation & Hygiene Standards',
+    desc:'Compliance with health department sanitation codes and Jeng Chi Restaurant standards',
+    questions:[
+      {id:'dw1', label:'Proper use and maintenance of commercial dishwashing equipment (pre-rinse, wash, rinse, sanitize cycles)'},
+      {id:'dw2', label:'Rinse water temperature compliance — final sanitizing rinse reaches minimum 180°F (as per FDA Food Code §4-501.112)'},
+      {id:'dw3', label:'Chemical concentration accuracy — dishwashing detergent and sanitizer at correct ppm per label instructions'},
+      {id:'dw4', label:'Cross-contamination prevention — separate soiled from clean dishes; correct rack loading technique'},
+      {id:'dw5', label:'Proper scraping and pre-rinsing of dishes, pots, and pans before washing cycle'},
+      {id:'dw_c1', label:'Describe any sanitation concerns or equipment issues observed during this review period.', type:'textarea'}
+    ]
+  },
+  { id:'chemical_safety', title:'Chemical Handling & Safety (OSHA 1910.1200)',
+    desc:'Safe use of cleaning chemicals per OSHA Hazard Communication Standard',
+    questions:[
+      {id:'dw6', label:'Correct storage and labeling of chemicals (separate from food areas, clearly labeled per GHS/OSHA)'},
+      {id:'dw7', label:'Proper use of personal protective equipment (gloves, apron, eye protection) when handling chemicals'},
+      {id:'dw8', label:'Knowledge of SDS (Safety Data Sheets) location and content for chemicals in use'},
+      {id:'dw_c2', label:'Note any chemical safety incidents or PPE compliance gaps observed.', type:'textarea'}
+    ]
+  },
+  { id:'efficiency_throughput', title:'Efficiency & Peak Hour Throughput',
+    desc:'Ability to maintain clean supply of dishes, pots, and equipment during high-volume service',
+    questions:[
+      {id:'dw9',  label:'Speed and efficiency: maintains adequate supply of clean dishes/utensils during peak hours without service delay'},
+      {id:'dw10', label:'Pot/pan scrubbing efficiency — removes baked-on food without excessive soak time or re-washing'},
+      {id:'dw11', label:'Floor and work area maintenance — keeps dishwashing area clean, dry, and hazard-free throughout shift'},
+      {id:'dw_c3', label:'Comments on efficiency, throughput, or staffing coverage during peak service periods.', type:'textarea'}
+    ]
+  },
+  { id:'kitchen_compliance', title:'Kitchen Compliance & Teamwork',
+    desc:'Adherence to Jeng Chi Restaurant BOH standards and collaborative kitchen culture',
+    questions:[
+      {id:'dw12', label:'Punctuality, attendance, and reliable presence during critical pre/post-service periods'},
+      {id:'dw13', label:'Proactive communication with BOH team about equipment issues, supply shortages, or backlog'},
+      {id:'dw14', label:'Waste sorting compliance — proper disposal of food waste, recycling, and grease (per local ordinance)'},
+      {id:'dw_c4', label:'Overall comments on teamwork, reliability, and compliance.', type:'textarea'}
+    ]
+  }
+];
+
 function detectDepartment(emp) {
-  const pos = ((emp.position||emp.job_title||'') + ' ' + (emp.department||'')).toLowerCase();
-  if (/manager|supervisor|gm|director|lead|owner|shift lead/i.test(pos)) return 'MANAGEMENT';
-  if (/cook|chef|kitchen|prep|dish|line|sous|grill|fry|wok|production|back/i.test(pos)) return 'BOH';
-  if (/server|waiter|waitress|host|hostess|cashier|runner|busser|bartender|bar|front/i.test(pos)) return 'FOH';
+  // 1. Explicit IsManagement flag (from DB spec)
+  if (emp.is_management === true || emp.ismanagement === true || emp.IsManagement === true) return 'MANAGEMENT';
+
+  const pos  = (emp.position  || emp.job_title  || '').toLowerCase().trim();
+  const dept = (emp.department || '').toLowerCase().trim();
+  const name = ((emp.first_name||emp.name||'') + ' ' + (emp.last_name||'')).toLowerCase();
+
+  // 2. Named management override (per spec: Craig Reeves, Pablo Gonzalez, Anh Mai Vu)
+  const mgmtNames = ['craig reeves','pablo gonzalez','anh mai vu'];
+  if (mgmtNames.some(n => name.includes(n))) return 'MANAGEMENT';
+
+  // 3. Department field takes priority if explicit
+  if (/boh|back.of.house|back of house|kitchen/i.test(dept)) {
+    // Still check if position is management within BOH
+    if (/manager|supervisor|director|lead|head chef|executive/i.test(pos)) return 'MANAGEMENT';
+    return 'BOH';
+  }
+  if (/foh|front.of.house|front of house/i.test(dept)) {
+    if (/manager|supervisor|director|lead/i.test(pos)) return 'MANAGEMENT';
+    return 'FOH';
+  }
+  if (/mgmt|management/i.test(dept)) return 'MANAGEMENT';
+
+  // 4. Position-based detection
+  // MANAGEMENT positions
+  if (/\b(general manager|gm|restaurant manager|shift manager|shift lead|floor manager|assistant manager|am|operations manager|hr manager|hr director|production manager|logistic.*manager|kitchen manager|bar manager)\b/i.test(pos)) return 'MANAGEMENT';
+  if (/\b(manager|supervisor|director|owner|proprietor)\b/i.test(pos)) return 'MANAGEMENT';
+
+  // BOH positions — exhaustive list per spec
+  if (/\b(wok chef|head chef|sous chef|executive chef|pastry chef|chef)\b/i.test(pos)) return 'BOH';
+  if (/\b(line cook|prep cook|cook)\b/i.test(pos)) return 'BOH';
+  if (/\b(dishwasher|dish washer|dish)\b/i.test(pos)) return 'BOH';
+  if (/\b(dumpling maker|noodle maker|dim sum)\b/i.test(pos)) return 'BOH';
+  if (/\b(kitchen prep|food prep|prep)\b/i.test(pos)) return 'BOH';
+  if (/\b(fryer|grill|line|expo|expeditor)\b/i.test(pos)) return 'BOH';
+  if (/\b(logistic coordinator|logistics|production coordinator|production)\b/i.test(pos)) return 'BOH';
+  if (/\b(porter|steward|utility)\b/i.test(pos)) return 'BOH';
+  if (/back of house|back-of-house/i.test(pos)) return 'BOH';
+
+  // FOH positions
+  if (/\b(server|waiter|waitress|waitstaff)\b/i.test(pos)) return 'FOH';
+  if (/\b(host|hostess|greeter|seater)\b/i.test(pos)) return 'FOH';
+  if (/\b(cashier|front cashier)\b/i.test(pos)) return 'FOH';
+  if (/\b(bartender|barback|bar back)\b/i.test(pos)) return 'FOH';
+  if (/\b(busser|busperson|food runner|runner)\b/i.test(pos)) return 'FOH';
+  if (/\b(to-go|togo|takeout|take out|to go|delivery)\b/i.test(pos)) return 'FOH';
+  if (/front of house|front-of-house/i.test(pos)) return 'FOH';
+
+  // 5. Fallback: use department field broadly
+  if (/boh|kitchen|back/i.test(dept)) return 'BOH';
+  if (/foh|front|floor|service/i.test(dept)) return 'FOH';
+
+  // 6. Default FOH (safe default for restaurants)
   return 'FOH';
 }
 
 function getTemplate(dept, reviewType) {
   if (reviewType === 'coaching') return COACHING_TEMPLATE;
   if (reviewType === 'progress') return PROGRESS_TEMPLATE;
+  // Dishwasher gets specialized sanitation-focused template
+  const pos = (state.employee?.position || state.employee?.job_title || '').toLowerCase();
+  if (dept === 'BOH' && /dishwasher|dish washer|\bdish\b/.test(pos)) return DISHWASHER_TEMPLATE || BOH_ANNUAL;
   if (dept === 'BOH') return BOH_ANNUAL;
   if (dept === 'MANAGEMENT') return MGMT_ANNUAL;
   return FOH_ANNUAL;
@@ -1402,13 +1500,22 @@ function selectEmployee(emp) {
   document.getElementById('searchDropdown').classList.remove('open');
   const dept = detectDepartment(emp);
   const cls = dept==='FOH'?'badge-foh':dept==='BOH'?'badge-boh':dept==='MANAGEMENT'?'badge-mgmt':'badge-general';
-  const deptLabel = dept==='FOH'?'Front of House':dept==='BOH'?'Back of House':dept==='MANAGEMENT'?'Management':'General Staff';
+  const deptLabel = dept==='FOH'?'Front of House':dept==='BOH'?'Back of House':dept==='MANAGEMENT'?'Management ⭐':'General Staff';
   const initials = emp.name.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase();
   document.getElementById('empAvatar').textContent = initials;
   document.getElementById('empName').textContent = emp.name;
-  document.getElementById('empRole').textContent = (emp.position||emp.job_title||'Employee') + ' — ' + (emp.department||dept);
-  document.getElementById('empDeptBadge').textContent = '● ' + deptLabel;
-  document.getElementById('empDeptBadge').className = 'status-badge search-dept-badge ' + cls;
+  // Show actual position + actual department from DB, not derived dept
+  const dbDept = emp.department || dept;
+  const reportsTo = emp.report_to || emp.reports_to || emp.supervisor || '';
+  const roleText = (emp.position||emp.job_title||'Employee') + ' — ' + dbDept
+    + (reportsTo ? '  |  Reports to: ' + reportsTo : '');
+  document.getElementById('empRole').textContent = roleText;
+  // Badge shows MANAGEMENT if flagged, otherwise actual DB dept
+  const isMgmt = emp.is_management || emp.ismanagement || emp.IsManagement;
+  const badgeLabel = isMgmt ? 'Management ⭐' : ('● ' + deptLabel);
+  const badgeCls   = isMgmt ? 'badge-mgmt' : cls;
+  document.getElementById('empDeptBadge').textContent = badgeLabel;
+  document.getElementById('empDeptBadge').className = 'status-badge search-dept-badge ' + badgeCls;
   if (emp.hire_date) {
     const years = ((new Date() - new Date(emp.hire_date)) / (365.25*24*3600*1000)).toFixed(1);
     document.getElementById('empTenure').textContent = years;
