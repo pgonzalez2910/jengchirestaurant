@@ -4069,6 +4069,7 @@ function resetForm() {
   });
   document.getElementById('pdfBtn').style.display='none';
   ['annual','coaching','progress'].forEach(t=>document.getElementById('rt-'+t).classList.remove('selected'));
+  document.getElementById('editModeBanner')?.remove();
 }
 
 function switchTab(tab) {
@@ -4518,6 +4519,10 @@ function renderHistoryList(rows) {
     byEmp[k].push(r);
   });
 
+  // Store rows by id for button callbacks
+  window._historyRowsById = {};
+  rows.forEach(r => { window._historyRowsById[r.id] = r; });
+
   list.innerHTML = rows.map(r => {
     const dt = r.review_date
       ? new Date(r.review_date + 'T12:00:00').toLocaleDateString('en-US',
@@ -4532,11 +4537,10 @@ function renderHistoryList(rows) {
     const empInitials = (r.employee_name||'?').split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase();
     const isDraft = r.status !== 'submitted';
     return `
-      <div style="padding:14px 20px;border-bottom:1px solid var(--gray-100);display:flex;align-items:center;gap:14px;cursor:pointer;transition:background 0.15s"
-           onmouseover="this.style.background='var(--gray-50)'" onmouseout="this.style.background=''"
-           onclick="openHistoryReview('${r.id}','${r.employee_name||''}')">
-        <div style="width:40px;height:40px;border-radius:50%;background:var(--navy);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0">${empInitials}</div>
-        <div style="flex:1;min-width:0">
+      <div class="hist-row" data-rid="${r.id}" style="padding:13px 16px;border-bottom:1px solid var(--gray-100);display:flex;align-items:center;gap:12px;transition:background 0.15s"
+           onmouseover="this.style.background='var(--gray-50)'" onmouseout="this.style.background=''">
+        <div class="hist-open" data-rid="${r.id}" style="width:40px;height:40px;border-radius:50%;background:var(--navy);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;cursor:pointer">${empInitials}</div>
+        <div class="hist-open" data-rid="${r.id}" style="flex:1;min-width:0;cursor:pointer">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
             <span style="font-weight:700;font-size:13px;color:var(--gray-800)">${r.employee_name||'Unknown'}</span>
             <span style="font-size:10px;color:var(--gray-400)">${dt}</span>
@@ -4550,9 +4554,167 @@ function renderHistoryList(rows) {
             ${score ? `<span style="font-size:11px;font-weight:700;color:var(--navy)">${score} / 5.0</span>` : ''}
           </div>
         </div>
-        <div style="color:var(--gray-300);font-size:18px">›</div>
+        <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+          <button class="hist-edit" data-rid="${r.id}" title="Edit and resubmit"
+            style="background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;font-size:11px;font-weight:700;padding:5px 12px;border-radius:7px;cursor:pointer;white-space:nowrap"
+            onmouseover="this.style.background='#dbeafe'" onmouseout="this.style.background='#eff6ff'">✏️ Edit</button>
+          <button class="hist-del" data-rid="${r.id}" title="Delete permanently"
+            style="background:#fef2f2;border:1px solid #fecaca;color:#dc2626;font-size:11px;font-weight:700;padding:5px 12px;border-radius:7px;cursor:pointer;white-space:nowrap"
+            onmouseover="this.style.background='#fee2e2'" onmouseout="this.style.background='#fef2f2'">🗑 Delete</button>
+        </div>
       </div>`;
   }).join('');
+
+  // Delegate clicks — avoids all inline-quote escaping issues
+  list.onclick = function(e) {
+    const openEl = e.target.closest('.hist-open');
+    const editEl = e.target.closest('.hist-edit');
+    const delEl  = e.target.closest('.hist-del');
+    if (openEl) {
+      const rid = openEl.dataset.rid;
+      const row = window._historyRowsById[rid];
+      openHistoryReview(rid, row ? row.employee_name||'' : '');
+    } else if (editEl) {
+      editReview(editEl.dataset.rid);
+    } else if (delEl) {
+      const rid = delEl.dataset.rid;
+      const row = window._historyRowsById[rid];
+      quickDeleteReview(rid, row ? row.employee_name||'Unknown' : 'Unknown');
+    }
+  };
+}
+
+// ── Quick delete from list row (no modal) ─────────────────────────
+async function quickDeleteReview(reviewId, empName) {
+  if (!confirm(`⚠️ Delete this review for ${empName}?\n\nThis cannot be undone.`)) return;
+  try {
+    const { error } = await sb.from('performance_reviews').delete().eq('id', reviewId);
+    if (error) throw error;
+    showToast('Review deleted ✅', 'success');
+    await refreshHistory();
+  } catch(e) {
+    showToast('Delete failed: ' + e.message, 'error');
+  }
+}
+
+// ── Edit: load saved review back into the form ─────────────────────
+async function editReview(reviewId) {
+  showToast('Loading review for editing…', 'info');
+  try {
+    const { data: r, error } = await sb.from('performance_reviews').select('*').eq('id', reviewId).single();
+    if (error) throw error;
+
+    // Mark state as editing this record (UPDATE not INSERT)
+    state.reviewId = r.id;
+
+    // Restore employee object from saved fields
+    const emp = {
+      id: r.employee_id,
+      name: r.employee_name,
+      position: r.employee_position,
+      department: r.department || r.employee_dept_raw,
+      is_management: (r.department||'').toLowerCase().includes('manag')
+    };
+    selectEmployee(emp);
+
+    // Restore review type
+    state.reviewType = r.review_type;
+    ['annual','coaching','progress'].forEach(t => {
+      const el = document.getElementById('rt-'+t);
+      if (el) el.classList.toggle('selected', t === r.review_type);
+    });
+
+    // Restore dates
+    if (r.review_date)  { const d = document.getElementById('reviewDate');    if(d) d.value = r.review_date; }
+    if (r.period_start) { const d = document.getElementById('periodStart');   if(d) d.value = r.period_start; }
+    if (r.period_end)   { const d = document.getElementById('periodEnd');     if(d) d.value = r.period_end; }
+
+    // Show config step
+    document.getElementById('stepReviewConfig').classList.remove('hidden');
+
+    // Restore responses into state
+    state.responses = { ...(r.responses || {}) };
+
+    // Restore prev review if probation
+    if (r.review_type === 'progress' && r.compared_review_id) {
+      document.getElementById('probationPrevSection').classList.remove('hidden');
+      await loadPreviousReviewsForEmployee(r.employee_id);
+      const sel = document.getElementById('probationPrevReviewId');
+      if (sel) {
+        sel.value = r.compared_review_id;
+        state.prevReviewData = await loadPreviousReviewData(r.compared_review_id);
+      }
+    }
+
+    // Build the form
+    await buildReviewForm();
+
+    // Re-inject all saved responses into inputs
+    const resp = r.responses || {};
+    Object.entries(resp).forEach(([key, val]) => {
+      // Rating circles
+      if (typeof val === 'number') {
+        const circles = document.querySelectorAll(`.rating-circle[data-qid="${key}"]`);
+        circles.forEach(c => {
+          c.classList.toggle('selected', parseInt(c.dataset.val) === val);
+        });
+        state.responses[key] = val;
+      }
+      // Textareas / comments
+      const ta = document.getElementById(key);
+      if (ta && typeof val === 'string') ta.value = val;
+    });
+
+    // Restore text fields (strengths, dev, goals, signatures)
+    const fieldMap = {
+      strengths: 'summaryStrengths', development: 'summaryDevelopment', goals: 'summaryGoals',
+      manager_sig_name: 'mgrSigName', manager_sig_title: 'mgrSigTitle',
+      employee_sig_name: 'empSigName'
+    };
+    Object.entries(fieldMap).forEach(([src, tgt]) => {
+      const el = document.getElementById(tgt);
+      if (el && r[src]) el.value = r[src];
+    });
+
+    // Coaching/probation extra fields
+    const extraFields = ['coaching-root-cause','coaching-prior-coaching','coaching-action-steps',
+      'coaching-support','coaching-timeline','coaching-consequences',
+      'probation-verdict','probation-improvements','probation-remaining','probation-next'];
+    extraFields.forEach(id => {
+      const el = document.getElementById(id);
+      const key = id.replace(/-/g,'_');
+      if (el && resp['text_' + key]) el.value = resp['text_' + key];
+      else if (el && resp[key]) el.value = resp[key];
+    });
+
+    // Recalculate analytics
+    updateAnalytics();
+
+    // Switch to performance tab and scroll to form
+    switchTab('performance');
+    setTimeout(() => {
+      const form = document.getElementById('reviewFormContainer');
+      if (form) form.scrollIntoView({ behavior:'smooth', block:'start' });
+    }, 200);
+
+    // Banner to signal edit mode
+    const existing = document.getElementById('editModeBanner');
+    if (!existing) {
+      const banner = document.createElement('div');
+      banner.id = 'editModeBanner';
+      banner.innerHTML = `<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:10px 16px;margin-bottom:14px;display:flex;align-items:center;gap:10px;font-size:13px;color:#92400e">
+        <span style="font-size:18px">✏️</span>
+        <span><strong>Edit Mode</strong> — Modifying existing review. When you submit, this record will be <strong>updated</strong>, not duplicated.</span>
+        <button onclick="resetForm();document.getElementById('editModeBanner')?.remove()" style="margin-left:auto;background:transparent;border:1px solid #d97706;color:#92400e;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer">Cancel Edit</button>
+      </div>`;
+      const form = document.getElementById('reviewFormContainer');
+      if (form) form.prepend(banner);
+    }
+
+    showToast('Review loaded for editing ✏️', 'success');
+  } catch(e) {
+    showToast('Could not load review: ' + e.message, 'error');
+  }
 }
 
 // Track current open review id for delete
