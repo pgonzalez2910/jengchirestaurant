@@ -1075,7 +1075,8 @@ const sb = _sbLib ? _sbLib.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
 let state = {
   employee: null, discEmployee: null, reviewType: null, reviewId: null,
-  responses: {}, charts: {}, empSigPad: null, mgrSigPad: null, allEmployees: []
+  responses: {}, charts: {}, empSigPad: null, mgrSigPad: null, allEmployees: [],
+  prevReviewData: null
 };
 
 // ═══ TEMPLATES ═══
@@ -1626,9 +1627,551 @@ const MGMT_ANNUAL = [
   }
 ];
 
+// ═══════════════════════════════════════════════════════════════════
+//  ROLE-SPECIFIC COACHING / IMPROVEMENT PLAN TEMPLATES
+//  Same categories as each Annual template — questions reworded from
+//  evaluation lens to coaching/improvement lens.
+//  Probation uses the same coaching template for its role.
+// ═══════════════════════════════════════════════════════════════════
+
 // ───────────────────────────────────────────────────────────────────
-//  COACHING / IMPROVEMENT PLAN TEMPLATE — 5 categories × 10 rating Qs
-//  Used when manager selects "Improvement / Coaching Plan" review type
+//  FOH COACHING — mirrors FOH_ANNUAL categories
+//  Server, Bartender, Cashier, Host, Busser
+// ───────────────────────────────────────────────────────────────────
+const FOH_COACHING = [
+  {
+    id: 'guest_service', title: 'Guest Service & Hospitality',
+    chartLabel: 'Guest Service',
+    desc: 'Identify gaps in guest interaction quality, complaint handling, table presence, and hospitality delivery',
+    questions: [
+      { id:'cf_gs1',  label:'Consistency of guest greeting — how reliably does this employee greet guests promptly, warmly, and personally at every table arrival' },
+      { id:'cf_gs2',  label:'Ownership of guest complaints — how often does this employee attempt table-level resolution before escalating to management' },
+      { id:'cf_gs3',  label:'Proactive table monitoring — how frequently does this employee check on guests before they need to signal for attention' },
+      { id:'cf_gs4',  label:'Accuracy of wait time communication — how consistently does this employee quote realistic wait times without creating guest frustration' },
+      { id:'cf_gs5',  label:'Response to accessibility, dietary, or language barrier situations — how immediately and professionally does this employee take ownership' },
+      { id:'cf_gs6',  label:'Balanced section attentiveness — how well does this employee manage multiple tables simultaneously without any table feeling neglected' },
+      { id:'cf_gs7',  label:'Personalization of the guest experience — how often does this employee use dining occasion cues to create a memorable interaction unprompted' },
+      { id:'cf_gs8',  label:'Quality of guest farewell — how consistently does this employee close interactions with a genuine, unhurried invitation to return' },
+      { id:'cf_gs9',  label:'Service quality under pressure — how well does this employee maintain warmth and attentiveness during staffing-stretched rushes' },
+      { id:'cf_gs10', label:'Guest complaint record — rate the frequency of guest complaints attributable to this employee\'s attitude or inattentiveness during this coaching period' },
+      { id:'cf_gs_c', label:'Coaching notes on Guest Service & Hospitality (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'menu_knowledge', title: 'Menu Knowledge & Revenue Building',
+    chartLabel: 'Menu Knowledge',
+    desc: 'Identify gaps in product knowledge, allergen communication, and ability to drive check average',
+    questions: [
+      { id:'cf_mk1',  label:'Depth of menu knowledge — how confidently does this employee describe preparation methods, ingredients, and flavor profiles without referencing printed materials' },
+      { id:'cf_mk2',  label:'Allergen accuracy — how reliably does this employee identify allergen-free items without guessing or giving uncertain answers to guests' },
+      { id:'cf_mk3',  label:'Beverage pairing knowledge — how effectively does this employee recommend pairings with contextual flavor knowledge rather than personal preference' },
+      { id:'cf_mk4',  label:'Upsell technique — how naturally does this employee suggest appetizers, premium proteins, and desserts at the right moment without it feeling like a sales pitch' },
+      { id:'cf_mk5',  label:'Modification knowledge — how accurately does this employee communicate what can and cannot be modified before an order is placed' },
+      { id:'cf_mk6',  label:'86 communication — how proactively does this employee communicate unavailable items to guests before they order' },
+      { id:'cf_mk7',  label:'Current menu awareness — how readily does this employee answer questions about seasonal changes and limited-time offerings without checking the menu board' },
+      { id:'cf_mk8',  label:'Check average contribution — how actively does this employee use menu knowledge to drive revenue through confident, non-pressured recommendations' },
+      { id:'cf_mk9',  label:'Off-menu request handling — how accurately does this employee represent what the kitchen can and cannot accommodate without over-promising' },
+      { id:'cf_mk10', label:'Pre-shift knowledge application — how visibly does this employee apply pre-shift tasting and briefing information during service, not just when observed by management' },
+      { id:'cf_mk_c', label:'Coaching notes on Menu Knowledge & Revenue Building (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'operations', title: 'POS Accuracy & Operational Standards',
+    chartLabel: 'Operations',
+    desc: 'Identify gaps in order accuracy, cash handling, side work compliance, and safety adherence',
+    questions: [
+      { id:'cf_op1',  label:'POS accuracy — how frequently does this employee enter orders with correct modifiers, seat numbers, and course timing without errors' },
+      { id:'cf_op2',  label:'Cash handling accuracy — how consistently does this employee close their drawer with zero variance and no unexplained shortages or overages' },
+      { id:'cf_op3',  label:'Authorization compliance — how reliably does this employee route voids, comps, and discounts through proper approval channels without bypassing protocol' },
+      { id:'cf_op4',  label:'Allergen modification documentation — how consistently does this employee enter all allergen modifications through the POS rather than communicating verbally' },
+      { id:'cf_op5',  label:'Table management adherence — how accurately does this employee follow the seating rotation system without creating section overloads or skipped turns' },
+      { id:'cf_op6',  label:'Responsible alcohol service — how proactively does this employee identify at-risk guests and involve management before an incident occurs' },
+      { id:'cf_op7',  label:'Side work completion — how reliably does this employee complete all assigned opening, side, and closing duties accurately within the allotted timeframe' },
+      { id:'cf_op8',  label:'Uniform and hygiene standards — how consistently does this employee maintain appearance standards at shift start and end without reminders' },
+      { id:'cf_op9',  label:'Floor cleanliness ownership — how promptly does this employee address spills and service station cleanliness throughout the shift rather than deferring to shift end' },
+      { id:'cf_op10', label:'Safe service technique — how consistently does this employee use correct safety and ergonomic technique for tray service, plate placement, and tableside tasks' },
+      { id:'cf_op_c', label:'Coaching notes on POS Accuracy & Operational Standards (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'teamwork', title: 'Teamwork & Floor Communication',
+    chartLabel: 'Teamwork',
+    desc: 'Identify gaps in cross-section collaboration, kitchen communication, and team support behavior',
+    questions: [
+      { id:'cf_tw1',  label:'Voluntary team support — how often does this employee run food, bus tables, or refill water in other sections during peak service without being directed' },
+      { id:'cf_tw2',  label:'Proactive kitchen communication — how consistently does this employee alert the kitchen expeditor about timing concerns before guests notice a delay' },
+      { id:'cf_tw3',  label:'Shift handoff quality — how completely does this employee communicate open check status, table needs, and VIP information to incoming staff' },
+      { id:'cf_tw4',  label:'Colleague support — how reliably does this employee cover steps for struggling team members without creating an embarrassing dynamic' },
+      { id:'cf_tw5',  label:'Conflict management — how consistently does this employee maintain a calm, solution-focused tone during disagreements without escalating floor tension' },
+      { id:'cf_tw6',  label:'Pre-shift information retention — how consistently does this employee apply daily specials, VIP notes, and operational updates during service' },
+      { id:'cf_tw7',  label:'Host team coordination — how accurately does this employee align with the host team on wait times to ensure guests receive consistent information' },
+      { id:'cf_tw8',  label:'Coverage acceptance — how willingly does this employee take on additional tables when a teammate calls out without creating management-level resistance' },
+      { id:'cf_tw9',  label:'Side work equity — how fairly does this employee share side work assignments without cherry-picking easy tasks and leaving difficult duties to colleagues' },
+      { id:'cf_tw10', label:'Team conflict history — rate the frequency of teammate complaints about fairness, communication, or shift cooperation involving this employee this period' },
+      { id:'cf_tw_c', label:'Coaching notes on Teamwork & Floor Communication (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'professionalism', title: 'Professionalism & Brand Standards',
+    chartLabel: 'Professionalism',
+    desc: 'Identify gaps in personal conduct, brand representation, and feedback responsiveness',
+    questions: [
+      { id:'cf_pr1',  label:'Shift readiness — how consistently does this employee arrive in full uniform and guest-ready at shift start rather than preparing after clocking in' },
+      { id:'cf_pr2',  label:'Phone policy compliance — how reliably does this employee maintain a device-free presence during active service hours' },
+      { id:'cf_pr3',  label:'Error ownership — how consistently does this employee take responsibility for order mistakes without deflecting blame to the kitchen, POS, or colleagues in front of guests' },
+      { id:'cf_pr4',  label:'Management conflict handling — how reliably does this employee address disagreements through proper post-service channels without creating floor tension during a shift' },
+      { id:'cf_pr5',  label:'Brand representation — how consistently does this employee represent Jeng Chi positively and avoid sharing internal issues with guests or on social media' },
+      { id:'cf_pr6',  label:'Confidentiality — how reliably does this employee refrain from discussing compensation, disputes, or internal operations with guests or non-staff' },
+      { id:'cf_pr7',  label:'Feedback response — how visibly does this employee translate performance feedback into behavioral change within the current coaching period rather than just acknowledging it' },
+      { id:'cf_pr8',  label:'Guest conduct management — how consistently does this employee maintain professional composure with difficult, intoxicated, or unreasonable guests' },
+      { id:'cf_pr9',  label:'Unobserved behavior standards — how consistently does this employee maintain the same professional standard when management is not actively watching' },
+      { id:'cf_pr10', label:'HR documentation history — rate the absence of conduct-related corrective conversations or HR documentation involving this employee this coaching period' },
+      { id:'cf_pr_c', label:'Coaching notes on Professionalism & Brand Standards (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'reliability', title: 'Reliability & Attendance',
+    chartLabel: 'Reliability',
+    desc: 'Identify gaps in punctuality, scheduling compliance, and team dependability',
+    questions: [
+      { id:'cf_re1',  label:'Tardiness frequency — how often has this employee arrived late or failed to meet the pre-shift ready standard during this coaching period' },
+      { id:'cf_re2',  label:'Absence notification quality — how consistently does this employee provide adequate advance notice rather than same-day or last-minute call-outs' },
+      { id:'cf_re3',  label:'Coverage reciprocity — how fairly does this employee cover for teammates relative to how often they request coverage from others' },
+      { id:'cf_re4',  label:'Full shift completion — how reliably does this employee complete all duties through end of service without premature side-work starts or early release requests' },
+      { id:'cf_re5',  label:'Schedule swap abuse — how often does this employee request changes after the confirmed weekly schedule in a pattern that disrupts planning' },
+      { id:'cf_re6',  label:'Timekeeping accuracy — how consistently are this employee\'s clock-in/out records free of early punches, discrepancies, or unexplained timecard issues' },
+      { id:'cf_re7',  label:'Break compliance — how reliably does this employee return from breaks on time without requiring management to locate them during service' },
+      { id:'cf_re8',  label:'Availability alignment — how well does this employee\'s availability match the restaurant\'s operational needs rather than only personal convenience' },
+      { id:'cf_re9',  label:'No-call/no-show record — rate the absence of no-call/no-show events involving this employee during this coaching period' },
+      { id:'cf_re10', label:'Overall dependability — how confidently can management schedule this employee without building in contingency plans for potential absence' },
+      { id:'cf_re_c', label:'Coaching notes on Reliability & Attendance (optional)', type:'textarea' }
+    ]
+  }
+];
+
+// ───────────────────────────────────────────────────────────────────
+//  LINE COOK / WOK CHEF COACHING — mirrors LINE_COOK_TEMPLATE
+// ───────────────────────────────────────────────────────────────────
+const LINE_COOK_COACHING = [
+  {
+    id: 'station_mastery', title: 'Station Mastery & Execution',
+    chartLabel: 'Station Mastery',
+    desc: 'Identify gaps in recipe execution, plate consistency, mise en place, and station capability',
+    questions: [
+      { id:'cl_sm1',  label:'Recipe execution from memory — how confidently does this cook execute all assigned dishes at full speed without needing to reference recipe cards during service' },
+      { id:'cl_sm2',  label:'Plate-to-plate consistency — how reliably does this cook achieve identical portion size, sauce placement, and garnish between the first and last cover of the night' },
+      { id:'cl_sm3',  label:'Station output pace — how often does this cook\'s station performance cause the line to stall or the pass to back up at maximum ticket volume' },
+      { id:'cl_sm4',  label:'Allergy modification execution — how consistently does this cook handle allergy modifications with dedicated pans, clean tongs, and zero cross-contact without reminders' },
+      { id:'cl_sm5',  label:'Multi-component ticket handling — how smoothly does this cook transition between proteins on multi-component tickets without confusion, delay, or quality drop' },
+      { id:'cl_sm6',  label:'Mise en place maintenance — how reliably does this cook maintain full station capacity throughout service without running short on prepped product without warning' },
+      { id:'cl_sm7',  label:'Technique proficiency — how consistently does this cook demonstrate professional-level wok technique, fire management, or flat-top control at their station' },
+      { id:'cl_sm8',  label:'Cross-station capability — how effectively does this cook work a second station during peak times or staff shortages without a measurable quality or speed decline' },
+      { id:'cl_sm9',  label:'Quality self-monitoring — how consistently does this cook reject and re-fire substandard plates independently before they reach expo' },
+      { id:'cl_sm10', label:'Ticket flow coordination — how well does this cook understand their role in the full ticket flow and adjust firing pace to coordinate with adjacent stations and expo' },
+      { id:'cl_sm_c', label:'Coaching notes on Station Mastery & Execution (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'food_safety', title: 'Food Safety & Temperature Control',
+    chartLabel: 'Food Safety',
+    desc: 'Identify gaps in temperature verification, cross-contamination prevention, and FIFO discipline',
+    questions: [
+      { id:'cl_fs1',  label:'Internal temperature verification — how consistently does this cook verify all proteins reach minimum safe temperature using a calibrated thermometer rather than estimating by touch or color' },
+      { id:'cl_fs2',  label:'Hot holding compliance — how reliably does this cook hold hot items at or above 140°F and log temperatures every two hours without undocumented holding periods' },
+      { id:'cl_fs3',  label:'Cross-contamination prevention — how consistently does this cook use dedicated color-coded utensils and surfaces for each protein category' },
+      { id:'cl_fs4',  label:'Product rejection discipline — how reliably does this cook remove and immediately report any product that fails a temperature check, smell test, or visual inspection' },
+      { id:'cl_fs5',  label:'Thawing procedure compliance — how consistently does this cook follow correct thawing procedures rather than using room temperature or hot water methods' },
+      { id:'cl_fs6',  label:'Labeling discipline — how reliably does this cook label all prepped items with product name, prep date, and use-by date within 5 minutes of storage' },
+      { id:'cl_fs7',  label:'FIFO rotation — how consistently does this cook apply correct first-in, first-out rotation with no exceptions during prep assembly or plating' },
+      { id:'cl_fs8',  label:'Raw and ready-to-eat separation — how reliably does this cook maintain raw protein separation from ready-to-eat items at the station and in cold storage' },
+      { id:'cl_fs9',  label:'Hand hygiene compliance — how consistently does this cook wash hands and change gloves correctly between raw proteins and ready-to-eat items every time' },
+      { id:'cl_fs10', label:'Food safety incident record — rate the absence of food safety violations, temperature log discrepancies, or health inspection findings this coaching period' },
+      { id:'cl_fs_c', label:'Coaching notes on Food Safety & Temperature Control (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'ticket_speed', title: 'Speed, Timing & Ticket Management',
+    chartLabel: 'Ticket Speed',
+    desc: 'Identify gaps in ticket time consistency, board reading, simultaneous firing, and rush recovery',
+    questions: [
+      { id:'cl_ts1',  label:'Ticket time consistency — how reliably does this cook maintain ticket times within the 8–12 minute standard during both slow and full-house peak service' },
+      { id:'cl_ts2',  label:'Proactive board reading — how consistently does this cook begin preparation before a ticket is called rather than waiting for the expeditor to call it twice' },
+      { id:'cl_ts3',  label:'Simultaneous component firing — how accurately does this cook fire all components of a multi-item ticket so that every item is ready at the same time' },
+      { id:'cl_ts4',  label:'86 communication speed — how promptly does this cook call an 86 to expo and FOH management the moment an item is at risk of running out' },
+      { id:'cl_ts5',  label:'Rush pace management — how effectively does this cook increase personal pace during a rush without sacrificing temperature standards, portioning, or presentation quality' },
+      { id:'cl_ts6',  label:'Status communication accuracy — how consistently does this cook call out plate status to expo without requiring expo to chase every ticket for a status update' },
+      { id:'cl_ts7',  label:'Error recovery speed — how efficiently does this cook re-fire a corrected dish within the station\'s recovery standard without derailing the rest of the ticket queue' },
+      { id:'cl_ts8',  label:'Ticket queue independence — how reliably does this cook manage a backed-up queue during a rush without allowing a single ticket to cascade into a broader station shutdown' },
+      { id:'cl_ts9',  label:'Extended cook time communication — how consistently does this cook communicate a realistic extended time to expo when an unusually long-cooking item impacts course timing' },
+      { id:'cl_ts10', label:'Guest wait time complaint record — rate the absence of guest complaints related to food wait time attributable to this cook\'s station during this coaching period' },
+      { id:'cl_ts_c', label:'Coaching notes on Speed, Timing & Ticket Management (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'kitchen_teamwork', title: 'Kitchen Communication & Teamwork',
+    chartLabel: 'Kitchen Teamwork',
+    desc: 'Identify gaps in station callouts, shift handoffs, cross-station support, and professional conduct',
+    questions: [
+      { id:'cl_kt1',  label:'Safety callout compliance — how consistently does this cook call "behind," "sharp," and "corner" every single time when moving through a busy kitchen' },
+      { id:'cl_kt2',  label:'Station handoff quality — how completely does this cook communicate 86\'d items, low prep, and equipment issues to the incoming cook rather than to management' },
+      { id:'cl_kt3',  label:'Cross-station support — how willingly does this cook step in to assist a struggling station during a gap in their own ticket flow rather than idling' },
+      { id:'cl_kt4',  label:'Redirection acceptance — how professionally does this cook accept redirection from the expeditor or sous chef during service without visible frustration or pushback' },
+      { id:'cl_kt5',  label:'Focus during service — how consistently does this cook avoid side conversations that pull mental focus from the station during an active ticket rush' },
+      { id:'cl_kt6',  label:'Dish return professionalism — how consistently does this cook maintain a calm, professional tone when a dish is returned without creating kitchen drama or blaming FOH' },
+      { id:'cl_kt7',  label:'FOH interaction quality — how professionally does this cook interact with servers during plate pickup without sarcasm, dismissiveness, or creating kitchen-FOH tension' },
+      { id:'cl_kt8',  label:'Equipment failure escalation — how promptly does this cook report equipment failures to the chef rather than quietly working around them during service' },
+      { id:'cl_kt9',  label:'Post-shift breakdown contribution — how equitably does this cook participate in breakdown and cleaning so the station is fully ready for the opening crew' },
+      { id:'cl_kt10', label:'Teamwork complaint record — rate the absence of kitchen teamwork complaints, teammate conflicts, or conduct escalations involving this cook this coaching period' },
+      { id:'cl_kt_c', label:'Coaching notes on Kitchen Communication & Teamwork (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'safety_standards', title: 'OSHA Safety & Workplace Standards',
+    chartLabel: 'Safety Standards',
+    desc: 'Identify gaps in PPE use, knife safety, burn prevention, and hazard reporting',
+    questions: [
+      { id:'cl_ss1',  label:'PPE compliance — how consistently does this cook wear required cut-resistant gloves, slip-resistant shoes, and burn-protection attire without exception' },
+      { id:'cl_ss2',  label:'Injury and near-miss record — rate the absence of recordable workplace injuries or documented near-miss incidents involving this cook this coaching period' },
+      { id:'cl_ss3',  label:'Knife selection discipline — how reliably does this cook use the correct knife for each task rather than improvised substitutions that increase injury risk' },
+      { id:'cl_ss4',  label:'Knife storage compliance — how consistently does this cook store knives in designated magnetic strips, knife rolls, or sheaths — never loose in a sink or on a shelf uncovered' },
+      { id:'cl_ss5',  label:'Hot equipment handling — how consistently does this cook handle all hot pans and sheet pans with dry towels or heat-rated gloves rather than bare hands or wet cloths' },
+      { id:'cl_ss6',  label:'Stacking and storage safety — how reliably does this cook avoid creating falling hazards with stacked sheet pans, equipment, or supply boxes in storage areas' },
+      { id:'cl_ss7',  label:'Spill response immediacy — how promptly does this cook address floor spills and wet surfaces at their station rather than leaving hazards for end-of-shift cleanup' },
+      { id:'cl_ss8',  label:'Safety briefing engagement — how actively does this cook participate in monthly safety briefings and retain the topics covered' },
+      { id:'cl_ss9',  label:'Emergency equipment location knowledge — how reliably can this cook locate the fire suppression pull station, eyewash station, and first aid kit in under 30 seconds' },
+      { id:'cl_ss10', label:'Unsafe condition reporting — how promptly does this cook report any unsafe condition to management within the same shift it is observed' },
+      { id:'cl_ss_c', label:'Coaching notes on OSHA Safety & Workplace Standards (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'reliability', title: 'Reliability & Attendance',
+    chartLabel: 'Reliability',
+    desc: 'Identify gaps in station readiness, attendance, certification status, and team dependability',
+    questions: [
+      { id:'cl_re1',  label:'Station readiness at shift start — how consistently does this cook arrive in full kitchen uniform and is physically at their station by scheduled start time' },
+      { id:'cl_re2',  label:'Tardiness frequency — how often has this cook arrived late during this coaching period, creating immediate station coverage risk' },
+      { id:'cl_re3',  label:'Advance notice of conflicts — how consistently does this cook communicate shift conflicts to the chef at least 4 hours before the shift begins' },
+      { id:'cl_re4',  label:'No-call/no-show record — rate the absence of no-call/no-show events during this coaching period' },
+      { id:'cl_re5',  label:'Station departure protocol — how consistently does this cook notify expo or the chef and receive an explicit coverage handoff before stepping away from the station during service' },
+      { id:'cl_re6',  label:'Break return compliance — how reliably does this cook return from breaks on time and ready to produce without the chef needing to locate them during a service rush' },
+      { id:'cl_re7',  label:'Food handler certification status — how current is this cook\'s food handler certification and how proactively was it renewed without a management reminder' },
+      { id:'cl_re8',  label:'Coverage reciprocity — how fairly does this cook cover kitchen shifts for teammates relative to how often they request coverage themselves' },
+      { id:'cl_re9',  label:'Early release frequency — how often does this cook request early release during non-emergency circumstances beyond the acceptable once-per-quarter standard' },
+      { id:'cl_re10', label:'Overall scheduling dependability — how confidently can the chef schedule this cook without building in contingency plans for potential absence' },
+      { id:'cl_re_c', label:'Coaching notes on Reliability & Attendance (optional)', type:'textarea' }
+    ]
+  }
+];
+
+// ───────────────────────────────────────────────────────────────────
+//  KITCHEN PRODUCTION COACHING — mirrors KITCHEN_PROD_TEMPLATE
+//  Kitchen Prep, Prep Cook, Dumpling Maker, Pastry Chef
+// ───────────────────────────────────────────────────────────────────
+const KITCHEN_PROD_COACHING = [
+  {
+    id: 'production_quality', title: 'Production Quality & Recipe Adherence',
+    chartLabel: 'Production Quality',
+    desc: 'Identify gaps in batch consistency, recipe fidelity, output specification, and quality self-inspection',
+    questions: [
+      { id:'ck_pq1',  label:'Batch consistency — how reliably does this employee produce items that meet the restaurant\'s size, weight, and appearance standards within the specified tolerance' },
+      { id:'ck_pq2',  label:'Recipe adherence — how consistently does this employee follow written recipes exactly without improvising ingredients, ratios, or technique without chef approval' },
+      { id:'ck_pq3',  label:'Quality self-inspection — how regularly does this employee taste, measure, and visually inspect production items before labeling and storing them' },
+      { id:'ck_pq4',  label:'Quantity accuracy — how reliably does this employee produce the correct quantities per the daily production sheet without over- or under-prepping without communication' },
+      { id:'ck_pq5',  label:'Specialty item specification — how consistently does this employee produce specialty items (dumplings, pastry, noodles) within the 3% weight and size variance standard' },
+      { id:'ck_pq6',  label:'Visual output consistency — how reliably does this employee produce visually uniform batches with no variation in thickness, shape, or portion from first to last piece' },
+      { id:'ck_pq7',  label:'Raw material rejection discipline — how consistently does this employee identify and remove substandard raw materials before they enter the production process' },
+      { id:'ck_pq8',  label:'Correct equipment and technique use — how reliably does this employee use the appropriate equipment and method for every prep task without improvised substitutions' },
+      { id:'ck_pq9',  label:'Production priority sequencing — how accurately does this employee complete prep list items in the correct order of service priority, starting with high-demand items' },
+      { id:'ck_pq10', label:'Pre-production issue communication — how consistently does this employee flag recipe discrepancies or ingredient quality concerns to the chef before beginning production' },
+      { id:'ck_pq_c', label:'Coaching notes on Production Quality & Recipe Adherence (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'food_safety_storage', title: 'Food Safety & Storage Standards',
+    chartLabel: 'Food Safety',
+    desc: 'Identify gaps in labeling, cold storage, allergen separation, FIFO rotation, and cool-down logging',
+    questions: [
+      { id:'ck_fs1',  label:'Labeling compliance — how consistently does this employee label all stored product with name, prep date, prep time, and use-by date within 5 minutes of storage' },
+      { id:'ck_fs2',  label:'Protein shelf placement — how reliably does this employee store raw proteins on the lowest shelves of the walk-in and reach-in below all produce and ready-to-eat items' },
+      { id:'ck_fs3',  label:'Allergen separation — how consistently does this employee store allergen-containing ingredients in dedicated, labeled containers separated from non-allergen product' },
+      { id:'ck_fs4',  label:'FIFO rotation discipline — how accurately does this employee apply first-in, first-out rotation every time a new batch is produced' },
+      { id:'ck_fs5',  label:'Expired product action — how promptly does this employee discard product past its use-by date or showing spoilage rather than attempting to use it up' },
+      { id:'ck_fs6',  label:'Surface sanitation between products — how consistently does this employee sanitize cutting boards and prep surfaces between each different product type and allergen run' },
+      { id:'ck_fs7',  label:'Cool-down logging — how reliably does this employee document the cool-down period for cooked items following the rapid chill standard' },
+      { id:'ck_fs8',  label:'Receiving inspection — how consistently does this employee inspect, temperature-check, condition-log, and store all received deliveries within 30 minutes of arrival' },
+      { id:'ck_fs9',  label:'Cooler temperature maintenance — how reliably does this employee keep coolers at or below 41°F and avoid storing product in warm zones without justification' },
+      { id:'ck_fs10', label:'Food safety incident record — rate the absence of food safety violations, inspection findings, or spoilage incidents attributable to this employee this coaching period' },
+      { id:'ck_fs_c', label:'Coaching notes on Food Safety & Storage Standards (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'efficiency_yield', title: 'Prep Efficiency & Yield Control',
+    chartLabel: 'Efficiency & Yield',
+    desc: 'Identify gaps in prep list completion timing, trim waste management, yield ratios, and production pace',
+    questions: [
+      { id:'ck_ey1',  label:'Prep list on-time completion — how consistently does this employee finish all assigned prep items before the service period begins without chef follow-up or task reassignment' },
+      { id:'ck_ey2',  label:'Trim and waste management — how accurately does this employee reserve usable trim for secondary use and correctly discard unusable waste without ambiguous storage' },
+      { id:'ck_ey3',  label:'Yield ratio achievement — how consistently does this employee meet the recipe\'s expected yield ratio within the acceptable cost variance for their position' },
+      { id:'ck_ey4',  label:'Setup and breakdown efficiency — how quickly does this employee set up and break down the prep station without wasting time locating tools or gathering equipment' },
+      { id:'ck_ey5',  label:'Production pace — how consistently does this employee complete production at the restaurant\'s documented pace standard without requiring overtime for a slow work pace' },
+      { id:'ck_ey6',  label:'Par level management — how reliably does this employee keep freezer and cooler par levels above the service minimum with advance notice to the chef when stock is low' },
+      { id:'ck_ey7',  label:'Batch scaling accuracy — how correctly does this employee scale up batch recipes when volume demands change without ratio errors or miscalculations' },
+      { id:'ck_ey8',  label:'Measurement independence — how consistently does this employee execute measurements for standard recipe items independently without repeated verification after training' },
+      { id:'ck_ey9',  label:'Workflow improvement communication — how proactively does this employee identify and communicate prep workflow inefficiencies to the chef rather than silently working around them' },
+      { id:'ck_ey10', label:'In-session organization — how consistently does this employee maintain labeled, organized prep containers throughout the production session without waiting until end of shift' },
+      { id:'ck_ey_c', label:'Coaching notes on Prep Efficiency & Yield Control (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'coordination', title: 'Production Coordination & Communication',
+    chartLabel: 'Coordination',
+    desc: 'Identify gaps in inventory alerts, handoff documentation, cross-team scheduling, and allergen escalation',
+    questions: [
+      { id:'ck_co1',  label:'Inventory shortage alert timing — how consistently does this employee communicate low inventory or ingredient shortages to the chef at least 2 hours before service' },
+      { id:'ck_co2',  label:'Prep log update discipline — how reliably does this employee update the prep list status board as each item is completed so teammates can read current status without asking' },
+      { id:'ck_co3',  label:'Receiving coordination — how effectively does this employee coordinate production timing with the receiving team to prevent delivery processing from contaminating an active production surface' },
+      { id:'ck_co4',  label:'Quota shortfall notification — how proactively does this employee notify the chef when a production quota cannot be achieved within the scheduled window — before it becomes a crisis' },
+      { id:'ck_co5',  label:'Pre-production clarification — how consistently does this employee ask clarifying questions before starting a new, modified, or unfamiliar recipe rather than guessing and proceeding' },
+      { id:'ck_co6',  label:'Allergen risk escalation — how immediately does this employee stop production and escalate to the chef or production manager when a cross-contamination risk arises' },
+      { id:'ck_co7',  label:'Shift handoff specificity — how usable are this employee\'s handoff notes — covering what was prepped, what remains, and what product is near expiration — versus a vague verbal summary' },
+      { id:'ck_co8',  label:'Service consumption awareness — how proactively does this employee communicate with line cooks to understand consumption rates and adjust production volume accordingly' },
+      { id:'ck_co9',  label:'Log and record completion — how consistently does this employee document production batches, temperature checks, and waste events without needing reminders' },
+      { id:'ck_co10', label:'Equipment malfunction reporting — how promptly does this employee report equipment malfunctions to management within the same shift rather than the following day' },
+      { id:'ck_co_c', label:'Coaching notes on Production Coordination & Communication (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'work_standards', title: 'Work Standards & Initiative',
+    chartLabel: 'Work Standards',
+    desc: 'Identify gaps in quality ownership, self-direction, cost awareness, equipment care, and improvement mindset',
+    questions: [
+      { id:'ck_ws1',  label:'Production pride — how consistently does this employee treat every batch as if it will be reviewed by the chef, regardless of whether the chef is present during production' },
+      { id:'ck_ws2',  label:'Self-directed initiative — how often does this employee identify unassigned prep tasks during downtime and begin them without waiting to be directed' },
+      { id:'ck_ws3',  label:'Production priority awareness — how consistently does this employee plan their work session around prep-intensive menu items without needing to be told what to prioritize' },
+      { id:'ck_ws4',  label:'Skill development responsiveness — how quickly does this employee apply chef corrections and pursue new production techniques without requiring repeated instruction' },
+      { id:'ck_ws5',  label:'Equipment care — how proactively does this employee report equipment wear and tear rather than returning damaged tools without mention' },
+      { id:'ck_ws6',  label:'Work area organization — how consistently does this employee keep the production area organized throughout the shift without creating a cleanup burden for others or the opening crew' },
+      { id:'ck_ws7',  label:'Corrective action record — rate the absence of corrective conversations related to work quality, product waste, production shortcuts, or food cost overrun this coaching period' },
+      { id:'ck_ws8',  label:'Adaptability — how positively does this employee adapt when production priorities shift due to menu changes, catering additions, or unexpected demand' },
+      { id:'ck_ws9',  label:'Food cost awareness — how consistently does this employee avoid over-portioning, excess trim, and ingredient misuse that inflates the kitchen\'s cost percentage without adding value' },
+      { id:'ck_ws10', label:'Unsupervised performance — how consistently does this employee maintain quality output and work pace when chef supervision is temporarily reduced or absent' },
+      { id:'ck_ws_c', label:'Coaching notes on Work Standards & Initiative (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'reliability', title: 'Reliability & Attendance',
+    chartLabel: 'Reliability',
+    desc: 'Identify gaps in production readiness, attendance, certification, and scheduling dependability',
+    questions: [
+      { id:'ck_re1',  label:'Production readiness at shift start — how consistently does this employee arrive with equipment assembled, recipes reviewed, and ready to begin production at the scheduled start time' },
+      { id:'ck_re2',  label:'Absence frequency — how often has this employee missed a scheduled production shift without appropriate advance notice during this coaching period' },
+      { id:'ck_re3',  label:'Scheduling conflict notice — how consistently does this employee communicate conflicts with at least 24 hours notice rather than a same-day message that disrupts production planning' },
+      { id:'ck_re4',  label:'Food handler certification status — how current is this employee\'s certification and how proactively was it renewed without a management reminder' },
+      { id:'ck_re5',  label:'Mid-production departure protocol — how consistently does this employee communicate batch status to a supervisor and ensure product is secured before stepping away mid-production' },
+      { id:'ck_re6',  label:'On-schedule production completion — how reliably does this employee complete assigned volume within the scheduled shift window without requiring overtime' },
+      { id:'ck_re7',  label:'Break return compliance — how consistently does this employee return from breaks at the scheduled time without leaving production batches unattended for extended periods' },
+      { id:'ck_re8',  label:'Attendance and tardiness record — rate the absence of corrective action or HR documentation related to attendance or scheduling compliance this coaching period' },
+      { id:'ck_re9',  label:'Coverage reciprocity — how willingly does this employee cover production shifts for teammates without repeated refusal when schedules require adjustment' },
+      { id:'ck_re10', label:'Overall production dependability — how consistently is this employee viewed as a reliable production team member whose presence is treated as an operational asset' },
+      { id:'ck_re_c', label:'Coaching notes on Reliability & Attendance (optional)', type:'textarea' }
+    ]
+  }
+];
+
+// ───────────────────────────────────────────────────────────────────
+//  DISHWASHER COACHING — mirrors DISHWASHER_TEMPLATE
+// ───────────────────────────────────────────────────────────────────
+const DISHWASHER_COACHING = [
+  {
+    id: 'sanitation', title: 'Sanitation & Equipment Operation',
+    chartLabel: 'Sanitation',
+    desc: 'Identify gaps in machine cycle compliance, rinse temperature verification, and clean item inspection',
+    questions: [
+      { id:'cd_s1',  label:'Pre-scrape discipline — how consistently does this employee thoroughly pre-scrape all dishes, pans, and utensils before loading rather than relying on the machine cycle to remove food' },
+      { id:'cd_s2',  label:'Rack loading quality — how reliably does this employee load racks with items face-down and properly spaced without over-packing that prevents spray arms from reaching all surfaces' },
+      { id:'cd_s3',  label:'Temperature verification at shift start — how consistently does this employee verify wash water temperature is within the correct range before operating the machine' },
+      { id:'cd_s4',  label:'Sanitizing rinse logging — how reliably does this employee confirm and log that the sanitizing rinse reaches the minimum required temperature at the start and mid-point of every shift' },
+      { id:'cd_s5',  label:'Air-dry compliance — how consistently does this employee allow all washed items to fully air-dry before stacking or storage without towel-drying' },
+      { id:'cd_s6',  label:'Clean item inspection — how thoroughly does this employee inspect returned dishware for residue, debris, water spots, or clouding before releasing it to the kitchen line' },
+      { id:'cd_s7',  label:'Machine end-of-shift cleaning — how consistently does this employee clean the machine interior, spray arms, and filter at the end of every shift without leaving it dirty for the next operator' },
+      { id:'cd_s8',  label:'Clean/dirty separation discipline — how reliably does this employee prevent soiled incoming items from crossing into the clean staging area at any point during the shift' },
+      { id:'cd_s9',  label:'Clean dishware sorting accuracy — how correctly does this employee sort clean items into designated areas for plates, glassware, flatware, and cookware without mixing' },
+      { id:'cd_s10', label:'Machine malfunction reporting — how promptly does this employee report temperature failures, door gasket damage, spray arm clogs, or pump issues to the kitchen manager before a backlog develops' },
+      { id:'cd_s_c', label:'Coaching notes on Sanitation & Equipment Operation (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'chemical_safety', title: 'Chemical Handling & OSHA Safety',
+    chartLabel: 'Chemical Safety',
+    desc: 'Identify gaps in PPE use, SDS knowledge, spill response, dosage accuracy, and chemical storage',
+    questions: [
+      { id:'cd_c1',  label:'PPE compliance before chemical contact — how consistently does this employee put on rubber gloves and a waterproof apron before any contact with detergents or sanitizers' },
+      { id:'cd_c2',  label:'Chemical label verification — how reliably does this employee read dispenser labels before use and never substitute a chemical based on container color, location, or assumption' },
+      { id:'cd_c3',  label:'SDS knowledge — how quickly and accurately can this employee locate the Safety Data Sheets for all pit chemicals and identify key hazard and first-aid information when asked' },
+      { id:'cd_c4',  label:'Chemical replenishment safety — how consistently does this employee replenish dispensers following manufacturer instructions with the machine shut down and the correct procedure followed' },
+      { id:'cd_c5',  label:'Spill response procedure accuracy — how correctly does this employee follow the contain-neutralize-clean-report sequence when handling chemical spills' },
+      { id:'cd_c6',  label:'Chemical storage compliance — how consistently does this employee store all chemicals in the designated area, physically separated from food items, smallwares, and packaging' },
+      { id:'cd_c7',  label:'Chemical dosage discipline — how reliably does this employee avoid over-applying detergent or sanitizer to cut wash time, understanding the food safety risk of excess residue' },
+      { id:'cd_c8',  label:'Chemical safety training application — how accurately can this employee answer basic hazard communication questions during a health inspection or management check' },
+      { id:'cd_c9',  label:'Eyewash station readiness — how confidently can this employee locate and operate the emergency eyewash station and reach it from the dish pit in under 15 seconds' },
+      { id:'cd_c10', label:'PPE and chemical incident record — rate the absence of PPE violations, chemical exposure incidents, or chemical safety corrective conversations this coaching period' },
+      { id:'cd_c_c', label:'Coaching notes on Chemical Handling & OSHA Safety (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'efficiency', title: 'Throughput Efficiency & Floor Maintenance',
+    chartLabel: 'Efficiency',
+    desc: 'Identify gaps in clean dish supply, pot turnaround, floor safety, waste management, and end-of-shift completion',
+    questions: [
+      { id:'cd_e1',  label:'Clean dish supply consistency — how reliably does this employee maintain a steady supply of clean plates, glasses, and flatware so the kitchen line never runs out during peak service' },
+      { id:'cd_e2',  label:'High-demand item prioritization — how consistently does this employee turn plates and glasses before less critical smallwares during a rush so the line is never waiting' },
+      { id:'cd_e3',  label:'Self-directed workflow management — how reliably does this employee manage the dish pit independently without requiring constant direction from the chef to maintain acceptable throughput' },
+      { id:'cd_e4',  label:'Pot and pan turnaround — how actively does this employee manage soaking times so critical cookware is available for re-use before it is needed during service' },
+      { id:'cd_e5',  label:'Floor maintenance frequency — how consistently does this employee sweep and spot-mop the pit area at least twice per shift to prevent water, debris, and grease from reaching a slip-hazard level' },
+      { id:'cd_e6',  label:'Proactive dishware staging — how consistently does this employee stage clean dishware near the kitchen line in advance of a rush rather than reacting after the kitchen has run short' },
+      { id:'cd_e7',  label:'Proactive trash removal — how consistently does this employee manage trash removal before bins overflow rather than waiting to be told or until overflow occurs' },
+      { id:'cd_e8',  label:'Waste sorting accuracy — how correctly does this employee sort food scraps, recyclables, and grease into designated containers per the restaurant\'s waste management protocol' },
+      { id:'cd_e9',  label:'End-of-night breakdown timeliness — how consistently does this employee complete the full end-of-night pit breakdown within the restaurant\'s standard time window' },
+      { id:'cd_e10', label:'Service interruption record — rate the absence of service interruptions, line stalls, or documented complaints related to clean dishware availability this coaching period' },
+      { id:'cd_e_c', label:'Coaching notes on Throughput Efficiency & Floor Maintenance (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'reliability', title: 'Reliability & Kitchen Teamwork',
+    chartLabel: 'Reliability',
+    desc: 'Identify gaps in attendance, shift readiness, team collaboration, and consistent work ethic',
+    questions: [
+      { id:'cd_r1',  label:'Pit readiness at shift start — how consistently does this employee arrive in proper kitchen uniform and is gloved and fully set up at the dish pit by the scheduled shift start time' },
+      { id:'cd_r2',  label:'Tardiness and absence frequency — how often has this employee had unexcused absences or tardiness events during this coaching period that left the pit unable to self-run' },
+      { id:'cd_r3',  label:'Advance notice of inability to work — how consistently does this employee communicate inability to work with at least 4 hours advance notice so coverage can be arranged' },
+      { id:'cd_r4',  label:'Downtime productivity — how actively does this employee assist the kitchen team with floor sweeping, trash removal, and supply restocking during natural downtime between service rushes' },
+      { id:'cd_r5',  label:'Task reassignment acceptance — how willingly does this employee accept task reassignment from kitchen management without resistance or requiring repeated requests to adapt' },
+      { id:'cd_r6',  label:'Pit departure communication — how consistently does this employee inform the chef of their absence duration and what is in the machine when stepping away from the pit during service' },
+      { id:'cd_r7',  label:'End-of-shift breakdown self-initiation — how consistently does this employee begin the closing breakdown checklist without a manager having to prompt it' },
+      { id:'cd_r8',  label:'Cooperative kitchen conduct — how professionally does this employee work with line cooks and prep staff without creating tension around task assignments or perceived territory' },
+      { id:'cd_r9',  label:'Role pride and engagement — how consistently does this employee demonstrate genuine ownership of the dish pit role, understanding its direct impact on kitchen output' },
+      { id:'cd_r10', label:'Overall kitchen dependability — how reliably is this employee counted on as a positive, dependable presence by teammates and the kitchen manager when building the weekly schedule' },
+      { id:'cd_r_c', label:'Coaching notes on Reliability & Kitchen Teamwork (optional)', type:'textarea' }
+    ]
+  }
+];
+
+// ───────────────────────────────────────────────────────────────────
+//  MANAGEMENT COACHING — mirrors MGMT_ANNUAL
+// ───────────────────────────────────────────────────────────────────
+const MGMT_COACHING = [
+  {
+    id: 'leadership', title: 'Leadership & Team Development',
+    chartLabel: 'Leadership',
+    desc: 'Identify gaps in coaching quality, expectation setting, disciplinary consistency, and employee development',
+    questions: [
+      { id:'cm_ld1',  label:'Feedback timeliness — how consistently does this manager provide behavior-specific, actionable feedback to employees within 48 hours of an observed performance issue' },
+      { id:'cm_ld2',  label:'One-on-one coaching discipline — how regularly does this manager conduct documented one-on-one coaching sessions with each direct report with records filed in HR' },
+      { id:'cm_ld3',  label:'Priority communication clarity — how well does this manager set clear weekly priorities so employees can describe their top 3 performance expectations without asking' },
+      { id:'cm_ld4',  label:'Disruptive behavior intervention — how consistently does this manager address disruptive employee behavior through the correct progressive discipline channel without allowing it to persist' },
+      { id:'cm_ld5',  label:'Performance recognition specificity — how consistently does this manager recognize strong performance with specific, public behavioral examples rather than generic praise' },
+      { id:'cm_ld6',  label:'Employee development investment — how actively has this manager developed at least one team member through cross-training, expanded role, or a documented advancement path this period' },
+      { id:'cm_ld7',  label:'Pre-shift meeting quality — how consistently does this manager lead structured pre-shift meetings where specials, 86s, VIPs, and operational priorities are communicated before service' },
+      { id:'cm_ld8',  label:'Fairness and consistency — how consistently does this manager apply the same standards to every employee regardless of tenure, relationship, or personal rapport' },
+      { id:'cm_ld9',  label:'Conflict mediation directness — how reliably does this manager mediate employee conflicts with documentation rather than deferring every conflict to HR or ownership' },
+      { id:'cm_ld10', label:'Self-development openness — how actively does this manager seek feedback on their own performance from the team and from ownership rather than only directing feedback at others' },
+      { id:'cm_ld_c', label:'Coaching notes on Leadership & Team Development (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'operations', title: 'Operational Excellence',
+    chartLabel: 'Operations',
+    desc: 'Identify gaps in opening/closing reliability, real-time floor management, shift documentation, and standards enforcement',
+    questions: [
+      { id:'cm_op1',  label:'Opening reliability — how consistently does the restaurant open on time for every service period on days this manager is on duty with zero late openings' },
+      { id:'cm_op2',  label:'Real-time communication — how consistently does this manager communicate kitchen pace, FOH floor status, and live guest count to the BOH team throughout service' },
+      { id:'cm_op3',  label:'Floor walk documentation — how consistently does this manager conduct and document a floor walk at the start and end of every shift with findings communicated to the incoming manager' },
+      { id:'cm_op4',  label:'Labor deployment management — how accurately does this manager cut staff during slow periods and call in support before a rush becomes a staffing crisis' },
+      { id:'cm_op5',  label:'Operational issue escalation speed — how consistently does this manager escalate vendor issues, product quality problems, and equipment failures to ownership within the same shift' },
+      { id:'cm_op6',  label:'POS reporting utilization — how actively does this manager use POS data to identify void rate anomalies, comp trends, and server performance variances and take documented corrective action' },
+      { id:'cm_op7',  label:'Closing standards enforcement — how consistently does this manager ensure every team member completes the full closing duties checklist before being released without exception' },
+      { id:'cm_op8',  label:'Guest traffic management — how effectively does this manager manage the waitlist and lobby during peak hours to reduce walkouts and overcrowding complaints' },
+      { id:'cm_op9',  label:'Guest service failure recovery — how consistently does this manager resolve service failures swiftly and convert negative experiences before a guest leaves visibly dissatisfied without an attempt' },
+      { id:'cm_op10', label:'Shift standards record — rate the absence of shifts where the restaurant\'s brand and operational standards fell measurably below benchmark on any observable dimension this coaching period' },
+      { id:'cm_op_c', label:'Coaching notes on Operational Excellence (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'financial', title: 'Financial Awareness & Cost Control',
+    chartLabel: 'Financial',
+    desc: 'Identify gaps in food cost knowledge, labor management, inventory accuracy, and revenue contribution',
+    questions: [
+      { id:'cm_fi1',  label:'Food cost knowledge — how readily can this manager identify the restaurant\'s current food cost percentage and the top three contributors to cost variance without needing a report first' },
+      { id:'cm_fi2',  label:'Inventory count compliance — how consistently does this manager submit weekly inventory counts on schedule with zero skipped categories so ownership has accurate COGS data every week' },
+      { id:'cm_fi3',  label:'Comp and void authorization discipline — how reliably does this manager avoid approving comps, voids, or discounts above the policy threshold without proper authorization and written documentation' },
+      { id:'cm_fi4',  label:'Labor dollar monitoring — how accurately does this manager monitor daily cover counts against labor hours in real time to avoid ending a shift with unnecessary labor dollars spent' },
+      { id:'cm_fi5',  label:'Cost leak identification — how actively has this manager identified and eliminated at least one specific recurring cost leak with documented corrective action this period' },
+      { id:'cm_fi6',  label:'Employee meal tracking — how consistently does this manager ensure all employee meals, family meals, and staff discounts are logged and tracked every shift with zero untracked consumption' },
+      { id:'cm_fi7',  label:'Food cost variance explanation — how clearly can this manager explain the variance between theoretical and actual food cost in a business review meeting without preparation time' },
+      { id:'cm_fi8',  label:'Overtime prevention — how consistently does this manager avoid creating overtime hours attributable to poor schedule management or avoidable shift extensions this period' },
+      { id:'cm_fi9',  label:'Cost reduction contribution — how actively does this manager contribute cost reduction or revenue-building ideas in management meetings with prepared observations rather than general agreement' },
+      { id:'cm_fi10', label:'Purchase order coordination — how reliably does this manager coordinate with the Logistics Coordinator to align purchase orders with projected sales volume without over-ordering' },
+      { id:'cm_fi_c', label:'Coaching notes on Financial Awareness & Cost Control (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'compliance', title: 'Compliance & Policy Enforcement',
+    chartLabel: 'Compliance',
+    desc: 'Identify gaps in HR documentation timing, health inspection readiness, certification tracking, and labor law adherence',
+    questions: [
+      { id:'cm_co1',  label:'HR documentation timeliness — how consistently does this manager complete disciplinary actions, coaching summaries, and performance discussions within 48 hours rather than retroactively' },
+      { id:'cm_co2',  label:'Health inspection readiness — how consistently does this manager conduct a health department-ready kitchen walk at least once per week with documented findings' },
+      { id:'cm_co3',  label:'Policy enforcement consistency — how fairly does this manager enforce uniform, appearance, and phone policy across all employees without selective enforcement based on personal relationships' },
+      { id:'cm_co4',  label:'Certification tracking — how reliably does this manager ensure all team members hold current food handler and TABC certifications with no expired credentials on their roster' },
+      { id:'cm_co5',  label:'Investigation confidentiality — how completely does this manager contain workplace investigation information to necessary parties with no retaliation occurring on their watch' },
+      { id:'cm_co6',  label:'Hostile environment prevention — rate the absence of harassment, hostile environment, or retaliation situations created, permitted, or unreported by this manager this coaching period' },
+      { id:'cm_co7',  label:'Incident report filing timeliness — how consistently does this manager process workers\' compensation claims, incident reports, and injury documentation within the state-required filing timeline' },
+      { id:'cm_co8',  label:'Timekeeping accuracy — how reliably does this manager ensure timekeeping records are accurate on their shifts with no unapproved clock modifications or unexplained irregularities' },
+      { id:'cm_co9',  label:'Regulatory update communication — how promptly does this manager communicate labor law and health code updates to the team within one week of being informed' },
+      { id:'cm_co10', label:'Employee relations complaint record — rate the absence of pending or unresolved employee relations complaints attributable to this manager\'s conduct or decisions this coaching period' },
+      { id:'cm_co_c', label:'Coaching notes on Compliance & Policy Enforcement (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'guest_experience', title: 'Guest Experience Oversight',
+    chartLabel: 'Guest Experience',
+    desc: 'Identify gaps in table touches, review management, service pattern monitoring, and recovery standards',
+    questions: [
+      { id:'cm_ge1',  label:'Table touch frequency — how consistently does this manager personally visit a minimum of 3 tables per shift for a genuine mid-meal check-in rather than only touching tables at the host stand' },
+      { id:'cm_ge2',  label:'Online review response timeliness — how consistently does this manager respond to Google and Yelp reviews within 72 hours with professional, brand-appropriate responses to negative reviews' },
+      { id:'cm_ge3',  label:'FOH coaching specificity — how consistently does this manager coach FOH staff with specific behavioral examples observed during service rather than vague directives like "be more attentive"' },
+      { id:'cm_ge4',  label:'Recurring complaint pattern resolution — how proactively does this manager identify and resolve service patterns causing recurring complaints before they generate additional public reviews' },
+      { id:'cm_ge5',  label:'Regular guest relationship maintenance — how well does this manager know the names, preferences, and visit frequency of the top 5 regular or high-value guests without needing to look at a file' },
+      { id:'cm_ge6',  label:'Physical environment monitoring — how consistently does this manager monitor music volume, table cleanliness, restroom condition, and ambient temperature at least twice per service period' },
+      { id:'cm_ge7',  label:'Recovery root cause documentation — how consistently does this manager follow every comp or recovery action with a documented root cause note rather than closing it out without investigation' },
+      { id:'cm_ge8',  label:'Guest satisfaction metric tracking — how actively does this manager track a specific guest satisfaction metric and report it to ownership monthly with context and recommendations' },
+      { id:'cm_ge9',  label:'Feedback communication to team — how specifically does this manager communicate recurring guest feedback themes to culinary and FOH teams with actionable proposals' },
+      { id:'cm_ge10', label:'Guest-first culture modeling — how consistently does the team observe this manager prioritize a guest-positive outcome over operational convenience as a visible leadership behavior' },
+      { id:'cm_ge_c', label:'Coaching notes on Guest Experience Oversight (optional)', type:'textarea' }
+    ]
+  },
+  {
+    id: 'strategic', title: 'Strategic Thinking & Organizational Growth',
+    chartLabel: 'Strategic',
+    desc: 'Identify gaps in process improvement execution, business acumen, succession planning, and long-term contribution',
+    questions: [
+      { id:'cm_st1',  label:'Process improvement execution — how recently has this manager completed a documented process improvement initiative that produced a measurable operational or financial outcome' },
+      { id:'cm_st2',  label:'Data-driven meeting preparation — how consistently does this manager review current operational data before management meetings and arrive with specific findings rather than general opinions' },
+      { id:'cm_st3',  label:'Competitive awareness activity — how recently has this manager visited a competitor restaurant and provided ownership with a written observation summary' },
+      { id:'cm_st4',  label:'Succession planning contribution — how actively does this manager cross-train high-potential team members in management-adjacent responsibilities' },
+      { id:'cm_st5',  label:'Revenue initiative generation — how consistently does this manager propose revenue-building initiatives per review period with a projected ROI before seeking approval' },
+      { id:'cm_st6',  label:'Crisis leadership composure — how effectively does this manager demonstrate calm, decisive leadership during major operational crises to prevent escalation to ownership' },
+      { id:'cm_st7',  label:'Industry knowledge engagement — how recently has this manager engaged with industry content and applied an insight to their management practice' },
+      { id:'cm_st8',  label:'Team retention investment — how proactively does this manager monitor team morale indicators and take pre-emptive action when engagement begins to decline' },
+      { id:'cm_st9',  label:'Vision articulation — how clearly can this manager articulate a 12-month vision for their area of responsibility that aligns with Jeng Chi\'s ownership goals beyond just current operations' },
+      { id:'cm_st10', label:'Self-directed professional development — how actively does this manager pursue certifications, hospitality training, or leadership development without waiting for ownership to mandate it' },
+      { id:'cm_st_c', label:'Coaching notes on Strategic Thinking & Organizational Growth (optional)', type:'textarea' }
+    ]
+  }
+];
+
+// ───────────────────────────────────────────────────────────────────
+//  LEGACY GENERIC TEMPLATES (kept for compatibility, no longer routed)
 // ───────────────────────────────────────────────────────────────────
 const COACHING_TEMPLATE = [
   {
@@ -1880,32 +2423,29 @@ function detectDepartment(emp) {
 }
 
 function getTemplate(dept, reviewType) {
-  if (reviewType === 'coaching') return COACHING_TEMPLATE;
-  if (reviewType === 'progress') return PROGRESS_TEMPLATE;
   const pos = (state.employee?.position || state.employee?.job_title || '').toLowerCase();
 
-  // ── Group 1: FOH ──────────────────────────────────────────────────────────
-  if (dept === 'FOH') return FOH_ANNUAL;
-
-  // ── Group 5: Management ───────────────────────────────────────────────────
-  if (dept === 'MANAGEMENT') return MGMT_ANNUAL;
-
-  // ── BOH routing by position ───────────────────────────────────────────────
-  if (dept === 'BOH') {
-    // Group 4: Dishwasher
-    if (/dishwasher|dish\s*washer|\bdish\b/.test(pos)) return DISHWASHER_TEMPLATE;
-
-    // Group 2: Line Cook / Wok Chef
-    if (/line\s*cook|wok\s*chef|wok/.test(pos)) return LINE_COOK_TEMPLATE;
-
-    // Group 3: Kitchen Production — Prep Cook, Kitchen Prep, Dumpling Maker,
-    //          Production Manager, Pastry Chef
-    if (/prep\s*cook|kitchen\s*prep|food\s*prep|\bprep\b|dumpling|pastry|production\s*manager|production/.test(pos)) return KITCHEN_PROD_TEMPLATE;
-
-    // Default BOH fallback: Line Cook template (most common BOH role)
-    return LINE_COOK_TEMPLATE;
+  // ── Coaching / Improvement Plan: role-specific coaching questions ─────────
+  if (reviewType === 'coaching' || reviewType === 'progress') {
+    if (dept === 'MANAGEMENT') return MGMT_COACHING;
+    if (dept === 'FOH') return FOH_COACHING;
+    if (dept === 'BOH') {
+      if (/dishwasher|dish\s*washer|\bdish\b/.test(pos)) return DISHWASHER_COACHING;
+      if (/prep\s*cook|kitchen\s*prep|food\s*prep|\bprep\b|dumpling|pastry|production\s*manager|production/.test(pos)) return KITCHEN_PROD_COACHING;
+      return LINE_COOK_COACHING; // Line Cook, Wok Chef, and all other BOH
+    }
+    return FOH_COACHING; // fallback
   }
 
+  // ── Annual Review: role-specific annual questions ─────────────────────────
+  if (dept === 'FOH') return FOH_ANNUAL;
+  if (dept === 'MANAGEMENT') return MGMT_ANNUAL;
+  if (dept === 'BOH') {
+    if (/dishwasher|dish\s*washer|\bdish\b/.test(pos)) return DISHWASHER_TEMPLATE;
+    if (/line\s*cook|wok\s*chef|wok/.test(pos)) return LINE_COOK_TEMPLATE;
+    if (/prep\s*cook|kitchen\s*prep|food\s*prep|\bprep\b|dumpling|pastry|production\s*manager|production/.test(pos)) return KITCHEN_PROD_TEMPLATE;
+    return LINE_COOK_TEMPLATE;
+  }
   return FOH_ANNUAL;
 }
 
@@ -2127,13 +2667,66 @@ async function loadPreviousReviewsForEmployee(empId) {
   }
 }
 
+async function loadPreviousReviewData(reviewId) {
+  if (!sb || !reviewId) return null;
+  try {
+    const {data, error} = await sb.from('performance_reviews')
+      .select('id, review_type, review_date, responses, category_scores, overall_score, performance_band, strengths, development, goals')
+      .eq('id', parseInt(reviewId))
+      .single();
+    if (error || !data) return null;
+    // responses may be stored as JSON string or object
+    if (typeof data.responses === 'string') {
+      try { data.responses = JSON.parse(data.responses); } catch(e) { data.responses = {}; }
+    }
+    return data;
+  } catch(e) {
+    console.error('loadPreviousReviewData error:', e.message);
+    return null;
+  }
+}
+
+function getRecommendationOptions(reviewType) {
+  if (reviewType === 'coaching') {
+    return '<option>Issue Coaching Plan — Begin 30-Day Monitoring Period</option>' +
+           '<option>Issue Coaching Plan — Begin 60-Day Monitoring Period</option>' +
+           '<option>Issue Coaching Plan — Begin 90-Day Monitoring Period</option>' +
+           '<option>Final Warning Issued — Termination on Next Occurrence</option>' +
+           '<option>Written Warning Only — No Formal Coaching Plan Needed</option>' +
+           '<option>Termination Recommended — Performance Not Correctable</option>';
+  }
+  if (reviewType === 'progress') {
+    return '<option>Coaching Plan Successfully Completed — Return to Standard Monitoring</option>' +
+           '<option>Extend Probation — Issue New 30-Day Coaching Plan</option>' +
+           '<option>Extend Probation — Issue New 60-Day Coaching Plan</option>' +
+           '<option>Continue Monitoring — Improvement Observed But Not Yet Sustained</option>' +
+           '<option>Termination Recommended — No Meaningful Improvement</option>';
+  }
+  return '<option>Promote to Next Level / Advance Career Path</option>' +
+         '<option>Merit Pay Increase Recommended</option>' +
+         '<option>Maintain Current Role &amp; Compensation</option>' +
+         '<option>Performance Improvement Plan Required</option>' +
+         '<option>Extended Probation Period</option>' +
+         '<option>Termination Recommended</option>';
+}
+
 function ratingLabel(n) {
   return ['Poor','Below<br>Expect.','Meets<br>Expect.','Exceeds<br>Expect.','Outstanding'][n-1];
 }
 
-function buildReviewForm() {
+async function buildReviewForm() {
   if (!state.employee) { showToast('Please select an employee first','error'); return; }
   if (!state.reviewType) { showToast('Please select a review type','error'); return; }
+
+  // For Probation: fetch previous review's responses so we can show them alongside each question
+  state.prevReviewData = null;
+  if (state.reviewType === 'progress') {
+    const prevId = document.getElementById('probationPrevReviewId')?.value;
+    if (prevId) {
+      state.prevReviewData = await loadPreviousReviewData(prevId);
+    }
+  }
+
   const dept = detectDepartment(state.employee);
   const template = getTemplate(dept, state.reviewType);
   const container = document.getElementById('reviewFormContainer');
@@ -2150,6 +2743,41 @@ function buildReviewForm() {
       </div>
     </div>
   </div>`;
+
+  // ── Coaching Plan: info banner ─────────────────────────────────────────────
+  if (state.reviewType === 'coaching') {
+    html += `<div style="margin-bottom:20px;padding:16px 20px;background:#fffbeb;border:1.5px solid #fcd34d;border-radius:var(--radius);display:flex;gap:14px;align-items:flex-start">
+      <div style="font-size:22px;flex-shrink:0">🎯</div>
+      <div>
+        <div style="font-weight:700;font-size:13px;color:#92400e;margin-bottom:4px">Improvement & Coaching Plan — Role-Specific Evaluation</div>
+        <div style="font-size:12px;color:#78350f;line-height:1.6">This coaching plan uses the same role-specific performance questions as the Annual Review so you can evaluate exactly where the employee stands in their role today. Rate each area honestly. The <strong>Coaching Goals & Action Plan</strong> section at the end captures the improvement roadmap, timeline, and consequences.</div>
+      </div>
+    </div>`;
+  }
+
+  // ── Probation: previous review comparison banner ───────────────────────────
+  if (state.reviewType === 'progress' && state.prevReviewData) {
+    const prevDate = state.prevReviewData.review_date
+      ? new Date(state.prevReviewData.review_date+'T12:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric',timeZone:'America/Chicago'})
+      : '—';
+    const prevScore = state.prevReviewData.overall_score ? parseFloat(state.prevReviewData.overall_score).toFixed(2) : '—';
+    const prevType = {annual:'Annual Review',coaching:'Coaching Plan',progress:'Probation Review'}[state.prevReviewData.review_type] || state.prevReviewData.review_type;
+    html += `<div style="margin-bottom:20px;padding:16px 20px;background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:var(--radius);display:flex;gap:14px;align-items:flex-start">
+      <div style="font-size:22px;flex-shrink:0">📊</div>
+      <div style="flex:1">
+        <div style="font-weight:700;font-size:13px;color:#1e40af;margin-bottom:4px">Probation Review — Comparing Against Previous Submission</div>
+        <div style="font-size:12px;color:#1e3a8a;line-height:1.6">Previous review loaded: <strong>${prevType}</strong> dated <strong>${prevDate}</strong> with overall score <strong>${prevScore}/5.00</strong>. For every rated question below, you will see the <span style="background:#dbeafe;color:#1d4ed8;font-weight:700;padding:1px 6px;border-radius:4px;font-size:11px">PREV</span> score from that submission. Rate the employee <em>today</em> — then the system will show improvement or decline automatically.</div>
+      </div>
+    </div>`;
+  } else if (state.reviewType === 'progress' && !state.prevReviewData) {
+    html += `<div style="margin-bottom:20px;padding:16px 20px;background:#fef3c7;border:1.5px solid #fcd34d;border-radius:var(--radius);display:flex;gap:14px;align-items:flex-start">
+      <div style="font-size:22px;flex-shrink:0">⚠️</div>
+      <div>
+        <div style="font-weight:700;font-size:13px;color:#92400e;margin-bottom:4px">No Previous Review Selected</div>
+        <div style="font-size:12px;color:#78350f">No prior review was selected for comparison. You can still complete this probation review — previous scores will not be shown. Go back to Step 2 to select a prior review if needed.</div>
+      </div>
+    </div>`;
+  }
 
   template.forEach((section, sIdx) => {
     html += `<div class="card" style="margin-bottom:20px" id="section-${section.id}">
@@ -2183,14 +2811,32 @@ function buildReviewForm() {
           <input type="date" class="form-control" id="q-${q.id}" style="max-width:220px" onchange="autoSave()">
         </div>`;
       } else {
+        // For Probation: look up the previous score for this question
+        const prevResponses = state.prevReviewData?.responses || null;
+        const prevScore = (state.reviewType === 'progress' && prevResponses && prevResponses[q.id])
+          ? parseInt(prevResponses[q.id]) : null;
+        const prevScoreColors = {1:'#dc2626',2:'#d97706',3:'#6366f1',4:'#0ea5e9',5:'#059669'};
+        const prevScoreBg    = {1:'#fef2f2',2:'#fffbeb',3:'#eef2ff',4:'#f0f9ff',5:'#ecfdf5'};
+        const prevScoreLabel = prevScore ? ['Poor','Below Exp.','Meets Exp.','Exceeds Exp.','Outstanding'][prevScore-1] : null;
+        const prevScoreHtml  = prevScore ? `
+          <div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--gray-400)">Previous Score:</span>
+            <span style="background:${prevScoreBg[prevScore]};color:${prevScoreColors[prevScore]};border:1.5px solid ${prevScoreColors[prevScore]}33;font-weight:700;font-size:12px;padding:3px 10px;border-radius:20px">
+              ${prevScore}/5 — ${prevScoreLabel}
+            </span>
+            <span style="font-size:10px;color:var(--gray-400);font-style:italic">↓ Rate employee today below</span>
+          </div>` : (state.reviewType === 'progress' ? `<div style="margin-bottom:8px"><span style="font-size:10px;color:var(--gray-400);font-style:italic">Previous score: not rated</span></div>` : '');
+
         html += `<div class="question-block">
           <div class="question-label"><span class="q-num">${qIdx+1}.</span><span><strong>${q.label}</strong></span></div>
+          ${prevScoreHtml}
           <div class="rating-row">
             ${[1,2,3,4,5].map(n => `<div class="rating-option">
               <div class="rating-circle" id="rc-${q.id}-${n}" onclick="setRating('${q.id}',${n})">${n}</div>
               <div class="rating-label">${ratingLabel(n)}</div>
             </div>${n<5?'<div class="rating-divider"></div>':''}`).join('')}
           </div>
+          ${prevScore ? `<div id="delta-${q.id}" style="margin-top:6px;font-size:11px;color:var(--gray-400);font-style:italic"></div>` : ''}
           <textarea class="question-comment" id="qc-${q.id}" rows="2" placeholder="Optional: Add specific examples or context..." oninput="autoSave()" style="margin-top:10px"></textarea>
         </div>`;
       }
@@ -2203,6 +2849,84 @@ function buildReviewForm() {
       <div class="word-count" id="wc-${section.id}">0 words</div>
     </div></div>`;
   });
+
+  // ── Coaching Plan: Coaching Goals & Action Plan section ───────────────────
+  if (state.reviewType === 'coaching') {
+    html += `<div class="card" style="margin-bottom:20px">
+      <div class="section-header" style="background:linear-gradient(135deg,#92400e 0%,#b45309 100%)">
+        <div class="section-header-num" style="background:#fbbf24;color:#1c1917">🎯</div>
+        <div><h4>Coaching Goals & Action Plan</h4><p>Document the specific improvement goals, timeline, support resources, and consequences</p></div>
+      </div>
+      <div class="question-block">
+        <div class="question-label"><span class="q-num">A.</span><span><strong>Identified Performance Gaps</strong> — Describe the specific behaviors or performance areas requiring improvement</span></div>
+        <textarea class="question-comment" id="coaching-gaps" rows="4" placeholder="e.g. Guest complaints related to slow response time on 3 occasions this month; POS errors averaging 6% above the 2% target..." oninput="autoSave()"></textarea>
+      </div>
+      <div class="question-block">
+        <div class="question-label"><span class="q-num">B.</span><span><strong>Improvement Goals (SMART)</strong> — Specific, Measurable, Achievable, Relevant, Time-bound goals</span></div>
+        <textarea class="question-comment" id="coaching-goals" rows="4" placeholder="Goal 1: Reduce POS error rate to below 2% within 30 days. Goal 2: Zero guest complaints related to attentiveness for the next 60 days..." oninput="autoSave()"></textarea>
+      </div>
+      <div class="question-block">
+        <div class="question-label"><span class="q-num">C.</span><span><strong>Timeline & Check-In Schedule</strong> — Key dates and milestones</span></div>
+        <textarea class="question-comment" id="coaching-timeline" rows="3" placeholder="30-day check-in: [date]. 60-day review: [date]. Final probation deadline: [date]..." oninput="autoSave()"></textarea>
+      </div>
+      <div class="question-block">
+        <div class="question-label"><span class="q-num">D.</span><span><strong>Resources & Support Provided</strong> — Training, mentorship, schedule changes, or tools allocated</span></div>
+        <textarea class="question-comment" id="coaching-support" rows="3" placeholder="e.g. Assigned to shadow Senior Server for 2 shifts; additional POS training session scheduled for [date]..." oninput="autoSave()"></textarea>
+      </div>
+      <div class="question-block">
+        <div class="question-label"><span class="q-num">E.</span><span><strong>Consequences of Non-Improvement</strong> — What happens if goals are not met by the deadline</span></div>
+        <textarea class="question-comment" id="coaching-consequences" rows="3" placeholder="Failure to achieve stated goals by [date] will result in [written warning / probation / termination recommendation]..." oninput="autoSave()"></textarea>
+      </div>
+      <div class="category-comment-section">
+        <label>📋 Manager's Coaching Session Notes</label>
+        <p>Document the full coaching conversation, employee's response, and any commitments made during this session.</p>
+        <textarea class="category-textarea" id="cat-coaching-notes" placeholder="Summarize the coaching session in detail..." oninput="updateWordCount(this,'wc-coaching-notes')"></textarea>
+        <div class="word-count" id="wc-coaching-notes">0 words</div>
+      </div>
+    </div>`;
+  }
+
+  // ── Probation: Comparison Summary section ─────────────────────────────────
+  if (state.reviewType === 'progress') {
+    const prevOvr = state.prevReviewData?.overall_score ? parseFloat(state.prevReviewData.overall_score).toFixed(2) : null;
+    html += `<div class="card" style="margin-bottom:20px">
+      <div class="section-header" style="background:linear-gradient(135deg,#1e40af 0%,#2563eb 100%)">
+        <div class="section-header-num" style="background:#60a5fa;color:#1e3a8a">📈</div>
+        <div><h4>Probation Outcome Assessment</h4><p>Overall improvement verdict, next steps, and manager recommendation</p></div>
+      </div>
+      ${prevOvr ? `<div style="padding:18px 24px;background:linear-gradient(135deg,#eff6ff,#dbeafe);border-bottom:1px solid var(--gray-200)">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:#1e40af;margin-bottom:10px">Coaching Plan Score Reference</div>
+        <div style="display:flex;gap:20px;flex-wrap:wrap">
+          <div style="text-align:center;min-width:100px"><div style="font-size:28px;font-weight:700;font-family:var(--font-display);color:#1e40af">${prevOvr}</div><div style="font-size:10px;font-weight:600;color:#1e40af;text-transform:uppercase;letter-spacing:0.8px">Previous Overall</div></div>
+          <div style="display:flex;align-items:center;font-size:22px;color:var(--gray-400)">→</div>
+          <div style="text-align:center;min-width:100px"><div style="font-size:28px;font-weight:700;font-family:var(--font-display);color:var(--navy)" id="probCurrScoreDisplay">—</div><div style="font-size:10px;font-weight:600;color:var(--navy);text-transform:uppercase;letter-spacing:0.8px">Current Score</div></div>
+          <div style="display:flex;align-items:center"><div id="probDeltaBadge" style="font-size:13px;font-weight:700;padding:6px 14px;border-radius:20px;background:var(--gray-100);color:var(--gray-400)">Rate questions to see trend</div></div>
+        </div>
+      </div>` : ''}
+      <div class="question-block">
+        <div class="question-label"><strong>Probation Verdict</strong> — Manager's assessment of the employee's improvement over the coaching period</div>
+        <select class="form-control" id="probation-verdict" style="max-width:480px" onchange="autoSave()">
+          <option value="">— Select Probation Outcome —</option>
+          <option>✅ Successfully Completed — Performance meets expectations, remove from coaching plan</option>
+          <option>⚠️ Partial Improvement — Extended probation required, new coaching plan needed</option>
+          <option>❌ No Improvement — Termination recommendation forwarded to ownership/HR</option>
+          <option>📋 Ongoing Monitoring — Employee shows progress but requires continued check-ins</option>
+        </select>
+      </div>
+      <div class="question-block">
+        <div class="question-label"><strong>Evidence of Improvement</strong> — Specific documented examples of positive change since the coaching plan began</div>
+        <textarea class="question-comment" id="probation-improvements" rows="4" placeholder="Cite specific dates, incidents, guest feedback, or observed behaviors that demonstrate improvement..." oninput="autoSave()"></textarea>
+      </div>
+      <div class="question-block">
+        <div class="question-label"><strong>Areas Still Requiring Development</strong> — What has NOT fully improved</div>
+        <textarea class="question-comment" id="probation-remaining" rows="3" placeholder="Document any areas where improvement is still needed or inconsistent..." oninput="autoSave()"></textarea>
+      </div>
+      <div class="question-block">
+        <div class="question-label"><strong>Next Steps & Action Plan</strong> — What happens after this probation review</div>
+        <textarea class="question-comment" id="probation-next" rows="3" placeholder="e.g. Employee returns to standard performance monitoring. Next annual review scheduled for [date]. OR: New 30-day coaching plan issued..." oninput="autoSave()"></textarea>
+      </div>
+    </div>`;
+  }
 
   // Overall summary
   html += `<div class="card" style="margin-bottom:20px">
@@ -2236,12 +2960,7 @@ function buildReviewForm() {
       <div class="question-label"><strong>Manager Recommendation</strong></div>
       <select class="form-control" id="q-recommendation" style="max-width:440px" onchange="autoSave()">
         <option value="">— Select Recommendation —</option>
-        <option>Promote to Next Level / Advance Career Path</option>
-        <option>Merit Pay Increase Recommended</option>
-        <option>Maintain Current Role & Compensation</option>
-        <option>Performance Improvement Plan Required</option>
-        <option>Extended Probation Period</option>
-        <option>Termination Recommended</option>
+        ${getRecommendationOptions(state.reviewType)}
       </select>
     </div>
   </div>`;
@@ -2260,6 +2979,17 @@ function setRating(qId, val) {
   for (let n=1; n<=5; n++) {
     const el = document.getElementById('rc-'+qId+'-'+n);
     if (el) { el.className = 'rating-circle'; if (n<=val) el.classList.add('selected-'+val); }
+  }
+  // For probation: show improvement / decline delta
+  const deltaEl = document.getElementById('delta-'+qId);
+  if (deltaEl && state.prevReviewData?.responses) {
+    const prev = parseInt(state.prevReviewData.responses[qId]);
+    if (prev && !isNaN(prev)) {
+      const diff = val - prev;
+      if (diff > 0)       deltaEl.innerHTML = `<span style="color:#059669;font-weight:700">▲ +${diff} Improved from previous score of ${prev}</span>`;
+      else if (diff < 0)  deltaEl.innerHTML = `<span style="color:#dc2626;font-weight:700">▼ ${diff} Declined from previous score of ${prev}</span>`;
+      else                deltaEl.innerHTML = `<span style="color:#6366f1;font-weight:700">= No change from previous score of ${prev}</span>`;
+    }
   }
   updateCharts();
   updateProgress();
@@ -2344,6 +3074,27 @@ function updateCharts() {
     <div class="score-card gold"><div class="score-card-val">${allVals.length}</div><div class="score-card-label">Rated Questions</div><div class="score-card-sub">of ${totalRating} total</div></div>
     <div class="score-card green"><div class="score-card-val">${pct}%</div><div class="score-card-label">Completion</div><div class="progress-bar-wrap mt-4"><div class="progress-bar-fill" style="width:${pct}%;background:var(--green)"></div></div></div>
     <div class="score-card navy"><div style="padding-top:8px"><span class="perf-band ${band.cls}">${band.label}</span></div><div class="score-card-label">Performance Band</div></div>`;
+
+  // Update probation delta badge if applicable
+  if (state.reviewType === 'progress' && state.prevReviewData?.overall_score) {
+    const prevOvr = parseFloat(state.prevReviewData.overall_score);
+    const currOvr = globalAvg;
+    const currEl = document.getElementById('probCurrScoreDisplay');
+    const deltaEl = document.getElementById('probDeltaBadge');
+    if (currEl) currEl.textContent = currOvr > 0 ? currOvr.toFixed(2) : '—';
+    if (deltaEl && currOvr > 0) {
+      const diff = (currOvr - prevOvr).toFixed(2);
+      const absDiff = Math.abs(parseFloat(diff));
+      if (parseFloat(diff) > 0.05)
+        deltaEl.innerHTML = `▲ +${absDiff} Improved`;
+      else if (parseFloat(diff) < -0.05)
+        deltaEl.innerHTML = `▼ -${absDiff} Declined`;
+      else
+        deltaEl.innerHTML = `= No Change`;
+      deltaEl.style.background = parseFloat(diff) > 0.05 ? '#ecfdf5' : parseFloat(diff) < -0.05 ? '#fef2f2' : '#eff6ff';
+      deltaEl.style.color = parseFloat(diff) > 0.05 ? '#059669' : parseFloat(diff) < -0.05 ? '#dc2626' : '#2563eb';
+    }
+  }
 
   const pbHtml = template.map((s,i) => `
     <div style="display:flex;align-items:center;gap:14px;padding:9px 0;border-bottom:1px solid var(--gray-100)">
