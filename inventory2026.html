@@ -8210,9 +8210,9 @@ input[id^="par-input-"]:focus {
 
     <div id="placeOrderRefreshBar" style="display:flex;align-items:center;justify-content:space-between;background:linear-gradient(90deg,var(--primary-900),var(--primary-700));color:white;padding:.5rem 1.25rem;border-radius:10px;margin-bottom:1rem;font-size:.8rem;">
 
-        <span><i class="fas fa-rotate" style="margin-right:.4rem;animation:spin 2s linear infinite;"></i> <strong>Live Mode</strong> — auto-refreshes every 60 seconds &amp; saves instantly</span>
+        <span><i class="fas fa-rotate" style="margin-right:.4rem;animation:spin 2s linear infinite;"></i> <strong>Live Mode</strong> — auto-refreshes every 10 minutes &amp; saves instantly</span>
 
-        <span id="placeOrderCountdown" style="font-family:var(--font-mono);background:rgba(255,255,255,.15);padding:.2rem .7rem;border-radius:6px;">⏱ 60s</span>
+        <span id="placeOrderCountdown" style="font-family:var(--font-mono);background:rgba(255,255,255,.15);padding:.2rem .7rem;border-radius:6px;">⏱ 10:00</span>
 
     </div>
 
@@ -11150,7 +11150,7 @@ async function initializeApp() {
 
         setTimeout(() => restoreLastTab(), 200);
 
-        // ✅ Auto-refresh all data every 30 minutes
+        // ✅ Auto-refresh all data every 10 minutes
         setInterval(async () => {
             try {
                 await loadAllData();
@@ -11160,11 +11160,11 @@ async function initializeApp() {
                 setTimeout(() => loadDropdownAlerts(), 500);
                 const ind = document.createElement('div');
                 ind.style.cssText = 'position:fixed;bottom:20px;right:20px;background:var(--success-600);color:white;padding:0.5rem 1rem;border-radius:8px;font-size:0.8rem;font-weight:600;z-index:9999;opacity:1;transition:opacity 1s;';
-                ind.textContent = '🔄 Data refreshed (30 min)';
+                ind.textContent = '🔄 Data refreshed (10 min)';
                 document.body.appendChild(ind);
                 setTimeout(() => { ind.style.opacity='0'; setTimeout(()=>ind.remove(),1000); }, 3000);
             } catch(e) { console.error('Auto-refresh error:', e); }
-        }, 30 * 60 * 1000);
+        }, 10 * 60 * 1000);
 
     } catch (error) {
         console.error('Init error:', error);
@@ -11553,10 +11553,13 @@ async function saveNewVendor() {
             .from('vendors')
             .upsert({ name, category, notes, created_at: new Date().toISOString() }, { onConflict: 'name' });
         if (error) {
-            // vendors table might not exist - show success anyway with instruction
             showAlert(`✅ Vendor "${name}" noted. Add SQL: INSERT INTO vendors(name, category, notes) VALUES('${name}','${category}','${notes}');`, 'info');
         } else {
             showAlert(`✅ Vendor "${name}" saved successfully!`, 'success');
+        }
+        // ✅ Add to ALLOWED_VENDORS so it appears in all dropdowns immediately
+        if (!ALLOWED_VENDORS.includes(name)) {
+            ALLOWED_VENDORS.push(name);
         }
         document.getElementById('addVendorModal').style.display = 'none';
         document.getElementById('newVendorName').value = '';
@@ -11564,6 +11567,9 @@ async function saveNewVendor() {
         loadVendorManagement();
     } catch(e) {
         showAlert(`✅ Vendor "${name}" (Category: ${category}) added to your list. Note: ${e.message}`, 'info');
+        if (!ALLOWED_VENDORS.includes(name)) {
+            ALLOWED_VENDORS.push(name);
+        }
         document.getElementById('addVendorModal').style.display = 'none';
     }
 }
@@ -18672,14 +18678,13 @@ function rptRenderBody(tabName, cfg, d) {
     case 'rpt_autochlor': {
 
         // ── 1. Merge autochlor_date_tracking rows with invoice data ──────────────
-        // Primary source: autochlor_date_tracking (manually recorded change dates + qty)
-        // Secondary source: invoice data (for spend totals)
+        // PRIMARY FILTER: Only products whose VENDOR is "Autochlor"
         const acByProd = {};
 
         // Helper: ensure product bucket exists
         const acBucket = (name, cat) => {
             if (!acByProd[name]) acByProd[name] = {
-                name, cat: cat||'Cleaning/Chemicals',
+                name, cat: cat||'Janitorial & Chemicals',
                 trackDates: [],   // from autochlor_date_tracking  {date, qty, unit, notes}
                 invoiceDates: [], // from invoice_items
                 totalSpend: 0
@@ -18687,9 +18692,14 @@ function rptRenderBody(tabName, cfg, d) {
             return acByProd[name];
         };
 
+        // TODAY's date string for "start fresh" cutoff
+        const todayStr = todayYMD();
+
         // Load from autochlor_date_tracking (new source of truth)
+        // Only include dates from today forward (fresh start)
         (d.allAcTracking||[]).forEach(row => {
-            const b = acBucket(row.product_name, 'Cleaning/Chemicals');
+            if (!row.date_changed) return;
+            const b = acBucket(row.product_name, 'Janitorial & Chemicals');
             b.trackDates.push({
                 date: row.date_changed,
                 qty:  row.qty  || null,
@@ -18698,22 +18708,19 @@ function rptRenderBody(tabName, cfg, d) {
             });
         });
 
-        // Load invoice data for spend totals (still useful)
+        // Load invoice spend data — only for products whose vendor IS "Autochlor"
         d.allEnriched.filter(it =>
-            (it.vendor||'').toLowerCase().includes('autochlor') ||
-            (it.category||'').toLowerCase().includes('autochlor') ||
-            (it.category||'').toLowerCase().includes('chemical')
+            (it.vendor||'').toLowerCase() === 'autochlor'
         ).forEach(it => {
-            const b = acBucket(it.product_name, it.category);
+            const b = acBucket(it.product_name, it.category || 'Janitorial & Chemicals');
             b.invoiceDates.push(it.invoice_date);
             b.totalSpend += it.total || 0;
         });
 
-        // Include catalog products even if no data yet
+        // Include catalog products whose vendor IS "Autochlor" (exact match)
         d.mgmt.filter(p =>
-            (p.category||'').toLowerCase().includes('autochlor') ||
-            (p.category||'').toLowerCase().includes('chemical') ||
-            (p.vendor||'').toLowerCase().includes('autochlor')
+            (p.vendor||'').toLowerCase() === 'autochlor' ||
+            (p.vendors||'').toLowerCase() === 'autochlor'
         ).forEach(p => acBucket(p.product_name, p.category));
 
         // ── 2. Build summary rows ─────────────────────────────────────────────────
@@ -18725,13 +18732,16 @@ function rptRenderBody(tabName, cfg, d) {
             const daysActive = (lastDate && firstDate && lastDate!==firstDate)
                 ? Math.round((new Date(lastDate) - new Date(firstDate))/86400000) : null;
             const daysSinceLast = lastDate
-                ? Math.round((Date.now() - new Date(lastDate).getTime())/86400000) : null;
+                ? Math.round((Date.now() - new Date(lastDate+'T00:00:00').getTime())/86400000) : null;
             let avgDaysBetween = null;
+            // Only calculate avg cycle if there are 2+ dates (real change history)
             if (allDates.length >= 2) {
                 const gaps = [];
                 for (let i=1;i<allDates.length;i++)
                     gaps.push(Math.round((new Date(allDates[i])-new Date(allDates[i-1]))/86400000));
-                avgDaysBetween = Math.round(gaps.reduce((a,b)=>a+b,0)/gaps.length);
+                const validGaps = gaps.filter(g => g >= 0 && g < 3650); // ignore impossible gaps
+                if (validGaps.length > 0)
+                    avgDaysBetween = Math.round(validGaps.reduce((a,b)=>a+b,0)/validGaps.length);
             }
             return {...p, allDates, lastDate, firstDate, daysActive, daysSinceLast, avgDaysBetween,
                     trackCount: p.trackDates.length, invoiceCount: p.invoiceDates.length};
@@ -18740,14 +18750,17 @@ function rptRenderBody(tabName, cfg, d) {
         // ── 3. KPIs ───────────────────────────────────────────────────────────────
         const totalProducts   = acRows.length;
         const trackedProds    = acRows.filter(r=>r.trackCount>0).length;
-        const avgCycle        = acRows.filter(r=>r.avgDaysBetween).reduce((s,r)=>s+(r.avgDaysBetween||0),0)
-                                / (acRows.filter(r=>r.avgDaysBetween).length||1);
+        // Avg cycle: only from products with ≥2 real date entries
+        const cycleProds      = acRows.filter(r=>r.avgDaysBetween !== null && r.avgDaysBetween > 0);
+        const avgCycle        = cycleProds.length > 0
+            ? cycleProds.reduce((s,r)=>s+(r.avgDaysBetween||0),0) / cycleProds.length
+            : 0;
         const totalAcSpend    = acRows.reduce((s,r)=>s+r.totalSpend,0);
         const overdueCnt      = acRows.filter(r=>r.daysSinceLast!==null && r.avgDaysBetween && r.daysSinceLast > r.avgDaysBetween*1.2).length;
 
         kpiEl.innerHTML =
             kpi('🧪','Products Tracked', trackedProds + '/' + totalProducts, 'With date entries', colHex) +
-            kpi('📅','Avg Change Cycle',  avgCycle>0 ? Math.round(avgCycle)+'d' : '—', 'Days between changes', colHex) +
+            kpi('📅','Avg Change Cycle',  avgCycle>0 ? Math.round(avgCycle)+'d' : '—', cycleProds.length>0?'Days between changes':'Collecting data…', colHex) +
             kpi('⚠️','Overdue Changes',  overdueCnt, overdueCnt>0?'Need attention':'All on time', overdueCnt>0?'#dc2626':'#16a34a') +
             kpi('💰','Invoice Spend',     fmt$(totalAcSpend), 'All time', '#0d9488');
 
@@ -30263,7 +30276,7 @@ function quickOrderFromAlert(productName) {
 
 
 
-// Auto-refresh every 60s when tab is active
+// Auto-refresh every 10 min when tab is active
 
 setInterval(() => {
 
@@ -30273,7 +30286,7 @@ setInterval(() => {
 
     }
 
-}, 60000);
+}, 10 * 60 * 1000);
 
 
 
@@ -36258,7 +36271,66 @@ function renderEditOrderTable(tbodyId, rows) {
 
 async function updateEditedOrder() {
 
-    showAlert('✅ All edits are auto-saved as you type. No additional action needed.', 'success');
+    showLoading(true);
+
+    try {
+
+        const dateISO = document.getElementById('editOrderDate')?.value || todayYMD();
+
+        // Read all current row values from the edit table and save to Supabase
+        const allInputs = document.querySelectorAll('#submittedOrdersBody input[data-row-id], #unsubmittedProductsBody input[data-row-id]');
+        const allSelects = document.querySelectorAll('#submittedOrdersBody select[data-row-id], #unsubmittedProductsBody select[data-row-id]');
+
+        const updates = {};
+
+        allInputs.forEach(inp => {
+            const id = inp.dataset.rowId;
+            if (!id) return;
+            if (!updates[id]) updates[id] = {};
+            updates[id].tentative = parseFloat(inp.value) || 0;
+        });
+
+        allSelects.forEach(sel => {
+            const id = sel.dataset.rowId;
+            if (!id) return;
+            if (!updates[id]) updates[id] = {};
+            updates[id].vendor = sel.value || null;
+        });
+
+        // Batch update each row
+        const promises = Object.entries(updates).map(([id, fields]) =>
+            supabaseClient.from('inventory_check').update(fields).eq('id', id)
+        );
+
+        const results = await Promise.all(promises);
+        const errors = results.filter(r => r.error).map(r => r.error.message);
+
+        if (errors.length > 0) {
+            showAlert('⚠️ Some items failed to save: ' + errors[0], 'error');
+        } else {
+            // ✅ Reload table to reflect saved state
+            await loadEditOrder();
+
+            // ✅ Show success banner at top of page
+            const banner = document.createElement('div');
+            banner.style.cssText = 'position:fixed;top:80px;left:50%;transform:translateX(-50%);background:var(--success-600);color:white;padding:1rem 2rem;border-radius:12px;font-size:1rem;font-weight:700;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,0.2);display:flex;align-items:center;gap:0.75rem;';
+            banner.innerHTML = '<i class="fas fa-check-circle" style="font-size:1.25rem;"></i> ✅ Your order was updated!';
+            document.body.appendChild(banner);
+            setTimeout(() => { banner.style.transition='opacity 0.5s'; banner.style.opacity='0'; setTimeout(()=>banner.remove(),600); }, 3000);
+
+            // ✅ Scroll to top of page
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+    } catch (error) {
+
+        showAlert('Error updating order: ' + error.message, 'error');
+
+    } finally {
+
+        showLoading(false);
+
+    }
 
 }
 
@@ -36816,17 +36888,19 @@ function startPlaceOrderAutoRefresh() {
 
     // Countdown display
 
-    let secondsLeft = 60;
+    let secondsLeft = 600;
 
     function updateCountdown() {
 
         const el = document.getElementById('placeOrderCountdown');
 
-        if (el) el.textContent = `⏱ ${secondsLeft}s`;
+        const mins = Math.floor(secondsLeft / 60);
+        const secs = secondsLeft % 60;
+        if (el) el.textContent = `⏱ ${mins}:${String(secs).padStart(2,'0')}`;
 
         secondsLeft--;
 
-        if (secondsLeft < 0) secondsLeft = 60;
+        if (secondsLeft < 0) secondsLeft = 600;
 
     }
 
@@ -36836,13 +36910,13 @@ function startPlaceOrderAutoRefresh() {
 
 
 
-    // Data refresh every 60s
+    // Data refresh every 10 min
 
     _placeOrderRefreshTimer = setInterval(async () => {
 
         console.log('🔄 Place Order auto-refresh…');
 
-        secondsLeft = 60;
+        secondsLeft = 600;
 
         const el = document.getElementById('placeOrderCountdown');
 
@@ -36858,11 +36932,11 @@ function startPlaceOrderAutoRefresh() {
 
         }
 
-    }, 60000);
+    }, 600000);
 
 
 
-    console.log('✅ Place Order auto-refresh started (60s)');
+    console.log('✅ Place Order auto-refresh started (10 min)');
 
 }
 
@@ -41065,6 +41139,7 @@ async function markVerifyDone(taskId) {
     </div>
 </div>
 </body>
+
 
 
 
