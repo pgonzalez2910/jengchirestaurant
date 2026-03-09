@@ -331,6 +331,92 @@ function getSubmittedStatus(emp) {
   return null;
 }
 
+// ─── LOGIN ───────────────────────────────────────────────────────
+// Auth is 100% DB-driven via the employees2025.policy3_access column.
+// No usernames, roles, or permissions are hardcoded in this file.
+// To grant or revoke portal access: set/clear policy3_access in Supabase.
+//
+// policy3_access column (JSONB) structure:
+// {
+//   "role":               "manager" | "hr" | "dual",
+//   "sig_key":            "JTJG",          ← key in hb_manager_signatures (legacy compat)
+//   "manages_employees":  ["CRV1038", ...], ← exact usernames (Manager mode)
+//   "manages_positions":  ["Server", ...],  ← job titles (Manager mode)
+//   "hr_positions":       ["*"]             ← ["*"] = all, or list of titles
+// }
+document.getElementById('btnManagerLogin').addEventListener('click', async () => {
+  const username = document.getElementById('managerUsername').value.trim().toUpperCase();
+  const pin      = document.getElementById('managerPassword').value.trim();
+  const errorDiv = document.getElementById('loginError');
+  if (!username || !pin) {
+    errorDiv.textContent = 'Please enter your username and PIN';
+    errorDiv.classList.remove('hidden'); return;
+  }
+  errorDiv.classList.add('hidden');
+
+  try {
+    // Single query — fetch employee + policy3_access in one round trip
+    const { data: rows, error } = await client
+      .from('employees2025')
+      .select('employee_id, username, first_name, last_name, job_title, department, pin, status, policy3_access')
+      .ilike('username', username)
+      .ilike('status', 'active')
+      .limit(1);
+
+    if (error) throw new Error(error.message);
+
+    const emp = rows?.[0];
+
+    // ── Validate PIN ──────────────────────────────────────────────
+    if (!emp || String(emp.pin ?? '').trim() !== pin) {
+      errorDiv.textContent = 'Invalid username or PIN';
+      errorDiv.classList.remove('hidden'); return;
+    }
+
+    // ── Validate portal access ────────────────────────────────────
+    const access = emp.policy3_access;
+    if (!access) {
+      errorDiv.textContent = 'Access not authorized for this portal.';
+      errorDiv.classList.remove('hidden'); return;
+    }
+
+    // ── Build currentManager from DB data only ────────────────────
+    const fullName = `${emp.first_name || ''} ${emp.last_name || ''}`.trim();
+    const sigKey   = access.sig_key || emp.username.toUpperCase(); // sig_key = key in hb_manager_signatures
+
+    currentManager = {
+      ok:                        true,
+      username:                  sigKey,                          // used for signature lookup
+      employees2025_username:    emp.username.toUpperCase(),      // employees2025 key
+      full_name:                 fullName,
+      allowed_employee_initials: access.manages_employees || [],
+      allowed_positions:         access.manages_positions  || [],
+      hr_allowed_positions:      access.hr_positions        || [],
+      can_see_all_employees:     (access.hr_positions || []).includes('*'),
+      is_dual_role:              access.role === 'dual',
+      hr_only:                   access.role === 'hr',
+    };
+    registerManagerName(sigKey, fullName);
+    registerManagerName(emp.username.toUpperCase(), fullName);
+
+    // ── Route to correct view ─────────────────────────────────────
+    if (currentManager.hr_only) {
+      currentManager.selectedRole = 'hr';
+      await showDashboard();
+    } else if (currentManager.is_dual_role) {
+      showRoleSelection();
+    } else {
+      currentManager.selectedRole = 'manager';
+      await showDashboard();
+    }
+
+  } catch (err) {
+    errorDiv.textContent = 'Login failed. Please try again.';
+    errorDiv.classList.remove('hidden');
+    console.error('Login error:', err);
+  }
+});
+
 // ─── SIGNATURE CANVAS ────────────────────────────────────────────
 let canvas, ctx, isDrawing = false, hasSignature = false;
 function initSignatureCanvas() {
@@ -459,57 +545,15 @@ async function showDashboard() {
   document.getElementById('dashboardView').classList.remove('hidden');
   document.getElementById('managerName').textContent = currentManager.full_name;
   document.getElementById('managerDept').textContent = currentManager.selectedRole === 'hr' ? 'HR Manager' : 'Manager';
-  initSignatureCanvas();
+  setTimeout(() => initSignatureCanvas(), 100);
   await loadExistingSignature();
   await loadEmployees();
 }
 
 // ─── LOAD EXISTING SIGNATURE ─────────────────────────────────────
 async function loadExistingSignature() {
-  // After the login migration, sig_keys changed (e.g. "CRV1038" instead of "CRJG").
-  // We try multiple lookups so every manager finds their existing signature:
-  //   1. Exact match on sig_key and employees2025 username
-  //   2. Letter-prefix of sig_key with trailing digits stripped ("AMV9910" → "AMV%")
-  //   3. 2-char prefix fallback ("CRV1038" → "CR%") catches cases like CRJG
-  const sigKey     = (currentManager.username || '').toUpperCase();
-  const emp2025Key = (currentManager.employees2025_username || '').toUpperCase();
-  const exactKeys  = [...new Set([sigKey, emp2025Key].filter(Boolean))];
-  const fullPrefix = sigKey.replace(/[0-9]+$/, '');   // "AMV9910"→"AMV", "JTJG"→"JTJG"
-  const shortPrefix = sigKey.substring(0, 2);          // "CRV1038"→"CR", "ST3764"→"ST"
-
-  let sigs = null;
-
-  // Step 1 — exact match
-  const { data: exactSigs } = await client
-    .from('hb_manager_signatures')
-    .select('signature_data, signed_at, manager_username')
-    .in('manager_username', exactKeys)
-    .order('signed_at', { ascending: false })
-    .limit(1);
-  if (exactSigs?.length && exactSigs[0].signature_data) sigs = exactSigs;
-
-  // Step 2 — full letter-prefix search (e.g. "AMV%" → finds "AMVJG")
-  if (!sigs && fullPrefix && fullPrefix.length >= 2 && fullPrefix !== sigKey) {
-    const { data: prefixSigs } = await client
-      .from('hb_manager_signatures')
-      .select('signature_data, signed_at, manager_username')
-      .ilike('manager_username', fullPrefix + '%')
-      .order('signed_at', { ascending: false })
-      .limit(1);
-    if (prefixSigs?.length && prefixSigs[0].signature_data) sigs = prefixSigs;
-  }
-
-  // Step 3 — 2-char fallback (e.g. "CR%" → finds "CRJG" for CRV1038)
-  if (!sigs && shortPrefix && shortPrefix.length === 2 && shortPrefix !== fullPrefix) {
-    const { data: shortSigs } = await client
-      .from('hb_manager_signatures')
-      .select('signature_data, signed_at, manager_username')
-      .ilike('manager_username', shortPrefix + '%')
-      .order('signed_at', { ascending: false })
-      .limit(1);
-    if (shortSigs?.length && shortSigs[0].signature_data) sigs = shortSigs;
-  }
-
+  const { data: sigs } = await client.from('hb_manager_signatures').select('signature_data, signed_at')
+    .eq('manager_username', currentManager.username).order('signed_at', { ascending:false }).limit(1);
   if (sigs?.length && sigs[0].signature_data) {
     managerSignatureData = sigs[0].signature_data;
     document.getElementById('existingSignatureImg').src = sigs[0].signature_data;
@@ -772,16 +816,7 @@ document.getElementById('btnEditSignature').addEventListener('click', () => {
   document.getElementById('drawSignatureBox').classList.remove('hidden');
   document.getElementById('btnEditSignature').classList.add('hidden');
   document.getElementById('btnCancelEdit').classList.remove('hidden');
-  clearSignature();
-  setTimeout(() => {
-    initSignatureCanvas();
-    // Preload existing signature onto canvas so manager can see it before re-signing
-    if (managerSignatureData) {
-      const img = new Image();
-      img.onload = () => { ctx.drawImage(img, 0, 0, canvas.width, canvas.height); hasSignature = true; };
-      img.src = managerSignatureData;
-    }
-  }, 50);
+  clearSignature(); setTimeout(() => initSignatureCanvas(), 50);
 });
 document.getElementById('btnCancelEdit').addEventListener('click', () => {
   document.getElementById('drawSignatureBox').classList.add('hidden');
