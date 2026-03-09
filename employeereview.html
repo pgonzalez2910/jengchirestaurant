@@ -4555,21 +4555,25 @@ function renderHistoryList(rows) {
   }).join('');
 }
 
-async function openHistoryReview(reviewId, empName) {
-  // Show dashboard sidebar
-  showEmployeeDashboard(empName);
+// Track current open review id for delete
+let _rdmCurrentId = null;
 
-  // Open detail modal
-  const modal = document.getElementById('reviewDetailModal');
-  const body  = document.getElementById('rdmBody');
-  const title = document.getElementById('rdmTitle');
-  const sub   = document.getElementById('rdmSubtitle');
-  const stat  = document.getElementById('rdmStatus');
-  const pdfBtn = document.getElementById('rdmPdfBtn');
+async function openHistoryReview(reviewId, empName) {
+  showEmployeeDashboard(empName);
+  const modal   = document.getElementById('reviewDetailModal');
+  const body    = document.getElementById('rdmBody');
+  const title   = document.getElementById('rdmTitle');
+  const sub     = document.getElementById('rdmSubtitle');
+  const stat    = document.getElementById('rdmStatus');
+  const pdfBtn  = document.getElementById('rdmPdfBtn');
+  const delBtn  = document.getElementById('rdmDeleteBtn');
+  const cont    = document.getElementById('rdmContainer');
   if (!modal) return;
 
+  _rdmCurrentId = reviewId;
   modal.style.display = 'block';
   body.innerHTML = '<div style="text-align:center;color:var(--gray-400);padding:40px;font-size:14px">⏳ Loading review...</div>';
+  if (delBtn) delBtn.style.display = 'none';
 
   try {
     const {data: r, error} = await sb.from('performance_reviews').select('*').eq('id', reviewId).single();
@@ -4579,103 +4583,314 @@ async function openHistoryReview(reviewId, empName) {
     const fmtD = s => s ? new Date(s+'T12:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric',timeZone:'America/Chicago'}) : '—';
     const score = r.overall_score ? parseFloat(r.overall_score).toFixed(2) : null;
     const isDraft = r.status !== 'submitted';
-    const bandColors = {'Outstanding':'#065f46','Exceeds Expectations':'#1e40af','Meets Expectations':'#92400e','Needs Improvement':'#9a3412','Unsatisfactory':'#991b1b'};
-    const bandColor = bandColors[r.performance_band] || 'var(--navy)';
 
     title.textContent = r.employee_name || 'Review Details';
     sub.textContent   = (typeLabel[r.review_type] || r.review_type) + ' · ' + fmtD(r.review_date);
     stat.textContent  = isDraft ? '⚠ Draft — not submitted' : '✅ Submitted ' + fmtD(r.updated_at?.split('T')[0]);
 
-    // PDF button
-    if (r.pdf_url) {
-      pdfBtn.style.display = 'inline-block';
-      pdfBtn.dataset.url = r.pdf_url;
-    } else {
-      pdfBtn.style.display = 'none';
+    if (pdfBtn) {
+      pdfBtn.style.display = r.pdf_url ? 'inline-block' : 'none';
+      if (r.pdf_url) pdfBtn.dataset.url = r.pdf_url;
     }
+    if (delBtn) delBtn.style.display = 'inline-block';
 
-    // Responses summary
-    const responses = r.responses || {};
-    const ratingEntries = Object.entries(responses).filter(([k,v]) => typeof v === 'number' && v > 0 && !k.startsWith('text_') && !k.startsWith('comment_'));
-    const catScores = r.category_scores || {};
+    // ── PROBATION WITH COMPARISON ──────────────────────────────────
+    if (r.review_type === 'progress' && r.compared_review_id) {
+      if (cont) cont.style.maxWidth = '1100px';
+      const {data: prev, error: pe} = await sb.from('performance_reviews').select('*').eq('id', r.compared_review_id).single();
+      if (!pe && prev) {
+        body.innerHTML = buildComparisonView(r, prev, fmtD, score);
+        setTimeout(() => renderComparisonCharts(r, prev), 100);
+        return;
+      }
+    }
+    if (cont) cont.style.maxWidth = '780px';
 
-    body.innerHTML = `
-      <!-- Info row -->
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">
-        <div style="padding:12px;background:var(--gray-50);border-radius:8px;border:1px solid var(--gray-200)">
-          <div style="font-size:10px;font-weight:700;color:var(--gray-400);text-transform:uppercase;letter-spacing:1px">Department</div>
-          <div style="font-size:13px;font-weight:600;color:var(--navy);margin-top:4px">${r.department || r.employee_dept_raw || '—'}</div>
-        </div>
-        <div style="padding:12px;background:var(--gray-50);border-radius:8px;border:1px solid var(--gray-200)">
-          <div style="font-size:10px;font-weight:700;color:var(--gray-400);text-transform:uppercase;letter-spacing:1px">Position</div>
-          <div style="font-size:13px;font-weight:600;color:var(--navy);margin-top:4px">${r.employee_position || '—'}</div>
-        </div>
-        <div style="padding:12px;background:var(--gray-50);border-radius:8px;border:1px solid var(--gray-200)">
-          <div style="font-size:10px;font-weight:700;color:var(--gray-400);text-transform:uppercase;letter-spacing:1px">Review Period</div>
-          <div style="font-size:12px;font-weight:600;color:var(--navy);margin-top:4px">${r.period_start ? fmtD(r.period_start)+' – '+fmtD(r.period_end) : fmtD(r.review_date)}</div>
-        </div>
-      </div>
+    // ── STANDARD VIEW ──────────────────────────────────────────────
+    const responses    = r.responses || {};
+    const ratingEntries = Object.entries(responses).filter(([k,v]) => typeof v === 'number' && v > 0);
+    const catScores    = r.category_scores || {};
 
-      <!-- Score banner -->
-      ${score ? `
-      <div style="background:linear-gradient(135deg,var(--navy),#2a3f6b);border-radius:10px;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;color:#fff">
-        <div>
-          <div style="font-size:11px;opacity:0.7;text-transform:uppercase;letter-spacing:1px">Overall Score</div>
-          <div style="font-size:36px;font-weight:700;font-family:var(--font-display)">${score} <span style="font-size:16px;opacity:0.6">/ 5.00</span></div>
-        </div>
-        <div style="text-align:right">
-          <div style="font-size:11px;opacity:0.7">Performance Band</div>
-          <div style="font-size:16px;font-weight:700;margin-top:4px;color:var(--gold)">${r.performance_band || '—'}</div>
-          <div style="font-size:11px;opacity:0.6;margin-top:4px">${ratingEntries.length} questions rated</div>
-        </div>
-      </div>` : ''}
-
-      <!-- Category scores -->
-      ${Object.keys(catScores).length ? `
-      <div style="margin-bottom:20px">
-        <div style="font-size:11px;font-weight:700;color:var(--gray-500);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">Category Scores</div>
-        ${Object.entries(catScores).map(([cat, avg]) => {
-          const pct = Math.round((avg/5)*100);
-          const color = avg >= 4 ? '#065f46' : avg >= 3 ? '#1e40af' : avg >= 2 ? '#92400e' : '#991b1b';
-          return `<div style="margin-bottom:8px">
-            <div style="display:flex;justify-content:space-between;margin-bottom:3px">
-              <span style="font-size:12px;font-weight:600;color:var(--gray-700)">${cat.replace(/_/g,' ').replace(/\b\w/g,l=>l.toUpperCase())}</span>
-              <span style="font-size:12px;font-weight:700;color:${color}">${parseFloat(avg).toFixed(2)}</span>
-            </div>
-            <div style="height:6px;background:var(--gray-200);border-radius:4px;overflow:hidden">
-              <div style="height:100%;width:${pct}%;background:${color};border-radius:4px;transition:width 0.5s"></div>
-            </div>
-          </div>`;
-        }).join('')}
-      </div>` : ''}
-
-      <!-- Narratives -->
-      ${r.strengths ? `<div style="margin-bottom:14px;padding:14px;background:#f0fdf4;border-left:3px solid #10b981;border-radius:0 8px 8px 0"><div style="font-size:10px;font-weight:700;color:#065f46;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Strengths</div><div style="font-size:13px;color:#1a2744;line-height:1.6">${r.strengths}</div></div>` : ''}
-      ${r.development ? `<div style="margin-bottom:14px;padding:14px;background:#fff7ed;border-left:3px solid #f59e0b;border-radius:0 8px 8px 0"><div style="font-size:10px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Development Areas</div><div style="font-size:13px;color:#1a2744;line-height:1.6">${r.development}</div></div>` : ''}
-      ${r.goals ? `<div style="margin-bottom:14px;padding:14px;background:#eff6ff;border-left:3px solid #3b82f6;border-radius:0 8px 8px 0"><div style="font-size:10px;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Goals & Action Plan</div><div style="font-size:13px;color:#1a2744;line-height:1.6">${r.goals}</div></div>` : ''}
-
-      <!-- Signatures -->
-      ${r.manager_sig_name ? `
-      <div style="margin-top:16px;padding:14px;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:8px">
-        <div style="font-size:10px;font-weight:700;color:var(--gray-400);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Signatures</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-          <div><div style="font-size:11px;color:var(--gray-500)">Manager</div><div style="font-size:13px;font-weight:600">${r.manager_sig_name}${r.manager_sig_title?' · '+r.manager_sig_title:''}</div><div style="font-size:11px;color:var(--gray-400)">${fmtD(r.manager_sig_date)}</div></div>
-          ${r.employee_sig_name ? `<div><div style="font-size:11px;color:var(--gray-500)">Employee</div><div style="font-size:13px;font-weight:600">${r.employee_sig_name}</div><div style="font-size:11px;color:var(--gray-400)">${fmtD(r.employee_sig_date)}</div></div>` : ''}
-        </div>
-      </div>` : ''}
-
-      <!-- Storage PDF link -->
-      ${r.pdf_path ? `<div style="margin-top:16px;padding:12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;font-size:12px;color:#0369a1">📎 PDF stored at: <code style="font-size:11px">${r.pdf_path}</code></div>` : ''}
-    `;
+    body.innerHTML = buildStandardView(r, catScores, ratingEntries, score, fmtD);
 
   } catch(e) {
-    body.innerHTML = '<div style="padding:20px;text-align:center;color:var(--gray-400)">Error loading review: ' + e.message + '</div>';
+    body.innerHTML = `<div style="padding:20px;text-align:center;color:var(--gray-400)">Error loading review: ${e.message}</div>`;
+  }
+}
+
+// ── Standard (non-comparison) view ────────────────────────────────
+function buildStandardView(r, catScores, ratingEntries, score, fmtD) {
+  const bandColors = {'Outstanding':'#065f46','Exceeds Expectations':'#1e40af','Meets Expectations':'#92400e','Needs Improvement':'#9a3412','Unsatisfactory':'#991b1b'};
+  return `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">
+      <div style="padding:12px;background:var(--gray-50);border-radius:8px;border:1px solid var(--gray-200)">
+        <div style="font-size:10px;font-weight:700;color:var(--gray-400);text-transform:uppercase;letter-spacing:1px">Department</div>
+        <div style="font-size:13px;font-weight:600;color:var(--navy);margin-top:4px">${r.department||r.employee_dept_raw||'—'}</div>
+      </div>
+      <div style="padding:12px;background:var(--gray-50);border-radius:8px;border:1px solid var(--gray-200)">
+        <div style="font-size:10px;font-weight:700;color:var(--gray-400);text-transform:uppercase;letter-spacing:1px">Position</div>
+        <div style="font-size:13px;font-weight:600;color:var(--navy);margin-top:4px">${r.employee_position||'—'}</div>
+      </div>
+      <div style="padding:12px;background:var(--gray-50);border-radius:8px;border:1px solid var(--gray-200)">
+        <div style="font-size:10px;font-weight:700;color:var(--gray-400);text-transform:uppercase;letter-spacing:1px">Review Period</div>
+        <div style="font-size:12px;font-weight:600;color:var(--navy);margin-top:4px">${r.period_start?fmtD(r.period_start)+' – '+fmtD(r.period_end):fmtD(r.review_date)}</div>
+      </div>
+    </div>
+    ${score ? `<div style="background:linear-gradient(135deg,var(--navy),#2a3f6b);border-radius:10px;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;color:#fff">
+      <div><div style="font-size:11px;opacity:0.7;text-transform:uppercase;letter-spacing:1px">Overall Score</div>
+      <div style="font-size:36px;font-weight:700;font-family:var(--font-display)">${score} <span style="font-size:16px;opacity:0.6">/ 5.00</span></div></div>
+      <div style="text-align:right"><div style="font-size:11px;opacity:0.7">Performance Band</div>
+      <div style="font-size:16px;font-weight:700;margin-top:4px;color:var(--gold)">${r.performance_band||'—'}</div>
+      <div style="font-size:11px;opacity:0.6;margin-top:4px">${ratingEntries.length} questions rated</div></div>
+    </div>` : ''}
+    ${Object.keys(catScores).length ? `<div style="margin-bottom:20px">
+      <div style="font-size:11px;font-weight:700;color:var(--gray-500);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">Category Scores</div>
+      ${Object.entries(catScores).map(([cat,avg])=>{
+        const pct=Math.round((avg/5)*100);
+        const c=avg>=4?'#065f46':avg>=3?'#1e40af':avg>=2?'#92400e':'#991b1b';
+        return `<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;margin-bottom:3px">
+          <span style="font-size:12px;font-weight:600;color:var(--gray-700)">${cat.replace(/_/g,' ').replace(/\b\w/g,l=>l.toUpperCase())}</span>
+          <span style="font-size:12px;font-weight:700;color:${c}">${parseFloat(avg).toFixed(2)}</span></div>
+          <div style="height:6px;background:var(--gray-200);border-radius:4px;overflow:hidden">
+            <div style="height:100%;width:${pct}%;background:${c};border-radius:4px"></div></div></div>`;
+      }).join('')}
+    </div>` : ''}
+    ${r.strengths?`<div style="margin-bottom:14px;padding:14px;background:#f0fdf4;border-left:3px solid #10b981;border-radius:0 8px 8px 0"><div style="font-size:10px;font-weight:700;color:#065f46;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Strengths</div><div style="font-size:13px;color:#1a2744;line-height:1.6">${r.strengths}</div></div>`:''}
+    ${r.development?`<div style="margin-bottom:14px;padding:14px;background:#fff7ed;border-left:3px solid #f59e0b;border-radius:0 8px 8px 0"><div style="font-size:10px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Development Areas</div><div style="font-size:13px;color:#1a2744;line-height:1.6">${r.development}</div></div>`:''}
+    ${r.goals?`<div style="margin-bottom:14px;padding:14px;background:#eff6ff;border-left:3px solid #3b82f6;border-radius:0 8px 8px 0"><div style="font-size:10px;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Goals & Action Plan</div><div style="font-size:13px;color:#1a2744;line-height:1.6">${r.goals}</div></div>`:''}
+    ${r.manager_sig_name?`<div style="margin-top:16px;padding:14px;background:var(--gray-50);border:1px solid var(--gray-200);border-radius:8px">
+      <div style="font-size:10px;font-weight:700;color:var(--gray-400);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Signatures</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div><div style="font-size:11px;color:var(--gray-500)">Manager</div><div style="font-size:13px;font-weight:600">${r.manager_sig_name}${r.manager_sig_title?' · '+r.manager_sig_title:''}</div><div style="font-size:11px;color:var(--gray-400)">${fmtD(r.manager_sig_date)}</div></div>
+        ${r.employee_sig_name?`<div><div style="font-size:11px;color:var(--gray-500)">Employee</div><div style="font-size:13px;font-weight:600">${r.employee_sig_name}</div><div style="font-size:11px;color:var(--gray-400)">${fmtD(r.employee_sig_date)}</div></div>`:''}
+      </div></div>`:''}
+    ${r.pdf_path?`<div style="margin-top:16px;padding:12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;font-size:12px;color:#0369a1">📎 PDF stored at: <code style="font-size:11px">${r.pdf_path}</code></div>`:''}
+  `;
+}
+
+// ── Probation Comparison View ──────────────────────────────────────
+function buildComparisonView(curr, prev, fmtD, currScore) {
+  const prevScore = prev.overall_score ? parseFloat(prev.overall_score).toFixed(2) : null;
+  const delta = (currScore && prevScore) ? (parseFloat(currScore) - parseFloat(prevScore)) : null;
+  const deltaColor = delta === null ? '#6b7280' : delta > 0 ? '#065f46' : delta < 0 ? '#dc2626' : '#1e40af';
+  const deltaArrow = delta === null ? '—' : delta > 0 ? '▲' : delta < 0 ? '▼' : '●';
+  const prevTypeLabel = {annual:'Annual Review', coaching:'Coaching Plan', progress:'Probation Review'}[prev.review_type] || prev.review_type;
+
+  // Build combined question comparison across all shared question IDs
+  const currResp = curr.responses || {};
+  const prevResp = prev.responses || {};
+
+  // Get template for this employee's role/dept to organize by category
+  const dept = curr.department || '';
+  const pos  = curr.employee_position || '';
+  const template = getTemplate(detectDepartment(dept, pos, false), curr.review_type === 'progress' ? 'progress' : curr.review_type);
+
+  let questionRows = '';
+  let improvedCount = 0, declinedCount = 0, sameCount = 0, totalCompared = 0;
+
+  template.forEach(cat => {
+    const ratingQs = cat.questions.filter(q => q.type !== 'textarea');
+    const catRows = ratingQs.map(q => {
+      const cVal = typeof currResp[q.id] === 'number' ? currResp[q.id] : null;
+      const pVal = typeof prevResp[q.id] === 'number' ? prevResp[q.id] : null;
+      if (cVal === null && pVal === null) return '';
+      const diff = (cVal !== null && pVal !== null) ? cVal - pVal : null;
+      if (diff !== null) {
+        totalCompared++;
+        if (diff > 0) improvedCount++;
+        else if (diff < 0) declinedCount++;
+        else sameCount++;
+      }
+      const badge = diff === null ? '' :
+        diff > 0  ? `<span style="background:#dcfce7;color:#065f46;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">▲ +${diff} Better</span>` :
+        diff < 0  ? `<span style="background:#fee2e2;color:#dc2626;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">▼ ${diff} Worse</span>` :
+                    `<span style="background:#f1f5f9;color:#475569;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px">● Same</span>`;
+      const dotColor = diff === null ? '#d1d5db' : diff > 0 ? '#10b981' : diff < 0 ? '#ef4444' : '#6366f1';
+      return `<tr>
+        <td style="padding:8px 10px;font-size:11px;color:#374151;line-height:1.4;border-bottom:1px solid #f3f4f6">${q.label}</td>
+        <td style="text-align:center;padding:8px;border-bottom:1px solid #f3f4f6">
+          <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:#f0f4ff;font-size:13px;font-weight:700;color:var(--navy)">${pVal ?? '—'}</span>
+        </td>
+        <td style="text-align:center;padding:8px;border-bottom:1px solid #f3f4f6">
+          <span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:${diff>0?'#dcfce7':diff<0?'#fee2e2':'#f0f4ff'};font-size:13px;font-weight:700;color:${dotColor}">${cVal ?? '—'}</span>
+        </td>
+        <td style="padding:8px 10px;border-bottom:1px solid #f3f4f6">${badge}</td>
+      </tr>`;
+    }).filter(Boolean).join('');
+
+    if (!catRows) return;
+    const catAvgCurr = (() => { const vals=ratingQs.map(q=>currResp[q.id]).filter(v=>typeof v==='number'&&v>0); return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:null; })();
+    const catAvgPrev = (() => { const vals=ratingQs.map(q=>prevResp[q.id]).filter(v=>typeof v==='number'&&v>0); return vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:null; })();
+    const catDelta = (catAvgCurr&&catAvgPrev) ? catAvgCurr-catAvgPrev : null;
+    questionRows += `
+      <tr><td colspan="4" style="padding:10px 10px 4px;background:#f8fafc">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span style="font-family:var(--font-display);font-size:12px;font-weight:700;color:var(--navy)">${cat.title}</span>
+          ${catDelta!==null?`<span style="font-size:11px;font-weight:700;color:${catDelta>0?'#065f46':catDelta<0?'#dc2626':'#6366f1'}">${catDelta>0?'▲ +':'▼ '}${Math.abs(catDelta).toFixed(2)} avg</span>`:''}
+        </div>
+      </td></tr>
+      ${catRows}`;
+  });
+
+  // Auto-conclusion
+  const pct = totalCompared > 0 ? Math.round((improvedCount/totalCompared)*100) : 0;
+  const conclusion = totalCompared === 0 ? 'Not enough comparable data to draw a conclusion.' :
+    pct >= 70 ? `Strong overall improvement — ${pct}% of rated questions improved. Employee has demonstrated meaningful progress since the prior review.` :
+    pct >= 50 ? `Moderate improvement — ${pct}% of questions improved. Employee is trending positive but key areas still need attention.` :
+    pct >= 30 ? `Mixed results — only ${pct}% of questions improved. The coaching plan has had limited effect; targeted follow-up is recommended.` :
+    `Decline overall — only ${pct}% of questions improved. Employee has not met the expectations set in the prior review. Escalation or action plan revision should be considered.`;
+  const conclusionColor = pct>=70?'#065f46':pct>=50?'#1e40af':pct>=30?'#92400e':'#dc2626';
+  const conclusionBg    = pct>=70?'#f0fdf4':pct>=50?'#eff6ff':pct>=30?'#fffbeb':'#fef2f2';
+
+  return `
+    <!-- Score comparison banner -->
+    <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:0;margin-bottom:20px;border-radius:10px;overflow:hidden;border:1px solid var(--gray-200)">
+      <div style="background:#f8fafc;padding:16px 20px;text-align:center">
+        <div style="font-size:10px;font-weight:700;color:var(--gray-400);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Previous · ${prevTypeLabel}</div>
+        <div style="font-size:10px;color:var(--gray-400);margin-bottom:8px">${fmtD(prev.review_date)}</div>
+        <div style="font-size:32px;font-weight:700;font-family:var(--font-display);color:var(--navy)">${prevScore ?? '—'}</div>
+        <div style="font-size:11px;color:var(--gray-500);margin-top:2px">${prev.performance_band||''}</div>
+      </div>
+      <div style="background:var(--navy);padding:16px 20px;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:100px">
+        <div style="font-size:28px;font-weight:900;color:${delta>0?'#4ade80':delta<0?'#f87171':'#94a3b8'}">${deltaArrow}</div>
+        <div style="font-size:18px;font-weight:700;color:#fff;margin-top:2px">${delta!==null?(delta>0?'+':'')+delta.toFixed(2):'—'}</div>
+        <div style="font-size:10px;color:rgba(255,255,255,0.5);margin-top:2px">Overall Δ</div>
+      </div>
+      <div style="background:linear-gradient(135deg,var(--navy),#2a3f6b);padding:16px 20px;text-align:center">
+        <div style="font-size:10px;font-weight:700;color:rgba(255,255,255,0.6);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Probation Review</div>
+        <div style="font-size:10px;color:rgba(255,255,255,0.5);margin-bottom:8px">${fmtD(curr.review_date)}</div>
+        <div style="font-size:32px;font-weight:700;font-family:var(--font-display);color:#fff">${currScore ?? '—'}</div>
+        <div style="font-size:11px;color:var(--gold);margin-top:2px">${curr.performance_band||''}</div>
+      </div>
+    </div>
+
+    <!-- Summary chips -->
+    <div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:90px;padding:12px;background:#dcfce7;border-radius:8px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:#065f46">${improvedCount}</div>
+        <div style="font-size:10px;font-weight:700;color:#065f46;text-transform:uppercase;letter-spacing:0.5px">Improved</div>
+      </div>
+      <div style="flex:1;min-width:90px;padding:12px;background:#fee2e2;border-radius:8px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:#dc2626">${declinedCount}</div>
+        <div style="font-size:10px;font-weight:700;color:#dc2626;text-transform:uppercase;letter-spacing:0.5px">Declined</div>
+      </div>
+      <div style="flex:1;min-width:90px;padding:12px;background:#f1f5f9;border-radius:8px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:#475569">${sameCount}</div>
+        <div style="font-size:10px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.5px">Unchanged</div>
+      </div>
+      <div style="flex:1;min-width:90px;padding:12px;background:#f0f4ff;border-radius:8px;text-align:center">
+        <div style="font-size:22px;font-weight:700;color:var(--navy)">${totalCompared}</div>
+        <div style="font-size:10px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:0.5px">Compared</div>
+      </div>
+    </div>
+
+    <!-- Auto conclusion -->
+    <div style="padding:14px 18px;background:${conclusionBg};border-left:4px solid ${conclusionColor};border-radius:0 8px 8px 0;margin-bottom:20px">
+      <div style="font-size:10px;font-weight:700;color:${conclusionColor};text-transform:uppercase;letter-spacing:1px;margin-bottom:5px">📊 Auto Conclusion</div>
+      <div style="font-size:13px;color:#1a2744;line-height:1.6">${conclusion}</div>
+    </div>
+
+    <!-- Side-by-side charts -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px">
+      <div style="background:var(--gray-50);border:1px solid var(--gray-200);border-radius:8px;padding:14px">
+        <div style="font-size:11px;font-weight:700;color:var(--gray-500);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;text-align:center">${prevTypeLabel} · ${fmtD(prev.review_date)}</div>
+        <canvas id="rdmChartPrev" height="200"></canvas>
+      </div>
+      <div style="background:#f0f4ff;border:1px solid #c7d2fe;border-radius:8px;padding:14px">
+        <div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px;text-align:center">Probation Review · ${fmtD(curr.review_date)}</div>
+        <canvas id="rdmChartCurr" height="200"></canvas>
+      </div>
+    </div>
+
+    <!-- Q×Q table -->
+    <div style="margin-bottom:20px">
+      <div style="font-size:11px;font-weight:700;color:var(--gray-500);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">Question-by-Question Comparison</div>
+      <div style="overflow-x:auto;border:1px solid var(--gray-200);border-radius:8px">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:var(--navy);color:#fff">
+              <th style="text-align:left;padding:9px 10px;font-weight:600;font-size:11px">Question</th>
+              <th style="text-align:center;padding:9px 8px;font-weight:600;font-size:11px;white-space:nowrap">Prior</th>
+              <th style="text-align:center;padding:9px 8px;font-weight:600;font-size:11px;white-space:nowrap">Now</th>
+              <th style="text-align:center;padding:9px 10px;font-weight:600;font-size:11px">Verdict</th>
+            </tr>
+          </thead>
+          <tbody>${questionRows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Narratives (current) -->
+    ${curr.strengths?`<div style="margin-bottom:12px;padding:14px;background:#f0fdf4;border-left:3px solid #10b981;border-radius:0 8px 8px 0"><div style="font-size:10px;font-weight:700;color:#065f46;text-transform:uppercase;letter-spacing:1px;margin-bottom:5px">Strengths (Probation)</div><div style="font-size:13px;color:#1a2744;line-height:1.6">${curr.strengths}</div></div>`:''}
+    ${curr.development?`<div style="margin-bottom:12px;padding:14px;background:#fff7ed;border-left:3px solid #f59e0b;border-radius:0 8px 8px 0"><div style="font-size:10px;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:1px;margin-bottom:5px">Remaining Development Areas</div><div style="font-size:13px;color:#1a2744;line-height:1.6">${curr.development}</div></div>`:''}
+    ${curr.goals?`<div style="margin-bottom:12px;padding:14px;background:#eff6ff;border-left:3px solid #3b82f6;border-radius:0 8px 8px 0"><div style="font-size:10px;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:1px;margin-bottom:5px">Next Steps</div><div style="font-size:13px;color:#1a2744;line-height:1.6">${curr.goals}</div></div>`:''}
+  `;
+}
+
+// ── Render dual radar/bar charts for comparison ────────────────────
+function renderComparisonCharts(curr, prev) {
+  const catScoresCurr = curr.category_scores || {};
+  const catScoresPrev = prev.category_scores || {};
+  const allCats = [...new Set([...Object.keys(catScoresCurr), ...Object.keys(catScoresPrev)])];
+  if (!allCats.length) return;
+
+  const labels = allCats.map(c => c.replace(/_/g,' ').replace(/\b\w/g,l=>l.toUpperCase()).substring(0,14));
+  const colorPrev = 'rgba(100,116,139,0.7)';
+  const colorCurr = 'rgba(26,39,68,0.8)';
+
+  ['Prev','Curr'].forEach(which => {
+    const el = document.getElementById(`rdmChart${which}`);
+    if (!el) return;
+    const scores = allCats.map(c => which==='Prev' ? (catScoresPrev[c]||0) : (catScoresCurr[c]||0));
+    if (window.Chart) {
+      new window.Chart(el.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: which === 'Prev' ? 'Prior' : 'Probation',
+            data: scores,
+            backgroundColor: which === 'Prev' ? colorPrev : colorCurr,
+            borderRadius: 4
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { min:0, max:5, ticks:{ stepSize:1, font:{size:10} }, grid:{ color:'rgba(0,0,0,0.05)' } },
+            x: { ticks:{ font:{size:9}, maxRotation:35 } }
+          }
+        }
+      });
+    }
+  });
+}
+
+// ── Delete review ──────────────────────────────────────────────────
+function confirmDeleteReview() {
+  if (!_rdmCurrentId) return;
+  if (!confirm('⚠️ Delete this review permanently? This cannot be undone.')) return;
+  deleteReview(_rdmCurrentId);
+}
+
+async function deleteReview(reviewId) {
+  try {
+    const { error } = await sb.from('performance_reviews').delete().eq('id', reviewId);
+    if (error) throw error;
+    closeReviewModal();
+    showToast('Review deleted ✅', 'success');
+    await refreshHistory();
+  } catch(e) {
+    showToast('Delete failed: ' + e.message, 'error');
   }
 }
 
 function closeReviewModal() {
   const m = document.getElementById('reviewDetailModal');
   if (m) m.style.display = 'none';
+  const cont = document.getElementById('rdmContainer');
+  if (cont) cont.style.maxWidth = '780px';
 }
 
 function openPdfFromReview() {
@@ -4751,7 +4966,7 @@ function exportHistoryCSV() {
 
 <!-- ═══════════════ REVIEW DETAIL MODAL ═══════════════ -->
 <div id="reviewDetailModal" style="display:none;position:fixed;inset:0;z-index:8000;background:rgba(0,0,0,0.45);overflow-y:auto" onclick="if(event.target===this)closeReviewModal()">
-  <div style="background:#fff;max-width:780px;margin:40px auto;border-radius:12px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,0.22)">
+  <div id="rdmContainer" style="background:#fff;max-width:780px;margin:40px auto;border-radius:12px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,0.22)">
     <!-- Modal header -->
     <div style="background:var(--navy);padding:20px 28px;display:flex;align-items:center;justify-content:space-between">
       <div>
@@ -4764,12 +4979,15 @@ function exportHistoryCSV() {
       </div>
     </div>
     <!-- Modal body -->
-    <div id="rdmBody" style="padding:28px;max-height:70vh;overflow-y:auto">
+    <div id="rdmBody" style="padding:28px;max-height:75vh;overflow-y:auto">
       <div style="text-align:center;color:var(--gray-400);padding:40px">⏳ Loading...</div>
     </div>
     <!-- Modal footer -->
     <div style="padding:16px 28px;background:var(--gray-50);border-top:1px solid var(--gray-200);display:flex;justify-content:space-between;align-items:center">
-      <div style="font-size:11px;color:var(--gray-400)" id="rdmStatus"></div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="font-size:11px;color:var(--gray-400)" id="rdmStatus"></div>
+        <button id="rdmDeleteBtn" onclick="confirmDeleteReview()" style="display:none;background:#fef2f2;border:1px solid #fca5a5;color:#dc2626;font-weight:600;font-size:12px;padding:7px 16px;border-radius:8px;cursor:pointer">🗑 Delete Review</button>
+      </div>
       <button onclick="closeReviewModal()" style="background:var(--navy);border:none;color:#fff;font-weight:600;font-size:13px;padding:8px 20px;border-radius:8px;cursor:pointer">Close</button>
     </div>
   </div>
