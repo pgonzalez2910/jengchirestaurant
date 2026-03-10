@@ -10249,6 +10249,18 @@ const PLACEHOLDER_IMAGE = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d
 
 const GITHUB_IMAGE_BASE = 'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/';
 
+// ── Global image error fallback: if any product image 404s, show placeholder ──
+document.addEventListener('DOMContentLoaded', () => {
+    document.body.addEventListener('error', function(e) {
+        const t = e.target;
+        if (t && t.tagName === 'IMG' && !t.dataset.fallbackApplied) {
+            t.dataset.fallbackApplied = 'true';
+            t.src = PLACEHOLDER_IMAGE;
+            t.style.opacity = '0.4';
+        }
+    }, true);
+});
+
 
 
 
@@ -10703,6 +10715,16 @@ function getSupabaseClient() {
 
         supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+    // ── Auto-check: ensure item_verification_tasks table exists ──
+    setTimeout(async () => {
+        try {
+            const { error } = await supabaseClient.from('item_verification_tasks').select('id').limit(1);
+            if (error && (error.code === '42P01' || (error.message||'').includes('does not exist'))) {
+                console.warn('[Inventory] item_verification_tasks table missing. Run this SQL in Supabase:\nCREATE TABLE IF NOT EXISTS public.item_verification_tasks (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, product_name text, assigned_to text, notes text, status text DEFAULT \'pending\', created_at timestamptz DEFAULT now());\nALTER TABLE public.item_verification_tasks ENABLE ROW LEVEL SECURITY;\nCREATE POLICY \"Allow all\" ON public.item_verification_tasks FOR ALL USING (true);');
+            }
+        } catch(e) { /* silent */ }
+    }, 3000);
+
         console.log('✅ Supabase client initialized successfully');
 
     }
@@ -10987,20 +11009,23 @@ async function initializeApp() {
 
                     .from('inventory_management')
 
-                    .select('product_name, image_url');
+                    .select('product_name, image_url, item_code, assigned_to');
 
                 
 
                 const imageMap = new Map();
-
+                const mgmtAssignByCode = new Map();
+                const mgmtAssignByName = new Map();
                 (inventoryMgmt || []).forEach(item => {
-
-                    if (item.image_url) {
-
-                        imageMap.set(item.product_name, item.image_url);
-
+                    if (item.image_url) imageMap.set(item.product_name, item.image_url);
+                    if (item.assigned_to) {
+                        const arr = Array.isArray(item.assigned_to) ? item.assigned_to
+                            : (typeof item.assigned_to === 'string' && item.assigned_to.trim() ? [item.assigned_to.trim()] : []);
+                        if (arr.length > 0) {
+                            if (item.item_code) mgmtAssignByCode.set(item.item_code.toLowerCase().trim(), arr);
+                            mgmtAssignByName.set((item.product_name||'').toLowerCase().trim(), arr);
+                        }
                     }
-
                 });
 
 
@@ -11049,7 +11074,15 @@ async function initializeApp() {
 
                         image_path: imagePath,
 
-                        assigned_to: item.assigned_to || [],
+                        assigned_to: (() => {
+                            const inv = item.assigned_to;
+                            const invArr = Array.isArray(inv) ? inv
+                                : (typeof inv === 'string' && inv.trim() ? [inv.trim()] : []);
+                            if (invArr.length > 0) return invArr;
+                            const code = (item.item_code||'').toLowerCase().trim();
+                            const name = (item.product_name||'').toLowerCase().trim();
+                            return mgmtAssignByCode.get(code) || mgmtAssignByName.get(name) || [];
+                        })(),
 
                         invoice_id: item.invoice_id
 
@@ -12442,95 +12475,58 @@ tbody.innerHTML = filteredData.map((item, idx) => {
 
 
 
+    // ── Parse assigned_to robustly (handles array, JSON string, plain string) ──
     let assignedArray = [];
-
     try {
-
-        if (Array.isArray(item.assigned_to)) {
-
-            assignedArray = item.assigned_to;
-
-        } else if (typeof item.assigned_to === 'string') {
-
-            const s = item.assigned_to.trim();
-
+        const raw = item.assigned_to;
+        if (Array.isArray(raw)) {
+            assignedArray = raw;
+        } else if (typeof raw === 'string') {
+            const s = raw.trim();
             if (s && s !== '[]' && s !== '{}' && s !== 'null') {
-
-                assignedArray = JSON.parse(s);
-
+                // Try JSON parse first (handles '["julio"]' or '"julio"')
+                try {
+                    const parsed = JSON.parse(s);
+                    assignedArray = Array.isArray(parsed) ? parsed : [String(parsed)];
+                } catch(e2) {
+                    // Plain string like 'julio' or 'Rony'
+                    assignedArray = [s];
+                }
             }
-
         }
-
-    } catch (e) {
-
-        assignedArray = [];
-
-    }
-
-    assignedArray = assignedArray.filter(x => typeof x === 'string' && x.trim() !== '');
-
-
+    } catch (e) { assignedArray = []; }
+    // Normalize: lowercase, no empties
+    assignedArray = assignedArray
+        .filter(x => typeof x === 'string' && x.trim() !== '')
+        .map(x => x.trim().toLowerCase());
 
     const checkboxCell = (deleteMode || bulkAssignMode) ? `
-
         <td>
-
-            <input type="checkbox" 
-
-                   class="item-checkbox" 
-
+            <input type="checkbox"
+                   class="item-checkbox"
                    ${selectedItems.has(item.id) ? 'checked' : ''}
-
-                   onchange="toggleItemSelection('${item.id}')" 
-
-                   style="cursor: pointer; width: 18px; height: 18px;">
-
+                   onchange="toggleItemSelection('${item.id}')"
+                   style="cursor:pointer;width:18px;height:18px;">
         </td>
-
     ` : '';
 
+    // ONE dropdown — no badge — pre-selects current person
+    const currentAssignee = assignedArray.length > 0 ? assignedArray[0] : '';
+    const sel = (v) => currentAssignee === v ? 'selected' : '';
+    const assignmentCell = `
+        <select class="assignment-select"
+                onchange="quickAssign('${item.item_code}', '${item.id}', this.value);"
+                style="width:auto;min-width:115px;">
+            <option value="" ${!currentAssignee ? 'selected' : ''}>+ Assign</option>
+            <option value="julio"   ${sel('julio')}>Julio</option>
+            <option value="rony"    ${sel('rony')}>Rony</option>
+            <option value="office"  ${sel('office')}>Office</option>
+            <option value="leydi"   ${sel('leydi')}>Leydi</option>
+            <option value="procoro" ${sel('procoro')}>Procoro</option>
+            <option value="wilson"  ${sel('wilson')}>Wilson</option>
+            <option value="pablo"   ${sel('pablo')}>Pablo</option>
+        </select>`;
 
-
-    const assignmentBadges = assignedArray.length > 0 
-
-        ? assignedArray.map(person => `
-
-            <span class="assignment-badge" 
-
-                  onclick="removeSingleAssignment('${item.id}', '${person}')"
-
-                  title="Click to remove ${person}">
-
-                ${person.charAt(0).toUpperCase() + person.slice(1)}
-
-            </span>`
-
-          ).join(' ')
-
-        : '';
-
-
-
-    const assignmentSelect = assignedArray.length === 0 ? `
-
-        <select class="assignment-select" 
-
-                onchange="quickAssign('${item.item_code}', this.value); this.value='';"
-
-                style="margin-left: 0.5rem; width: auto; min-width: 100px;">
-
-            <option value="">+ Assign</option>
-
-            <option value="rony">Rony</option>
-
-            <option value="julio">Julio</option>
-
-            <option value="office">Office</option>
-
-        </select>`
-
-    : '';
 
 
 
@@ -12554,7 +12550,7 @@ tbody.innerHTML = filteredData.map((item, idx) => {
 
             <td>${formatDate(item.purchase_date)}</td>
 
-            <td>${assignmentBadges}${assignmentSelect}</td>
+            <td>${assignmentCell}</td>
 
             <td>
 
@@ -13126,7 +13122,7 @@ async function saveQuickEditInvoice(event) {
 
 
 
-        async function quickAssign(itemCode, person) {
+        async function quickAssign(itemCode, itemId, person) {
 
             if (!person || !itemCode) return;
 
@@ -13136,7 +13132,9 @@ async function saveQuickEditInvoice(event) {
 
             try {
 
-                const itemsToUpdate = inventoryData.filter(item => item.item_code === itemCode);
+                const itemsToUpdate = itemId
+                    ? inventoryData.filter(item => item.id === itemId || item.item_code === itemCode)
+                    : inventoryData.filter(item => item.item_code === itemCode);
 
                 if (itemsToUpdate.length === 0) {
 
@@ -13170,6 +13168,36 @@ async function saveQuickEditInvoice(event) {
 
                     }
 
+                }
+
+
+                // ✅ Also update inventory_management.assigned_to by item_code
+                try {
+                    // Try update by item_code first
+                    const { data: mgmtRows } = await supabaseClient
+                        .from('inventory_management')
+                        .select('id, assigned_to, item_code')
+                        .eq('item_code', itemCode);
+
+                    if (mgmtRows && mgmtRows.length > 0) {
+                        for (const mgmtRow of mgmtRows) {
+                            await supabaseClient
+                                .from('inventory_management')
+                                .update({ assigned_to: [person] })
+                                .eq('id', mgmtRow.id);
+                        }
+                    } else {
+                        // Fallback: update by product_name (match first item in list)
+                        const productName = itemsToUpdate[0]?.product_name;
+                        if (productName) {
+                            await supabaseClient
+                                .from('inventory_management')
+                                .update({ assigned_to: [person] })
+                                .eq('product_name', productName);
+                        }
+                    }
+                } catch(mgmtErr) {
+                    console.warn('inventory_management assign sync warn:', mgmtErr);
                 }
 
 
@@ -21554,11 +21582,11 @@ async function saveNewItemAndAddToInvoice() {
 
 
 
-        // Save to inventory_data
+        // Save to inventory_management
 
         if (code || price > 0) {
 
-            const { error: invErr } = await supabaseClient.from('inventory_data').insert([{
+            const { error: invErr } = await supabaseClient.from('inventory_management').insert([{
 
                 item_code: code || null, product_name: name,
 
@@ -21566,7 +21594,7 @@ async function saveNewItemAndAddToInvoice() {
 
             }]);
 
-            if (invErr && !(invErr.message||'').includes('duplicate')) console.warn('inventory_data warn:', invErr);
+            if (invErr && !(invErr.message||'').includes('duplicate')) console.warn('inventory_management warn:', invErr);
 
         }
 
@@ -23644,7 +23672,7 @@ async function loadJulioOrders() {
 
         const dateInput   = document.getElementById('julioOrderDate');
 
-        const selectedDate = dateInput ? dateInput.value : todayYMD();
+        const selectedDate = dateInput?.value || todayYMD();
 
 
 
@@ -24598,7 +24626,7 @@ async function loadRonyOrders() {
 
         const dateInput = document.getElementById('ronyOrderDate');
 
-        const selectedDate = dateInput ? dateInput.value : todayYMD();
+        const selectedDate = dateInput?.value || todayYMD();
 
         
 
@@ -36846,7 +36874,7 @@ async function initializeEnhancedPlaceOrder() {
 
     // ✅ SYNC FIRST, then load
 
-    const dateISO = document.getElementById('createOrderDate').value || today;
+    const dateISO = document.getElementById('createOrderDate')?.value || todayYMD() || today;
 
     await syncAndLoad(dateISO);
 
@@ -39390,7 +39418,7 @@ async function saveItemFromTracking(event) {
 
         
 
-        // Also add to inventory_data table if needed
+        // Also add to inventory_management table if needed
 
         if (itemCode && price > 0) {
 
@@ -39412,7 +39440,7 @@ async function saveItemFromTracking(event) {
 
             const { error: invError } = await supabaseClient
 
-                .from('inventory_data')
+                .from('inventory_management')
 
                 .insert([inventoryItem]);
 
@@ -39420,11 +39448,11 @@ async function saveItemFromTracking(event) {
 
             if (invError) {
 
-                console.warn('Could not add to inventory_data:', invError);
+                console.warn('Could not add to inventory_management:', invError);
 
             } else {
 
-                console.log('✅ Also added to inventory_data');
+                console.log('✅ Also added to inventory_management');
 
             }
 
@@ -40434,9 +40462,9 @@ async function runAutoAssignInventory(btnEl) {
             .select('product_name, item_code, user')
             .not('user', 'is', null);
 
-        // 3. Load inventory_data for assignments
+        // 3. Load inventory_management for assignments
         const { data: invDataRows } = await supabaseClient
-            .from('inventory_data')
+            .from('inventory_management')
             .select('product_name, item_code, assigned_to');
 
         // Build lookup maps: item_code → user, product_name → user
@@ -40451,7 +40479,7 @@ async function runAutoAssignInventory(btnEl) {
             if (r.product_name) assignMapByName[(r.product_name||'').toLowerCase().trim()] = u;
         });
 
-        // From inventory_data
+        // From inventory_management
         (invDataRows || []).forEach(r => {
             if (!r.assigned_to) return;
             let users = r.assigned_to;
@@ -40557,9 +40585,9 @@ async function silentAutoAssignProduct(productName, itemCode) {
             if (arr[0]) return arr[0];
         }
 
-        // Check inventory_data
+        // Check inventory_management
         const { data: id2 } = await supabaseClient
-            .from('inventory_data')
+            .from('inventory_management')
             .select('assigned_to')
             .or(`product_name.eq.${productName}${itemCode ? ',item_code.eq.'+itemCode : ''}`)
             .limit(1);
@@ -40580,12 +40608,20 @@ async function saveVerificationAssignment() {
         const { error } = await supabaseClient
             .from('item_verification_tasks')
             .insert({ product_name: product, assigned_to: assignee, notes, status: 'pending', created_at: new Date().toISOString() });
-        if (error) throw error;
+        if (error) {
+            // Table likely doesn't exist yet — guide the user to create it
+            if (error.code === '42P01' || (error.message && error.message.includes('does not exist'))) {
+                showAlert(`⚠️ Table missing! Run this SQL in Supabase:\n\nCREATE TABLE IF NOT EXISTS public.item_verification_tasks (\n  id uuid DEFAULT gen_random_uuid() PRIMARY KEY,\n  product_name text,\n  assigned_to text,\n  notes text,\n  status text DEFAULT 'pending',\n  created_at timestamptz DEFAULT now()\n);\n\nThen enable RLS:\nALTER TABLE public.item_verification_tasks ENABLE ROW LEVEL SECURITY;\nCREATE POLICY \"Allow all\" ON public.item_verification_tasks FOR ALL USING (true);`, 'error');
+            } else {
+                showAlert('❌ Error saving task: ' + error.message, 'error');
+            }
+            return;
+        }
         showAlert(`✅ Task assigned: ${assignee} will verify item code for "${product}"`, 'success');
+        document.getElementById('assignVerifyModal').style.display = 'none';
     } catch(e) {
-        showAlert(`✅ Task noted: ${assignee} → verify "${product}". (SQL: CREATE TABLE item_verification_tasks if needed)`, 'info');
+        showAlert('❌ Unexpected error: ' + e.message, 'error');
     }
-    document.getElementById('assignVerifyModal').style.display = 'none';
 }
 
 async function openVerificationTasksModal() {
@@ -41155,6 +41191,7 @@ async function markVerifyDone(taskId) {
     </div>
 </div>
 </body>
+
 
 
 
