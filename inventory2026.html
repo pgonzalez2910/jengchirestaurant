@@ -7700,7 +7700,22 @@ input[id^="par-input-"]:focus {
             style="background:white;color:#1e293b;border:none;border-radius:7px;padding:.32rem .75rem;font-size:.78rem;font-weight:700;cursor:pointer;">
             <i class="fas fa-sync-alt"></i> Refresh
         </button>
+        <button onclick="diagnoseBudgetDB()"
+            style="background:#fef9c3;color:#92400e;border:1.5px solid #fde68a;border-radius:7px;padding:.32rem .75rem;font-size:.78rem;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:.35rem;"
+            title="Check what budget data is actually saved in the database">
+            <i class="fas fa-database"></i> 🔍 Check DB
+        </button>
     </div>
+</div>
+
+<!-- DB Diagnostic Panel (hidden by default) -->
+<div id="budgetDiagPanel" style="display:none;background:#1e293b;color:#e2e8f0;border-radius:12px;padding:1.25rem 1.5rem;margin-bottom:1.5rem;font-family:monospace;font-size:.8rem;line-height:1.7;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem;">
+        <span style="font-weight:700;color:#fbbf24;font-size:.9rem;">🔍 Budget Database Diagnostic</span>
+        <button onclick="document.getElementById('budgetDiagPanel').style.display='none'"
+            style="background:rgba(255,255,255,.1);color:white;border:none;border-radius:6px;padding:.2rem .6rem;cursor:pointer;font-size:.75rem;">✕ Close</button>
+    </div>
+    <div id="budgetDiagContent">Running…</div>
 </div>
 
 <!-- KPI Cards -->
@@ -28557,10 +28572,6 @@ const ALLOWED_VENDORS = [
     'Delta Office Products',
 
     'Autochlor',
-    'HMart',
-    'SAMS Club',
-    'Home Depot',
-    'Costco',
     'Restaurant Depot'
 ];
 
@@ -32172,6 +32183,138 @@ function setBudgetView(mode) {
     loadBudgetTracking();
 }
 
+async function diagnoseBudgetDB() {
+    const panel = document.getElementById('budgetDiagPanel');
+    const out   = document.getElementById('budgetDiagContent');
+    panel.style.display = 'block';
+    out.innerHTML = '<span style="color:#94a3b8;">⏳ Querying database…</span>';
+
+    const lines = [];
+    const ok  = s => `<span style="color:#4ade80;">${s}</span>`;
+    const err = s => `<span style="color:#f87171;">${s}</span>`;
+    const warn= s => `<span style="color:#fbbf24;">${s}</span>`;
+    const dim = s => `<span style="color:#94a3b8;">${s}</span>`;
+    const code= s => `<code style="background:#0f172a;color:#7dd3fc;padding:.35rem .75rem;border-radius:6px;display:block;margin:.4rem 0;white-space:pre;font-size:.77rem;line-height:1.6;">${s}</code>`;
+    const copyBtn = (txt, label) => `<button onclick="navigator.clipboard.writeText(${JSON.stringify(txt)}).then(()=>{this.textContent='✅ Copied!';setTimeout(()=>this.textContent='📋 Copy SQL',1500)})"
+        style="margin-top:.4rem;background:#3b82f6;color:white;border:none;border-radius:6px;padding:.3rem .75rem;font-size:.75rem;font-weight:700;cursor:pointer;">📋 ${label||'Copy SQL'}</button>`;
+
+    // ── Step 1: Check if table exists ──────────────────────────────
+    lines.push('<b style="color:#fbbf24;font-size:.9rem;">── Step 1: Table existence check ──</b>');
+    const { data: raw, error: rawErr } = await supabaseClient
+        .from('budget_settings').select('*').limit(3);
+
+    if (rawErr) {
+        // Table likely does not exist
+        lines.push(err(`❌ CANNOT READ budget_settings`));
+        lines.push(err(`   Error: ${rawErr.message}`));
+        lines.push(err(`   Code:  ${rawErr.code || 'N/A'} | HTTP: ${rawErr.status || rawErr.details || 'N/A'}`));
+        lines.push('');
+        lines.push(err('🚨 DIAGNOSIS: The budget_settings table does NOT exist in your Supabase project.'));
+        lines.push(warn('   This is why all budgets show "No Budget Set" and every save fails with 400.'));
+        lines.push('');
+        lines.push('<b style="color:#fbbf24;font-size:.9rem;">── FIX: Run this SQL in Supabase → SQL Editor ──</b>');
+
+        const createSQL = `CREATE TABLE IF NOT EXISTS budget_settings (
+  id            bigserial PRIMARY KEY,
+  vendor        text        NOT NULL,
+  amount        numeric     NOT NULL DEFAULT 0,
+  period_type   text        NOT NULL DEFAULT 'monthly',
+  year          integer,
+  month         integer,
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (vendor, period_type, year, month)
+);
+
+-- Allow app to read/write (disable RLS or add policy)
+ALTER TABLE budget_settings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all" ON budget_settings FOR ALL USING (true) WITH CHECK (true);`;
+
+        lines.push(code(createSQL.replace(/</g,'&lt;').replace(/>/g,'&gt;')));
+        lines.push(copyBtn(createSQL, 'Copy CREATE TABLE SQL'));
+        lines.push('');
+        lines.push(warn('Steps:'));
+        lines.push(warn('  1. Go to your Supabase project → SQL Editor'));
+        lines.push(warn('  2. Paste the SQL above and click Run'));
+        lines.push(warn('  3. Come back here and click 🔍 Check DB again to verify'));
+        lines.push(warn('  4. Then re-enter your budgets using Set Monthly Budget'));
+        out.innerHTML = lines.join('<br>');
+        return;
+    }
+
+    lines.push(ok(`✅ Table EXISTS`));
+
+    // ── Step 2: Column check ────────────────────────────────────────
+    lines.push('');
+    lines.push('<b style="color:#fbbf24;font-size:.9rem;">── Step 2: Column check ──</b>');
+    const cols = raw && raw.length > 0 ? Object.keys(raw[0]) : [];
+    if (cols.length > 0) {
+        lines.push(ok(`✅ Columns: ${cols.join(', ')}`));
+    } else {
+        lines.push(warn('⚠️ Table exists but is empty — checking schema via insert probe…'));
+    }
+    const hasYear     = cols.includes('year');
+    const hasMonth    = cols.includes('month');
+    const hasCategory = cols.includes('category');
+    const hasVendor   = cols.includes('vendor');
+    if (hasCategory && !hasVendor) {
+        lines.push(ok('✅ Uses "category" column as vendor field (app updated to match)'));
+    }
+
+    if (!hasYear || !hasMonth) {
+        lines.push(err(`❌ Missing columns: ${!hasYear?'year ':''} ${!hasMonth?'month':''}`));
+        const alterSQL = `ALTER TABLE budget_settings ADD COLUMN IF NOT EXISTS year integer;
+ALTER TABLE budget_settings ADD COLUMN IF NOT EXISTS month integer;
+ALTER TABLE budget_settings DROP CONSTRAINT IF EXISTS budget_settings_vendor_period_type_key;
+ALTER TABLE budget_settings ADD CONSTRAINT budget_settings_unique UNIQUE (category, period_type, year, month);`;
+        lines.push(warn('→ Run this SQL to fix:'));
+        lines.push(code(alterSQL.replace(/</g,'&lt;').replace(/>/g,'&gt;')));
+        lines.push(copyBtn(alterSQL, 'Copy ALTER TABLE SQL'));
+    } else {
+        lines.push(ok('✅ year column: EXISTS'));
+        lines.push(ok('✅ month column: EXISTS'));
+    }
+
+    // ── Step 3: Show all data ───────────────────────────────────────
+    lines.push('');
+    lines.push('<b style="color:#fbbf24;font-size:.9rem;">── Step 3: All saved budget data ──</b>');
+    const { data: allRows, error: allErr } = await supabaseClient
+        .from('budget_settings').select('*').order('category').order('year').order('month');
+    if (allErr) {
+        lines.push(err(`❌ Error reading all rows: ${allErr.message}`));
+    } else if ((allRows||[]).length === 0) {
+        lines.push(err('❌ Table is EMPTY — no budgets have ever been successfully saved.'));
+        lines.push(warn('→ Use Set Monthly Budget on each vendor card to enter and save budgets.'));
+    } else {
+        lines.push(ok(`✅ ${allRows.length} budget row(s) found:`));
+        const byVendor = {};
+        allRows.forEach(r => {
+            const v = r.category || r.vendor || '(null)';
+            if (!byVendor[v]) byVendor[v] = [];
+            byVendor[v].push(r);
+        });
+        Object.entries(byVendor).sort().forEach(([v, rows]) => {
+            lines.push('');
+            lines.push(`<b style="color:#e2e8f0;">📦 ${v}</b> — ${rows.length} row(s)`);
+            rows.forEach(r => {
+                const yr  = r.year  != null ? r.year  : dim('?');
+                const mo  = r.month != null ? r.month : dim('?');
+                const amt = parseFloat(r.amount||0);
+                const ts  = r.updated_at ? r.updated_at.slice(0,10) : '?';
+                const moName = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(mo)||0] || mo;
+                lines.push(
+                    `  ${yr} ${moName.toString().padEnd(4)} → ` +
+                    `<b style="color:#4ade80;">$${amt.toLocaleString('en-US')}</b> ` +
+                    dim(`[${r.period_type||'?'}] saved ${ts}`)
+                );
+            });
+        });
+        lines.push('');
+        lines.push(ok('✅ Schema and data look correct. Budgets should load when you select the matching year/month above.'));
+    }
+
+    out.innerHTML = lines.join('<br>');
+}
+
 async function loadBudgetTracking() {
     showLoading(true);
     try {
@@ -32214,12 +32357,41 @@ async function loadBudgetTracking() {
         if (invErr) throw invErr;
 
         // ── Load budget settings ──────────────────────────────────────
-        // Load ALL monthly budgets — we pick the best match per vendor below
-        const { data: budgetSettings } = await supabaseClient
-            .from('budget_settings')
-            .select('vendor, amount, period_type, year, month, updated_at')
-            .eq('period_type', 'monthly')
-            .order('updated_at', { ascending: false });
+        let budgetSettings = [];
+        let budgetHasYearMonth = false;
+        let budgetTableMissing = false;
+        try {
+            // Load budget settings — table uses 'category' as the vendor field
+            const { data: bs, error: bsErr } = await supabaseClient
+                .from('budget_settings')
+                .select('category, amount, period_type, year, month, updated_at')
+                .eq('period_type', 'monthly')
+                .order('updated_at', { ascending: false });
+            if (!bsErr) {
+                budgetHasYearMonth = true;
+                // Normalize: map category → vendor so rest of code works
+                budgetSettings = (bs || []).map(r => ({ ...r, vendor: r.category }));
+            } else {
+                budgetTableMissing = true;
+                console.warn('[Budget] budget_settings unavailable:', bsErr.message, bsErr.code);
+            }
+        } catch(e) {
+            budgetTableMissing = true;
+            console.warn('[Budget] budget_settings load error:', e);
+        }
+        console.log(`[Budget] Schema: year/month=${budgetHasYearMonth}, tableMissing=${budgetTableMissing}, records=${budgetSettings.length}`);
+
+        // Show banner if table is missing
+        const existingBanner = document.getElementById('budgetTableMissingBanner');
+        if (existingBanner) existingBanner.remove();
+        if (budgetTableMissing) {
+            const banner = document.createElement('div');
+            banner.id = 'budgetTableMissingBanner';
+            banner.style.cssText = 'background:#fef2f2;border:2px solid #fca5a5;border-radius:10px;padding:1rem 1.25rem;margin-bottom:1rem;color:#991b1b;font-weight:600;font-size:.88rem;';
+            banner.innerHTML = '🚨 <b>budget_settings table error — click 🔍 Check DB for details.</b> Click the <b>🔍 Check DB</b> button above to get the exact SQL needed to create it. Once created, your budgets will save and load correctly.';
+            const kpiGrid = document.getElementById('budgetKpiGrid');
+            if (kpiGrid) kpiGrid.parentNode.insertBefore(banner, kpiGrid);
+        }
 
         // ── Build per-month budget map: vendor → { month → amount } ──
         const selYear  = year;
@@ -32227,19 +32399,19 @@ async function loadBudgetTracking() {
 
         // budgetByVendorMonth: vendor_key → { 1..12 → amount }
         const budgetByVendorMonth = {};
-        // budgetByVendor: vendor_key → "display" amount (avg of set months in period, for card badge)
 
         (budgetSettings || []).forEach(b => {
             const bk    = (b.vendor||'').toLowerCase().trim();
-            const bYear  = parseInt(b.year  || 0);
-            const bMonth = parseInt(b.month || 0);
+            const bYear  = budgetHasYearMonth ? parseInt(b.year  || 0) : 0;
+            const bMonth = budgetHasYearMonth ? parseInt(b.month || 0) : 0;
             const bAmt   = parseFloat(b.amount || 0);
             if (!budgetByVendorMonth[bk]) budgetByVendorMonth[bk] = {};
 
-            if (bYear === selYear && bMonth) {
-                budgetByVendorMonth[bk][bMonth] = bAmt;
+            if (budgetHasYearMonth && bYear === selYear && bMonth) {
+                // Records are DESC by updated_at — first write = newest, skip older duplicates
+                if (!budgetByVendorMonth[bk][bMonth]) budgetByVendorMonth[bk][bMonth] = bAmt;
             } else if (!bYear && !bMonth) {
-                // Legacy record — apply to all months as baseline only if nothing set
+                // Legacy record (no year/month cols) — apply to all months as baseline
                 for (let m=1; m<=12; m++) {
                     if (!budgetByVendorMonth[bk][m]) budgetByVendorMonth[bk][m] = bAmt;
                 }
@@ -32294,7 +32466,7 @@ async function loadBudgetTracking() {
             const sync = JSON.parse(localStorage.getItem('vendorBudgets') || '{}');
             (budgetSettings || []).forEach(b => {
                 if (parseFloat(b.amount||0) > 0) {
-                    const bk = (b.vendor||'').toLowerCase().trim();
+                    const bk = (b.vendor||b.category||'').toLowerCase().trim();
                     if (b.year && b.month) sync[`${bk}|${b.year}|${b.month}`] = parseFloat(b.amount);
                     else sync[bk] = parseFloat(b.amount);
                 }
@@ -32804,7 +32976,7 @@ async function sbmLoadAll() {
             const { data: rows } = await supabaseClient
                 .from('budget_settings')
                 .select('month, amount, year')
-                .eq('vendor', vendor)
+                .eq('category', vendor)
                 .eq('period_type', 'monthly')
                 .eq('year', year);
             (rows || []).forEach(r => {
@@ -32815,7 +32987,7 @@ async function sbmLoadAll() {
             try {
                 const { data: rows } = await supabaseClient
                     .from('budget_settings').select('amount')
-                    .eq('vendor', vendor).eq('period_type', 'monthly').maybeSingle();
+                    .eq('category', vendor).eq('period_type', 'monthly').maybeSingle();
                 if (rows && rows.amount > 0) {
                     // Apply same amount to all months as starting point
                     for (let m=1; m<=12; m++) dbBudgets[m] = parseFloat(rows.amount);
@@ -32969,33 +33141,39 @@ async function sbmSave() {
 
     // ── Save each month to Supabase ──
     let saved = 0, failed = 0;
+    let tableError = null;
     const chiTs = new Date().toISOString();
 
     for (const [m, amount] of Object.entries(monthAmounts)) {
         try {
-            const rec = { vendor, amount, period_type:'monthly', year, month: parseInt(m), updated_at: chiTs };
+            const rec = { category: vendor, amount, period_type:'monthly', year, month: parseInt(m), updated_at: chiTs };
             const { error } = await supabaseClient
                 .from('budget_settings')
-                .upsert(rec, { onConflict: 'vendor,period_type,year,month' });
+                .upsert(rec, { onConflict: 'category,period_type,year,month' });
             if (error) {
-                // Fallback: old schema without year/month
-                const { error: e2 } = await supabaseClient
-                    .from('budget_settings')
-                    .upsert({ vendor, amount, period_type:'monthly', updated_at: chiTs },
-                             { onConflict: 'vendor,period_type' });
-                if (e2) failed++; else saved++;
+                tableError = error;
+                failed++;
             } else saved++;
-        } catch(e) { failed++; }
+        } catch(e) { failed++; tableError = e; }
     }
 
     const fmt$ = n => '$'+Math.round(n).toLocaleString('en-US');
     const total = Object.values(monthAmounts).reduce((a,b)=>a+b,0);
-    showAlert(
-        `✅ ${saved} month${saved>1?'s':''} saved for ${vendor} ${year}` +
-        ` — Annual total: ${fmt$(total)}` +
-        (failed>0 ? ` (${failed} failed — check DB columns)` : ''),
-        failed>0 ? 'info' : 'success'
-    );
+    if (saved === 0 && failed > 0) {
+        showAlert(
+            `🚨 All ${failed} saves FAILED — budget_settings table may be missing. ` +
+            `Error: ${tableError?.message || 'unknown'}. ` +
+            `Click the 🔍 Check DB button on the Budget tab to diagnose and get the fix SQL.`,
+            'error'
+        );
+    } else {
+        showAlert(
+            `✅ ${saved} month${saved>1?'s':''} saved for ${vendor} ${year}` +
+            ` — Annual total: ${fmt$(total)}` +
+            (failed>0 ? ` (${failed} failed — click 🔍 Check DB to diagnose)` : ''),
+            failed>0 ? 'info' : 'success'
+        );
+    }
 
     btn.disabled = false;
     btn.innerHTML = '<i class="fas fa-save"></i> Save All Budgets';
