@@ -1883,8 +1883,26 @@ function formatDateTime(isoString) {
 if (!isoString) return '—';
 return new Date(isoString).toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
 }
+// ✅ DST-AWARE: Returns '-06:00' (CST, Nov–Mar) or '-05:00' (CDT, Mar–Nov) for the given date
+function getChicagoOffsetString(dateStr) {
+try {
+const dt = new Date(`${dateStr}T18:00:00Z`);
+const parts = new Intl.DateTimeFormat('en-US', {
+timeZone: 'America/Chicago',
+timeZoneName: 'shortOffset'
+}).formatToParts(dt);
+const tzPart = (parts.find(p => p.type === 'timeZoneName') || {}).value || 'GMT-6';
+const match = tzPart.match(/GMT([+-])(\d+)/);
+if (match) {
+const sign = match[1];
+const hours = String(match[2]).padStart(2, '0');
+return `${sign}${hours}:00`;
+}
+} catch(e) {}
+return '-06:00'; // safe fallback to CST
+}
 function toCSTISOString(dateStr, timeStr) {
-return `${dateStr}T${timeStr}:00-06:00`;
+return `${dateStr}T${timeStr}:00${getChicagoOffsetString(dateStr)}`;
 }
 function showGlobalStatus(msg, type = 'info') {
 const el = document.getElementById('globalStatus');
@@ -2096,9 +2114,11 @@ const shiftStart = sched.start_time.slice(0,5);
 const firstTaskFmt = new Date(dayLogs[0].start_time)
 .toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'America/Chicago' });
 if (firstTaskFmt > shiftStart) {
+// First task starts AFTER shift start — show untask gap
 const gapMin = (new Date(dayLogs[0].start_time) - new Date(toCST_ISO(dateStr, shiftStart))) / 60000;
 if (gapMin >= 1) rows.push({ type:'untask', name:'Untasked', dur: gapMin, startFmt: shiftStart, endFmt: firstTaskFmt });
 }
+// If firstTaskFmt <= shiftStart: task is at or before shift start — show task as-is, no gap needed
 }
 dayLogs.forEach((log, i) => {
 const startFmt = new Date(log.start_time).toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'America/Chicago' });
@@ -2438,9 +2458,9 @@ showLocalStatus('taskStatus', '✅ Task completed!', 'success');
 // ══════════════════════════════════════════════════════
 // Default shift end: 8:30 PM CST
 const DEFAULT_SHIFT_END = '20:30';
-// Build a fake ISO string for a date+time in CST for comparison
+// Build a correct ISO string for a date+time in Chicago time (DST-aware)
 function toCST_ISO(dateStr, timeStr) {
-return `${dateStr}T${timeStr}:00-06:00`;
+return `${dateStr}T${timeStr}:00${getChicagoOffsetString(dateStr)}`;
 }
 // Generate inline gap rows (UNTASK / BREAK) between two timestamps on the same date
 function buildGapRows(dateStr, empName, gapStartISO, gapEndISO, isHalfDay = false) {
@@ -2779,9 +2799,9 @@ const totalGap   = (gapEnd - gapStart) / (1000 * 60);
 if (totalGap < 1) return { untaskMin: 0, breakMin: 0 };
 // Half-day employees: no break at all, all gap = untask
 if (isHalfDay) return { untaskMin: totalGap, breakMin: 0 };
-// Build 3 PM and 4 PM boundaries for this date in CST (UTC-6)
-const breakStart = new Date(`${dateStr}T${String(BREAK_WINDOW_START).padStart(2,'0')}:00:00-06:00`);
-const breakEnd   = new Date(`${dateStr}T${String(BREAK_WINDOW_END).padStart(2,'0')}:00:00-06:00`);
+// Build 3 PM and 4 PM boundaries for this date using DST-aware Chicago offset
+const breakStart = new Date(`${dateStr}T${String(BREAK_WINDOW_START).padStart(2,'0')}:00:00${getChicagoOffsetString(dateStr)}`);
+const breakEnd   = new Date(`${dateStr}T${String(BREAK_WINDOW_END).padStart(2,'0')}:00:00${getChicagoOffsetString(dateStr)}`);
 // Overlap between gap and break window
 const overlapStart = Math.max(gapStart.getTime(), breakStart.getTime());
 const overlapEnd   = Math.min(gapEnd.getTime(),   breakEnd.getTime());
