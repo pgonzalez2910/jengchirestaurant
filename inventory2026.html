@@ -7531,14 +7531,7 @@ input[id^="par-input-"]:focus {
     margin-bottom: 1.75rem;
 }
 .vendor-budget-card {
-    background: white;
-    border-radius: 14px;
-    padding: 1.5rem;
-    box-shadow: var(--shadow-md);
-    border: 2px solid var(--neutral-200);
-    transition: all 0.2s;
-    position: relative;
-    overflow: hidden;
+    transition: box-shadow 0.3s ease, border-color 0.3s ease;
 }
 .vendor-budget-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: var(--primary-300); }
 .vendor-budget-card::before {
@@ -10248,6 +10241,23 @@ input[id^="par-input-"]:focus {
 
                 } else if (tabName === 'budgetTracking' && typeof loadBudgetTracking === 'function') {
 
+                    // Auto-select current Chicago month on first open
+                    (function() {
+                        const _cn = new Date(new Date().toLocaleString('en-US',{timeZone:'America/Chicago'}));
+                        const _ms = document.getElementById('budgetMonthFilter');
+                        const _ys = document.getElementById('budgetYearFilter');
+                        if (_ms && _ms.value === 'all') _ms.value = String(_cn.getMonth()+1);
+                        if (_ys) _ys.value = String(_cn.getFullYear());
+                        // Switch to Monthly view
+                        if (!window._budgetViewMode || window._budgetViewMode === 'month') {
+                            window._budgetViewMode = 'month';
+                            document.querySelectorAll('[id^="bv_"]').forEach(b => {
+                                b.style.background = 'transparent'; b.style.color = 'rgba(255,255,255,.85)';
+                            });
+                            const bvM = document.getElementById('bv_month');
+                            if (bvM) { bvM.style.background='white'; bvM.style.color='#1e293b'; }
+                        }
+                    })();
                     loadBudgetTracking();
 
                 } else if (tabName === 'vendorPerformance' && typeof loadVendorPerformance === 'function') {
@@ -32204,57 +32214,93 @@ async function loadBudgetTracking() {
         if (invErr) throw invErr;
 
         // ── Load budget settings ──────────────────────────────────────
+        // Load ALL monthly budgets — we pick the best match per vendor below
         const { data: budgetSettings } = await supabaseClient
             .from('budget_settings')
-            .select('vendor, amount, period_type, year, month')
-            .eq('period_type', 'monthly');
+            .select('vendor, amount, period_type, year, month, updated_at')
+            .eq('period_type', 'monthly')
+            .order('updated_at', { ascending: false });
 
-        const budgetByVendor = {};
-
-        // ── Merge localStorage budgets first (fallback layer) ──
-        try {
-            const lsStored = JSON.parse(localStorage.getItem('vendorBudgets') || '{}');
-            Object.entries(lsStored).forEach(([k, v]) => {
-                // Support both "vendor" and "vendor|year|month" keys
-                if (!k.includes('|')) {
-                    budgetByVendor[k.toLowerCase().trim()] = parseFloat(v || 0);
-                }
-            });
-        } catch(e) { /* ignore */ }
-
-        // ── DB values override localStorage — prefer current period budget ──
-        // First pass: use any matching per-month entry for the selected period
+        // ── Build per-month budget map: vendor → { month → amount } ──
         const selYear  = year;
         const selMonth = (mNum !== 'all') ? parseInt(mNum) : null;
+
+        // budgetByVendorMonth: vendor_key → { 1..12 → amount }
+        const budgetByVendorMonth = {};
+        // budgetByVendor: vendor_key → "display" amount (avg of set months in period, for card badge)
+
         (budgetSettings || []).forEach(b => {
-            const bk = (b.vendor||'').toLowerCase().trim();
+            const bk    = (b.vendor||'').toLowerCase().trim();
             const bYear  = parseInt(b.year  || 0);
             const bMonth = parseInt(b.month || 0);
             const bAmt   = parseFloat(b.amount || 0);
-            // If record has year+month: only apply when it matches selected period
-            if (bYear && bMonth) {
-                if (bYear === selYear && (!selMonth || bMonth === selMonth)) {
-                    budgetByVendor[bk] = bAmt;
+            if (!budgetByVendorMonth[bk]) budgetByVendorMonth[bk] = {};
+
+            if (bYear === selYear && bMonth) {
+                budgetByVendorMonth[bk][bMonth] = bAmt;
+            } else if (!bYear && !bMonth) {
+                // Legacy record — apply to all months as baseline only if nothing set
+                for (let m=1; m<=12; m++) {
+                    if (!budgetByVendorMonth[bk][m]) budgetByVendorMonth[bk][m] = bAmt;
                 }
-            } else {
-                // Legacy record without year/month — use as fallback
-                if (!budgetByVendor[bk]) budgetByVendor[bk] = bAmt;
             }
         });
 
-        // ── Sync DB values back to localStorage ──
+        // Also merge localStorage per-month budgets as fallback
+        try {
+            const ls = JSON.parse(localStorage.getItem('vendorBudgets') || '{}');
+            Object.entries(ls).forEach(([k, v]) => {
+                if (k.includes('|')) {
+                    const [vk, yr, mo] = k.split('|');
+                    if (parseInt(yr) === selYear) {
+                        if (!budgetByVendorMonth[vk]) budgetByVendorMonth[vk] = {};
+                        if (!budgetByVendorMonth[vk][parseInt(mo)]) {
+                            budgetByVendorMonth[vk][parseInt(mo)] = parseFloat(v);
+                        }
+                    }
+                }
+            });
+        } catch(e) {}
+
+        // ── Compute budgetByVendor for the selected period ──
+        // = sum of budget for months in the selected period
+        // budgetByVendor stores the PERIOD TOTAL (so cards show correct period budget)
+        const budgetPeriodByVendor = {}; // vendor_key → total budget for selected period
+        const budgetMonthlyAvgByVendor = {}; // vendor_key → avg monthly (for badge display)
+
+        // Determine which months are in the period
+        let periodMonths = [];
+        if (mode === 'year') {
+            periodMonths = [1,2,3,4,5,6,7,8,9,10,11,12];
+        } else if (mode === 'quarter') {
+            const qMap = {1:[1,2,3],2:[4,5,6],3:[7,8,9],4:[10,11,12],'all':[1,2,3,4,5,6,7,8,9,10,11,12]};
+            periodMonths = qMap[qNum] || [1,2,3,4,5,6,7,8,9,10,11,12];
+        } else { // monthly
+            periodMonths = selMonth ? [selMonth] : [1,2,3,4,5,6,7,8,9,10,11,12];
+        }
+
+        Object.entries(budgetByVendorMonth).forEach(([vk, moMap]) => {
+            const periodTotal = periodMonths.reduce((sum, m) => sum + (moMap[m] || 0), 0);
+            const setMonths   = periodMonths.filter(m => moMap[m] > 0).length;
+            budgetPeriodByVendor[vk]     = periodTotal;
+            budgetMonthlyAvgByVendor[vk] = setMonths > 0 ? periodTotal / setMonths : 0;
+        });
+
+        // Keep budgetByVendor as period total for KPI compatibility
+        const budgetByVendor = budgetPeriodByVendor;
+
+        // ── Sync DB to localStorage ──
         try {
             const sync = JSON.parse(localStorage.getItem('vendorBudgets') || '{}');
             (budgetSettings || []).forEach(b => {
                 if (parseFloat(b.amount||0) > 0) {
-                    const field = b.year && b.month
-                        ? `${(b.vendor||'').toLowerCase().trim()}|${b.year}|${b.month}`
-                        : (b.vendor||'').toLowerCase().trim();
-                    sync[field] = parseFloat(b.amount);
+                    const bk = (b.vendor||'').toLowerCase().trim();
+                    if (b.year && b.month) sync[`${bk}|${b.year}|${b.month}`] = parseFloat(b.amount);
+                    else sync[bk] = parseFloat(b.amount);
                 }
             });
             localStorage.setItem('vendorBudgets', JSON.stringify(sync));
-        } catch(e) { /* ignore */ }
+        } catch(e) {}
 
         // ── Aggregate spend by vendor & month ────────────────────────
         const spendByVendor = {};           // vendor → total spend in period
@@ -32296,12 +32342,12 @@ async function loadBudgetTracking() {
 
         // ── KPIs ─────────────────────────────────────────────────────
         const totalSpend    = Object.values(spendByVendor).reduce((a,b)=>a+b,0);
-        const totalBudget   = Object.values(budgetByVendor).reduce((a,b)=>a+b,0) * months;
+        const totalBudget   = Object.values(budgetByVendor).reduce((a,b)=>a+b,0); // already period totals
         const remaining     = totalBudget - totalSpend;
         const totalAvg3m    = Object.values(avg3mByVendor).reduce((a,b)=>a+b,0);
         const overBudgetCnt = vendors.filter(v => {
             const bk = v.toLowerCase().trim();
-            const bgt = (budgetByVendor[bk] || 0) * months;
+            const bgt = budgetByVendor[bk] || 0; // already period total
             return bgt > 0 && spendByVendor[v] > bgt;
         }).length;
 
@@ -32483,10 +32529,10 @@ async function loadBudgetTracking() {
         }
 
         // ── Per-vendor cards ─────────────────────────────────────────
-        renderVendorBudgetCards(vendors, spendByVendor, avg3mByVendor, budgetByVendor, months, startISO, endISO);
+        renderVendorBudgetCards(vendors, spendByVendor, avg3mByVendor, budgetByVendor, budgetMonthlyAvgByVendor, months, startISO, endISO);
 
         // ── Monthly Breakdown rendering ──────────────────────────────
-        renderBudgetMonthly(invoices || [], vendors, budgetByVendor, spendByVendor);
+        renderBudgetMonthly(invoices || [], vendors, budgetByVendorMonth, spendByVendor, selYear);
 
     } catch (error) {
         console.error('Budget tracking error:', error);
@@ -32500,241 +32546,469 @@ async function loadBudgetTracking() {
     }
 }
 
-function renderVendorBudgetCards(vendors, spendByVendor, avg3mByVendor, budgetByVendor, months, startISO, endISO) {
+function renderVendorBudgetCards(vendors, spendByVendor, avg3mByVendor, budgetByVendor, budgetMonthlyAvgByVendor, months, startISO, endISO) {
     const container = document.getElementById('vendorBudgetCards');
     if (!container) return;
     const fmt$ = n => '$' + Math.round(n||0).toLocaleString('en-US');
-    const allVendors = [...new Set([...vendors, 'Autochlor'])].sort();
+    // Always show all known vendors (ALLOWED_VENDORS) + any from invoices/budget settings
+    const baseVendors = (typeof ALLOWED_VENDORS !== 'undefined') ? ALLOWED_VENDORS : ['Autochlor'];
+    const allVendors = [...new Set([...baseVendors, ...vendors])].sort();
     if (allVendors.length === 0) {
         container.innerHTML = '<div style="text-align:center;padding:3rem;color:var(--neutral-500);grid-column:1/-1;">No vendor data found.</div>';
         return;
     }
     const totalSpend = allVendors.reduce((s,v) => s+(spendByVendor[v]||0), 0);
+    const chiCur = new Date(new Date().toLocaleString('en-US',{timeZone:'America/Chicago'}));
+    const curYr  = chiCur.getFullYear(), curMo = chiCur.getMonth()+1;
+
     container.innerHTML = allVendors.map(function(vendor) {
         const logo = getBudgetVendorLogo(vendor);
-        const spend = spendByVendor[vendor] || 0;
-        const avg3m = avg3mByVendor[vendor] || 0;
-        const bk = vendor.toLowerCase().trim();
-        const monthlyBudget = budgetByVendor[bk] || 0;
-        const periodBudget  = monthlyBudget * Math.max(1, months);
-        const remaining     = periodBudget - spend;
-        const pct = periodBudget > 0 ? Math.min(Math.round((spend / periodBudget) * 100), 200) : 0;
-        const vendorPct = totalSpend > 0 ? ((spend/totalSpend)*100).toFixed(1) : '0.0';
-        const barColor = pct > 100 ? '#dc2626' : pct > 80 ? '#d97706' : '#059669';
-        const statusIcon = !periodBudget ? '⚪' : pct > 100 ? '🔴' : pct > 80 ? '🟠' : '🟢';
-        const safeId = vendor.replace(/[^a-zA-Z0-9]/g,'_');
+        const spend        = spendByVendor[vendor] || 0;
+        const avg3m        = avg3mByVendor[vendor] || 0;
+        const bk           = vendor.toLowerCase().trim();
+        const periodBudget = budgetByVendor[bk] || 0;
+        const monthlyBudget= budgetMonthlyAvgByVendor[bk] || (periodBudget / Math.max(1, months));
+        const remaining    = periodBudget - spend;
+        const rawPct       = periodBudget > 0 ? (spend / periodBudget) * 100 : 0;
+        const pct          = Math.min(Math.round(rawPct), 999);
+        const vendorPct    = totalSpend > 0 ? ((spend/totalSpend)*100).toFixed(1) : '0.0';
+        const vendorEsc    = vendor.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+        const safeId       = vendor.replace(/[^a-zA-Z0-9]/g,'_');
+
+        // ── Mood / status system ──────────────────────────────────────
+        // No budget set
+        let moodEmoji, moodLabel, moodBg, moodColor, cardBorderColor, cardGlow, ringColor, ringBg;
+        if (!periodBudget) {
+            moodEmoji = '😶'; moodLabel = 'No Budget Set';
+            moodBg    = '#f8fafc'; moodColor = '#94a3b8';
+            cardBorderColor = '#e2e8f0'; cardGlow = 'none';
+            ringColor = '#e2e8f0'; ringBg = '#f8fafc';
+        } else if (rawPct <= 0) {
+            moodEmoji = '🎯'; moodLabel = 'Budget Ready';
+            moodBg    = '#f0fdf4'; moodColor = '#15803d';
+            cardBorderColor = '#86efac'; cardGlow = '0 0 0 2px #d1fae5';
+            ringColor = '#22c55e'; ringBg = '#f0fdf4';
+        } else if (rawPct < 60) {
+            moodEmoji = '😄'; moodLabel = 'Great — Well Under';
+            moodBg    = '#f0fdf4'; moodColor = '#15803d';
+            cardBorderColor = '#86efac'; cardGlow = '0 0 0 2px #d1fae5';
+            ringColor = '#22c55e'; ringBg = '#f0fdf4';
+        } else if (rawPct < 80) {
+            moodEmoji = '🙂'; moodLabel = 'Good — On Track';
+            moodBg    = '#f0fdf4'; moodColor = '#166534';
+            cardBorderColor = '#86efac'; cardGlow = '0 0 0 2px #d1fae5';
+            ringColor = '#16a34a'; ringBg = '#dcfce7';
+        } else if (rawPct < 95) {
+            moodEmoji = '😬'; moodLabel = 'Watch Out — Getting Close';
+            moodBg    = '#fefce8'; moodColor = '#92400e';
+            cardBorderColor = '#fde68a'; cardGlow = '0 0 0 2px #fef9c3';
+            ringColor = '#d97706'; ringBg = '#fefce8';
+        } else if (rawPct < 100) {
+            moodEmoji = '😰'; moodLabel = 'Almost At Limit!';
+            moodBg    = '#fff7ed'; moodColor = '#9a3412';
+            cardBorderColor = '#fdba74'; cardGlow = '0 0 0 2px #fed7aa';
+            ringColor = '#ea580c'; ringBg = '#fff7ed';
+        } else if (rawPct < 120) {
+            moodEmoji = '🚨'; moodLabel = 'OVER BUDGET';
+            moodBg    = '#fef2f2'; moodColor = '#dc2626';
+            cardBorderColor = '#fca5a5'; cardGlow = '0 0 0 3px #fee2e2';
+            ringColor = '#dc2626'; ringBg = '#fef2f2';
+        } else {
+            moodEmoji = '🔥'; moodLabel = 'WAY OVER BUDGET';
+            moodBg    = '#fef2f2'; moodColor = '#991b1b';
+            cardBorderColor = '#f87171'; cardGlow = '0 0 0 3px #fecaca';
+            ringColor = '#dc2626'; ringBg = '#fee2e2';
+        }
+
+        // ── SVG Donut Ring ────────────────────────────────────────────
+        const ringSize = 72, ringStroke = 8;
+        const r = (ringSize/2) - ringStroke/2;
+        const circ = 2 * Math.PI * r;
+        const fillPct = Math.min(rawPct, 100) / 100;
+        const dash = circ * fillPct;
+        const ringHtml = periodBudget > 0
+            ? `<div style="position:relative;width:${ringSize}px;height:${ringSize}px;flex-shrink:0;">
+                <svg width="${ringSize}" height="${ringSize}" style="transform:rotate(-90deg);">
+                  <circle cx="${ringSize/2}" cy="${ringSize/2}" r="${r}" fill="none" stroke="#e2e8f0" stroke-width="${ringStroke}"/>
+                  <circle cx="${ringSize/2}" cy="${ringSize/2}" r="${r}" fill="none" stroke="${ringColor}"
+                    stroke-width="${ringStroke}" stroke-linecap="round"
+                    stroke-dasharray="${dash.toFixed(1)} ${circ.toFixed(1)}"
+                    style="transition:stroke-dasharray .6s ease;"/>
+                </svg>
+                <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.1;">
+                  <span style="font-size:.75rem;font-weight:800;color:${ringColor};font-family:var(--font-mono);">${pct}%</span>
+                </div>
+               </div>`
+            : `<div style="width:${ringSize}px;height:${ringSize}px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:2rem;">😶</div>`;
+
+        // ── Logo ──────────────────────────────────────────────────────
         const logoHtml = logo
-            ? '<img src="' + logo + '" class="vendor-budget-logo" alt="' + vendor + '" onerror="this.style.display=\'none\'">'
-            : '<div style="width:56px;height:56px;border-radius:10px;background:linear-gradient(135deg,var(--primary-700),var(--primary-500));display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:1.1rem;">' + vendor.slice(0,2).toUpperCase() + '</div>';
+            ? `<img src="${logo}" class="vendor-budget-logo" alt="${vendor}" onerror="this.style.display='none'" style="width:44px;height:44px;border-radius:8px;object-fit:contain;border:1px solid #f1f5f9;">`
+            : `<div style="width:44px;height:44px;border-radius:8px;background:linear-gradient(135deg,var(--primary-700),var(--primary-500));display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:.95rem;">${vendor.slice(0,2).toUpperCase()}</div>`;
+
+        // ── Mood banner ───────────────────────────────────────────────
+        const moodBanner = `<div style="display:flex;align-items:center;gap:.4rem;background:${moodBg};border-radius:8px;padding:.35rem .65rem;margin-bottom:.65rem;border:1px solid ${cardBorderColor};">
+            <span style="font-size:1.15rem;">${moodEmoji}</span>
+            <div style="flex:1;min-width:0;">
+                <div style="font-size:.7rem;font-weight:800;color:${moodColor};text-transform:uppercase;letter-spacing:.04em;">${moodLabel}</div>
+                ${periodBudget > 0 ? `<div style="font-size:.65rem;color:${moodColor};opacity:.8;">${pct}% of ${fmt$(periodBudget)} budget used this period</div>` : `<div style="font-size:.65rem;color:#94a3b8;">Click below to set a budget for this vendor</div>`}
+            </div>
+            ${periodBudget > 0 ? ringHtml : ''}
+        </div>`;
+
+        // ── Metrics row ───────────────────────────────────────────────
+        const metricsHtml = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.4rem;margin-bottom:.65rem;">
+            <div style="background:#f8fafc;border-radius:8px;padding:.45rem .35rem;text-align:center;border:1px solid #f1f5f9;">
+                <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.04em;margin-bottom:.18rem;">Spent</div>
+                <div style="font-size:.92rem;font-weight:800;color:#0891b2;font-family:var(--font-mono);">${fmt$(spend)}</div>
+            </div>
+            <div style="background:#f8fafc;border-radius:8px;padding:.45rem .35rem;text-align:center;border:1px solid #f1f5f9;">
+                <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.04em;margin-bottom:.18rem;">Budget</div>
+                <div style="font-size:.92rem;font-weight:800;color:#6366f1;font-family:var(--font-mono);">${periodBudget > 0 ? fmt$(periodBudget) : '—'}</div>
+            </div>
+            <div style="background:#f8fafc;border-radius:8px;padding:.45rem .35rem;text-align:center;border:1px solid #f1f5f9;">
+                <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;color:#94a3b8;letter-spacing:.04em;margin-bottom:.18rem;">${remaining >= 0 ? 'Left' : 'Over'}</div>
+                <div style="font-size:.92rem;font-weight:800;font-family:var(--font-mono);color:${remaining >= 0 ? '#059669' : '#dc2626'};">${periodBudget > 0 ? fmt$(Math.abs(remaining)) : '—'}</div>
+            </div>
+        </div>`;
+
+        // ── Progress bar ──────────────────────────────────────────────
+        const barColor = rawPct > 100 ? '#dc2626' : rawPct > 80 ? '#d97706' : '#22c55e';
         const progressHtml = periodBudget > 0
-            ? '<div class="vb-progress-wrap"><div class="vb-progress-label"><span>Budget Used (' + months + ' mo \u00d7 ' + fmt$(monthlyBudget) + '/mo)</span><span style="color:' + barColor + ';font-weight:700;">' + pct + '%</span></div><div class="vb-progress-bar"><div class="vb-progress-fill" style="width:' + Math.min(pct,100) + '%;background:' + barColor + ';"></div></div></div>'
-            : '<div style="font-size:.7rem;color:#9ca3af;padding:.35rem 0;">No budget set — enter a monthly target below</div>';
-        const vendorEsc = vendor.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
-        return '<div class="vendor-budget-card">'
-            + '<div class="vendor-budget-header">'
-            +   logoHtml
-            +   '<div style="flex:1;min-width:0;">'
-            +     '<div class="vendor-budget-name">' + vendor + '</div>'
-            +     '<div class="vendor-budget-avg">3-Mo Avg: ' + fmt$(avg3m) + '/mo &nbsp;' + statusIcon + '</div>'
-            +     '<div style="font-size:.68rem;color:#6b7280;margin-top:.1rem;">' + vendorPct + '% of period spend' + (spend>0?' &middot; ' + fmt$(spend) + ' this period':'') + '</div>'
-            +   '</div>'
-            + '</div>'
-            + '<div class="vendor-budget-metrics">'
-            +   '<div class="vb-metric"><div class="vb-metric-label">Period Spend</div><div class="vb-metric-value" style="color:#0891b2;' + (spend===0?'opacity:.4':'') + '">' + fmt$(spend) + '</div></div>'
-            +   '<div class="vb-metric"><div class="vb-metric-label">Period Budget</div><div class="vb-metric-value" style="color:#6366f1;">' + (periodBudget > 0 ? fmt$(periodBudget) : '—') + '</div></div>'
-            +   '<div class="vb-metric"><div class="vb-metric-label">' + (remaining>=0?'Remaining':'Over by') + '</div><div class="vb-metric-value" style="color:' + (remaining>=0?'#059669':'#dc2626') + ';">' + (periodBudget > 0 ? fmt$(Math.abs(remaining)) : '—') + '</div></div>'
-            + '</div>'
-            + progressHtml
-            + '<div class="vb-budget-input-wrap">'
-            +   '<label>&#128176; Monthly Budget:</label>'
-            +   '<input type="number" id="vb_input_' + safeId + '" value="' + (monthlyBudget > 0 ? monthlyBudget : '') + '" placeholder="Enter $/mo" min="0" step="100" onkeydown="if(event.key===\'Enter\')saveVendorBudget(\'' + vendorEsc + '\',\'' + safeId + '\')">'
-            +   '<button class="vb-save-btn" onclick="saveVendorBudget(\'' + vendorEsc + '\',\'' + safeId + '\')">'
-            +     '<i class="fas fa-save"></i> Save'
-            +   '</button>'
-            + '</div>'
-            + '</div>';
+            ? `<div style="margin-bottom:.6rem;">
+                <div style="height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden;">
+                    <div style="width:${Math.min(rawPct,100)}%;height:100%;background:${barColor};border-radius:99px;transition:width .5s ease;"></div>
+                </div>
+               </div>` : '';
+
+        // ── 3-mo avg sub-line ─────────────────────────────────────────
+        const avgLine = `<div style="font-size:.65rem;color:#6b7280;margin-bottom:.5rem;">
+            3-Mo Avg: <strong>${fmt$(avg3m)}/mo</strong> &nbsp;·&nbsp; ${vendorPct}% of total spend
+            ${avg3m > 0 && monthlyBudget > 0 ? (avg3m > monthlyBudget
+                ? `&nbsp;<span style="color:#dc2626;font-weight:700;">↑ avg exceeds budget by ${fmt$(avg3m-monthlyBudget)}</span>`
+                : `&nbsp;<span style="color:#15803d;font-weight:700;">✓ avg within budget</span>`) : ''}
+        </div>`;
+
+        // ── Saved confirmation (shown after save via JS) ───────────────
+        const savedToastId = `vbc_saved_${safeId}`;
+
+        // ── Button ────────────────────────────────────────────────────
+        const btnBg    = periodBudget > 0 ? 'linear-gradient(135deg,#4f46e5,#6366f1)' : 'linear-gradient(135deg,var(--primary-600),var(--primary-800))';
+        const btnLabel = periodBudget > 0
+            ? `<i class="fas fa-edit"></i> Update Budget &mdash; ${fmt$(monthlyBudget)}/mo`
+            : `<i class="fas fa-plus"></i> Set Monthly Budget`;
+        const editBtn  = `<button onclick="openBudgetModal('${vendorEsc}',${curYr},${curMo},${monthlyBudget})"
+            style="display:flex;align-items:center;justify-content:center;gap:.35rem;width:100%;padding:.45rem .75rem;background:${btnBg};border:none;color:white;border-radius:8px;font-size:.78rem;font-weight:700;cursor:pointer;">${btnLabel}</button>`;
+
+        // ── Saved toast placeholder ───────────────────────────────────
+        const savedToast = `<div id="${savedToastId}" style="display:none;text-align:center;margin-top:.4rem;font-size:.72rem;font-weight:700;color:#15803d;animation:fadeIn .4s ease;">✅ Budget saved successfully!</div>`;
+
+        return `<div class="vendor-budget-card" id="vbc_${safeId}" style="border:2px solid ${cardBorderColor};box-shadow:${cardGlow};border-radius:14px;padding:1rem;background:white;display:flex;flex-direction:column;gap:0;">
+            <div style="display:flex;align-items:center;gap:.65rem;margin-bottom:.6rem;">
+                ${logoHtml}
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:1rem;font-weight:800;color:var(--neutral-900);line-height:1.2;">${vendor}</div>
+                    <div style="font-size:.65rem;color:#6b7280;">${vendorPct}% of period spend${spend>0?' &middot; '+fmt$(spend)+' this period':''}</div>
+                </div>
+                ${periodBudget > 0 ? ringHtml : `<span style="font-size:1.8rem;" title="No budget set">😶</span>`}
+            </div>
+            ${moodBanner}
+            ${metricsHtml}
+            ${progressHtml}
+            ${avgLine}
+            ${editBtn}
+            ${savedToast}
+        </div>`;
     }).join('');
 }
+
 async function saveVendorBudget(vendorName, safeId) {
-    // Open the proper per-month modal pre-filled with this vendor
-    const input = document.getElementById('vb_input_' + safeId);
-    const existingAmt = parseFloat(input?.value || '0');
     const chiNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+    const input = document.getElementById('vb_input_' + safeId);
+    const existingAmt = input ? parseFloat(input.value || '0') : 0;
     openBudgetModal(vendorName, chiNow.getFullYear(), chiNow.getMonth() + 1, existingAmt);
 }
-
 function openSetBudgetModal() { openBudgetModal(); }
 
-/* ────────────────────────────────────────────────────────────
-   BUDGET MODAL — open, close, Q1 avg load, save
-──────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════
+   BUDGET MODAL — per-vendor, per-month annual grid
+   Each vendor gets 12 independent monthly budget fields.
+═══════════════════════════════════════════════════════════════ */
+
+const SBM_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
 function openBudgetModal(vendorName, year, month, existingAmount) {
     const modal = document.getElementById('setBudgetModal');
     if (!modal) return;
 
-    // Populate vendor dropdown from ALLOWED_VENDORS
+    // Populate vendor dropdown
     const vSel = document.getElementById('sbm_vendor');
     vSel.innerHTML = '<option value="">— Select Vendor —</option>' +
         ALLOWED_VENDORS.map(v => `<option value="${v}"${v===vendorName?' selected':''}>${v}</option>`).join('');
 
-    // Set month/year to current Chicago time or passed values
+    // Set year
     const chiNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
-    document.getElementById('sbm_month').value = month || (chiNow.getMonth() + 1);
-    document.getElementById('sbm_year').value  = year  || chiNow.getFullYear();
-    document.getElementById('sbm_amount').value = existingAmount > 0 ? existingAmount : '';
+    document.getElementById('sbm_year').value = year || chiNow.getFullYear();
 
+    // Reset state
+    document.getElementById('sbm_status_row').innerHTML = '';
     document.getElementById('sbm_q1panel').style.display   = 'none';
     document.getElementById('sbm_q1loading').style.display = 'none';
-    document.getElementById('sbm_existing').style.display  = 'none';
+
+    // Build the 12-month grid (empty first, then fill)
+    sbmBuildGrid();
 
     modal.style.display = 'flex';
-    if (vendorName) sbmLoadQ1Avg();
+
+    // Load existing budgets + Q1 avg if vendor known
+    if (vendorName) setTimeout(sbmLoadAll, 60);
 }
 
 function closeBudgetModal() {
     document.getElementById('setBudgetModal').style.display = 'none';
 }
 
-async function sbmLoadQ1Avg() {
+function sbmBuildGrid() {
+    const grid = document.getElementById('sbm_month_grid');
+    if (!grid) return;
+    grid.innerHTML = SBM_MONTHS.map((mo, i) => {
+        const m = i + 1;
+        return `<div style="display:flex;flex-direction:column;gap:.2rem;">
+          <label style="font-size:.65rem;font-weight:700;text-transform:uppercase;color:#64748b;text-align:center;">${mo}</label>
+          <input type="number" id="sbm_m${m}" min="0" step="50" placeholder="—"
+            style="width:100%;padding:.3rem .25rem;border:1.5px solid #e2e8f0;border-radius:6px;
+                   font-size:.8rem;font-weight:700;font-family:var(--font-mono);text-align:center;
+                   background:white;"
+            onfocus="this.style.borderColor='var(--primary-400)'"
+            onblur="this.style.borderColor='#e2e8f0'"
+            oninput="sbmUpdateTotal()">
+        </div>`;
+    }).join('');
+}
+
+async function sbmLoadAll() {
     const vendor = document.getElementById('sbm_vendor').value;
     const year   = parseInt(document.getElementById('sbm_year').value);
-    if (!vendor || !year) {
-        document.getElementById('sbm_q1panel').style.display = 'none';
-        return;
-    }
+    if (!vendor || !year) return;
 
     document.getElementById('sbm_q1loading').style.display = 'block';
     document.getElementById('sbm_q1panel').style.display   = 'none';
-    document.getElementById('sbm_existing').style.display  = 'none';
+    document.getElementById('sbm_status_row').innerHTML    = '<span style="font-size:.72rem;color:#94a3b8;"><i class="fas fa-spinner fa-spin"></i> Loading saved budgets…</span>';
+
+    const fmt$ = n => '$' + Math.round(n||0).toLocaleString('en-US');
 
     try {
-        // ── Load Q1 invoices for this vendor ──
-        const q1Start = `${year}-01-01`;
-        const q1End   = `${year}-03-31`;
-        const { data: q1Inv } = await supabaseClient
-            .from('invoices')
-            .select('total, invoice_date')
-            .eq('vendor', vendor)
-            .gte('invoice_date', q1Start)
-            .lte('invoice_date', q1End);
+        // ── 1. Load all saved budgets for this vendor+year from DB ──
+        let dbBudgets = {}; // month → amount
+        try {
+            const { data: rows } = await supabaseClient
+                .from('budget_settings')
+                .select('month, amount, year')
+                .eq('vendor', vendor)
+                .eq('period_type', 'monthly')
+                .eq('year', year);
+            (rows || []).forEach(r => {
+                if (r.month) dbBudgets[parseInt(r.month)] = parseFloat(r.amount || 0);
+            });
+        } catch(e) {
+            // Fallback: year/month columns may not exist — try generic
+            try {
+                const { data: rows } = await supabaseClient
+                    .from('budget_settings').select('amount')
+                    .eq('vendor', vendor).eq('period_type', 'monthly').maybeSingle();
+                if (rows && rows.amount > 0) {
+                    // Apply same amount to all months as starting point
+                    for (let m=1; m<=12; m++) dbBudgets[m] = parseFloat(rows.amount);
+                }
+            } catch(e2) {}
+        }
 
-        // Group by month
-        const byMonth = {1:0, 2:0, 3:0};
-        (q1Inv || []).forEach(inv => {
+        // ── 2. Merge localStorage ──
+        try {
+            const ls = JSON.parse(localStorage.getItem('vendorBudgets') || '{}');
+            const vk = vendor.toLowerCase().trim();
+            for (let m=1; m<=12; m++) {
+                const key = `${vk}|${year}|${m}`;
+                if (ls[key] > 0 && !dbBudgets[m]) dbBudgets[m] = parseFloat(ls[key]);
+            }
+        } catch(e) {}
+
+        // ── 3. Fill grid inputs ──
+        for (let m=1; m<=12; m++) {
+            const el = document.getElementById(`sbm_m${m}`);
+            if (el && dbBudgets[m] > 0) {
+                el.value = dbBudgets[m];
+                el.style.background = '#f0fdf4';
+                el.style.borderColor = '#86efac';
+            }
+        }
+        sbmUpdateTotal();
+
+        const savedCount = Object.keys(dbBudgets).length;
+        document.getElementById('sbm_status_row').innerHTML = savedCount > 0
+            ? `<span style="font-size:.72rem;color:#15803d;font-weight:700;">&#9989; ${savedCount} month${savedCount>1?'s':''} pre-loaded — edit any month and save</span>`
+            : `<span style="font-size:.72rem;color:#92400e;font-weight:700;">&#9888; No budgets saved yet for ${year} — enter amounts below</span>`;
+
+        // ── 4. Load Q1 actual spend ──
+        const { data: q1Inv } = await supabaseClient.from('invoices')
+            .select('total, invoice_date').eq('vendor', vendor)
+            .gte('invoice_date', `${year}-01-01`).lte('invoice_date', `${year}-03-31`);
+
+        const byMo = {1:0,2:0,3:0};
+        (q1Inv||[]).forEach(inv => {
             const m = parseInt((inv.invoice_date||'').slice(5,7));
-            if (m >= 1 && m <= 3) byMonth[m] += parseFloat(inv.total||0);
+            if (m>=1 && m<=3) byMo[m] += parseFloat(inv.total||0);
         });
-        const q1Total = byMonth[1] + byMonth[2] + byMonth[3];
-        const activeMos = [byMonth[1],byMonth[2],byMonth[3]].filter(v=>v>0).length;
-        const q1Avg = activeMos > 0 ? q1Total / activeMos : 0;
+        const activeMos = [byMo[1],byMo[2],byMo[3]].filter(v=>v>0).length;
+        const q1Avg = activeMos > 0 ? (byMo[1]+byMo[2]+byMo[3]) / activeMos : 0;
 
-        const fmt$ = n => '$' + Math.round(n).toLocaleString('en-US');
-        const MONTHS = ['Jan','Feb','Mar'];
-        const rows = [1,2,3].map(m =>
-            `<span style="margin-right:.75rem;"><strong>${MONTHS[m-1]}:</strong> ${byMonth[m]>0?fmt$(byMonth[m]):'—'}</span>`
-        ).join('');
+        // Also load full-year actual spend per month for reference
+        const { data: allInv } = await supabaseClient.from('invoices')
+            .select('total, invoice_date').eq('vendor', vendor)
+            .gte('invoice_date', `${year}-01-01`).lte('invoice_date', `${year}-12-31`);
+        const actualByMo = {};
+        (allInv||[]).forEach(inv => {
+            const m = parseInt((inv.invoice_date||'').slice(5,7));
+            actualByMo[m] = (actualByMo[m]||0) + parseFloat(inv.total||0);
+        });
 
-        document.getElementById('sbm_q1content').innerHTML =
-            `<div style="display:flex;flex-wrap:wrap;margin-bottom:.3rem;">${rows}</div>` +
-            `<div style="font-weight:700;font-size:.88rem;">Q1 Avg/mo: <span style="color:#15803d;">${q1Avg>0?fmt$(q1Avg):'No data for '+year+' Q1'}</span>` +
-            (q1Avg>0 ? ` <span style="font-size:.7rem;color:#6b7280;">(${activeMos} month${activeMos>1?'s':''})</span>` : '') + `</div>`;
-
-        document.getElementById('sbm_q1panel').style.display   = 'block';
-        document.getElementById('sbm_q1loading').style.display = 'none';
-
-        // ── Check if a budget already exists for this vendor/month/year ──
-        const selMonth = document.getElementById('sbm_month').value;
-        const { data: existing } = await supabaseClient
-            .from('budget_settings')
-            .select('amount')
-            .eq('vendor', vendor)
-            .eq('period_type', 'monthly')
-            .eq('year', year)
-            .eq('month', parseInt(selMonth))
-            .maybeSingle();
-
-        if (existing && parseFloat(existing.amount) > 0) {
-            document.getElementById('sbm_existing_text').textContent =
-                `Existing budget for ${vendor} (${year}/${String(selMonth).padStart(2,'0')}): ${fmt$(existing.amount)}/mo — saving will overwrite.`;
-            document.getElementById('sbm_existing').style.display = 'block';
-            if (!document.getElementById('sbm_amount').value) {
-                document.getElementById('sbm_amount').value = existing.amount;
+        // Show actual spend below each input as hint
+        for (let m=1; m<=12; m++) {
+            const el = document.getElementById(`sbm_m${m}`);
+            if (el && actualByMo[m] > 0) {
+                el.title = `Actual ${year}: ${fmt$(actualByMo[m])}`;
+                el.placeholder = fmt$(actualByMo[m]).replace('$','');
+                el.style.setProperty('--actual', fmt$(actualByMo[m]));
             }
         }
 
+        // Render Q1 panel
+        const q1Rows = [1,2,3].map(m =>
+            `<span style="margin-right:.65rem"><strong>${SBM_MONTHS[m-1]}:</strong> ${byMo[m]>0?fmt$(byMo[m]):'—'}</span>`
+        ).join('');
+        document.getElementById('sbm_q1content').innerHTML =
+            `<div style="display:flex;flex-wrap:wrap;margin-bottom:.25rem;">${q1Rows}</div>` +
+            `<div style="font-weight:700;">Q1 Avg/mo: <span style="color:#15803d;">${q1Avg>0?fmt$(q1Avg):'No Q1 data for '+year}</span></div>`;
+        document.getElementById('sbm_q1panel').style.display   = 'block';
+        document.getElementById('sbm_q1loading').style.display = 'none';
+
     } catch(e) {
         document.getElementById('sbm_q1loading').style.display = 'none';
-        console.warn('sbmLoadQ1Avg error:', e.message);
+        document.getElementById('sbm_status_row').innerHTML = `<span style="font-size:.72rem;color:#dc2626;">Error loading: ${e.message}</span>`;
+        console.warn('sbmLoadAll error:', e);
     }
+}
+
+function sbmUpdateTotal() {
+    let total = 0, count = 0;
+    for (let m=1; m<=12; m++) {
+        const v = parseFloat(document.getElementById(`sbm_m${m}`)?.value || 0);
+        if (v > 0) { total += v; count++; }
+    }
+    const el = document.getElementById('sbm_total_row');
+    if (el) {
+        el.innerHTML = count > 0
+            ? `Annual Total: <strong>$${Math.round(total).toLocaleString('en-US')}</strong> &nbsp;·&nbsp; Avg/mo: <strong>$${Math.round(total/count).toLocaleString('en-US')}</strong> (${count} months set)`
+            : 'Enter budget amounts above';
+    }
+}
+
+function sbmFillAll() {
+    // Copy first filled month value to all empty months
+    let baseVal = 0;
+    for (let m=1; m<=12; m++) {
+        const v = parseFloat(document.getElementById(`sbm_m${m}`)?.value || 0);
+        if (v > 0) { baseVal = v; break; }
+    }
+    if (!baseVal) { showAlert('Enter at least one month budget first', 'error'); return; }
+    for (let m=1; m<=12; m++) {
+        const el = document.getElementById(`sbm_m${m}`);
+        if (el && !el.value) { el.value = baseVal; el.style.background='#fefce8'; el.style.borderColor='#fde68a'; }
+    }
+    sbmUpdateTotal();
+}
+
+function sbmClearAll() {
+    for (let m=1; m<=12; m++) {
+        const el = document.getElementById(`sbm_m${m}`);
+        if (el) { el.value=''; el.style.background='white'; el.style.borderColor='#e2e8f0'; }
+    }
+    sbmUpdateTotal();
 }
 
 async function sbmSave() {
     const vendor = document.getElementById('sbm_vendor').value;
-    const month  = parseInt(document.getElementById('sbm_month').value);
     const year   = parseInt(document.getElementById('sbm_year').value);
-    const amount = parseFloat(document.getElementById('sbm_amount').value || '0');
-
     if (!vendor) { showAlert('Please select a vendor', 'error'); return; }
-    if (!month || !year) { showAlert('Please select month and year', 'error'); return; }
-    if (isNaN(amount) || amount < 0) { showAlert('Enter a valid budget amount', 'error'); return; }
+
+    // Collect all month values
+    const monthAmounts = {}; // month → amount (only filled)
+    for (let m=1; m<=12; m++) {
+        const v = parseFloat(document.getElementById(`sbm_m${m}`)?.value || 0);
+        if (v > 0) monthAmounts[m] = v;
+    }
+    if (Object.keys(monthAmounts).length === 0) {
+        showAlert('Enter at least one monthly budget amount', 'error'); return;
+    }
 
     const btn = document.getElementById('sbm_save_btn');
     btn.disabled = true;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…';
 
-    // ── Always persist to localStorage as fallback ──
-    try {
-        const lsKey = 'vendorBudgets';
-        const stored = JSON.parse(localStorage.getItem(lsKey) || '{}');
-        const lsField = `${vendor.toLowerCase().trim()}|${year}|${month}`;
-        stored[lsField] = amount;
-        // Also keep a "current" key for legacy code
-        stored[vendor.toLowerCase().trim()] = amount;
-        localStorage.setItem(lsKey, JSON.stringify(stored));
-    } catch(e) { /* ignore */ }
+    const vk = vendor.toLowerCase().trim();
 
-    // ── Save to Supabase ──
-    let dbOk = false;
+    // ── Always save to localStorage ──
     try {
-        const { error } = await supabaseClient
-            .from('budget_settings')
-            .upsert(
-                { vendor, amount, period_type: 'monthly', year, month,
-                  updated_at: new Date().toISOString() },
-                { onConflict: 'vendor,period_type,year,month' }
-            );
-        if (error) {
-            // Try without year/month constraint (old schema)
-            const { error: e2 } = await supabaseClient
+        const ls = JSON.parse(localStorage.getItem('vendorBudgets') || '{}');
+        Object.entries(monthAmounts).forEach(([m, amt]) => {
+            ls[`${vk}|${year}|${m}`] = amt;
+            ls[vk] = amt; // keep generic key as most recent
+        });
+        localStorage.setItem('vendorBudgets', JSON.stringify(ls));
+    } catch(e) {}
+
+    // ── Save each month to Supabase ──
+    let saved = 0, failed = 0;
+    const chiTs = new Date().toISOString();
+
+    for (const [m, amount] of Object.entries(monthAmounts)) {
+        try {
+            const rec = { vendor, amount, period_type:'monthly', year, month: parseInt(m), updated_at: chiTs };
+            const { error } = await supabaseClient
                 .from('budget_settings')
-                .upsert(
-                    { vendor, amount, period_type: 'monthly',
-                      updated_at: new Date().toISOString() },
-                    { onConflict: 'vendor,period_type' }
-                );
-            if (e2) console.warn('budget_settings fallback upsert warn:', e2.message);
-            else dbOk = true;
-        } else {
-            dbOk = true;
-        }
-    } catch(dbErr) {
-        console.warn('budget_settings DB error (localStorage saved):', dbErr.message);
+                .upsert(rec, { onConflict: 'vendor,period_type,year,month' });
+            if (error) {
+                // Fallback: old schema without year/month
+                const { error: e2 } = await supabaseClient
+                    .from('budget_settings')
+                    .upsert({ vendor, amount, period_type:'monthly', updated_at: chiTs },
+                             { onConflict: 'vendor,period_type' });
+                if (e2) failed++; else saved++;
+            } else saved++;
+        } catch(e) { failed++; }
     }
 
-    const MONTH_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    const label = `${MONTH_NAMES[month-1]} ${year}`;
-    const fmt$  = n => '$' + Math.round(n).toLocaleString('en-US');
-
+    const fmt$ = n => '$'+Math.round(n).toLocaleString('en-US');
+    const total = Object.values(monthAmounts).reduce((a,b)=>a+b,0);
     showAlert(
-        `✅ Budget saved — ${vendor}: ${fmt$(amount)}/mo for ${label}` +
-        (dbOk ? '' : ' (stored locally — DB may need year/month columns)'),
-        dbOk ? 'success' : 'info'
+        `✅ ${saved} month${saved>1?'s':''} saved for ${vendor} ${year}` +
+        ` — Annual total: ${fmt$(total)}` +
+        (failed>0 ? ` (${failed} failed — check DB columns)` : ''),
+        failed>0 ? 'info' : 'success'
     );
 
     btn.disabled = false;
-    btn.innerHTML = '<i class="fas fa-save"></i> Save Budget';
+    btn.innerHTML = '<i class="fas fa-save"></i> Save All Budgets';
     closeBudgetModal();
     await loadBudgetTracking();
+
+    // ── Flash "Saved!" toast on the vendor's card ──
+    const savedSafeId = vendor.replace(/[^a-zA-Z0-9]/g,'_');
+    const toastEl = document.getElementById('vbc_saved_' + savedSafeId);
+    if (toastEl) {
+        toastEl.style.display = 'block';
+        setTimeout(() => { toastEl.style.display = 'none'; }, 4000);
+    }
 }
 
 
@@ -41084,7 +41358,7 @@ function _toggleMonthlyChartType() {
     if (_monthlyChartData) _buildMonthlyBarChart(_monthlyChartData);
 }
 
-function renderBudgetMonthly(invoices, vendors, budgetByVendor, spendByVendor) {
+function renderBudgetMonthly(invoices, vendors, budgetByVendorMonth, spendByVendor, selYear) {
     const fmt$ = n => '$' + Math.round(n||0).toLocaleString('en-US');
     const MONTHS_LABEL = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const QCOLORS = ['#6366f1','#059669','#f59e0b','#dc2626'];
@@ -41921,81 +42195,78 @@ async function acSaveEditLog(entryId) {
      SET VENDOR BUDGET MODAL  (per-month, per-vendor)
 ════════════════════════════════════════════════════════════ -->
 <div id="setBudgetModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:999990;align-items:center;justify-content:center;">
-  <div style="background:white;border-radius:16px;width:430px;max-width:95vw;box-shadow:0 20px 50px rgba(0,0,0,0.35);border:2px solid var(--primary-300);overflow:hidden;font-family:var(--font-display);">
+  <div style="background:white;border-radius:16px;width:680px;max-width:96vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,0.35);border:2px solid var(--primary-300);overflow:hidden;font-family:var(--font-display);">
+
     <!-- Header -->
-    <div style="background:linear-gradient(135deg,var(--primary-700),var(--primary-500));padding:0.85rem 1.1rem;display:flex;justify-content:space-between;align-items:center;">
+    <div style="background:linear-gradient(135deg,var(--primary-700),var(--primary-500));padding:0.85rem 1.1rem;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:2;">
       <div style="color:white;font-weight:800;font-size:1rem;display:flex;align-items:center;gap:0.5rem;">
-        <i class="fas fa-bullseye"></i> Set Vendor Budget
+        <i class="fas fa-bullseye"></i> Vendor Monthly Budgets
       </div>
       <button onclick="closeBudgetModal()" style="background:rgba(255,255,255,0.2);border:none;color:white;width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:1.1rem;display:flex;align-items:center;justify-content:center;">×</button>
     </div>
 
-    <!-- Body -->
-    <div style="padding:1.1rem;">
+    <div style="padding:1rem 1.15rem;overflow-y:auto;max-height:calc(90vh - 56px);">
 
-      <!-- Vendor -->
-      <div style="margin-bottom:0.85rem;">
-        <label style="display:block;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--neutral-600);margin-bottom:0.3rem;">🏢 Vendor *</label>
-        <select id="sbm_vendor" onchange="sbmLoadQ1Avg()" style="width:100%;padding:.45rem .65rem;border:1.5px solid #e2e8f0;border-radius:8px;font-size:0.9rem;font-weight:600;background:white;">
-          <option value="">— Select Vendor —</option>
-        </select>
-      </div>
-
-      <!-- Month + Year row -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem;margin-bottom:0.85rem;">
+      <!-- Vendor + Year row -->
+      <div style="display:grid;grid-template-columns:1fr auto;gap:.75rem;margin-bottom:.9rem;align-items:end;">
         <div>
-          <label style="display:block;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--neutral-600);margin-bottom:0.3rem;">📅 Month *</label>
-          <select id="sbm_month" onchange="sbmLoadQ1Avg()" style="width:100%;padding:.45rem .65rem;border:1.5px solid #e2e8f0;border-radius:8px;font-size:0.88rem;font-weight:600;background:white;">
-            <option value="1">January</option><option value="2">February</option>
-            <option value="3">March</option><option value="4">April</option>
-            <option value="5">May</option><option value="6">June</option>
-            <option value="7">July</option><option value="8">August</option>
-            <option value="9">September</option><option value="10">October</option>
-            <option value="11">November</option><option value="12">December</option>
+          <label style="display:block;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--neutral-600);margin-bottom:.3rem;">🏢 Vendor *</label>
+          <select id="sbm_vendor" onchange="sbmLoadAll()" style="width:100%;padding:.42rem .65rem;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.9rem;font-weight:600;background:white;">
+            <option value="">— Select Vendor —</option>
           </select>
         </div>
         <div>
-          <label style="display:block;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--neutral-600);margin-bottom:0.3rem;">📆 Year *</label>
-          <select id="sbm_year" onchange="sbmLoadQ1Avg()" style="width:100%;padding:.45rem .65rem;border:1.5px solid #e2e8f0;border-radius:8px;font-size:0.88rem;font-weight:600;background:white;">
-            <option value="2026" selected>2026</option>
+          <label style="display:block;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--neutral-600);margin-bottom:.3rem;">📆 Year</label>
+          <select id="sbm_year" onchange="sbmLoadAll()" style="padding:.42rem .65rem;border:1.5px solid #e2e8f0;border-radius:8px;font-size:.88rem;font-weight:600;background:white;">
             <option value="2025">2025</option>
+            <option value="2026" selected>2026</option>
             <option value="2027">2027</option>
           </select>
         </div>
       </div>
 
-      <!-- Budget Amount -->
-      <div style="margin-bottom:0.75rem;">
-        <label style="display:block;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--neutral-600);margin-bottom:0.3rem;">💰 Monthly Budget ($) *</label>
-        <input type="number" id="sbm_amount" min="0" step="50" placeholder="e.g. 2000"
-               style="width:100%;padding:.45rem .65rem;border:1.5px solid #e2e8f0;border-radius:8px;font-size:1.05rem;font-weight:700;font-family:var(--font-mono);"
-               onfocus="this.style.borderColor='var(--primary-400)'" onblur="this.style.borderColor='#e2e8f0'"
-               onkeydown="if(event.key==='Enter') sbmSave()">
+      <!-- Status row -->
+      <div id="sbm_status_row" style="min-height:1.1rem;margin-bottom:.6rem;"></div>
+
+      <!-- 12-Month Grid -->
+      <div style="margin-bottom:.85rem;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem;">
+          <label style="font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--neutral-600);">💰 Monthly Budget — each month is independent</label>
+          <div style="display:flex;gap:.4rem;">
+            <button onclick="sbmFillAll()" style="font-size:.68rem;padding:.2rem .55rem;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;font-weight:600;color:#475569;" title="Copy first entered amount to all empty months">Fill All</button>
+            <button onclick="sbmClearAll()" style="font-size:.68rem;padding:.2rem .55rem;background:#fff1f2;border:1px solid #fecdd3;border-radius:5px;cursor:pointer;font-weight:600;color:#dc2626;" title="Clear all month inputs">Clear</button>
+          </div>
+        </div>
+        <div id="sbm_month_grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;">
+          <!-- Built by sbmBuildGrid() -->
+        </div>
       </div>
 
-      <!-- Q1 Average Info Panel -->
-      <div id="sbm_q1panel" style="display:none;background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:10px;padding:0.65rem 0.85rem;margin-bottom:0.85rem;">
-        <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#15803d;margin-bottom:0.4rem;">📊 Q1 Historical Average (Jan–Mar)</div>
-        <div id="sbm_q1content" style="font-size:0.82rem;color:#166534;"></div>
+      <!-- Annual total row -->
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:.5rem .75rem;margin-bottom:.85rem;font-size:.8rem;color:#475569;text-align:center;" id="sbm_total_row">
+        Enter budget amounts above
       </div>
-      <div id="sbm_q1loading" style="display:none;font-size:0.75rem;color:#94a3b8;padding:.3rem 0;"><i class="fas fa-spinner fa-spin"></i> Loading averages…</div>
 
-      <!-- Existing budget note -->
-      <div id="sbm_existing" style="display:none;background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:.5rem .75rem;margin-bottom:.75rem;font-size:.78rem;color:#92400e;">
-        <i class="fas fa-info-circle"></i> <span id="sbm_existing_text"></span>
+      <!-- Q1 Average Reference -->
+      <div id="sbm_q1loading" style="display:none;font-size:.75rem;color:#94a3b8;padding:.3rem 0;"><i class="fas fa-spinner fa-spin"></i> Loading actuals…</div>
+      <div id="sbm_q1panel" style="display:none;background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:10px;padding:.65rem .85rem;margin-bottom:.85rem;">
+        <div style="font-size:.63rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#15803d;margin-bottom:.35rem;">📊 Q1 Actual Spend Reference (Jan–Mar)</div>
+        <div id="sbm_q1content" style="font-size:.8rem;color:#166534;"></div>
       </div>
 
       <!-- Action buttons -->
-      <div style="display:flex;gap:0.55rem;">
-        <button onclick="closeBudgetModal()" style="flex:.45;padding:.5rem;background:#f1f5f9;border:1.5px solid #e2e8f0;color:#64748b;border-radius:8px;font-size:.82rem;font-weight:600;cursor:pointer;">Cancel</button>
+      <div style="display:flex;gap:.55rem;">
+        <button onclick="closeBudgetModal()" style="flex:.4;padding:.5rem;background:#f1f5f9;border:1.5px solid #e2e8f0;color:#64748b;border-radius:8px;font-size:.82rem;font-weight:600;cursor:pointer;">Cancel</button>
         <button onclick="sbmSave()" id="sbm_save_btn"
                 style="flex:1;padding:.5rem;background:linear-gradient(135deg,var(--primary-600),var(--primary-800));border:none;color:white;border-radius:8px;font-size:.85rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:.4rem;">
-          <i class="fas fa-save"></i> Save Budget
+          <i class="fas fa-save"></i> Save All Budgets
         </button>
       </div>
+
     </div>
   </div>
 </div>
+
 
 <!-- ══════════════════════════════════════════════════════════
      CUSTOM CONFIRM MODAL (replaces browser confirm() for delete)
@@ -42017,6 +42288,7 @@ async function acSaveEditLog(entryId) {
 </div>
 
 </body>
+
 
 
 
