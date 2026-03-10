@@ -32286,6 +32286,21 @@ ALTER TABLE budget_settings ADD CONSTRAINT budget_settings_unique UNIQUE (catego
         lines.push(warn('→ Use Set Monthly Budget on each vendor card to enter and save budgets.'));
     } else {
         lines.push(ok(`✅ ${allRows.length} budget row(s) found:`));
+
+        // Check if any rows use food categories instead of vendor names
+        const vendorNames = (typeof ALLOWED_VENDORS !== 'undefined' ? ALLOWED_VENDORS : []).map(v => v.toLowerCase());
+        const oldCategoryRows = (allRows||[]).filter(r => {
+            const cat = (r.category||'').toLowerCase();
+            return cat && !vendorNames.includes(cat);
+        });
+        if (oldCategoryRows.length > 0) {
+            const oldCats = [...new Set(oldCategoryRows.map(r => r.category))].join(', ');
+            lines.push('');
+            lines.push(warn(`⚠️ ${oldCategoryRows.length} row(s) use food category names (${oldCats}) instead of vendor names.`));
+            lines.push(warn('   These WILL NOT show on vendor cards. Use Set Monthly Budget on each card to save vendor budgets.'));
+            lines.push('');
+        }
+
         const byVendor = {};
         allRows.forEach(r => {
             const v = r.category || r.vendor || '(null)';
@@ -32309,7 +32324,9 @@ ALTER TABLE budget_settings ADD CONSTRAINT budget_settings_unique UNIQUE (catego
             });
         });
         lines.push('');
+        const chiNow = new Date(new Date().toLocaleString('en-US',{timeZone:'America/Chicago'}));
         lines.push(ok('✅ Schema and data look correct. Budgets should load when you select the matching year/month above.'));
+        lines.push(dim(`   Current Chicago time: ${chiNow.toLocaleString('en-US',{timeZone:'America/Chicago'})} · All saves use this timezone.`));
     }
 
     out.innerHTML = lines.join('<br>');
@@ -33142,17 +33159,46 @@ async function sbmSave() {
     // ── Save each month to Supabase ──
     let saved = 0, failed = 0;
     let tableError = null;
-    const chiTs = new Date().toISOString();
+
+    // Chicago CST/CDT timestamp
+    const chiNowTs = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+    const chiTs = chiNowTs.toISOString(); // ISO string in UTC, but derived from Chicago wall-clock
+
+    // Safety: ensure year is valid integer
+    const saveYear = (Number.isInteger(year) && year >= 2020 && year <= 2099) ? year : chiNowTs.getFullYear();
 
     for (const [m, amount] of Object.entries(monthAmounts)) {
+        const saveMonth = parseInt(m);
+        if (!saveMonth || saveMonth < 1 || saveMonth > 12) continue;
         try {
-            const rec = { category: vendor, amount, period_type:'monthly', year, month: parseInt(m), updated_at: chiTs };
+            const rec = {
+                category:    vendor,
+                amount:      parseFloat(amount),
+                period_type: 'monthly',
+                year:        saveYear,
+                month:       saveMonth,
+                updated_at:  chiTs
+            };
             const { error } = await supabaseClient
                 .from('budget_settings')
                 .upsert(rec, { onConflict: 'category,period_type,year,month' });
             if (error) {
-                tableError = error;
-                failed++;
+                // Conflict constraint may differ — try insert+update pattern
+                const { error: e2 } = await supabaseClient
+                    .from('budget_settings')
+                    .upsert(rec, { onConflict: 'id' });
+                if (e2) {
+                    // Last resort: delete old + insert new
+                    await supabaseClient.from('budget_settings')
+                        .delete()
+                        .eq('category', vendor)
+                        .eq('period_type', 'monthly')
+                        .eq('year', saveYear)
+                        .eq('month', saveMonth);
+                    const { error: e3 } = await supabaseClient
+                        .from('budget_settings').insert(rec);
+                    if (e3) { tableError = e3; failed++; } else saved++;
+                } else saved++;
             } else saved++;
         } catch(e) { failed++; tableError = e; }
     }
