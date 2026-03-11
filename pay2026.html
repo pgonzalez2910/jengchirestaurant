@@ -1730,25 +1730,24 @@ async function buildPDFBlob(r){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'letter' });
   const W=215.9, H=279.4;
-  const ML=18, MR=18, CW=W-ML-MR;
+  const ML=16, MR=16, CW=W-ML-MR;
 
   // ── Palette ─────────────────────────────────────────────
-  const NAVY   = [15, 35, 65];
-  const NAVYLT = [28, 58, 100];
-  const GOLD   = [180, 143, 82];
-  const GOLDB  = [210, 183, 130];
-  const GOLDLT = [245, 238, 220];
-  const SILVER = [205, 213, 225];
-  const LGRAY  = [246, 247, 250];
-  const MGRAY  = [128, 142, 160];
-  const DARK   = [20, 35, 58];
-  const GREEN  = [5, 105, 62];
-  const RED    = [172, 22, 22];
-  const AMBER  = [158, 88, 0];
+  const NAVY   = [13, 31, 61];
+  const NAVYLT = [26, 54, 96];
+  const GOLD   = [176, 139, 76];
+  const GOLDB  = [208, 178, 120];
+  const GOLDLT = [250, 243, 225];
+  const SILVER = [200, 210, 222];
+  const LGRAY  = [247, 248, 251];
+  const MGRAY  = [120, 136, 156];
+  const DARK   = [18, 32, 54];
+  const GREEN  = [4, 100, 58];
+  const RED    = [165, 20, 20];
+  const AMBER  = [152, 82, 0];
   const WHITE  = [255, 255, 255];
-  const BLACK  = [0, 0, 0];
 
-  // ── Draw helpers ────────────────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────
   const T = (t, x, y, sz=9, col=DARK, bold=false, align='left') => {
     doc.setFontSize(sz); doc.setFont('helvetica', bold?'bold':'normal');
     doc.setTextColor(...col); doc.text(String(t??'—'), x, y, {align});
@@ -1770,229 +1769,241 @@ async function buildPDFBlob(r){
     }catch(e){return String(iso);}
   };
 
-  // ══════════════════════════════════════════════════════
-  // 1. HEADER  — gold cap · logo left · title+info right
-  // ══════════════════════════════════════════════════════
-  // Gold top cap
-  R(0, 0, W, 3, GOLD);
-  R(0, 3, W, 1, GOLDB);
+  // ══════════════════════════════════════════════════════════
+  // 1. HEADER  — light/white background, logo left, title right
+  // ══════════════════════════════════════════════════════════
+  const HDR_H = 40;
+  // Gold top accent strip
+  R(0, 0, W, 3.5, GOLD);
+  R(0, 3.5, W, 1, GOLDB);
+  // Light white/cream header background
+  R(0, 4.5, W, HDR_H, WHITE);
 
-  // ── Logo  (grabs already-loaded img from the portal DOM)
+  // Logo: fetch as blob then FileReader base64 - avoids canvas CORS taint completely
+  const LOGO_RAW = 'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg';
   let logoPlaced = false;
-  await new Promise(res => {
-    const LOGO_SRC = 'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg';
-    const embed = imgEl => {
-      try {
-        const cv = document.createElement('canvas');
-        cv.width  = imgEl.naturalWidth  || imgEl.width  || 400;
-        cv.height = imgEl.naturalHeight || imgEl.height || 150;
-        cv.getContext('2d').drawImage(imgEl, 0, 0);
-        const ratio = cv.width / cv.height;
-        const IH = 28, IW = Math.min(IH * ratio, 90);
-        doc.addImage(cv.toDataURL('image/jpeg', 0.95), 'JPEG', ML, 6, IW, IH);
-        logoPlaced = true;
-      } catch(e){}
-      res();
-    };
-    // Try every <img> that contains the logo URL
-    const candidates = [...document.querySelectorAll('img')].filter(i =>
-      (i.src||'').includes('jengchilogo') || (i.src||'').includes('pgonzalez2910')
-    );
-    const ready = candidates.find(i => i.complete && i.naturalWidth > 0);
-    if(ready){ embed(ready); return; }
-    // Fetch fresh
-    const fresh = new Image(); fresh.crossOrigin = 'anonymous';
-    fresh.onload  = () => embed(fresh);
-    fresh.onerror = () => res();
-    fresh.src = LOGO_SRC + '?t=' + Date.now();
-    setTimeout(() => { if(!logoPlaced) res(); }, 6000);
-  });
-  if(!logoPlaced){
-    // Fallback wordmark
-    T('JENGCHI', ML, 24, 22, NAVY, true);
+
+  await (async () => {
+    try {
+      const resp = await fetch(LOGO_RAW, { cache: 'no-store' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const blob = await resp.blob();
+      const b64 = await new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload  = () => resolve(fr.result);
+        fr.onerror = reject;
+        fr.readAsDataURL(blob);
+      });
+      const img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        i.onload  = () => resolve(i);
+        i.onerror = reject;
+        i.src = b64;
+      });
+      const ratio = img.naturalWidth / img.naturalHeight;
+      const IH = 28;
+      const IW = Math.min(IH * ratio, 90);
+      doc.addImage(b64, 'JPEG', ML, 7, IW, IH);
+      logoPlaced = true;
+    } catch(e) {
+      console.warn('Logo load failed:', e.message);
+    }
+  })();
+
+  if (!logoPlaced) {
+    T('JENGCHI', ML, 30, 22, NAVY, true);
   }
 
-  // Right side — document title + contact block
+  // ── Right side: Title block (dark text on white background) ─
   const titleX = W - MR;
-  T('EMPLOYEE PAY ADVANCE AUTHORIZATION', titleX, 12, 13, NAVY, true, 'right');
-  T('OFFICIAL PAYROLL DOCUMENT  ·  STRICTLY CONFIDENTIAL', titleX, 19, 8, MGRAY, false, 'right');
-  T(new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'}), titleX, 25, 8, MGRAY, false, 'right');
+  T('EMPLOYEE PAY ADVANCE AUTHORIZATION', titleX, 16, 13, NAVY, true, 'right');
+  T('OFFICIAL PAYROLL DOCUMENT  ·  STRICTLY CONFIDENTIAL', titleX, 24, 8, [180,143,82], true, 'right');
+  const todayStr = new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+  T(todayStr, titleX, 32, 8.5, DARK, true, 'right');
 
-  // Gold rule closing header
-  L(0, 36, W, 36, GOLD, 1.6);
-  L(0, 37.8, W, 37.8, GOLDB, 0.4);
+  // Thin navy line + gold bottom rule closing header
+  L(0, 4.5+HDR_H-0.5, W, 4.5+HDR_H-0.5, NAVY, 0.5);
+  R(0, 4.5+HDR_H, W, 2.5, GOLD);
+  R(0, 4.5+HDR_H+2.5, W, 0.8, GOLDB);
 
-  // ── Restaurant contact bar (white bg, below gold rule)
-  R(0, 38, W, 11, LGRAY);
+  let y = 4.5 + HDR_H + 3.3;
+
+  // ── Address bar — light gray ──────────────────────────────
+  R(0, y, W, 11, LGRAY);
   const cx = W/2;
-  T('400 N. Greenville Ave., Ste. 11  ·  Richardson, Texas 75081', cx, 43, 8, DARK, true, 'center');
-  T('admin@jengchirestaurant.com', cx - 22, 49, 7.5, MGRAY, false, 'center');
-  T('·', cx, 49, 7.5, MGRAY, false, 'center');
-  T('972-669-9094', cx + 22, 49, 7.5, MGRAY, false, 'center');
-  L(0, 49, W, 49, SILVER, 0.25);
+  T('400 N. Greenville Ave., Ste. 11  ·  Richardson, Texas 75081  ·  admin@jengchirestaurant.com  ·  972-669-9094',
+    cx, y+7.5, 7.5, DARK, true, 'center');
+  L(0, y+11, W, y+11, SILVER, 0.2);
+  y += 11;
 
-  // ══════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
   // 2. REFERENCE BAR
-  // ══════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
   const docRef = r.doc_ref || genDocId();
   const stCol  = r.status==='approved'? GREEN : r.status==='denied'? RED : AMBER;
-  R(0, 49, W, 12, WHITE);
-  R(0, 49, 5, 12, GOLD);
-  T('DOC REF:  ' + docRef,               ML+7, 56.5, 9, BLACK, true);
-  T('Submitted:  ' + fDate(r.submitted_at), cx,  56.5, 9, BLACK, true, 'center');
-  T('STATUS: ' + (r.status||'PENDING').toUpperCase(), W-MR, 56.5, 9, stCol, true, 'right');
-  L(0, 61, W, 61, GOLD, 1.2);
+  R(0, y, W, 11, WHITE);
+  R(0, y, 4, 11, GOLD);
+  T('DOC REF:  ' + docRef,                    ML+6, y+7.5, 9, DARK, true);
+  T('Submitted:  ' + fDate(r.submitted_at),   cx,   y+7.5, 9, DARK, true, 'center');
+  T('STATUS: ' + (r.status||'PENDING').toUpperCase(), W-MR, y+7.5, 9, stCol, true, 'right');
+  L(0, y+11, W, y+11, GOLD, 1.0);
+  y += 11 + 5;
 
-  // ══════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
   // 3. TWO-COLUMN BODY
-  // ══════════════════════════════════════════════════════
-  let y   = 67;
-  const COL1W = 92;
-  const COL2X = ML + COL1W + 12;
-  const COL2W = CW - COL1W - 12;
-  const ROW_H = 12;   // generous row height
+  // ══════════════════════════════════════════════════════════
+  const COL1W = 90;
+  const GAP   = 8;
+  const COL2X = ML + COL1W + GAP;
+  const COL2W = CW - COL1W - GAP;
+  const ROW_H = 9;
 
-  // Section label
   const secHdr = (label, x, xw, yy) => {
-    T(label, x, yy, 8, GOLD, true);
-    L(x, yy+2, x+xw, yy+2, GOLDB, 0.7);
+    R(x, yy, xw, 8, LGRAY, GOLDB, 0.5);
+    R(x, yy, 3, 8, GOLD);
+    T(label, x+7, yy+6, 7.5, NAVY, true);
   };
 
-  // ── LEFT: Employee Information (6 fields only)
+  // ── LEFT: Employee Information ────────────────────────────
   const isSal  = (r.emp_comp_type||'').toLowerCase() === 'salary';
   const hrRate = getHourlyRate(r);
-
   secHdr('EMPLOYEE INFORMATION', ML, COL1W, y);
-  const eStart = y + 7;
+  const eStart = y + 8;
 
   const eRows = [
-    ['Full Name',     r.name || r.username],
-    ['Position',      r.emp_job_title || '—'],
-    ['Department',    r.department || '—'],
-    ['Pay Type',      isSal ? 'Salaried' : 'Hourly'],
-    ['Hourly Rate',   '$' + hrRate.toFixed(2) + ' / hr'],
-    ['Tips Eligible', r.emp_has_tips ? 'Yes' : 'No'],
+    ['Full Name',      r.name || r.username],
+    ['Employee ID',    r.employee_id || '—'],
+    ['Position',       r.emp_job_title || '—'],
+    ['Department',     r.department || '—'],
+    ['Compensation',   isSal ? 'Salaried' : 'Hourly'],
+    ['Rate',           isSal ? cur(r.emp_wage||0)+' / yr' : '$'+hrRate.toFixed(2)+' / hr'],
+    ['Tips Eligible',  r.emp_has_tips ? 'Yes ✓' : 'No'],
   ];
 
   eRows.forEach((row, i) => {
     const ry = eStart + i * ROW_H;
     R(ML, ry, COL1W, ROW_H, i%2===0 ? LGRAY : WHITE);
-    // Label — BOLD
-    T(row[0], ML+4, ry + ROW_H*0.72, 8, DARK, true);
-    // Value — right-aligned, navy
-    T(row[1], ML+COL1W-4, ry + ROW_H*0.72, 8.5, NAVYLT, true, 'right');
-    L(ML, ry+ROW_H, ML+COL1W, ry+ROW_H, SILVER, 0.15);
+    T(row[0], ML+3, ry+ROW_H*0.72, 7.5, MGRAY, true);
+    T(row[1], ML+COL1W-3, ry+ROW_H*0.72, 8, DARK, true, 'right');
+    L(ML, ry+ROW_H, ML+COL1W, ry+ROW_H, SILVER, 0.12);
   });
+  // Border around left col
+  doc.setDrawColor(...SILVER); doc.setLineWidth(0.3);
+  doc.rect(ML, eStart, COL1W, eRows.length*ROW_H, 'S');
   const eBottom = eStart + eRows.length * ROW_H;
 
-  // ── RIGHT: Advance Details
+  // ── RIGHT: Advance Details ────────────────────────────────
   secHdr('ADVANCE DETAILS', COL2X, COL2W, y);
-  let ry2 = y + 7;
+  let ry2 = y + 8;
 
-  // Requested amount hero box — white bg, navy border
+  // Amount hero box — light background
   const isOver = r.amount > (r.hr_max_50pct || r.max_advance_50pct || 0.01);
-  const HERO_H = 28;
-  R(COL2X, ry2, COL2W, HERO_H, WHITE, isOver ? AMBER : NAVYLT, 0.8);
-  R(COL2X, ry2, 5, HERO_H, isOver ? AMBER : GOLD);
-  T('REQUESTED AMOUNT', COL2X+9, ry2+10, 8, MGRAY, true);
-  T(cur(r.amount), COL2X+COL2W/2+3, ry2+23, 20, isOver ? AMBER : NAVY, true, 'center');
-  ry2 += HERO_H + 3;
+  const HERO_H = 22;
+  R(COL2X, ry2, COL2W, HERO_H, isOver?[255,248,235]:LGRAY, isOver?AMBER:NAVY, 0.7);
+  R(COL2X, ry2, 4, HERO_H, isOver?AMBER:GOLD);
+  T('REQUESTED AMOUNT', COL2X + COL2W/2, ry2+8, 8, isOver?AMBER:NAVY, true, 'center');
+  T(cur(r.amount), COL2X + COL2W/2, ry2+19, 18, isOver?AMBER:NAVY, true, 'center');
+  ry2 += HERO_H + 2;
 
-  // Status badge (approved / denied)
+  // Status row
   if(r.status==='approved'||r.status==='denied'){
     const dc = r.status==='approved'? GREEN : RED;
-    const bg = r.status==='approved'? [235,250,242] : [252,238,238];
-    R(COL2X, ry2, COL2W, 12, bg, dc, 0.5);
-    R(COL2X, ry2, 5, 12, dc);
-    T((r.status==='approved'?'APPROVED: ':'DENIED — ')+(r.status==='approved'?cur(r.amount):'Request Not Approved'),
-      COL2X+9, ry2+8.5, 9, dc, true);
-    ry2 += 15;
+    const bg = r.status==='approved'? [230,250,238] : [252,235,235];
+    R(COL2X, ry2, COL2W, 10, bg, dc, 0.4);
+    R(COL2X, ry2, 4, 10, dc);
+    T((r.status==='approved'?'✓ APPROVED — ':' DENIED — ')+(r.status==='approved'?cur(r.amount):'Not Approved'),
+      COL2X+8, ry2+7, 8.5, dc, true);
+    ry2 += 12;
   }
 
-  // Advance rows: Pay Period · Next Payday · Reason only
+  // Detail rows
   const dRows = [
-    ['Pay Period',  r.payroll_period_start ? fDate(r.payroll_period_start)+' – '+fDate(r.payroll_period_end) : '—'],
-    ['Next Payday', fDate(r.next_payday)],
-    ['Reason',      r.reason || '—'],
+    ['Pay Period',   r.payroll_period_start ? fDate(r.payroll_period_start)+' – '+fDate(r.payroll_period_end) : '—'],
+    ['Next Payday',  fDate(r.next_payday)],
+    ['Reason',       r.reason || '—'],
   ];
-
   dRows.forEach((row, i) => {
     const ry = ry2 + i*ROW_H;
-    const isPayday = row[0]==='Next Payday';
     R(COL2X, ry, COL2W, ROW_H, i%2===0 ? LGRAY : WHITE);
-    // Label — BOLD
-    T(row[0], COL2X+4, ry+ROW_H*0.72, 8, DARK, true);
-    // Value
-    T(row[1], COL2X+COL2W-4, ry+ROW_H*0.72, 8.5, isPayday ? NAVYLT : DARK, true, 'right');
-    L(COL2X, ry+ROW_H, COL2X+COL2W, ry+ROW_H, SILVER, 0.15);
+    T(row[0], COL2X+3, ry+ROW_H*0.72, 7.5, MGRAY, true);
+    T(row[1], COL2X+COL2W-3, ry+ROW_H*0.72, 8, DARK, true, 'right');
+    L(COL2X, ry+ROW_H, COL2X+COL2W, ry+ROW_H, SILVER, 0.12);
   });
+  doc.setDrawColor(...SILVER); doc.setLineWidth(0.3);
+  doc.rect(COL2X, ry2, COL2W, dRows.length*ROW_H, 'S');
   const dBottom = ry2 + dRows.length * ROW_H;
 
-  y = Math.max(eBottom, dBottom) + 10;
+  y = Math.max(eBottom, dBottom) + 7;
 
-  // ══════════════════════════════════════════════════════
-  // 4. DISCLAIMER  (+25% font: header 11pt, body 9.5pt)
-  // ══════════════════════════════════════════════════════
-  L(ML, y, W-MR, y, GOLD, 1.2);
-  L(ML, y+1.5, W-MR, y+1.5, GOLDB, 0.3);
-  y += 7;
-
+  // ══════════════════════════════════════════════════════════
+  // 4. ACKNOWLEDGMENT & DISCLAIMER
+  // ══════════════════════════════════════════════════════════
   const periodStr = r.payroll_period_start
     ? fDate(r.payroll_period_start)+' through '+fDate(r.payroll_period_end)
     : 'the current pay period';
   const discFull =
     'By signing this document, I, '+(r.name||r.username)+
-    ', authorize Jengchi to deduct 100% of the approved advance amount ('+cur(r.amount)+
-    ') from my paycheck on '+fDate(r.next_payday)+
-    '. This advance represents up to 50% of wages earned during '+periodStr+
-    (r.emp_has_tips?', including tips.':'.')+
-    '  Maximum of 6 advances per calendar year.';
+    ', hereby authorize Jengchi Restaurant to deduct 100% of the approved advance amount ('+cur(r.amount)+
+    ') from my paycheck on '+fDate(r.next_payday)+'. This advance represents up to 50% of wages earned during '+
+    periodStr+(r.emp_has_tips?', including tips.':'.')+' Maximum of 6 advances per calendar year. '+
+    'This deduction will be processed without further notice per company payroll policy.';
 
-  doc.setFontSize(9.5); doc.setFont('helvetica','normal');
-  const discLines = doc.splitTextToSize(discFull, CW-14);
-  const DLH = 5.8;
-  const DISC_H = 13 + discLines.length*DLH + 5;
+  doc.setFontSize(8.5); doc.setFont('helvetica','normal');
+  const discLines = doc.splitTextToSize(discFull, CW-12);
+  const DLH = 5.2;
+  const DISC_H = 11 + discLines.length*DLH + 4;
 
-  R(ML, y, CW, DISC_H, GOLDLT, GOLDB, 0.5);
-  R(ML, y, 5, DISC_H, GOLD);
-  T('ACKNOWLEDGMENT & DISCLAIMER', ML+9, y+10, 11, NAVY, true);
-  discLines.forEach((ln,i) => T(ln, ML+9, y+16+i*DLH, 9.5, DARK, false));
-  y += DISC_H + 8;
+  R(ML, y, CW, DISC_H, GOLDLT, GOLD, 0.5);
+  R(ML, y, 4, DISC_H, GOLD);
+  T('ACKNOWLEDGMENT & DISCLAIMER', ML+8, y+8.5, 9, NAVY, true);
+  discLines.forEach((ln,i) => T(ln, ML+8, y+13+i*DLH, 8.5, DARK, false));
+  y += DISC_H + 6;
 
-  // ══════════════════════════════════════════════════════
-  // 5. SIGNATURES  — boxes fill remaining page space
-  // ══════════════════════════════════════════════════════
-  L(ML, y, W-MR, y, GOLD, 1.2);
-  L(ML, y+1.5, W-MR, y+1.5, GOLDB, 0.3);
-  y += 7;
-  T('AUTHORIZATION SIGNATURES', ML, y, 10, NAVY, true);
-  L(ML, y+3, W-MR, y+3, GOLDB, 0.5);
-  y += 9;
+  // ══════════════════════════════════════════════════════════
+  // 5. AUTHORIZATION SIGNATURES — fixed height, no overlap
+  // ══════════════════════════════════════════════════════════
+  // Section header — light style
+  R(ML, y, CW, 8, LGRAY, GOLDB, 0.5);
+  R(ML, y, 3, 8, GOLD);
+  T('AUTHORIZATION SIGNATURES', ML+7, y+6, 8, NAVY, true);
+  y += 8 + 3;
 
-  const FOOTER_H = 14;                               // space reserved for footer
-  const sigW = (CW - 14) / 2;
-  const SIG_H = Math.max(52, H - y - FOOTER_H - 4); // fill rest of page
-  const IMG_H = SIG_H - 26;                          // image area inside box
+  const FOOTER_H  = 14;
+  const sigW      = (CW - 10) / 2;
+  // Fixed signature box height — enough for image but never overflows footer
+  const SIG_H     = Math.min(52, H - y - FOOTER_H - 6);
+  const SIG_IMG_H = SIG_H - 24;  // reserved for the signature image
 
   const drawSigBox = (sx, label, sigData, name, role, dateStr) => {
-    // Outer box
-    R(sx, y, sigW, SIG_H, WHITE, SILVER, 0.4);
-    // Header band
-    R(sx, y, sigW, 11, LGRAY);
-    L(sx, y+11, sx+sigW, y+11, GOLD, 0.6);
-    T(label, sx+5, y+8, 8.5, NAVY, true);
-    // Signature image or placeholder
-    if(sigData && sigData.length>200){
-      try{ doc.addImage(sigData,'PNG', sx+4, y+12, sigW-8, IMG_H); }
-      catch(e){ T('[Signature on file]', sx+sigW/2, y+12+IMG_H/2, 9, MGRAY, false,'center'); }
+    // Outer border
+    R(sx, y, sigW, SIG_H, WHITE, SILVER, 0.35);
+    // Header band — light gray with gold accent
+    R(sx, y, sigW, 10, LGRAY);
+    R(sx, y, 3, 10, GOLD);
+    L(sx, y+10, sx+sigW, y+10, GOLDB, 0.5);
+    T(label, sx+7, y+7.5, 8, NAVY, true);
+    // Signature image area — constrained
+    const imgTop  = y + 11;
+    const imgH    = SIG_IMG_H;
+    if(sigData && sigData.length > 200){
+      try{
+        doc.addImage(sigData, 'PNG', sx+3, imgTop, sigW-6, imgH);
+      } catch(e){
+        T('[Signature on file]', sx+sigW/2, imgTop+imgH/2, 8, MGRAY, false, 'center');
+      }
     } else {
-      T('[Pending Signature]', sx+sigW/2, y+12+IMG_H/2, 9, SILVER, false,'center');
+      // Dashed placeholder line
+      doc.setLineDash([1.5, 1.5], 0);
+      L(sx+8, imgTop+imgH*0.6, sx+sigW-8, imgTop+imgH*0.6, SILVER, 0.4);
+      doc.setLineDash([], 0);
+      T('[Pending Signature]', sx+sigW/2, imgTop+imgH*0.5, 7.5, SILVER, false, 'center');
     }
-    // Name line
-    L(sx+5, y+SIG_H-16, sx+sigW-5, y+SIG_H-16, SILVER, 0.35);
-    T(name,     sx+5,      y+SIG_H-10, 9,   DARK,  true);
-    T(role,     sx+5,      y+SIG_H-4,  7.5, MGRAY, false);
-    T('Date: '+dateStr, sx+sigW-5, y+SIG_H-10, 8, MGRAY, false,'right');
+    // Name / role / date footer inside box
+    const footY = y + SIG_H - 12;
+    L(sx+4, footY-1, sx+sigW-4, footY-1, SILVER, 0.25);
+    T(name,          sx+4,       footY+4,  8,   DARK,  true);
+    T(role,          sx+4,       footY+9,  7,   MGRAY, false);
+    T('Date: '+dateStr, sx+sigW-4, footY+4, 7.5, MGRAY, false, 'right');
   };
 
   drawSigBox(
@@ -2004,7 +2015,7 @@ async function buildPDFBlob(r){
     fDate(r.submitted_at)
   );
   drawSigBox(
-    ML + sigW + 14,
+    ML + sigW + 10,
     'HR MANAGER SIGNATURE',
     r.hr_signature,
     r.approved_by || r.denied_by || 'HR Manager',
@@ -2012,19 +2023,18 @@ async function buildPDFBlob(r){
     r.approved_at||r.denied_at ? fDate(r.approved_at||r.denied_at) : '—'
   );
 
-  // ══════════════════════════════════════════════════════
-  // 6. FOOTER
-  // ══════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  // 6. FOOTER  — pinned to bottom
+  // ══════════════════════════════════════════════════════════
   const FY = H - FOOTER_H;
-  L(0, FY, W, FY, SILVER, 0.2);
-  R(0, FY, W, FOOTER_H-3, LGRAY);
+  L(0, FY, W, FY, GOLDB, 0.5);
+  R(0, FY, W, FOOTER_H, LGRAY);
   T('JENGCHI  ·  400 N. Greenville Ave., Ste. 11, Richardson TX 75081  ·  admin@jengchirestaurant.com  ·  972-669-9094  ·  Ref: '+docRef,
-    W/2, FY+5, 6.5, MGRAY, false,'center');
+    W/2, FY+5, 6, NAVY, true, 'center');
   T('Generated: '+new Date().toLocaleString()+'  ·  This document is the property of Jengchi Restaurant. Unauthorized distribution prohibited.',
-    W/2, FY+10, 5.5, SILVER, false,'center');
-  R(0, H-3, W, 3, GOLD);
+    W/2, FY+10.5, 5.5, MGRAY, false, 'center');
+  R(0, H-2.5, W, 2.5, GOLD);
 
-  // Return as Blob instead of triggering download directly
   return doc.output('blob');
 }
 
