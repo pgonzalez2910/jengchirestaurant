@@ -310,6 +310,14 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 </div>
 </div>
 <div class="nav-item">
+<button class="nb" id="requestsMenuBtn" onclick="ScheduleApp.toggleMenu('requestsMenu')">
+<i class="fas fa-calendar-times ni"></i>Day-Off Requests<i class="fas fa-chevron-down nc"></i>
+</button>
+<div class="dd" id="requestsMenu">
+<button class="di" onclick="ScheduleApp.showView('requests');ScheduleApp.closeAllMenus()"><span class="ico">🍜</span>Wok Chef Requests</button>
+</div>
+</div>
+<div class="nav-item">
 <button class="nb" id="employeesMenuBtn" onclick="ScheduleApp.toggleMenu('employeesMenu')">
 <i class="fas fa-users ni"></i>Employees<i class="fas fa-chevron-down nc"></i>
 </button>
@@ -396,6 +404,33 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 <input type="text" id="newEmployeeName" placeholder="Enter employee full name" style="flex:1" onkeydown="if(event.key==='Enter') ScheduleApp.addEmployee()">
 <button class="bp" onclick="ScheduleApp.addEmployee()"><i class="fas fa-plus"></i> Add</button>
 </div>
+</div>
+</div>
+<div id="requests-view" class="vs">
+<div class="page-title">🍜 Wok Chef Day-Off Requests</div>
+<div class="page-sub">Record days a Wok Chef has requested off — these days will be automatically disabled in the schedule</div>
+<div class="card">
+<div class="card-hdr">
+<div class="card-title"><i class="fas fa-plus-circle" style="color:var(--accent)"></i> Add New Request</div>
+</div>
+<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+<div class="cg">
+<label>Wok Chef</label>
+<select id="req-chef" style="min-width:160px">
+<option value="">— Select Chef —</option>
+</select>
+</div>
+<div class="cg">
+<label>Date Off</label>
+<input type="date" id="req-date">
+</div>
+<div class="cg">
+<label>Note (optional)</label>
+<input type="text" id="req-note" placeholder="e.g. Doctor appointment" style="min-width:200px">
+</div>
+<button class="bp" onclick="ScheduleApp.addDayOffRequest()"><i class="fas fa-plus"></i> Add Request</button>
+</div>
+<div id="req-list-wrap" style="margin-top:6px"></div>
 </div>
 </div>
 </main>
@@ -501,6 +536,7 @@ var btn = document.getElementById(name + 'MenuBtn');
 if (btn) btn.classList.add('active');
 if (name === 'saved') loadSavedSchedules();
 else if (name === 'employees') renderEmployeeList();
+else if (name === 'requests') { loadDayOffRequests(); renderDayOffRequests(); }
 }
 
 function testConnection() {
@@ -766,7 +802,14 @@ if (vacDays > 0) tbody += '<div style="margin-top:3px"><span class="vac-badge">�
 tbody += '</div></td>';
 for (var day = 0; day < 7; day++) {
 var isVacDay = analyze(slot.shifts[day]).isVac;
-tbody += '<td class="shift-td' + (isVacDay ? ' vacation-day' : '') + '" id="td-' + sk + '-' + day + '">';
+var ws2 = new Date(v + 'T00:00:00');
+var cellDate = new Date(ws2); cellDate.setDate(ws2.getDate() + day);
+var cellDateStr = cellDate.getFullYear() + '-' + String(cellDate.getMonth()+1).padStart(2,'0') + '-' + String(cellDate.getDate()).padStart(2,'0');
+var dayOffMap = getDayOffDates();
+var empName = slot.employee;
+var isDayOff = !isVacDay && dayOffMap[empName] && dayOffMap[empName].indexOf(cellDateStr) >= 0;
+tbody += '<td class="shift-td' + (isVacDay ? ' vacation-day' : (isDayOff ? ' vacation-day' : '')) + '" id="td-' + sk + '-' + day + '">';
+if (isDayOff) tbody += '<div class="vac-overlay" style="background:rgba(159,18,57,0.07)">🚫 Requested Off</div>';
 if (isVacDay) tbody += '<div class="vac-overlay">🏖️ Off</div>';
 tbody += '<div class="cell-inner" id="cell-' + sk + '-' + day + '">' + renderCell(sk, day, compact) + '</div>';
 tbody += '</td>';
@@ -906,7 +949,15 @@ if (el) el.innerHTML = renderCell(sk, day, viewMode === 'compact');
 }
 
 function addShift(sk, day) {
-currentSchedule[sk].shifts[day].push({start: '', end: ''});
+if (!currentSchedule[sk]) return;
+if (!currentSchedule[sk].shifts[day]) currentSchedule[sk].shifts[day] = [];
+var cleaned = [];
+for (var i = 0; i < currentSchedule[sk].shifts[day].length; i++) {
+var s = currentSchedule[sk].shifts[day][i];
+if ((s.start && s.start !== 'vacation') || s.end) cleaned.push(s);
+}
+cleaned.push({start: '', end: ''});
+currentSchedule[sk].shifts[day] = cleaned;
 refreshCell(sk, day);
 calcStats();
 }
@@ -1316,7 +1367,9 @@ html += '<style>';
 html += '@page{size:8.5in 11in landscape;margin:0.5in 0.45in}';
 html += '*{box-sizing:border-box;margin:0;padding:0}';
 html += 'body{font-family:Helvetica Neue,Arial,sans-serif;font-size:13px;color:#0F172A;background:#fff;width:100%}';
-html += '.page-header{text-align:center;margin-bottom:12px;border-bottom:3px solid #0C1A2E;padding-bottom:10px}';
+html += '.page-header{text-align:center;margin-bottom:12px;border-bottom:3px solid #0C1A2E;padding-bottom:10px;display:flex;align-items:center;justify-content:center;gap:18px}';
+html += '.page-header .logo-img{height:60px;width:auto;object-fit:contain;flex-shrink:0}';
+html += '.page-header .header-text{text-align:left}';
 html += '.page-header h1{font-size:20px;font-weight:900;letter-spacing:1.5px;color:#0C1A2E;text-transform:uppercase}';
 html += '.page-header h2{font-size:15px;font-weight:700;color:#1E3250;margin-top:3px}';
 html += '.page-header .range{font-size:13px;color:#475569;margin-top:4px;font-weight:600}';
@@ -1346,9 +1399,12 @@ html += '.footer{margin-top:12px;font-size:10px;color:#94A3B8;text-align:right}'
 html += '@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}';
 html += '</style></head><body>';
 html += '<div class="page-header">';
-html += '<h1>🥢 JENG CHI RESTAURANT</h1>';
+html += '<img class="logo-img" src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg" alt="Jeng Chi Logo" onerror="this.style.display=\'none\'">';
+html += '<div class="header-text">';
+html += '<h1>JENG CHI RESTAURANT</h1>';
 html += '<h2>Executive Employee Schedule · 員工排班表</h2>';
 html += '<div class="range">Week of ' + dateRange + '</div>';
+html += '</div>';
 html += '</div>';
 html += '<table><colgroup><col class="col-emp">';
 for (var ci = 0; ci < 7; ci++) html += '<col>';
@@ -1556,11 +1612,113 @@ document.getElementById('weekStart').valueAsDate = sun;
 testConnection().then(function() {
 loadEmployees().then(function() {
 onWeekChange();
+loadDayOffRequests();
 });
 });
 var rs = document.getElementById('report-start-date');
 var re = document.getElementById('report-end-date');
 if (rs && re) { rs.value = '2025-12-28'; re.value = '2026-01-04'; }
+}
+
+// ─── DAY-OFF REQUESTS ────────────────────────────────────────────
+var dayOffRequests = [];
+
+function loadDayOffRequests() {
+if (!dbConnected) {
+document.getElementById('req-list-wrap').innerHTML = '<p style="color:var(--danger);padding:12px">No database connection</p>';
+return;
+}
+supabase.from('wok_chef_requests').select('*').order('date_off', {ascending: true}).then(function(r) {
+dayOffRequests = r.data || [];
+renderDayOffRequests();
+}).catch(function() { dayOffRequests = []; renderDayOffRequests(); });
+}
+
+function renderDayOffRequests() {
+var wrap = document.getElementById('req-list-wrap');
+if (!wrap) return;
+// Refresh chef dropdown
+var sel = document.getElementById('req-chef');
+if (sel) {
+var cur = sel.value;
+sel.innerHTML = '<option value="">— Select Chef —</option>';
+for (var i = 0; i < employees.length; i++) {
+sel.innerHTML += '<option value="' + employees[i] + '"' + (employees[i] === cur ? ' selected' : '') + '>' + employees[i] + '</option>';
+}
+}
+if (!dayOffRequests.length) {
+wrap.innerHTML = '<div class="empty-state"><i class="fas fa-calendar-check"></i><p>No day-off requests yet</p></div>';
+return;
+}
+// Group by chef
+var byChef = {};
+for (var i = 0; i < dayOffRequests.length; i++) {
+var r = dayOffRequests[i];
+if (!byChef[r.chef_name]) byChef[r.chef_name] = [];
+byChef[r.chef_name].push(r);
+}
+var html = '';
+var chefs = Object.keys(byChef).sort();
+for (var ci = 0; ci < chefs.length; ci++) {
+var chef = chefs[ci];
+var reqs = byChef[chef];
+var ei = employees.indexOf(chef);
+var clr = EMP_COLORS[ei >= 0 ? ei : ci % EMP_COLORS.length];
+html += '<div style="margin-bottom:14px">';
+html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">';
+html += '<div style="width:10px;height:10px;border-radius:50%;background:' + clr + '"></div>';
+html += '<span style="font-weight:800;font-size:13px;color:var(--txt)">' + chef + '</span>';
+html += '<span style="font-size:11px;color:var(--txtm);background:var(--bg);padding:1px 8px;border-radius:20px;border:1px solid var(--bdr)">' + reqs.length + ' day' + (reqs.length !== 1 ? 's' : '') + ' off</span>';
+html += '</div>';
+html += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+for (var ri = 0; ri < reqs.length; ri++) {
+var req = reqs[ri];
+var dateStr = new Date(req.date_off + 'T12:00:00').toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric', year:'numeric'});
+html += '<div style="display:inline-flex;align-items:center;gap:7px;background:#FFF1F2;border:1px solid #FECDD3;border-radius:var(--r6);padding:5px 10px">';
+html += '<span style="font-size:11.5px;font-weight:700;color:#9F1239">🚫 ' + dateStr + '</span>';
+if (req.note) html += '<span style="font-size:10.5px;color:#BE185D;border-left:1px solid #FECDD3;padding-left:7px">' + req.note + '</span>';
+html += '<button class="bxs bd" style="padding:2px 7px;min-height:0;font-size:10px" onclick="ScheduleApp.deleteDayOffRequest(\'' + req.id + '\')"><i class="fas fa-times"></i></button>';
+html += '</div>';
+}
+html += '</div></div>';
+}
+wrap.innerHTML = html;
+}
+
+function addDayOffRequest() {
+var chef = document.getElementById('req-chef').value;
+var date = document.getElementById('req-date').value;
+var note = document.getElementById('req-note').value.trim();
+if (!chef) { toast('Select a Wok Chef', 'error'); return; }
+if (!date) { toast('Select a date', 'error'); return; }
+if (!dbConnected) { toast('No database connection', 'error'); return; }
+supabase.from('wok_chef_requests').insert({chef_name: chef, date_off: date, note: note || null}).then(function(r) {
+if (r.error) { toast('Failed to save: ' + r.error.message, 'error'); return; }
+document.getElementById('req-date').value = '';
+document.getElementById('req-note').value = '';
+toast('Day-off request added for ' + chef, 'success');
+loadDayOffRequests();
+}).catch(function() { toast('Save failed', 'error'); });
+}
+
+function deleteDayOffRequest(id) {
+if (!confirm('Remove this day-off request?')) return;
+supabase.from('wok_chef_requests').delete().eq('id', id).then(function(r) {
+if (r.error) { toast('Delete failed', 'error'); return; }
+toast('Removed', 'success');
+loadDayOffRequests();
+}).catch(function() { toast('Delete failed', 'error'); });
+}
+
+function getDayOffDates() {
+// Returns a map: { "CHEF_NAME": ["2026-03-10", ...] }
+var map = {};
+for (var i = 0; i < dayOffRequests.length; i++) {
+var r = dayOffRequests[i];
+if (!map[r.chef_name]) map[r.chef_name] = [];
+map[r.chef_name].push(r.date_off);
+}
+return map;
 }
 
 return {
@@ -1590,6 +1748,9 @@ selectScheduleForDuplicate: selectScheduleForDuplicate,
 closeDuplicateDialog: closeDuplicateDialog,
 confirmDuplicate: confirmDuplicate,
 generateWokChefReport: generateWokChefReport,
+addDayOffRequest: addDayOffRequest,
+deleteDayOffRequest: deleteDayOffRequest,
+loadDayOffRequests: loadDayOffRequests,
 setPreset: setPreset,
 setViewMode: setViewMode
 };
