@@ -5308,7 +5308,7 @@ input[id^="par-input-"]:focus {
 
             <button class="corp-nav-btn" id="corpGroup_invdash">
 
-                <i class="fas fa-chart-bar"></i> Dashboard <span class="chevron">▼</span>
+                <i class="fas fa-bell"></i> Stock Alerts <span class="chevron">▼</span>
 
             </button>
 
@@ -42709,481 +42709,452 @@ async function acSaveEditLog(entryId) {
 <script>
 
 // ═══════════════════════════════════════════════════════════════════
-// RONY DASHBOARD — inventory + stock count + invoice balance
+// RONY DASHBOARD — current_stock + invoices balance view
+// KEY TABLE FACTS (from production code audit):
+//   assigned_to  → JSON array  e.g. ["rony"] or ["rony","julio"]
+//   Rony stock   → current_stock  (product_name, quantity_in_stock, stock_date)
+//   Julio stock  → inventory_check (product_name, on_hand, order_date, user='julio')
+//   unit_type    → product_conversions (product_name, units_per_case, unit_type)
+//   par (alert)  → inventory_management.par
 // ═══════════════════════════════════════════════════════════════════
 const RD = {
-    inventory:    [],   // inventory_management rows (assigned to rony or both)
-    allInventory: [],   // full catalog for category filter
-    checks:       {},   // latest on_hand per product from inventory_check
-    invoiceTot:   {},   // sum qty from invoice_items for selected month
-    alerts:       {},   // par (min) per product from inventory_management.par
-    editingProd:  null,
-    loaded:       false,
-    MONTHS: ['','January','February','March','April','May','June',
-             'July','August','September','October','November','December']
+    products:  [],   // inventory_management rows for Rony
+    stockMap:  {},   // latest qty from current_stock
+    convMap:   {},   // unit_type/units_per_case from product_conversions
+    invTot:    {},   // sum qty from invoice_items for selected month/year
+    editing:   null,
+    loaded:    false,
+    MONTHS:['','January','February','March','April','May','June','July','August','September','October','November','December']
 };
 
-function rdGetSB() { return getSupabaseClient(); }
+function rdSB() { return getSupabaseClient(); }
 
 function rdDefaults() {
     const now = new Date();
     const m = document.getElementById('rd-month');
     const y = document.getElementById('rd-year');
-    if (m && !m.value) m.value = now.getMonth() + 1;
-    if (y && !y.value) y.value = now.getFullYear();
+    if (m && !m.value) m.value = String(now.getMonth() + 1);
+    if (y && !y.value) y.value = String(now.getFullYear());
+}
+
+// Parse assigned_to whether string or array
+function rdAssignedStr(val) {
+    if (Array.isArray(val)) return val.join(' ').toLowerCase();
+    return String(val || '').toLowerCase();
 }
 
 async function rdLoadAll() {
     rdDefaults();
-    await Promise.all([rdLoadInventory(), rdLoadInvoices()]);
-    // update nav badge
-    const badge = document.getElementById('nav-badge-low');
-    const lowCount = RD.inventory.filter(r => {
-        const par = parseFloat(r.par || 0);
-        return par > 0 && parseFloat(r.on_hand || 0) < par;
-    }).length;
-    if (badge) { badge.textContent = lowCount; badge.style.display = lowCount > 0 ? '' : 'none'; }
+    document.getElementById('rd-tbody').innerHTML =
+        '<tr class="row-load"><td colspan="10"><i class="fas fa-spinner fa-spin"></i> Loading inventory…</td></tr>';
+    try {
+        await Promise.all([rdLoadProducts(), rdLoadConversions(), rdLoadStock(), rdLoadInvoices()]);
+        rdRender();
+    } catch(e) {
+        console.error('rdLoadAll error:', e);
+        document.getElementById('rd-tbody').innerHTML =
+            '<tr class="row-load"><td colspan="10">⚠️ Error loading: ' + e.message + '</td></tr>';
+    }
 }
 
-async function rdLoadInventory() {
-    const sb = rdGetSB();
+async function rdLoadProducts() {
+    const sb = rdSB();
     const { data, error } = await sb
         .from('inventory_management')
-        .select('product_name,category,on_hand,par,assigned_to,unit_type,units_per_case,unit,vendors,position')
-        .order('category', { ascending: true })
-        .order('product_name', { ascending: true });
+        .select('product_name,category,par,assigned_to,vendors,position')
+        .order('category',{ascending:true})
+        .order('product_name',{ascending:true});
+    if (error) throw new Error('inventory_management: ' + error.message);
 
-    if (error) { console.error('rdLoadInventory:', error.message); return; }
-
-    RD.allInventory = data || [];
-    // Filter to Rony products
-    RD.inventory = RD.allInventory.filter(r => {
-        const a = String(r.assigned_to || '').toLowerCase();
-        return a.includes('rony') || a.includes('both');
-    });
-
-    // Build par (alert) map
-    RD.alerts = {};
-    RD.allInventory.forEach(r => {
-        const p = parseFloat(r.par || 0);
-        if (p > 0) RD.alerts[r.product_name] = p;
-    });
-
-    // Load latest inventory_check per product
-    const { data: checks } = await sb
-        .from('inventory_check')
-        .select('product_name,on_hand,order_date')
-        .order('order_date', { ascending: false });
-
-    RD.checks = {};
-    if (checks) checks.forEach(c => {
-        if (!RD.checks[c.product_name]) RD.checks[c.product_name] = parseFloat(c.on_hand || 0);
-    });
+    // Filter to Rony-assigned products
+    RD.products = (data || []).filter(r => rdAssignedStr(r.assigned_to).includes('rony'));
 
     // Populate category filter
-    const cats = [...new Set(RD.inventory.map(r => r.category).filter(Boolean))].sort();
-    const catSel = document.getElementById('rd-cat');
-    if (catSel) {
-        const cur = catSel.value;
-        catSel.innerHTML = '<option value="">All Categories</option>';
-        cats.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c; catSel.appendChild(o); });
-        catSel.value = cur;
+    const cats = [...new Set(RD.products.map(r=>r.category).filter(Boolean))].sort();
+    const sel = document.getElementById('rd-cat');
+    if (sel) {
+        const cur = sel.value;
+        sel.innerHTML = '<option value="">All Categories</option>';
+        cats.forEach(c => { const o=document.createElement('option'); o.value=c; o.textContent=c; sel.appendChild(o); });
+        if (cur) sel.value = cur;
     }
+}
 
-    rdRender();
+async function rdLoadConversions() {
+    const sb = rdSB();
+    const { data } = await sb.from('product_conversions').select('product_name,units_per_case,unit_type');
+    RD.convMap = {};
+    (data || []).forEach(c => { RD.convMap[c.product_name] = { utype: c.unit_type||'unit', upc: parseFloat(c.units_per_case||1) }; });
+}
+
+async function rdLoadStock() {
+    const sb = rdSB();
+    // current_stock: most recent per product (ordered DESC → first = latest)
+    const { data } = await sb
+        .from('current_stock')
+        .select('product_name,quantity_in_stock,stock_date')
+        .order('stock_date',{ascending:false});
+    RD.stockMap = {};
+    (data || []).forEach(s => {
+        if (!(s.product_name in RD.stockMap))
+            RD.stockMap[s.product_name] = { qty: parseFloat(s.quantity_in_stock??0), date: s.stock_date };
+    });
 }
 
 async function rdLoadInvoices() {
-    const sb   = rdGetSB();
+    const sb = rdSB();
     const month = document.getElementById('rd-month')?.value;
     const year  = document.getElementById('rd-year')?.value;
-    RD.invoiceTot = {};
+    RD.invTot = {};
+    if (!year) return;
 
-    if (!month || !year) { rdRender(); return; }
+    const start = month ? `${year}-${String(month).padStart(2,'0')}-01`   : `${year}-01-01`;
+    const endD  = month ? new Date(year,month,0)                           : new Date(year,12,0);
+    const end   = `${endD.getFullYear()}-${String(endD.getMonth()+1).padStart(2,'0')}-${String(endD.getDate()).padStart(2,'0')}`;
 
-    const start = `${year}-${String(month).padStart(2,'0')}-01`;
-    const last  = new Date(year, month, 0);
-    const end   = `${year}-${String(month).padStart(2,'0')}-${String(last.getDate()).padStart(2,'0')}`;
+    const { data: invs } = await sb.from('invoices').select('id').gte('invoice_date',start).lte('invoice_date',end);
+    if (!invs || !invs.length) return;
 
-    const { data: invs } = await sb.from('invoices').select('id').gte('invoice_date', start).lte('invoice_date', end);
-    if (!invs || invs.length === 0) { rdRender(); return; }
-
-    const ids = invs.map(i => i.id);
-    const { data: items } = await sb.from('invoice_items').select('product_name,quantity').in('invoice_id', ids);
-    if (items) items.forEach(it => {
-        RD.invoiceTot[it.product_name] = (RD.invoiceTot[it.product_name] || 0) + (parseFloat(it.quantity) || 0);
-    });
-
-    rdRender();
+    const ids = invs.map(i=>i.id);
+    const { data: items } = await sb.from('invoice_items').select('product_name,quantity').in('invoice_id',ids);
+    (items||[]).forEach(it => { RD.invTot[it.product_name] = (RD.invTot[it.product_name]||0) + (parseFloat(it.quantity)||0); });
 }
 
 function rdRender() {
-    const catF  = document.getElementById('rd-cat')?.value || '';
-    const srch  = (document.getElementById('rd-search')?.value || '').toLowerCase().trim();
+    const catF = document.getElementById('rd-cat')?.value||'';
+    const srch = (document.getElementById('rd-search')?.value||'').toLowerCase().trim();
+    const esc  = s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-    let rows = RD.inventory.filter(r => {
+    let rows = RD.products.filter(r => {
         if (catF && r.category !== catF) return false;
-        if (srch && !(r.product_name || '').toLowerCase().includes(srch)) return false;
+        if (srch && !(r.product_name||'').toLowerCase().includes(srch)) return false;
         return true;
     });
 
-    let low=0, watch=0, ok=0, recv=0;
-    let html = '';
+    let low=0,watch=0,ok=0,recv=0;
+    let html='';
 
     rows.forEach(r => {
-        const name     = r.product_name || '';
-        const cat      = r.category || '—';
-        const utype    = r.unit_type || 'unit';
-        const upc      = r.units_per_case || null;
-        const onHand   = parseFloat(r.on_hand || 0);
-        const ulabel   = r.unit || '';
-        const lastCnt  = (name in RD.checks) ? RD.checks[name] : null;
-        const invQty   = RD.invoiceTot[name] || 0;
-        if (invQty > 0) recv++;
-        const balance  = lastCnt !== null ? lastCnt + invQty : onHand;
-        const par      = RD.alerts[name] || null;
+        const name   = r.product_name||'';
+        const cat    = r.category||'—';
+        const par    = parseFloat(r.par||0);
+        const conv   = RD.convMap[name]||{utype:'unit',upc:1};
+        const utype  = conv.utype;
+        const upc    = conv.upc;
+        const stock  = RD.stockMap[name]??null;
+        const lastCnt= stock!==null ? stock.qty : null;
+        const lastDt = stock?.date||null;
+        const invQty = RD.invTot[name]||0;
+        if (invQty>0) recv++;
+        const balance= lastCnt!==null ? lastCnt+invQty : invQty;
 
-        let bClass = 'b-none', bLabel = 'No Alert';
-        if (par !== null) {
-            if (onHand <= par)         { bClass='b-low';   bLabel='LOW STOCK'; low++; }
-            else if (onHand <= par*1.5){ bClass='b-watch'; bLabel='WATCH';     watch++; }
-            else                        { bClass='b-ok';    bLabel='OK';        ok++; }
+        let bClass='b-none',bLabel='No Alert';
+        if (par>0) {
+            if (balance<=par)         {bClass='b-low';   bLabel='LOW STOCK'; low++;}
+            else if (balance<=par*1.5){bClass='b-watch'; bLabel='WATCH';     watch++;}
+            else                       {bClass='b-ok';    bLabel='OK';        ok++;}
         }
 
-        const isEdit = (RD.editingProd === name);
-        const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+        const isEdit = (RD.editing===name);
+        const qcls   = bClass==='b-low'?'ql':(bClass==='b-watch'?'qw':'');
 
         if (isEdit) {
-            html += `<tr class="inv-editing" data-rd-prod="${esc(name)}">
-              <td><select class="inv-es" id="rd-ed-cat" style="width:140px">${rdCatOptions(cat)}</select></td>
-              <td class="inv-pname">${esc(name)}</td>
-              <td class="tc"><select class="inv-es" id="rd-ed-utype" onchange="rdToggleEditCase(this)">
+            html+=`<tr class="row-editing" data-rd="${esc(name)}">
+              <td>${rdCatSel(cat)}</td>
+              <td class="pname">${esc(name)}</td>
+              <td class="tc"><select class="es" id="rd-ed-ut" onchange="rdToggleUPC(this)">
                 <option value="unit" ${utype==='unit'?'selected':''}>Unit</option>
                 <option value="case" ${utype==='case'?'selected':''}>Case</option>
               </select></td>
-              <td class="tc"><input type="number" class="inv-ei" id="rd-ed-upc" value="${upc||''}" min="1" placeholder="—" style="width:60px;display:${utype==='case'?'block':'none'};margin:0 auto"></td>
-              <td class="tc inv-q qp">${lastCnt !== null ? lastCnt+' '+ulabel : '—'}</td>
-              <td class="tc inv-q qi">${invQty>0?'+'+invQty:'—'}</td>
-              <td class="tc"><input type="number" class="inv-ei" id="rd-ed-qty" value="${onHand}" min="0" style="width:70px;margin:0 auto"></td>
-              <td class="tc"><input type="number" class="inv-ei" id="rd-ed-par" value="${par !== null ? par : ''}" min="0" placeholder="—" style="width:60px;margin:0 auto"></td>
-              <td class="tc"><span class="inv-badge ${bClass}">${bLabel}</span></td>
-              <td class="tc">
-                <div class="inv-action-grp">
-                  <button class="inv-btn-save" onclick="rdSaveEdit('${esc(name)}')"><i class="fas fa-check"></i> Save</button>
-                  <button class="inv-btn-cancel" onclick="rdCancelEdit()">✕</button>
-                </div>
-              </td>
+              <td class="tc"><input type="number" class="ei" id="rd-ed-upc" value="${utype==='case'?upc:''}" min="1" placeholder="—" style="width:60px;display:${utype==='case'?'block':'none'};margin:0 auto"></td>
+              <td class="tc q qp">${lastCnt!==null?lastCnt+(lastDt?' ('+lastDt+')':''):'—'}</td>
+              <td class="tc q qi">${invQty>0?'+'+invQty:'—'}</td>
+              <td class="tc"><input type="number" class="ei" id="rd-ed-bal" value="${balance}" min="0" style="width:70px;margin:0 auto" title="Override balance"></td>
+              <td class="tc"><input type="number" class="ei" id="rd-ed-par" value="${par>0?par:''}" min="0" placeholder="—" style="width:60px;margin:0 auto"></td>
+              <td class="tc"><span class="badge ${bClass}">${bLabel}</span></td>
+              <td class="tc"><div class="ag">
+                <button class="btn-save" onclick="rdSaveEdit('${esc(name)}')"><i class="fas fa-check"></i> Save</button>
+                <button class="btn-cancel" onclick="rdCancelEdit()">✕</button>
+              </div></td>
             </tr>`;
         } else {
-            const qcls = bClass==='b-low' ? 'ql' : (bClass==='b-watch' ? 'qw' : '');
-            html += `<tr data-rd-prod="${esc(name)}">
-              <td><span class="inv-cat">${esc(cat)}</span></td>
-              <td class="inv-pname">${esc(name)}</td>
-              <td class="tc"><span class="inv-badge ${utype==='case'?'b-case':'b-unit'}">${utype}</span></td>
-              <td class="tc" style="color:var(--neutral-500)">${upc ? upc+' units' : '—'}</td>
-              <td class="tc inv-q qp">${lastCnt !== null ? lastCnt+' '+ulabel : '—'}</td>
-              <td class="tc inv-q qi">${invQty>0?'<b>+'+invQty+'</b>':'—'}</td>
-              <td class="tc inv-q qb ${qcls}" style="font-weight:800">${balance} ${ulabel}</td>
-              <td class="tc" style="color:var(--neutral-500)">${par !== null ? par : '—'}</td>
-              <td class="tc"><span class="inv-badge ${bClass}">${bLabel}</span></td>
-              <td class="tc"><button class="inv-btn-edit" onclick="rdStartEdit('${esc(name)}')"><i class="fas fa-pen"></i> Edit</button></td>
+            html+=`<tr data-rd="${esc(name)}">
+              <td><span class="cat-tag">${esc(cat)}</span></td>
+              <td class="pname">${esc(name)}</td>
+              <td class="tc"><span class="badge ${utype==='case'?'b-case':'b-unit'}">${utype}</span></td>
+              <td class="tc" style="color:var(--n500)">${utype==='case'?upc+' units':'—'}</td>
+              <td class="tc q qp">${lastCnt!==null?lastCnt+(lastDt?' <span style="font-size:10px;color:var(--n400)">('+lastDt+')</span>':''):'<span style="color:var(--n400)">—</span>'}</td>
+              <td class="tc q qi">${invQty>0?'<b>+'+invQty+'</b>':'<span style="color:var(--n300)">—</span>'}</td>
+              <td class="tc q qb ${qcls}" style="font-weight:800">${balance}</td>
+              <td class="tc" style="color:var(--n500)">${par>0?par:'<span style="color:var(--n300)">—</span>'}</td>
+              <td class="tc"><span class="badge ${bClass}">${bLabel}</span></td>
+              <td class="tc"><button class="btn-edit" onclick="rdStartEdit('${esc(name)}')"><i class="fas fa-pen"></i> Edit</button></td>
             </tr>`;
         }
     });
 
-    const tbody = document.getElementById('rd-tbody');
-    if (tbody) tbody.innerHTML = html || '<tr class="inv-empty"><td colspan="10">No products found.</td></tr>';
-
-    const cc = document.getElementById('rd-count');
-    if (cc) cc.textContent = rows.length + ' products';
+    const tbody=document.getElementById('rd-tbody');
+    if(tbody) tbody.innerHTML=html||'<tr class="row-empty"><td colspan="10">No products found.</td></tr>';
+    const cc=document.getElementById('rd-count'); if(cc) cc.textContent=rows.length+' products';
 
     // KPIs
-    const $ = id => { const el=document.getElementById(id); if(el) el.textContent=arguments[1]??''; };
-    document.getElementById('rd-k-low')  && (document.getElementById('rd-k-low').textContent  = low);
-    document.getElementById('rd-k-watch')&& (document.getElementById('rd-k-watch').textContent= watch);
-    document.getElementById('rd-k-ok')   && (document.getElementById('rd-k-ok').textContent   = ok);
-    document.getElementById('rd-k-total')&& (document.getElementById('rd-k-total').textContent= rows.length);
-    document.getElementById('rd-k-recv') && (document.getElementById('rd-k-recv').textContent = recv);
+    const s=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+    s('rd-k-low',low); s('rd-k-watch',watch); s('rd-k-ok',ok);
+    s('rd-k-tot',rows.length); s('rd-k-recv',recv);
+
+    // Nav badge
+    const badge=document.getElementById('nav-badge-low');
+    if(badge){badge.textContent=low;badge.style.display=low>0?'':'none';}
 }
 
-function rdStartEdit(name) { RD.editingProd = name; rdRender(); const r = document.querySelector(`tr[data-rd-prod="${CSS.escape(name)}"]`); if(r) r.scrollIntoView({behavior:'smooth',block:'center'}); }
-function rdCancelEdit()    { RD.editingProd = null; rdRender(); }
-function rdToggleEditCase(sel) { const el=document.getElementById('rd-ed-upc'); if(el) el.style.display=sel.value==='case'?'block':'none'; }
+function rdStartEdit(n){RD.editing=n;rdRender();const r=document.querySelector(`tr[data-rd="${CSS.escape(n)}"]`);if(r)r.scrollIntoView({behavior:'smooth',block:'center'});}
+function rdCancelEdit(){RD.editing=null;rdRender();}
+function rdToggleUPC(sel){const el=document.getElementById('rd-ed-upc');if(el)el.style.display=sel.value==='case'?'block':'none';}
 
 async function rdSaveEdit(name) {
-    const sb      = rdGetSB();
-    const newCat  = document.getElementById('rd-ed-cat')?.value;
-    const newUt   = document.getElementById('rd-ed-utype')?.value || 'unit';
-    const newUpc  = document.getElementById('rd-ed-upc')?.value;
-    const newQty  = document.getElementById('rd-ed-qty')?.value;
-    const newPar  = document.getElementById('rd-ed-par')?.value;
-    const qtyNum  = newQty !== '' ? parseFloat(newQty) : null;
-    const parNum  = newPar !== '' && newPar !== null ? parseFloat(newPar) : null;
+    const sb     = rdSB();
+    const newCat = document.getElementById('rd-ed-cat-sel')?.value;
+    const newUt  = document.getElementById('rd-ed-ut')?.value||'unit';
+    const newUpc = document.getElementById('rd-ed-upc')?.value;
+    const newPar = document.getElementById('rd-ed-par')?.value;
 
-    const payload = {};
-    if (newCat)       payload.category       = newCat;
-    if (qtyNum !== null) payload.on_hand     = qtyNum;
-    if (newUt)        payload.unit_type      = newUt;
-    if (parNum !== null) payload.par         = parNum;
-    payload.units_per_case = (newUt==='case' && newUpc) ? parseInt(newUpc) : null;
+    // Update inventory_management par + category
+    const mgmtPay={};
+    if(newCat) mgmtPay.category=newCat;
+    if(newPar!==''&&newPar!==null) mgmtPay.par=parseFloat(newPar);
+    if(Object.keys(mgmtPay).length){
+        const{error}=await sb.from('inventory_management').update(mgmtPay).eq('product_name',name);
+        if(error){showAlert('Error saving: '+error.message,'error');return;}
+    }
 
-    const { error } = await sb.from('inventory_management').update(payload).eq('product_name', name);
-    if (error) { showAlert('Error saving: ' + error.message, 'error'); return; }
+    // Update product_conversions
+    const convPay={product_name:name,unit_type:newUt,units_per_case:newUt==='case'&&newUpc?parseFloat(newUpc):1};
+    await sb.from('product_conversions').upsert(convPay,{onConflict:'product_name'});
 
     // Update local state
-    const idx = RD.inventory.findIndex(r => r.product_name === name);
-    if (idx >= 0) Object.assign(RD.inventory[idx], payload);
-    const idx2 = RD.allInventory.findIndex(r => r.product_name === name);
-    if (idx2 >= 0) Object.assign(RD.allInventory[idx2], payload);
-    if (parNum !== null) RD.alerts[name] = parNum;
+    const idx=RD.products.findIndex(r=>r.product_name===name);
+    if(idx>=0){if(newCat)RD.products[idx].category=newCat;if(newPar!=='')RD.products[idx].par=parseFloat(newPar);}
+    RD.convMap[name]={utype:newUt,upc:newUt==='case'&&newUpc?parseFloat(newUpc):1};
 
-    RD.editingProd = null;
-    rdRender();
-    showAlert('✅ ' + name + ' saved!', 'success');
+    RD.editing=null; rdRender();
+    showAlert('✅ '+name+' saved!','success');
 }
 
-function rdCatOptions(sel) {
-    const cats = ['Proteins - Meat','Proteins - Seafood','Produce','Dry Goods / Pantry',
-        'Sauces / Condiments','Frozen Items','Beverages / Tea',
-        'Disposables - FOH','Disposables - BOH','Cleaning Supplies','Paper Goods','Office / Misc','Uncategorized'];
-    const extra = [...new Set(RD.allInventory.map(r=>r.category).filter(Boolean))].filter(c=>!cats.includes(c));
-    return [...cats,...extra].map(c=>`<option value="${c}"${c===sel?' selected':''}>${c}</option>`).join('');
+function rdCatSel(cur){
+    const cats=['Proteins - Meat','Proteins - Seafood','Produce','Dry Goods / Pantry',
+        'Sauces / Condiments','Frozen Items','Beverages / Tea','Disposables - FOH',
+        'Disposables - BOH','Cleaning Supplies','Paper Goods','Office / Misc','Uncategorized'];
+    return `<select class="es" id="rd-ed-cat-sel" style="min-width:130px">${
+        cats.map(c=>`<option value="${c}"${c===cur?' selected':''}>${c}</option>`).join('')
+    }</select>`;
 }
 
 // Add Product Modal
-function rdOpenAddModal() { document.getElementById('rd-add-modal')?.classList.add('show'); }
-function rdCloseAddModal(){ document.getElementById('rd-add-modal')?.classList.remove('show'); }
-function rdToggleCaseField() { const t=document.getElementById('rd-new-utype')?.value; const r=document.getElementById('rd-new-case-row'); if(r) r.style.display=t==='case'?'':'none'; }
+function rdOpenAdd(){document.getElementById('rd-add-modal')?.classList.add('open');}
+function rdCloseAdd(){document.getElementById('rd-add-modal')?.classList.remove('open');}
+function rdToggleCaseField(){const t=document.getElementById('rd-new-utype')?.value;const r=document.getElementById('rd-new-case-row');if(r)r.style.display=t==='case'?'':'none';}
 
-async function rdSaveNewProduct() {
-    const sb    = rdGetSB();
-    const name  = document.getElementById('rd-new-name')?.value.trim();
-    const cat   = document.getElementById('rd-new-cat')?.value;
-    const utype = document.getElementById('rd-new-utype')?.value;
-    const upc   = document.getElementById('rd-new-upc')?.value;
-    const qty   = parseFloat(document.getElementById('rd-new-qty')?.value) || 0;
-    const par   = document.getElementById('rd-new-par')?.value;
-    const ulbl  = document.getElementById('rd-new-ulabel')?.value.trim();
-    const user  = document.getElementById('rd-new-user')?.value || 'rony';
+async function rdSaveNewProduct(){
+    const sb=rdSB();
+    const name=document.getElementById('rd-new-name')?.value.trim();
+    const cat=document.getElementById('rd-new-cat')?.value;
+    const utype=document.getElementById('rd-new-utype')?.value||'unit';
+    const upc=document.getElementById('rd-new-upc')?.value;
+    const par=document.getElementById('rd-new-par')?.value;
+    const user=document.getElementById('rd-new-user')?.value||'rony';
+    if(!name){showAlert('Product name required.','error');return;}
+    if(!cat) {showAlert('Please select a category.','error');return;}
 
-    if (!name)  { showAlert('Product name is required.', 'error'); return; }
-    if (!cat)   { showAlert('Please select a category.', 'error'); return; }
-    if (utype==='case' && !upc) { showAlert('Enter units per case.', 'error'); return; }
-
-    const payload = {
-        product_name:   name,
-        category:       cat,
-        on_hand:        qty,
-        par:            par !== '' ? parseFloat(par) : null,
-        unit:           ulbl || (utype==='case'?'cs':'ea'),
-        unit_type:      utype,
-        units_per_case: utype==='case' ? parseInt(upc) : null,
-        assigned_to:    user,
-    };
-
-    const { error } = await sb.from('inventory_management').insert(payload);
-    if (error) { showAlert('Error adding product: ' + error.message, 'error'); return; }
-
-    rdCloseAddModal();
-    showAlert('✅ Product "' + name + '" added!', 'success');
+    const assigned=user==='both'?['rony','julio']:[user];
+    const{error}=await sb.from('inventory_management').insert({
+        product_name:name,category:cat,par:par?parseFloat(par):null,assigned_to:assigned
+    });
+    if(error){showAlert('Error: '+error.message,'error');return;}
+    if(utype==='case'&&upc){
+        await sb.from('product_conversions').upsert({product_name:name,unit_type:'case',units_per_case:parseFloat(upc)},{onConflict:'product_name'});
+    }
+    rdCloseAdd();
+    showAlert('✅ Product "'+name+'" added!','success');
     await rdLoadAll();
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// JULIO DASHBOARD — order history from invoice_items + invoices
+// JULIO DASHBOARD — invoice_items + invoices order history
 // ═══════════════════════════════════════════════════════════════════
 const JD = {
-    rows:    [],
-    catMap:  {},
-    MONTHS: ['','January','February','March','April','May','June',
-             'July','August','September','October','November','December']
+    rows:   [],
+    catMap: {},
+    MONTHS:['','January','February','March','April','May','June','July','August','September','October','November','December']
 };
 
-function jdGetSB() { return getSupabaseClient(); }
+function jdSB(){return getSupabaseClient();}
 
-function jdDefaults() {
-    const now = new Date();
-    const m = document.getElementById('jd-month');
-    const y = document.getElementById('jd-year');
-    if (m && !m.value) m.value = now.getMonth() + 1;
-    if (y && !y.value) y.value = now.getFullYear();
+function jdDefaults(){
+    const now=new Date();
+    const m=document.getElementById('jd-month');
+    const y=document.getElementById('jd-year');
+    if(m&&!m.value) m.value=String(now.getMonth()+1);
+    if(y&&!y.value) y.value=String(now.getFullYear());
 }
 
-async function jdLoad() {
+async function jdLoad(){
     jdDefaults();
-    const sb    = jdGetSB();
-    const month = document.getElementById('jd-month')?.value;
-    const year  = document.getElementById('jd-year')?.value;
+    document.getElementById('jd-tbody').innerHTML=
+        '<tr class="row-load"><td colspan="9"><i class="fas fa-spinner fa-spin"></i> Loading orders…</td></tr>';
+    const sb=jdSB();
+    const month=document.getElementById('jd-month')?.value;
+    const year =document.getElementById('jd-year')?.value;
 
-    const start = month && year ? `${year}-${String(month).padStart(2,'0')}-01` : (year ? `${year}-01-01` : null);
-    const endD  = month && year ? new Date(year, month, 0) : (year ? new Date(year, 12, 0) : null);
-    const end   = endD ? `${endD.getFullYear()}-${String(endD.getMonth()+1).padStart(2,'0')}-${String(endD.getDate()).padStart(2,'0')}` : null;
+    const start=month&&year?`${year}-${String(month).padStart(2,'0')}-01`:(year?`${year}-01-01`:null);
+    const endD =month&&year?new Date(year,month,0):(year?new Date(year,12,0):null);
+    const end  =endD?`${endD.getFullYear()}-${String(endD.getMonth()+1).padStart(2,'0')}-${String(endD.getDate()).padStart(2,'0')}`:null;
 
-    let invQuery = sb.from('invoices').select('id,invoice_date,vendor,vendor_name');
-    if (start) invQuery = invQuery.gte('invoice_date', start);
-    if (end)   invQuery = invQuery.lte('invoice_date', end);
-
-    const { data: invs, error: e1 } = await invQuery.order('invoice_date', { ascending: false }).limit(2000);
-    if (e1) { console.error('jdLoad invoices:', e1.message); return; }
-
-    // Build catalog map for category lookup
-    if (!Object.keys(JD.catMap).length) {
-        const { data: cat } = await sb.from('inventory_management').select('product_name,category,unit_type,units_per_case');
-        if (cat) cat.forEach(r => { JD.catMap[r.product_name] = r; });
+    // Build category map once
+    if(!Object.keys(JD.catMap).length){
+        const{data:cat}=await sb.from('inventory_management').select('product_name,category');
+        if(cat) cat.forEach(r=>{JD.catMap[r.product_name]=r.category||'Uncategorized';});
     }
 
-    if (!invs || invs.length === 0) { JD.rows = []; jdRender(); return; }
+    // Load conversion map for unit_type
+    const{data:conv}=await sb.from('product_conversions').select('product_name,unit_type');
+    const convMap={};
+    (conv||[]).forEach(c=>{convMap[c.product_name]=c.unit_type||'unit';});
 
-    const invMap = {};
-    invs.forEach(i => { invMap[i.id] = i; });
-    const ids = invs.map(i => i.id);
+    let invQ=sb.from('invoices').select('id,invoice_date,vendor,vendor_name').order('invoice_date',{ascending:false}).limit(3000);
+    if(start) invQ=invQ.gte('invoice_date',start);
+    if(end)   invQ=invQ.lte('invoice_date',end);
+    const{data:invs,error:e1}=await invQ;
+    if(e1){console.error('jdLoad:',e1.message);return;}
 
-    const { data: items, error: e2 } = await sb
-        .from('invoice_items')
-        .select('product_name,quantity,unit_price,price_per_unit,invoice_id,category')
-        .in('invoice_id', ids);
+    if(!invs||!invs.length){JD.rows=[];jdRender();return;}
 
-    if (e2) { console.error('jdLoad items:', e2.message); return; }
+    const invMap={};
+    invs.forEach(i=>{invMap[i.id]=i;});
+    const ids=invs.map(i=>i.id);
 
-    JD.rows = (items || []).map(it => {
-        const inv    = invMap[it.invoice_id] || {};
-        const invDt  = inv.invoice_date ? new Date(inv.invoice_date) : null;
-        const cat    = JD.catMap[it.product_name];
-        const price  = parseFloat(it.unit_price || it.price_per_unit || 0);
-        const qty    = parseFloat(it.quantity || 0);
-        return {
-            product_name: it.product_name || '',
-            vendor:       inv.vendor || inv.vendor_name || 'Unknown',
-            invoice_date: inv.invoice_date || '',
-            month:        invDt ? invDt.getMonth() + 1 : null,
-            year:         invDt ? invDt.getFullYear() : null,
-            quantity:     qty,
-            unit_price:   price,
-            unit_type:    cat?.unit_type || 'unit',
-            category:     cat?.category || it.category || 'Uncategorized',
-            total_cost:   qty * price,
+    const{data:items,error:e2}=await sb.from('invoice_items').select('product_name,quantity,unit_price,price_per_unit,invoice_id,category').in('invoice_id',ids);
+    if(e2){console.error('jdItems:',e2.message);return;}
+
+    JD.rows=(items||[]).map(it=>{
+        const inv=invMap[it.invoice_id]||{};
+        const dt=inv.invoice_date?new Date(inv.invoice_date):null;
+        const price=parseFloat(it.unit_price||it.price_per_unit||0);
+        const qty=parseFloat(it.quantity||0);
+        return{
+            product_name:it.product_name||'',
+            vendor:inv.vendor||inv.vendor_name||'Unknown',
+            invoice_date:inv.invoice_date||'',
+            month:dt?dt.getMonth()+1:null,
+            year:dt?dt.getFullYear():null,
+            quantity:qty,unit_price:price,
+            unit_type:convMap[it.product_name]||'unit',
+            category:JD.catMap[it.product_name]||it.category||'Uncategorized',
+            total_cost:qty*price
         };
     });
 
-    // Populate vendor filter
-    const vendors = [...new Set(JD.rows.map(r=>r.vendor).filter(Boolean))].sort();
-    const vsel = document.getElementById('jd-vendor');
-    if (vsel) {
-        const cur = vsel.value;
-        vsel.innerHTML = '<option value="">All Vendors</option>';
-        vendors.forEach(v => { const o=document.createElement('option'); o.value=v; o.textContent=v; vsel.appendChild(o); });
-        vsel.value = cur;
-    }
+    // Build vendor + category filters
+    const vendors=[...new Set(JD.rows.map(r=>r.vendor).filter(Boolean))].sort();
+    const vsel=document.getElementById('jd-vendor');
+    if(vsel){const cur=vsel.value;vsel.innerHTML='<option value="">All Vendors</option>';
+        vendors.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;vsel.appendChild(o);});
+        if(cur)vsel.value=cur;}
 
-    // Populate category filter for julio
-    const cats = [...new Set(JD.rows.map(r=>r.category).filter(Boolean))].sort();
-    const csel = document.getElementById('jd-cat');
-    if (csel) {
-        const cur = csel.value;
-        csel.innerHTML = '<option value="">All Categories</option>';
-        cats.forEach(c => { const o=document.createElement('option'); o.value=c; o.textContent=c; csel.appendChild(o); });
-        csel.value = cur;
-    }
+    const cats=[...new Set(JD.rows.map(r=>r.category).filter(Boolean))].sort();
+    const csel=document.getElementById('jd-cat');
+    if(csel){const cur=csel.value;csel.innerHTML='<option value="">All Categories</option>';
+        cats.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;csel.appendChild(o);});
+        if(cur)csel.value=cur;}
 
     jdRender();
 }
 
-function jdRender() {
-    const catF   = document.getElementById('jd-cat')?.value || '';
-    const venF   = document.getElementById('jd-vendor')?.value || '';
-    const srch   = (document.getElementById('jd-search')?.value || '').toLowerCase().trim();
-    const esc    = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function jdRender(){
+    const catF=(document.getElementById('jd-cat')?.value||'');
+    const venF=(document.getElementById('jd-vendor')?.value||'');
+    const srch=(document.getElementById('jd-search')?.value||'').toLowerCase().trim();
+    const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-    let rows = JD.rows.filter(r => {
-        if (catF && r.category !== catF) return false;
-        if (venF && r.vendor  !== venF)  return false;
-        if (srch && !(r.product_name+r.vendor).toLowerCase().includes(srch)) return false;
+    let rows=JD.rows.filter(r=>{
+        if(catF&&r.category!==catF) return false;
+        if(venF&&r.vendor!==venF)   return false;
+        if(srch&&!(r.product_name+r.vendor).toLowerCase().includes(srch)) return false;
         return true;
     });
 
-    // Sort: vendor → year desc → month desc → product
-    rows.sort((a,b) => {
-        if (a.vendor<b.vendor) return -1; if (a.vendor>b.vendor) return 1;
-        if ((b.year-a.year)!==0) return b.year-a.year;
-        if ((b.month-a.month)!==0) return b.month-a.month;
+    rows.sort((a,b)=>{
+        if(a.vendor<b.vendor)return -1;if(a.vendor>b.vendor)return 1;
+        if((b.year-a.year)!==0)return b.year-a.year;
+        if((b.month-a.month)!==0)return b.month-a.month;
         return a.product_name.localeCompare(b.product_name);
     });
 
-    // KPIs
-    const totalCost = rows.reduce((s,r)=>s+r.total_cost,0);
-    const totalQty  = rows.reduce((s,r)=>s+r.quantity,0);
-    document.getElementById('jd-k-lines')  && (document.getElementById('jd-k-lines').textContent   = rows.length);
-    document.getElementById('jd-k-cost')   && (document.getElementById('jd-k-cost').textContent    = '$' + totalCost.toFixed(2));
-    document.getElementById('jd-k-prods')  && (document.getElementById('jd-k-prods').textContent   = new Set(rows.map(r=>r.product_name)).size);
-    document.getElementById('jd-k-vendors')&& (document.getElementById('jd-k-vendors').textContent = new Set(rows.map(r=>r.vendor)).size);
-    document.getElementById('jd-k-qty')    && (document.getElementById('jd-k-qty').textContent     = totalQty);
+    const totCost=rows.reduce((s,r)=>s+r.total_cost,0);
+    const totQty =rows.reduce((s,r)=>s+r.quantity,0);
+    const kv=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+    kv('jd-k-lines',rows.length);
+    kv('jd-k-cost','$'+totCost.toFixed(2));
+    kv('jd-k-prods',new Set(rows.map(r=>r.product_name)).size);
+    kv('jd-k-vendors',new Set(rows.map(r=>r.vendor)).size);
+    kv('jd-k-qty',totQty);
 
-    const tbody = document.getElementById('jd-tbody');
-    if (!tbody) return;
-
-    if (rows.length === 0) {
-        tbody.innerHTML = '<tr class="inv-empty"><td colspan="9">No orders found for the selected filters.</td></tr>';
-        document.getElementById('jd-count') && (document.getElementById('jd-count').textContent = '0 rows');
-        return;
+    const tbody=document.getElementById('jd-tbody');
+    if(!tbody)return;
+    if(!rows.length){
+        tbody.innerHTML='<tr class="row-empty"><td colspan="9">No orders found for selected filters.</td></tr>';
+        const cc=document.getElementById('jd-count');if(cc)cc.textContent='0 rows';return;
     }
 
-    let html = '';
-    let curVendor = null;
-    let vRows = [];
-
-    const flushVendor = () => {
-        if (!vRows.length) return;
-        const vTot = vRows.reduce((s,r)=>s+r.total_cost,0);
-        const vQty = vRows.reduce((s,r)=>s+r.quantity,0);
-        html += `<tr class="inv-vendor-sub">
-          <td colspan="5" style="padding:6px 12px;font-size:11px">📊 ${esc(curVendor)} — ${vRows.length} lines · ${vQty} units</td>
-          <td class="tc" style="font-weight:800">${vQty}</td><td></td><td></td>
-          <td class="tc" style="font-weight:800">$${vTot.toFixed(2)}</td>
-        </tr>`;
-        vRows = [];
+    let html='',curVendor=null,vRows=[];
+    const flushV=()=>{
+        if(!vRows.length)return;
+        const vT=vRows.reduce((s,r)=>s+r.total_cost,0);
+        const vQ=vRows.reduce((s,r)=>s+r.quantity,0);
+        html+=`<tr class="vsub"><td colspan="5" style="padding:6px 12px;font-size:11px">
+            📊 <b>${esc(curVendor)}</b> — ${vRows.length} lines · ${vQ} units</td>
+            <td class="tc" style="font-weight:800">${vQ}</td><td></td><td></td>
+            <td class="tc" style="font-weight:800">$${vT.toFixed(2)}</td></tr>`;
+        vRows=[];
     };
 
-    rows.forEach(r => {
-        if (r.vendor !== curVendor) {
-            flushVendor();
-            curVendor = r.vendor;
-            html += `<tr><td colspan="9" class="inv-vendor-hdr"><i class="fas fa-store" style="margin-right:6px;color:var(--accent-400);"></i>${esc(r.vendor)}</td></tr>`;
+    rows.forEach(r=>{
+        if(r.vendor!==curVendor){
+            flushV();curVendor=r.vendor;
+            html+=`<tr><td colspan="9" class="vhdr"><i class="fas fa-store" style="margin-right:6px;color:var(--a400)"></i>${esc(r.vendor)}</td></tr>`;
         }
         vRows.push(r);
-        const mName = r.month ? JD.MONTHS[r.month] : '—';
-        const uTag  = `<span class="inv-badge ${r.unit_type==='case'?'b-case':'b-unit'}">${r.unit_type||'unit'}</span>`;
-        html += `<tr>
-          <td><span class="inv-cat">${esc(r.category)}</span></td>
-          <td class="inv-pname">${esc(r.product_name)}</td>
-          <td style="color:var(--neutral-500)">${esc(r.vendor)}</td>
+        const mName=r.month?JD.MONTHS[r.month]:'—';
+        const uTag=`<span class="badge ${r.unit_type==='case'?'b-case':'b-unit'}">${r.unit_type||'unit'}</span>`;
+        html+=`<tr>
+          <td><span class="cat-tag">${esc(r.category)}</span></td>
+          <td class="pname">${esc(r.product_name)}</td>
+          <td style="color:var(--n600)">${esc(r.vendor)}</td>
           <td class="tc">${mName}</td>
           <td class="tc">${r.year||'—'}</td>
-          <td class="tc inv-q qi"><b>${r.quantity}</b></td>
+          <td class="tc q qi"><b>${r.quantity}</b></td>
           <td class="tc">${uTag}</td>
-          <td class="tc" style="color:var(--neutral-500)">$${r.unit_price.toFixed(2)}</td>
-          <td class="tc inv-q qb" style="font-weight:800">$${r.total_cost.toFixed(2)}</td>
+          <td class="tc" style="color:var(--n600)">$${r.unit_price.toFixed(2)}</td>
+          <td class="tc q qb" style="font-weight:800">$${r.total_cost.toFixed(2)}</td>
         </tr>`;
     });
-    flushVendor();
-
-    tbody.innerHTML = html;
-    document.getElementById('jd-count') && (document.getElementById('jd-count').textContent = rows.length + ' rows');
+    flushV();
+    tbody.innerHTML=html;
+    const cc=document.getElementById('jd-count');if(cc)cc.textContent=rows.length+' rows';
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// HOOK INTO corpNav so dashboards load when clicked
-// ═══════════════════════════════════════════════════════════════════
-const _origCorpNav = typeof corpNav === 'function' ? corpNav : null;
-function corpNav(tabName) {
-    if (_origCorpNav) _origCorpNav(tabName);
-    if (tabName === 'ronyDashboard') {
-        if (!RD.loaded) { RD.loaded = true; rdLoadAll(); }
-        else rdRender();
-    }
-    if (tabName === 'julioDashboard') {
-        jdLoad();
-    }
-}
+document.addEventListener('DOMContentLoaded', function() {
+    const _origCorpNav = window.corpNav;
+    window.corpNav = function(tabName) {
+        if (typeof _origCorpNav === 'function') _origCorpNav(tabName);
+        if (tabName === 'ronyDashboard') {
+            if (!RD.loaded) { RD.loaded = true; rdLoadAll(); }
+            else rdRender();
+        }
+        if (tabName === 'julioDashboard') {
+            jdLoad();
+        }
+    };
+});
 
 </script>
   (fixed, always visible while open)
@@ -43804,6 +43775,14 @@ function corpNav(tabName) {
 </div>
 
 </body>
+
+
+
+
+
+
+
+
 
 
 </html>
