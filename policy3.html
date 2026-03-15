@@ -181,9 +181,9 @@
     <div class="bg-white rounded-xl shadow-sm">
       <div class="border-b border-gray-200">
         <nav class="flex -mb-px">
-          <button id="tabPending" class="px-6 py-4 text-sm font-medium border-b-2 border-blue-600 text-blue-600">Pending</button>
-          <button id="tabSubmitted" class="px-6 py-4 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Submitted</button>
-          <button id="tabApproved" class="px-6 py-4 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Approved</button>
+          <button id="tabPending" class="px-6 py-4 text-sm font-medium border-b-2 border-blue-600 text-blue-600">Pending <span id="tabBadgePending" class="ml-1.5 px-2 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-700">0</span></button>
+          <button id="tabSubmitted" class="px-6 py-4 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Submitted <span id="tabBadgeSubmitted" class="ml-1.5 px-2 py-0.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600">0</span></button>
+          <button id="tabApproved" class="px-6 py-4 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">Approved <span id="tabBadgeApproved" class="ml-1.5 px-2 py-0.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600">0</span></button>
         </nav>
       </div>
 
@@ -711,6 +711,10 @@ async function loadEmployees() {
   submittedEmployees = allEmployees.filter(e => !!getSubmittedStatus(e));
   submittedEmployees = submittedEmployees.map(emp => ({ ...emp, status: getSubmittedStatus(emp) }));
 
+  // Pre-fetch language preferences for all employees
+  const allUsernames = allEmployees.map(e=>e.username||e.initials).filter(Boolean);
+  await fetchEmployeeLanguages(allUsernames);
+
   console.log(`⏳ Pending: ${pendingEmployees.length}  ✅ Submitted: ${submittedEmployees.length}`);
   updateStats(); renderPendingList(); renderSubmittedList(); renderApprovedList(); updateApprovalCount();
 }
@@ -721,6 +725,33 @@ function updateStats() {
   document.getElementById('statsEmployeeSigned').textContent = submittedEmployees.filter(e=>e.status?.employee_signed&&!e.status?.manager_approved).length;
   document.getElementById('statsManagerApproved').textContent = submittedEmployees.filter(e=>e.status?.manager_approved&&!e.status?.hr_approved).length;
   document.getElementById('statsFullyApproved').textContent = submittedEmployees.filter(e=>e.status?.hr_approved).length;
+
+  // Tab count badges
+  const pendingBadge = document.getElementById('tabBadgePending');
+  const submittedBadge = document.getElementById('tabBadgeSubmitted');
+  const approvedBadge = document.getElementById('tabBadgeApproved');
+  if(pendingBadge) pendingBadge.textContent = pendingEmployees.length;
+  if(submittedBadge) { const n = submittedEmployees.filter(e=>!e.status?.hr_approved).length; submittedBadge.textContent=n; submittedBadge.className=`ml-1.5 px-2 py-0.5 rounded-full text-xs font-bold ${n>0?'bg-blue-100 text-blue-700':'bg-gray-100 text-gray-600'}`; }
+  if(approvedBadge) { const n = submittedEmployees.filter(e=>e.status?.hr_approved).length; approvedBadge.textContent=n; approvedBadge.className=`ml-1.5 px-2 py-0.5 rounded-full text-xs font-bold ${n>0?'bg-green-100 text-green-700':'bg-gray-100 text-gray-600'}`; }
+}
+
+// ─── LANGUAGE BADGE HELPER ───────────────────────────────────────
+// Detects preferred language from hb_handbook_access.preferred_language
+// Falls back to 'EN' if not set
+const _langCache = new Map();
+async function fetchEmployeeLanguages(usernames) {
+  if(!usernames.length) return;
+  const uncached = usernames.filter(u=>!_langCache.has(u));
+  if(!uncached.length) return;
+  const {data} = await client.from('hb_handbook_access').select('username,preferred_language').in('username', uncached);
+  (data||[]).forEach(r=>_langCache.set(r.username, r.preferred_language||'EN'));
+  uncached.forEach(u=>{ if(!_langCache.has(u)) _langCache.set(u,'EN'); });
+}
+function getLangBadge(username) {
+  const lang = (_langCache.get(username||'') || 'EN').toUpperCase();
+  if(lang==='ES') return '<span class="px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-100 text-yellow-700">ES</span>';
+  if(lang==='ZH'||lang==='ZH-HANS'||lang==='CN') return '<span class="px-1.5 py-0.5 rounded text-xs font-bold bg-red-100 text-red-700">中文</span>';
+  return '<span class="px-1.5 py-0.5 rounded text-xs font-bold bg-gray-100 text-gray-500">EN</span>';
 }
 
 // ─── FOH / BOH HELPERS ───────────────────────────────────────────
@@ -770,8 +801,11 @@ function renderPendingList() {
       <div class="flex items-center gap-4">
         <div class="w-12 h-12 bg-gray-200 rounded-full flex items-center justify-center font-bold text-gray-700">${emp.avatarInitials||'??'}</div>
         <div>
-          <div class="font-semibold text-gray-900">${emp.full_name||'Unknown'}</div>
-          <div class="text-sm text-gray-600">${emp.position||'N/A'} • <span class="font-semibold ${getEmpDept(emp)==='FOH'?'text-blue-600':'text-orange-600'}">${getEmpDept(emp)}</span></div>
+          <div class="flex items-center gap-2">
+              <div class="font-semibold text-gray-900">${emp.full_name||'Unknown'}</div>
+              ${getLangBadge(emp.username)}
+            </div>
+            <div class="text-sm text-gray-600">${emp.position||'N/A'} • <span class="font-semibold ${getEmpDept(emp)==='FOH'?'text-blue-600':'text-orange-600'}">${getEmpDept(emp)}</span></div>
         </div>
       </div>
       <span class="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm font-medium">⏳ Not Submitted</span>
@@ -809,6 +843,7 @@ function renderSubmittedList() {
             <div class="flex items-center gap-2">
               <div class="font-semibold text-gray-900">${emp.full_name||'Unknown'}</div>${sigBadge}
               <span class="px-2 py-0.5 rounded text-xs font-semibold ${deptLabel==='FOH'?'bg-blue-50 text-blue-600':'bg-orange-50 text-orange-600'}">${deptLabel}</span>
+              ${getLangBadge(emp.username)}
             </div>
             <div class="text-sm text-gray-600">${emp.position||'N/A'} • Submitted: ${signedDate} ${signedTime}</div>
             ${s.manager_approved?`<div class="text-xs text-gray-500 mt-1">Manager: ${s.manager_approved_by||'?'} • ${toCSTDate(s.manager_approved_at)}</div>`:''}
@@ -847,6 +882,7 @@ function renderApprovedList() {
               <div class="font-semibold text-gray-900">${emp.full_name||'Unknown'}</div>
               <span class="px-2 py-1 bg-green-500 text-white rounded text-xs font-bold">3/3 ✓</span>
               <span class="px-2 py-0.5 rounded text-xs font-semibold ${deptLabel==='FOH'?'bg-blue-50 text-blue-600':'bg-orange-50 text-orange-600'}">${deptLabel}</span>
+              ${getLangBadge(emp.username)}
             </div>
             <div class="text-sm text-gray-600">${emp.position||'N/A'} • Submitted: ${signedDate}</div>
             <div class="text-xs text-gray-500 mt-1">Mgr: ${s.manager_approved_by||'?'} • HR: ${s.hr_approved_by||'?'} • ${toCSTDate(s.hr_approved_at)}</div>
