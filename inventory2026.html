@@ -97,13 +97,15 @@ function invToast(msg,type='ok'){
 // rd2: RONY RICH CARD DASHBOARD STATE
 // ─────────────────────────────────────────────────────────────
 const RD2 = {
-    products:  [],   // inventory_management (rony assigned)
+    products:  [],   // inventory_management (rony assigned, deduplicated)
     convMap:   {},   // product_conversions
     stockMap:  {},   // current_stock latest per product
     invTot:    {},   // invoice qty sum for period
     invSpend:  {},   // invoice $ spend for period
     invItems:  0,    // unique products ordered this period
     totalSpend:0,    // total $ spend
+    groupMap:  {},   // product_name → group name
+    allGroups: [],   // all distinct group names
     initialized: false
 };
 
@@ -240,7 +242,27 @@ async function rd2LoadProducts(){
         .order('category',{ascending:true})
         .order('product_name',{ascending:true});
     if(error) throw new Error('inventory_management: '+error.message);
-    RD2.products = (data||[]).filter(r => invAssigned(r.assigned_to).includes('rony'));
+    // Deduplicate by product_name — keep the entry with best image_url, highest par
+    const seen = new Map();
+    (data||[]).filter(r => invAssigned(r.assigned_to).includes('rony')).forEach(r => {
+        const key = (r.product_name||'').trim();
+        if (!seen.has(key)) {
+            seen.set(key, r);
+        } else {
+            const prev = seen.get(key);
+            // Prefer entry with image, higher par, or product_group
+            if (!prev.image_url && r.image_url) seen.set(key, r);
+            else if ((parseFloat(r.par||0) > parseFloat(prev.par||0)) && !prev.image_url) seen.set(key, r);
+        }
+    });
+    RD2.products = Array.from(seen.values());
+    // Also load product_group info
+    const {data:grpData} = await invSB().from('inventory_management')
+        .select('product_name,product_group').not('product_group','is',null);
+    RD2.groupMap = {};
+    (grpData||[]).forEach(r=>{ if(r.product_group) RD2.groupMap[r.product_name]=r.product_group; });
+    // Collect all distinct groups
+    RD2.allGroups = [...new Set(Object.values(RD2.groupMap))].filter(Boolean).sort();
     // populate category dropdown
     const sel = document.getElementById('rd2-cat');
     if(sel){ const cur=sel.value; sel.innerHTML=catOptionsHTML(cur); if(cur) sel.value=cur; }
@@ -304,62 +326,166 @@ function rd2Render(){
         return true;
     });
 
+    // ── KPI calculations ─────────────────────────────────────────
     let low=0, watch=0, ok=0;
     rows.forEach(r=>{
-        const stock = RD2.stockMap[r.product_name];
-        const bal   = stock ? stock.qty : parseFloat(r.on_hand||0);
-        const par   = parseFloat(r.par||0);
-        const invQ  = RD2.invTot[r.product_name]||0;
-        const cur   = bal + invQ;
-        if(par > 0){
-            if(cur <= par)            low++;
-            else if(cur <= par*1.5)   watch++;
-            else                      ok++;
-        }
+        const bal = (RD2.stockMap[r.product_name]?.qty ?? parseFloat(r.on_hand||0));
+        const par = parseFloat(r.par||0);
+        const cur = bal + (RD2.invTot[r.product_name]||0);
+        if(par>0){ if(cur<=par) low++; else if(cur<=par*1.5) watch++; else ok++; }
     });
-
-    // Update KPIs
-    const set = (id,v) => { const el=document.getElementById(id); if(el) el.textContent=v; };
-    set('rd2-k-low',   low);
-    set('rd2-k-watch', watch);
-    set('rd2-k-ok',    ok);
+    const set = (id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=v; };
+    set('rd2-k-low',   low);   set('rd2-k-watch', watch); set('rd2-k-ok', ok);
     set('rd2-k-tot',   rows.length);
     set('rd2-k-spend', '$'+RD2.totalSpend.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}));
     set('rd2-k-items', RD2.invItems);
-
-    // Update nav badge
-    const badge = document.getElementById('nav-badge-low');
+    const badge=document.getElementById('nav-badge-low');
     if(badge){ badge.textContent=low; badge.style.display=low>0?'':'none'; }
 
     if(!rows.length){
-        cont.innerHTML = '<div style="text-align:center;padding:60px;color:var(--neutral-400)"><i class="fas fa-inbox" style="font-size:2rem;margin-bottom:10px;display:block"></i>No products found.</div>';
+        cont.innerHTML='<div style="text-align:center;padding:60px;color:var(--neutral-400)"><i class="fas fa-inbox" style="font-size:2rem;margin-bottom:10px;display:block"></i>No products found.</div>';
         return;
     }
 
-    // Group by category
+    // ── Separate grouped vs ungrouped ─────────────────────────────
+    const groupedRows   = rows.filter(r=>(RD2.groupMap||{})[r.product_name]);
+    const ungroupedRows = rows.filter(r=>!(RD2.groupMap||{})[r.product_name]);
+
+    // Build group buckets: groupName → [products]
+    const groupBuckets = {};
+    groupedRows.forEach(r=>{
+        const g = RD2.groupMap[r.product_name];
+        if(!groupBuckets[g]) groupBuckets[g]=[];
+        groupBuckets[g].push(r);
+    });
+
+    // ── Category buckets for ungrouped items ──────────────────────
     const bycat = {};
-    rows.forEach(r=>{
+    ungroupedRows.forEach(r=>{
         const c = r.category||'Other';
         if(!bycat[c]) bycat[c]=[];
         bycat[c].push(r);
     });
 
-    const html = Object.keys(bycat).sort().map(cat => {
+    let html = '';
+
+    // ── 1. GROUPS SECTION (sorted by group name) ──────────────────
+    const sortedGroups = Object.keys(groupBuckets).sort();
+    if(sortedGroups.length){
+        const grpBlockId = 'rd2cat___GROUPS___';
+        html += `<div class="rd2-cat-block">
+          <div class="rd2-cat-hdr" style="background:linear-gradient(135deg,var(--accent-600),var(--accent-500));" onclick="rd2ToggleCat('${grpBlockId}')">
+            <span class="rd2-cat-title"><i class="fas fa-layer-group" style="margin-right:6px"></i>PRODUCT GROUPS</span>
+            <span class="rd2-cat-badge">${sortedGroups.length} GROUPS &middot; ${groupedRows.length} ITEMS</span>
+            <span class="rd2-cat-arrow open" id="${grpBlockId}_arr">&#9660;</span>
+          </div>
+          <div id="${grpBlockId}" style="background:var(--neutral-50);border:1px solid var(--neutral-200);border-top:none;border-radius:0 0 12px 12px;padding:12px;">`;
+
+        sortedGroups.forEach(grpName=>{
+            const members = groupBuckets[grpName];
+            const grpId   = 'rd2grp_'+grpName.replace(/[^a-zA-Z0-9]/g,'_');
+            // Consolidated stats: sum stock + invoiced across all members
+            const totalPrev   = members.reduce((s,r)=>s+(RD2.stockMap[r.product_name]?.qty??parseFloat(r.on_hand||0)),0);
+            const totalInv    = members.reduce((s,r)=>s+(RD2.invTot[r.product_name]||0),0);
+            const totalCur    = totalPrev + totalInv;
+            const totalPar    = members.reduce((s,r)=>s+parseFloat(r.par||0),0);
+            const maxPar      = Math.max(...members.map(r=>parseFloat(r.par||0)));
+            // Status: based on ratio of total cur vs total par
+            let gpCls='rd2-pill-none', gpTxt='\u2014';
+            if(totalPar>0){
+                gpTxt=(totalCur<=totalPar)?'LOW \u2014 '+totalPar:(totalCur<=totalPar*1.5)?'WATCH \u2014 '+totalPar:'OK \u2014 '+totalPar;
+                gpCls=(totalCur<=totalPar)?'rd2-pill-low':(totalCur<=totalPar*1.5)?'rd2-pill-watch':'rd2-pill-ok';
+            }
+            const gpPct    = totalPar>0?Math.min(100,Math.round(totalCur/totalPar*100)):0;
+            const gpBar    = totalCur<=totalPar?'#dc2626':totalCur<=totalPar*1.5?'#f97316':'#16a34a';
+            const grpSafeId = 'rdgrp_'+grpName.replace(/[^a-zA-Z0-9]/g,'_');
+            // Image: use the first member that has an image
+            const imgMember = members.find(m=>m.image_url)||members[0];
+            const rawImg    = imgMember?.image_url||'';
+            const imgSrc    = (typeof resolveImage==='function')?resolveImage(rawImg):(rawImg||window.PLACEHOLDER_IMAGE||'');
+
+            html += `
+            <div class="rd2-group-block" id="${grpId}">
+              <div class="rd2-group-hdr" onclick="rd2ToggleGroup('${grpId}')">
+                <i class="fas fa-boxes-stacked" style="color:var(--accent-400);margin-right:6px"></i>
+                <strong style="font-size:12px;font-weight:800;color:var(--neutral-900);">${invEsc(grpName)}</strong>
+                <span style="font-size:10px;color:#6b7280;margin-left:6px;">${members.length} item${members.length>1?'s':''}</span>
+                <span class="rd2-status-pill ${gpCls}" style="margin-left:auto;margin-right:6px;font-size:9px;">${gpTxt}</span>
+                <span class="rd2-cat-arrow open" id="${grpId}_arr" style="font-size:10px;color:var(--neutral-400)">&#9660;</span>
+              </div>
+
+              <!-- Consolidated group card -->
+              <div class="rd2-group-card" data-prod="${invEsc(grpName)}" data-is-group="1">
+                <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--neutral-100);">
+                  <img src="${invEsc(imgSrc)}" style="width:48px;height:48px;object-fit:contain;border-radius:6px;border:1px solid var(--neutral-200);background:#fff;"
+                    onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMAGE||''">
+                  <div style="flex:1;">
+                    <div style="font-size:11px;font-weight:800;color:var(--neutral-900);">${invEsc(grpName)}</div>
+                    <div style="font-size:9px;color:#6b7280;margin-top:1px;">${members.map(m=>invEsc(m.product_name)).join(' &middot; ')}</div>
+                  </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;padding:6px 10px 4px;">
+                  <div class="rd2-cell"><span class="rd2-cell-lbl">PREV STOCK</span><span class="rd2-cell-val">${totalPrev.toFixed(1)}</span></div>
+                  <div class="rd2-cell"><span class="rd2-cell-lbl">+ INVOICED</span><span class="rd2-cell-val blue">${totalInv>0?'+'+totalInv:'\u2014'}</span></div>
+                  <div class="rd2-cell"><span class="rd2-cell-lbl">= CURRENT</span><span class="rd2-cell-val green">${totalCur.toFixed(1)}</span></div>
+                </div>
+                <div style="padding:0 10px 6px;">
+                  <div class="rd2-bar-wrap"><div class="rd2-bar" style="width:${gpPct}%;background:${gpBar}"></div></div>
+                </div>
+                <div class="rd2-actions">
+                  <input type="number" min="0" step="0.1" id="${grpSafeId}" class="rd2-new-count" placeholder="New count (all)"
+                    style="flex:1;" title="Enter total count for the whole group"
+                    oninput="this.classList.add('dirty')"
+                    onkeydown="if(event.key==='Enter')rd2SaveGroup('${invEsc(grpName)}','${grpSafeId}')">
+                  <button class="rd2-save-btn" onclick="rd2SaveGroup('${invEsc(grpName)}','${grpSafeId}')">
+                    <i class="fas fa-save"></i> Save All
+                  </button>
+                </div>
+              </div>
+
+              <!-- Individual member cards (collapsible) -->
+              <div class="rd2-cards" id="${grpId}_members" style="border:none;background:white;border-left:3px solid var(--accent-300);">
+                ${members.map(r=>rd2BuildCard(r)).join('')}
+              </div>
+            </div>`;
+        });
+
+        html += '</div></div>';
+    }
+
+    // ── 2. UNGROUPED ITEMS by category ────────────────────────────
+    Object.keys(bycat).sort().forEach(cat=>{
         const prods = bycat[cat];
         const catId = 'rd2cat_'+cat.replace(/[^a-zA-Z0-9]/g,'_');
-        const cards = prods.map(r => rd2BuildCard(r)).join('');
-        return `
+        html += `
         <div class="rd2-cat-block">
           <div class="rd2-cat-hdr" onclick="rd2ToggleCat('${catId}')">
             <span class="rd2-cat-title">${invEsc(cat)}</span>
             <span class="rd2-cat-badge">${prods.length} ITEMS</span>
             <span class="rd2-cat-arrow open" id="${catId}_arr">&#9660;</span>
           </div>
-          <div class="rd2-cards" id="${catId}">${cards}</div>
+          <div class="rd2-cards" id="${catId}">${prods.map(r=>rd2BuildCard(r)).join('')}</div>
         </div>`;
-    }).join('');
+    });
 
     if(cont) cont.innerHTML = html;
+    // Wire group buttons via event delegation (avoids inline onclick with special chars)
+    cont.querySelectorAll('[data-grp-prod]').forEach(btn => {
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            const prod = btn.getAttribute('data-grp-prod');
+            if (prod) window.rd2OpenGroup(prod);
+        });
+    });
+}
+
+function rd2ToggleGroup(grpId){
+    const members = document.getElementById(grpId+'_members');
+    const arr     = document.getElementById(grpId+'_arr');
+    if(!members) return;
+    const hidden = members.style.display==='none';
+    members.style.display = hidden?'':'none';
+    if(arr) arr.classList.toggle('open', hidden);
 }
 
 function rd2ToggleCat(catId){
@@ -380,24 +506,36 @@ function rd2BuildCard(r){
     const invQ   = RD2.invTot[name]||0;
     const cur    = prevQty + invQ;
     const conv   = RD2.convMap[name]||{utype:'unit',upc:1};
-    const imgSrc = r.image_url || 'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/placeholder.jpg';
+    // Image: use resolveImage if available, otherwise direct URL, fallback to placeholder
+    const rawImg = r.image_url||'';
+    const imgSrc = (typeof resolveImage==='function') ? resolveImage(rawImg) : (rawImg||window.PLACEHOLDER_IMAGE||'');
     const safeId = 'rdut_'+name.replace(/[^a-zA-Z0-9]/g,'_');
+    const grp    = (RD2.groupMap||{})[name]||'';
 
     // Status pill
-    let pillCls='rd2-pill-none', pillTxt='— PAR 0';
+    let pillCls='rd2-pill-none', pillTxt='\u2014 PAR 0';
     if(par>0){
         pillTxt = (cur<=par)?'LOW \u2014 PAR '+par:(cur<=par*1.5)?'WATCH \u2014 PAR '+par:'OK \u2014 PAR '+par;
         pillCls = (cur<=par)?'rd2-pill-low':(cur<=par*1.5)?'rd2-pill-watch':'rd2-pill-ok';
     }
-
-    // PAR progress bar
-    const pct = par>0 ? Math.min(100,Math.round(cur/par*100)) : 0;
+    const pct      = par>0 ? Math.min(100,Math.round(cur/par*100)) : 0;
     const barColor = cur<=par?'#dc2626':cur<=par*1.5?'#f97316':'#16a34a';
+    const isCase   = conv.utype==='case';
+    const upc      = conv.upc||1;
 
     return `
-    <div class="rd2-card">
+    <div class="rd2-card" data-prod="${invEsc(name)}">
+      <!-- Group icon top-right -->
+      <button class="rd2-grp-btn" title="Assign group" data-grp-prod="${invEsc(name)}"
+        style="position:absolute;top:6px;right:6px;background:${grp?'var(--accent-400)':'var(--neutral-200)'};border:none;border-radius:6px;width:26px;height:26px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;z-index:2;transition:all .15s;"
+        title="${grp?'Group: '+invEsc(grp):'Assign to group'}">
+        <i class="fas fa-tag" style="color:${grp?'var(--primary-900)':'var(--neutral-500)'}"></i>
+      </button>
+      ${grp?`<div style="position:absolute;top:6px;left:6px;background:var(--accent-300);border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;color:var(--primary-900);z-index:2;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${invEsc(grp)}</div>`:''}
+
       <div class="rd2-card-top">
-        <img class="rd2-card-img" src="${invEsc(imgSrc)}" onerror="this.src='https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/placeholder.jpg'" alt="">
+        <img class="rd2-card-img" src="${invEsc(imgSrc)}" 
+          onerror="this.onerror=null;this.src=window.PLACEHOLDER_IMAGE||'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiBmaWxsPSIjZTVlN2ViIi8+PHRleHQgeD0iMzIiIHk9IjM2IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjEwIiBmaWxsPSIjOWNhM2FmIj5ObyBJbWc8L3RleHQ+PC9zdmc+'" alt="">
         <div class="rd2-card-name">${invEsc(name)}</div>
         <span class="rd2-status-pill ${pillCls}">${pillTxt}</span>
         <div class="rd2-bar-wrap"><div class="rd2-bar" style="width:${pct}%;background:${barColor}"></div></div>
@@ -429,10 +567,16 @@ function rd2BuildCard(r){
         </div>
       </div>
       <div class="rd2-actions">
-        <select class="rd2-unit-sel" id="${safeId}_usel">
-          <option value="unit" ${conv.utype==='unit'?'selected':''}>Unit</option>
-          <option value="case" ${conv.utype==='case'?'selected':''}>Case (${conv.upc}u)</option>
+        <select class="rd2-unit-sel" id="${safeId}_usel" onchange="rd2OnUnitChange(this,'${safeId}')">
+          <option value="unit" ${!isCase?'selected':''}>Unit</option>
+          <option value="case" ${isCase?'selected':''}>Case (${upc}u)</option>
         </select>
+        <!-- Units-per-case input — shown only when Case is selected -->
+        <input type="number" min="1" step="1" id="${safeId}_upc"
+          value="${upc}" placeholder="u/cs"
+          title="Units per case"
+          style="width:46px;padding:4px 5px;border:1.5px solid var(--neutral-200);border-radius:6px;font-size:11px;font-weight:700;text-align:center;display:${isCase?'block':'none'};"
+          onchange="rd2SaveUPC('${invEsc(name)}','${safeId}')">
         <button class="rd2-save-btn" onclick="rd2SaveCount('${invEsc(name)}','${safeId}')">
           <i class="fas fa-save"></i> Save
         </button>
@@ -446,19 +590,16 @@ async function rd2SaveCount(productName, safeId){
     if(!input) return;
     const rawVal = parseFloat(input.value);
     if(isNaN(rawVal)||rawVal<0){ invToast('Enter a valid number','err'); return; }
-    const utype  = usel?.value || 'unit';
-    const conv   = RD2.convMap[productName]||{utype:'unit',upc:1};
-    // Convert to units if case selected
+    const utype    = usel?.value || 'unit';
+    const conv     = RD2.convMap[productName]||{utype:'unit',upc:1};
     const qtyUnits = utype==='case' ? rawVal * conv.upc : rawVal;
     const today    = new Date().toISOString().slice(0,10);
     const sb       = invSB();
-    // Upsert into current_stock
     const {error} = await sb.from('current_stock').upsert(
         {product_name:productName, quantity_in_stock:qtyUnits, stock_date:today},
         {onConflict:'product_name,stock_date'}
     );
     if(error){
-        // If upsert fails (no unique constraint), try insert
         const {error:e2} = await sb.from('current_stock').insert(
             {product_name:productName, quantity_in_stock:qtyUnits, stock_date:today}
         );
@@ -466,11 +607,63 @@ async function rd2SaveCount(productName, safeId){
     }
     input.value = '';
     input.classList.remove('dirty');
-    // Update local stockMap immediately
     RD2.stockMap[productName] = {qty:qtyUnits, date:today};
-    invToast('\u2705 Count saved: '+productName,'ok');
+    // ── Color flash: random accent color confirms save ────────────
+    rd2FlashSaved(safeId);
+    invToast('\u2705 Saved: '+productName,'ok');
     rd2Render();
 }
+
+// ── rd2FlashSaved: random color border flash on the card ─────────
+function rd2FlashSaved(safeId){
+    const input = document.getElementById(safeId);
+    const card  = input?.closest('.rd2-card,.rd2-group-card');
+    if(!card) return;
+    const colors = ['#16a34a','#2563eb','#7c3aed','#d97706','#0891b2','#be185d','#059669'];
+    const col    = colors[Math.floor(Math.random()*colors.length)];
+    const prev   = card.style.outline;
+    card.style.transition = 'outline 0.1s, box-shadow 0.1s';
+    card.style.outline    = '3px solid '+col;
+    card.style.boxShadow  = '0 0 0 4px '+col+'33';
+    setTimeout(()=>{ card.style.outline=''; card.style.boxShadow=''; }, 1200);
+}
+
+// ── rd2SaveGroup: save count for the whole group ─────────────────
+window.rd2SaveGroup = async function(groupName, grpSafeId){
+    const input   = document.getElementById(grpSafeId);
+    if(!input) return;
+    const rawVal  = parseFloat(input.value);
+    if(isNaN(rawVal)||rawVal<0){ invToast('Enter a valid number','err'); return; }
+    const members = RD2.products.filter(p=>(RD2.groupMap||{})[p.product_name]===groupName);
+    if(!members.length) return;
+    const today   = new Date().toISOString().slice(0,10);
+    const sb      = invSB();
+    // Distribute total count evenly across members (round down, remainder to last)
+    const perItem = rawVal / members.length;
+    let errors    = [];
+    for (let i=0; i<members.length; i++){
+        const pName = members[i].product_name;
+        const qty   = i===members.length-1
+            ? parseFloat((rawVal - perItem*(members.length-1)).toFixed(3))
+            : parseFloat(perItem.toFixed(3));
+        const {error} = await sb.from('current_stock').upsert(
+            {product_name:pName, quantity_in_stock:qty, stock_date:today},
+            {onConflict:'product_name,stock_date'}
+        );
+        if(error){
+            const {error:e2} = await sb.from('current_stock').insert(
+                {product_name:pName, quantity_in_stock:qty, stock_date:today}
+            );
+            if(e2) errors.push(pName+': '+e2.message);
+        }
+        RD2.stockMap[pName] = {qty, date:today};
+    }
+    input.value = '';
+    if(errors.length){ invToast('Some errors: '+errors.join('; '),'err'); return; }
+    rd2FlashSaved(grpSafeId);
+    invToast('\u2705 Group saved: '+groupName+' ('+members.length+' items, total: '+rawVal+')','ok');
+    rd2Render();
+};
 
 // Legacy rdSetDefaults / rdRender stubs so existing calls don't break
 function rdSetDefaults(){ rd2SetDefaults(); }
@@ -506,10 +699,137 @@ async function rdSaveNew(){
     RD2.initialized=false;
     await rd2Init(true);
 }
-window.rdSaveNew    = rdSaveNew;
-window.rd2SaveCount = rd2SaveCount;
-window.rd2ToggleCat = rd2ToggleCat;
+// ── rd2OnUnitChange: toggle UPC input when Case selected ────────
+window.rd2OnUnitChange = function(sel, safeId) {
+    const upcInput = document.getElementById(safeId+'_upc');
+    if (upcInput) upcInput.style.display = sel.value==='case' ? 'block' : 'none';
+    // Update label in the option
+    if (sel.value === 'case') {
+        const upc = parseFloat(document.getElementById(safeId+'_upc')?.value||1);
+        sel.options[1].text = 'Case ('+upc+'u)';
+    }
+};
+
+// ── rd2SaveUPC: save units-per-case to product_conversions ──────
+window.rd2SaveUPC = async function(productName, safeId) {
+    const upcInput = document.getElementById(safeId+'_upc');
+    const usel     = document.getElementById(safeId+'_usel');
+    if (!upcInput || !usel) return;
+    const upc   = parseFloat(upcInput.value)||1;
+    const utype = usel.value||'unit';
+    // Update option label
+    if (utype==='case') usel.options[1].text = 'Case ('+upc+'u)';
+    // Save to DB
+    const {error} = await invSB().from('product_conversions').upsert(
+        {product_name:productName, unit_type:utype, units_per_case:upc},
+        {onConflict:'product_name'}
+    );
+    if (error) { invToast('Error saving unit info: '+error.message,'err'); return; }
+    // Update local convMap
+    RD2.convMap[productName] = {utype, upc};
+    invToast('✅ Unit saved: '+productName,'ok');
+};
+
+// ── rd2OpenGroup: open the group assignment popover ─────────────
+// Uses data-attributes + addEventListener — NO inline onclick strings with product names
+// This avoids SyntaxError from product names with parens, apostrophes, slashes etc.
+window.rd2OpenGroup = function(productName) {
+    document.querySelectorAll('.rd2-grp-popover').forEach(el=>el.remove());
+    const card = document.querySelector('.rd2-card[data-prod="'+CSS.escape(productName)+'"]');
+    if (!card) return;
+    const existing  = (RD2.groupMap||{})[productName]||'';
+    const allGroups = (RD2.allGroups||[]).slice();
+
+    const pop = document.createElement('div');
+    pop.className = 'rd2-grp-popover';
+    pop.style.cssText = 'position:absolute;top:34px;right:4px;z-index:9999;background:#fff;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.2);border:1px solid var(--neutral-200);padding:12px;min-width:220px;';
+
+    // Header
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--neutral-500);margin-bottom:8px;';
+    hdr.textContent = 'Assign Group — '+productName.slice(0,28)+(productName.length>28?'…':'');
+    pop.appendChild(hdr);
+
+    // Existing group buttons
+    if (allGroups.length) {
+        const list = document.createElement('div');
+        list.style.cssText = 'display:flex;flex-direction:column;gap:4px;margin-bottom:8px;max-height:160px;overflow-y:auto;';
+        allGroups.forEach(g => {
+            const btn = document.createElement('button');
+            btn.textContent = g + (g===existing ? ' ✓' : '');
+            btn.style.cssText = 'text-align:left;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;font-weight:'+(g===existing?'700':'400')+';'
+                + 'border:1.5px solid '+(g===existing?'var(--accent-400)':'var(--neutral-200)')+';'
+                + 'background:'+(g===existing?'#fffbeb':'white')+';';
+            btn.addEventListener('click', () => window.rd2AssignGroup(productName, g, btn));
+            list.appendChild(btn);
+        });
+        pop.appendChild(list);
+    }
+
+    // New group row
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+    const inp = document.createElement('input');
+    inp.type = 'text'; inp.id = 'rd2-grp-new-input'; inp.placeholder = 'New group name…';
+    inp.style.cssText = 'flex:1;border:1.5px solid var(--neutral-200);border-radius:6px;padding:5px 8px;font-size:12px;';
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = 'Save';
+    saveBtn.style.cssText = 'padding:5px 12px;background:var(--primary-700);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;';
+    const doSave = () => { const v=inp.value.trim(); if(v) window.rd2AssignGroup(productName, v, null); };
+    saveBtn.addEventListener('click', doSave);
+    inp.addEventListener('keydown', e => { if(e.key==='Enter') doSave(); });
+    row.appendChild(inp); row.appendChild(saveBtn);
+    pop.appendChild(row);
+
+    // Remove from group button
+    if (existing) {
+        const remBtn = document.createElement('button');
+        remBtn.textContent = '✕ Remove from group';
+        remBtn.style.cssText = 'margin-top:6px;width:100%;padding:4px;background:#fee2e2;border:1px solid #fca5a5;border-radius:6px;font-size:11px;color:#dc2626;font-weight:600;cursor:pointer;';
+        remBtn.addEventListener('click', () => window.rd2AssignGroup(productName, '', null));
+        pop.appendChild(remBtn);
+    }
+
+    card.style.position = 'relative';
+    card.appendChild(pop);
+    setTimeout(() => inp.focus(), 30);
+
+    // Close on outside click
+    setTimeout(() => {
+        document.addEventListener('click', function h(e){
+            if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('click',h); }
+        });
+    }, 10);
+};
+
+// ── rd2AssignGroup: save group to DB and update local state ─────
+window.rd2AssignGroup = async function(productName, groupName, btnEl) {
+    const grp = groupName.trim();
+    const {error} = await invSB().from('inventory_management')
+        .update({product_group: grp||null})
+        .eq('product_name', productName);
+    if (error) { invToast('Error: '+error.message,'err'); return; }
+    // Update local state
+    if (!RD2.groupMap) RD2.groupMap = {};
+    if (grp) {
+        RD2.groupMap[productName] = grp;
+        if (!RD2.allGroups.includes(grp)) RD2.allGroups.push(grp);
+        RD2.allGroups.sort();
+    } else {
+        delete RD2.groupMap[productName];
+    }
+    // Close popover
+    document.querySelectorAll('.rd2-grp-popover').forEach(el=>el.remove());
+    invToast('✅ Group '+(grp?'set: '+grp:'removed'),'ok');
+    rd2Render();
+};
+
+window.rdSaveNew       = rdSaveNew;
+window.rd2SaveCount    = rd2SaveCount;
+window.rd2ToggleCat    = rd2ToggleCat;
 window.rd2OnViewChange = rd2OnViewChange;
+window.rd2ToggleGroup  = rd2ToggleGroup;
+window.rd2FlashSaved   = rd2FlashSaved;
 
 const JD = {
     rows: [],
@@ -5780,6 +6100,13 @@ input[id^="par-input-"]:focus {
 .rd2-save-btn:hover{background:var(--success-600)}
 .rd2-save-btn:disabled{opacity:.5;cursor:default}
 .rd2-actions{display:flex;gap:5px;align-items:center;padding:6px 10px 8px;border-top:1px solid var(--neutral-100)}
+.rd2-grp-popover{animation:fadeIn .12s ease}
+.rd2-group-block{background:#fff;border-radius:10px;border:1px solid var(--neutral-200);margin-bottom:10px;overflow:hidden}
+.rd2-group-hdr{display:flex;align-items:center;padding:8px 12px;cursor:pointer;background:var(--primary-50);border-bottom:1px solid var(--neutral-200)}
+.rd2-group-hdr:hover{background:var(--primary-100)}
+.rd2-group-card{background:#fff;border-bottom:1px solid var(--neutral-100);position:relative}
+.rd2-group-card .rd2-new-count{font-size:13px}
+.rd2-grp-btn:hover{transform:scale(1.1)}
 .rd2-bar-wrap{height:4px;background:#e5e7eb;border-radius:2px;margin-top:3px;overflow:hidden}
 .rd2-bar{height:100%;border-radius:2px;transition:width .3s}
 @media(max-width:640px){.rd2-cards{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}}
