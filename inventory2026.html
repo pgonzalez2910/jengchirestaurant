@@ -43419,9 +43419,15 @@ async function jdReload(){
     console.log('[JD] jdReload:', start, '→', end);
     JD.invTot={};
     const{data:invs}=await sb.from('invoices').select('id').gte('invoice_date',start).lte('invoice_date',end);
+    console.log('[JD] jdReload invoices found:', (invs||[]).length);
     if(invs&&invs.length){
-        const{data:items}=await sb.from('invoice_items').select('product_name,quantity').in('invoice_id',invs.map(i=>i.id));
-        (items||[]).forEach(it=>{ JD.invTot[it.product_name]=(JD.invTot[it.product_name]||0)+(parseFloat(it.quantity)||0); });
+        const{data:items}=await sb.from('invoice_items').select('product_name,quantity,weight,has_weight').in('invoice_id',invs.map(i=>i.id));
+        (items||[]).forEach(it=>{
+            const wv=parseFloat(it.weight||0);
+            const isW=!!(it.has_weight||wv>0);
+            const qty=isW?wv:parseFloat(it.quantity||0);
+            JD.invTot[it.product_name]=(JD.invTot[it.product_name]||0)+qty;
+        });
     }
     jdRender();
 }
@@ -43453,20 +43459,32 @@ async function jdLoad(){
     JD.stockMap={};
     (stk||[]).forEach(s=>{ if(!(s.product_name in JD.stockMap)) JD.stockMap[s.product_name]={qty:parseFloat(s.quantity_in_stock??0),date:s.stock_date}; });
 
-    // Load invoice totals (current month by default)
-    const now=new Date();
-    const yr=String(now.getFullYear());
-    const mo=String(now.getMonth()+1).padStart(2,'0');
-    const start=`${yr}-${mo}-01`;
-    const lastDay=new Date(now.getFullYear(),now.getMonth()+1,0);
-    const end=`${yr}-${mo}-${String(lastDay.getDate()).padStart(2,'0')}`;
+    // Load invoice totals — read from dropdowns (default to current month/2026)
+    const now=new Date(new Date().toLocaleString('en-US',{timeZone:'America/Chicago'}));
+    const jdMonthEl=document.getElementById('jd-month');
+    const jdYearEl=document.getElementById('jd-year');
+    // Set dropdown defaults if not set
+    if(jdMonthEl&&!jdMonthEl.value) jdMonthEl.value=String(now.getMonth()+1);
+    if(jdYearEl&&!jdYearEl.value) jdYearEl.value='2026';
+    const selMonth=jdMonthEl?.value||String(now.getMonth()+1);
+    const selYear=jdYearEl?.value||'2026';
+    const pad=n=>String(n).padStart(2,'0');
+    const start=selMonth?`${selYear}-${pad(selMonth)}-01`:`${selYear}-01-01`;
+    const lastDayD=selMonth?new Date(selYear,selMonth,0):new Date(selYear,12,0);
+    const end=`${lastDayD.getFullYear()}-${pad(lastDayD.getMonth()+1)}-${pad(lastDayD.getDate())}`;
+    console.log('[JD] Loading invoices for period:', start, '→', end);
     JD.invTot={};
     JD.spendMap={};
-    // Load current month invoiced qty
+    // Load invoiced qty for selected period
     const{data:invs}=await sb.from('invoices').select('id').gte('invoice_date',start).lte('invoice_date',end);
     if(invs&&invs.length){
-        const{data:items}=await sb.from('invoice_items').select('product_name,quantity').in('invoice_id',invs.map(i=>i.id));
-        (items||[]).forEach(it=>{ JD.invTot[it.product_name]=(JD.invTot[it.product_name]||0)+(parseFloat(it.quantity)||0); });
+        const{data:items}=await sb.from('invoice_items').select('product_name,quantity,weight,has_weight').in('invoice_id',invs.map(i=>i.id));
+        (items||[]).forEach(it=>{
+            const wv=parseFloat(it.weight||0);
+            const isW=!!(it.has_weight||wv>0);
+            const qty=isW?wv:parseFloat(it.quantity||0);
+            JD.invTot[it.product_name]=(JD.invTot[it.product_name]||0)+qty;
+        });
     }
     // Load 2026 full-year spend per product
     try{
@@ -43605,17 +43623,17 @@ function jdRender(){
             <!-- Name + category (editable) + PAR badge -->
             <div style="padding:7px 8px 5px;flex-shrink:0;">
                 <div style="font-size:10px;font-weight:700;color:var(--neutral-900);line-height:1.3;min-height:1.8rem;">${invEsc(name)}</div>
-                <!-- Category — click to change (uses data-product, no IIFE) -->
+                <!-- Category editor — click button to change -->
                 <div style="position:relative;margin:3px 0 5px;" class="jdcat-wrap">
                     <div onclick="jdOpenCat(this,event)"
                         data-product="${nameSafe}"
                         data-cat="${invEsc(cat)}"
                         class="jdcat-trigger"
-                        style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;background:var(--accent-50);border:1.5px solid var(--accent-200);border-radius:5px;padding:3px 9px;font-size:9px;font-weight:700;color:var(--accent-700);"
-                        title="Click to change category">
-                        <i class="fas fa-folder" style="font-size:8px;opacity:.7;"></i>
-                        <span class="jdcat-label">${invEsc(cat)}</span>
-                        <i class="fas fa-pencil" style="font-size:7px;opacity:.5;margin-left:2px;"></i>
+                        style="display:flex;align-items:center;gap:5px;cursor:pointer;background:var(--neutral-800);border-radius:5px;padding:4px 9px;width:100%;box-sizing:border-box;"
+                        title="Click to assign or change category">
+                        <i class="fas fa-folder-open" style="font-size:9px;color:var(--accent-300);flex-shrink:0;"></i>
+                        <span class="jdcat-label" style="font-size:9.5px;font-weight:700;color:white;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${invEsc(cat)}</span>
+                        <i class="fas fa-pen" style="font-size:8px;color:rgba(255,255,255,.5);flex-shrink:0;"></i>
                     </div>
                     <!-- Dropdown panel — built dynamically by jdOpenCat -->
                     <div class="jdcat-panel" style="display:none;position:absolute;top:100%;left:0;width:240px;background:white;border:2px solid var(--accent-400);border-radius:8px;z-index:500;box-shadow:0 12px 28px rgba(0,0,0,0.28);margin-top:2px;">
@@ -44566,7 +44584,7 @@ document.addEventListener('click',()=>{ document.querySelectorAll('[data-rdcard]
     <div id="pchart-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--neutral-200);border-bottom:1px solid var(--neutral-200);"></div>
     <div style="padding:20px;display:grid;grid-template-columns:1fr 1fr;gap:18px;">
       <div style="background:var(--neutral-50);border-radius:12px;padding:16px;border:1px solid var(--neutral-200);">
-        <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--neutral-600);margin-bottom:10px;">📦 Qty Ordered Per Month (24 mo)</div>
+        <div style="font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;color:var(--neutral-600);margin-bottom:10px;">📦 Qty Ordered Per Month (2026)</div>
         <canvas id="pchart-qty-canvas" height="180"></canvas>
       </div>
       <div style="background:var(--neutral-50);border-radius:12px;padding:16px;border:1px solid var(--neutral-200);">
@@ -44893,5 +44911,14 @@ async function grpToggle(productName, el){
 </script>
 
 </body>
+
+
+
+
+
+
+
+
+
 
 </html>
