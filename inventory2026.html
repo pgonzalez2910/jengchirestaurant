@@ -8273,8 +8273,35 @@ input[id^="par-input-"]:focus {
         <select id="jd-group" class="inv-sel" onchange="jdRender()"><option value="">All Groups</option></select>
       </div>
       <div class="inv-div"></div>
+      <div class="inv-fg"><label class="inv-lbl">Month</label>
+        <select id="jd-month" class="inv-sel" onchange="jdReload()">
+          <option value="">All 2026</option>
+          <option value="1">January</option><option value="2">February</option>
+          <option value="3">March</option><option value="4">April</option>
+          <option value="5">May</option><option value="6">June</option>
+          <option value="7">July</option><option value="8">August</option>
+          <option value="9">September</option><option value="10">October</option>
+          <option value="11">November</option><option value="12">December</option>
+        </select>
+      </div>
+      <div class="inv-fg"><label class="inv-lbl">Year</label>
+        <select id="jd-year" class="inv-sel" onchange="jdReload()">
+          <option value="2026" selected>2026</option>
+          <option value="2025">2025</option>
+        </select>
+      </div>
+      <div class="inv-div"></div>
+      <div class="inv-fg"><label class="inv-lbl">Sort By</label>
+        <select id="jd-sort" class="inv-sel" onchange="jdRender()">
+          <option value="category" selected>Category</option>
+          <option value="name">Product Name</option>
+          <option value="group">Group</option>
+          <option value="status">Alert Status</option>
+        </select>
+      </div>
+      <div class="inv-div"></div>
       <div class="inv-fg"><label class="inv-lbl">Search</label>
-        <input type="text" id="jd-search" class="inv-sel" placeholder="Product name…" oninput="jdRender()" style="min-width:175px" list="jd-search-list" autocomplete="off">
+        <input type="text" id="jd-search" class="inv-sel" placeholder="Product name…" oninput="jdRender()" style="min-width:160px" list="jd-search-list" autocomplete="off">
         <datalist id="jd-search-list"></datalist>
       </div>
       <div style="margin-left:auto;display:flex;gap:8px;">
@@ -8289,6 +8316,7 @@ input[id^="par-input-"]:focus {
       <div class="inv-kpi inv-kpi-orange"><div class="inv-klbl">🟠 Watch</div>     <div class="inv-kval orange"id="jd-k-watch">0</div> <div class="inv-ksub">≤ 150% of PAR</div></div>
       <div class="inv-kpi inv-kpi-green"> <div class="inv-klbl">🟢 OK</div>        <div class="inv-kval green" id="jd-k-ok">0</div>    <div class="inv-ksub">Sufficient stock</div></div>
       <div class="inv-kpi inv-kpi-purple"><div class="inv-klbl">📥 Invoiced</div>  <div class="inv-kval"       id="jd-k-recv">0</div>  <div class="inv-ksub">Lines this period</div></div>
+      <div class="inv-kpi inv-kpi-gold">  <div class="inv-klbl">💰 2026 Spend</div><div class="inv-kval gold"  id="jd-k-spend">$0</div><div class="inv-ksub">Total year spend</div></div>
     </div>
 
     <!-- PRODUCT CARD GRID -->
@@ -42881,7 +42909,9 @@ async function rdLoadStock(){
 }
 
 async function rdReload(){
-    rdSetDefaults();
+    // Do NOT call rdSetDefaults() here — that resets user's month selection to current month
+    // Only rdInit(force=true) should set defaults on first load
+    console.log('[RD] rdReload: month='+document.getElementById('rd-month')?.value+' year='+document.getElementById('rd-year')?.value);
     await rdLoadInvoices();
     rdRender();
 }
@@ -42899,8 +42929,13 @@ async function rdLoadInvoices(){
     const end=`${lastDay.getFullYear()}-${pad(lastDay.getMonth()+1)}-${pad(lastDay.getDate())}`;
     const {data:invs}=await sb.from('invoices').select('id').gte('invoice_date',start).lte('invoice_date',end);
     if(!invs||!invs.length) return;
-    const {data:items}=await sb.from('invoice_items').select('product_name,quantity').in('invoice_id',invs.map(i=>i.id));
-    (items||[]).forEach(it=>{RD.invTot[it.product_name]=(RD.invTot[it.product_name]||0)+(parseFloat(it.quantity)||0);});
+    const {data:items}=await sb.from('invoice_items').select('product_name,quantity,weight,has_weight').in('invoice_id',invs.map(i=>i.id));
+    (items||[]).forEach(it=>{
+        const wv=parseFloat(it.weight||0);
+        const isW=!!(it.has_weight||wv>0);
+        const qty=isW?wv:parseFloat(it.quantity||0);
+        RD.invTot[it.product_name]=(RD.invTot[it.product_name]||0)+qty;
+    });
 }
 
 function rdRender(){
@@ -42951,6 +42986,8 @@ function rdRender(){
 
     let low=0,watch=0,ok=0,recv=0;
     let cardsHTML='';
+    RD.cardNames = {}; // maps card index → product name
+    let _rdCardIdx = 0;
 
     Object.values(groups).forEach(grp=>{
         // Group header
@@ -43004,39 +43041,41 @@ function rdRender(){
 
             const parId = 'rd-par-'+name.replace(/[^a-zA-Z0-9]/g,'_');
             const saveBtnId = 'rd-save-btn-'+name.replace(/[^a-zA-Z0-9]/g,'_');
-            cardsHTML += `<div class="rd-card" id="rdc-${name.replace(/[^a-zA-Z0-9]/g,'_')}" style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(90,20,20,0.08);border:2px solid var(--neutral-200);display:flex;flex-direction:column;position:relative;">
+            cardsHTML += `<div class="rd-card" id="rdc-${name.replace(/[^a-zA-Z0-9]/g,'_')}" style="background:white;border-radius:12px;box-shadow:0 2px 8px rgba(90,20,20,0.08);border:2px solid var(--neutral-200);display:flex;flex-direction:column;position:relative;">
 
                 <!-- TOP BAR: Group label (clickable) + Chart icon -->
                 <div style="display:flex;align-items:stretch;position:relative;">
                     <!-- Group picker trigger -->
                     <div style="position:relative;flex:1;overflow:visible;">
-                        <div onclick="rdToggleGroupPicker('${nameSafe}',event)"
-                            id="rdgb-${name.replace(/[^a-zA-Z0-9]/g,'_')}"
-                            style="background:${grpName?'var(--accent-500)':'var(--neutral-600)'};color:white;font-size:9.5px;font-weight:700;padding:5px 10px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:5px;min-height:26px;"
+                        ${(()=>{ RD.cardNames[_rdCardIdx]=name; const _idx=_rdCardIdx++; return `
+                    <div onclick="rdToggleGroupPicker(${_idx},event)"
+                            data-rdgb="${_idx}"
+                            style="background:${grpName?'var(--accent-500)':'var(--neutral-600)'};color:white;font-size:9.5px;font-weight:700;padding:5px 10px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:5px;min-height:26px;border-radius:${grpName?'12px 0 0 0':'12px 0 0 0'};"
                             title="Click to assign or change group">
                             <i class="fas fa-layer-group" style="opacity:.8;font-size:9px;flex-shrink:0;"></i>
                             <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${grpName?invEsc(grpName):'<span style="opacity:.6;">Assign Group…</span>'}</span>
                             <i class="fas fa-chevron-down" style="font-size:7px;opacity:.6;flex-shrink:0;"></i>
                         </div>
-                        <!-- Dropdown panel -->
-                        <div id="rdgp-${name.replace(/[^a-zA-Z0-9]/g,'_')}" style="display:none;position:absolute;top:100%;left:0;width:220px;background:white;border:2px solid var(--accent-400);border-radius:0 8px 8px 8px;z-index:200;box-shadow:0 10px 24px rgba(0,0,0,0.22);">
+                        <!-- Dropdown panel — indexed to avoid encoding issues -->
+                        <div data-rdcard="${_idx}" style="display:none;position:absolute;top:100%;left:0;width:240px;background:white;border:2px solid var(--accent-400);border-radius:0 8px 8px 8px;z-index:200;box-shadow:0 10px 24px rgba(0,0,0,0.22);">
                             <div style="padding:6px 8px;background:var(--accent-50);border-bottom:1px solid var(--accent-200);">
-                                <div style="font-size:9px;font-weight:700;color:var(--accent-700);text-transform:uppercase;margin-bottom:4px;letter-spacing:.05em;">Assign to Group</div>
-                                <input type="text" placeholder="Search or type new group…"
-                                    id="rdgp-search-${name.replace(/[^a-zA-Z0-9]/g,'_')}"
+                                <div style="font-size:9px;font-weight:700;color:var(--accent-700);text-transform:uppercase;margin-bottom:4px;letter-spacing:.05em;"><i class="fas fa-layer-group" style="margin-right:4px;"></i>Assign to Group</div>
+                                <input type="text" placeholder="Search or type new group name…"
+                                    class="rdgp-search-inp"
                                     style="width:100%;font-size:11px;border:1.5px solid var(--accent-300);border-radius:5px;padding:4px 7px;box-sizing:border-box;outline:none;"
-                                    oninput="rdGroupPickerFilter('${nameSafe}')" onclick="event.stopPropagation()">
+                                    oninput="rdGroupPickerFilter(${_idx})" onclick="event.stopPropagation()">
                             </div>
-                            <div id="rdgp-list-${name.replace(/[^a-zA-Z0-9]/g,'_')}" style="max-height:160px;overflow-y:auto;">
+                            <div class="rdgp-list" style="max-height:160px;overflow-y:auto;">
                                 ${rdGroupPickerOptions(name)}
                             </div>
                             <div style="padding:5px 8px;border-top:1px solid var(--neutral-100);background:var(--neutral-50);">
-                                <button onclick="rdCreateAndAssignGroup('${nameSafe}',event)"
-                                    style="width:100%;background:var(--primary-700);color:white;border:none;border-radius:6px;padding:5px 8px;font-size:10px;font-weight:700;cursor:pointer;">
+                                <button onclick="rdCreateAndAssignGroup(${_idx},event)"
+                                    style="width:100%;background:var(--primary-700);color:white;border:none;border-radius:6px;padding:6px 8px;font-size:10px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px;">
                                     <i class="fas fa-plus"></i> Create & Assign New Group
                                 </button>
+                                <div style="font-size:9px;color:var(--neutral-500);text-align:center;margin-top:3px;">Type name above, then click</div>
                             </div>
-                        </div>
+                        </div>`; })()}
                     </div>
                     <!-- Chart button -->
                     <button onclick="openProductChart('${nameSafe}','rony')"
@@ -43364,8 +43403,28 @@ const JD = {
     invTot: {},
     spendMap: {},
     groupMap: {},
+    cardNames: {},  // idx → productName for category picker
     MONTHS:['','January','February','March','April','May','June','July','August','September','October','November','December']
 };
+
+async function jdReload(){
+    // Called when month/year dropdowns change — re-fetches invoices only, no full reload
+    const sb=invSB();
+    const month=document.getElementById('jd-month')?.value||'';
+    const year=document.getElementById('jd-year')?.value||'2026';
+    const pad=n=>String(n).padStart(2,'0');
+    const start=month?`${year}-${pad(month)}-01`:`${year}-01-01`;
+    const lastDay=month?new Date(year,month,0):new Date(year,12,0);
+    const end=`${lastDay.getFullYear()}-${pad(lastDay.getMonth()+1)}-${pad(lastDay.getDate())}`;
+    console.log('[JD] jdReload:', start, '→', end);
+    JD.invTot={};
+    const{data:invs}=await sb.from('invoices').select('id').gte('invoice_date',start).lte('invoice_date',end);
+    if(invs&&invs.length){
+        const{data:items}=await sb.from('invoice_items').select('product_name,quantity').in('invoice_id',invs.map(i=>i.id));
+        (items||[]).forEach(it=>{ JD.invTot[it.product_name]=(JD.invTot[it.product_name]||0)+(parseFloat(it.quantity)||0); });
+    }
+    jdRender();
+}
 
 async function jdLoad(){
     console.log('[JD] jdLoad: loading assigned products…');
@@ -43413,10 +43472,14 @@ async function jdLoad(){
     try{
         const{data:invs2026}=await sb.from('invoices').select('id').gte('invoice_date','2026-01-01').lte('invoice_date','2026-12-31');
         if(invs2026&&invs2026.length){
-            const{data:spItems}=await sb.from('invoice_items').select('product_name,quantity,unit_price,price_per_unit').in('invoice_id',invs2026.map(i=>i.id));
+            const{data:spItems}=await sb.from('invoice_items').select('product_name,quantity,unit_price,price_per_unit,weight,has_weight').in('invoice_id',invs2026.map(i=>i.id));
             (spItems||[]).forEach(it=>{
-                const price=parseFloat(it.unit_price||it.price_per_unit||0);
-                const qty=parseFloat(it.quantity||0);
+                const ppUnit=parseFloat(it.price_per_unit||0);
+                const uPrice=parseFloat(it.unit_price||0);
+                const wv=parseFloat(it.weight||0);
+                const isWeight=!!(it.has_weight||wv>0);
+                const price=isWeight&&ppUnit>0?ppUnit:uPrice>0?uPrice:ppUnit;
+                const qty=isWeight?wv:parseFloat(it.quantity||0);
                 if(!JD.spendMap[it.product_name]) JD.spendMap[it.product_name]={total:0,qty:0,cnt:0,lastPrice:0};
                 JD.spendMap[it.product_name].total+=price*qty;
                 JD.spendMap[it.product_name].qty+=qty;
@@ -43451,6 +43514,8 @@ function jdRender(){
     const grpF  = document.getElementById('jd-group')?.value||'';
     const srch  = (document.getElementById('jd-search')?.value||'').toLowerCase().trim();
 
+    const sortBy = document.getElementById('jd-sort')?.value||'category';
+
     let rows = (JD.products||[]).filter(r=>{
         if(catF && r.category!==catF) return false;
         if(grpF && JD.groupMap[r.product_name]!==grpF) return false;
@@ -43462,7 +43527,30 @@ function jdRender(){
     const dl=document.getElementById('jd-search-list');
     if(dl) dl.innerHTML=(JD.products||[]).map(r=>`<option value="${invEsc(r.product_name)}">`).join('');
 
+    // Sort
+    rows.sort((a,b)=>{
+        if(sortBy==='group'){
+            const ga=(JD.groupMap[a.product_name]||'').toLowerCase()||'zzz';
+            const gb=(JD.groupMap[b.product_name]||'').toLowerCase()||'zzz';
+            if(ga!==gb) return ga.localeCompare(gb);
+        } else if(sortBy==='status'){
+            const pa=parseFloat(a.par||0),pb=parseFloat(b.par||0);
+            const sa=(JD.stockMap[a.product_name]||{}).qty??0;
+            const sb=(JD.stockMap[b.product_name]||{}).qty??0;
+            const ba=sa+(JD.invTot[a.product_name]||0), bb=sb+(JD.invTot[b.product_name]||0);
+            const ra=pa>0?ba/pa:99, rb=pb>0?bb/pb:99;
+            if(Math.abs(ra-rb)>0.01) return ra-rb;
+        } else {
+            // default: category
+            const ca=(a.category||'Uncategorized').toLowerCase();
+            const cb=(b.category||'Uncategorized').toLowerCase();
+            if(ca!==cb) return ca.localeCompare(cb);
+        }
+        return (a.product_name||'').localeCompare(b.product_name||'');
+    });
+
     let low=0,watch=0,ok=0,recv=0;
+    // (JD.cardNames no longer used — category picker uses data-product attribute)
     const grid=document.getElementById('jd-card-grid');
     if(!grid){ console.warn('[JD] jd-card-grid not found'); return; }
     if(!rows.length){
@@ -43505,7 +43593,7 @@ function jdRender(){
             :'';
         return `<div class="jd-prod-card" style="cursor:default;display:flex;flex-direction:column;">
             <!-- Top label bar -->
-            <div style="background:${grpName?'var(--accent-500)':'var(--neutral-700)'};color:white;font-size:9px;font-weight:700;padding:3px 8px;display:flex;justify-content:space-between;align-items:center;letter-spacing:.04em;">
+            <div style="background:${grpName?'var(--accent-500)':'var(--neutral-700)'};color:white;font-size:9px;font-weight:700;padding:3px 8px;display:flex;justify-content:space-between;align-items:center;letter-spacing:.04em;border-radius:12px 12px 0 0;">
                 <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${invEsc(grpName||cat)}</span>
                 <button onclick="openProductChart('${nameSafe}','julio')" style="background:rgba(255,255,255,.2);border:none;color:white;border-radius:4px;padding:1px 5px;font-size:9px;cursor:pointer;flex-shrink:0;margin-left:4px;" title="View charts"><i class="fas fa-chart-line"></i></button>
             </div>
@@ -43514,10 +43602,39 @@ function jdRender(){
                 <img src="${imgUrl}" onerror="this.src='${PLACEHOLDER_IMAGE}'" loading="lazy" style="max-width:100%;max-height:64px;object-fit:contain;">
                 ${invQty>0?`<span style="position:absolute;top:4px;right:4px;background:var(--primary-700);color:white;border-radius:20px;padding:1px 6px;font-size:9px;font-weight:700;">+${invQty}</span>`:''}
             </div>
-            <!-- Name + category + PAR badge -->
+            <!-- Name + category (editable) + PAR badge -->
             <div style="padding:7px 8px 5px;flex-shrink:0;">
                 <div style="font-size:10px;font-weight:700;color:var(--neutral-900);line-height:1.3;min-height:1.8rem;">${invEsc(name)}</div>
-                <div style="font-size:9px;color:var(--accent-600);font-weight:600;margin:2px 0 4px;">${invEsc(cat)}</div>
+                <!-- Category — click to change (uses data-product, no IIFE) -->
+                <div style="position:relative;margin:3px 0 5px;" class="jdcat-wrap">
+                    <div onclick="jdOpenCat(this,event)"
+                        data-product="${nameSafe}"
+                        data-cat="${invEsc(cat)}"
+                        class="jdcat-trigger"
+                        style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;background:var(--accent-50);border:1.5px solid var(--accent-200);border-radius:5px;padding:3px 9px;font-size:9px;font-weight:700;color:var(--accent-700);"
+                        title="Click to change category">
+                        <i class="fas fa-folder" style="font-size:8px;opacity:.7;"></i>
+                        <span class="jdcat-label">${invEsc(cat)}</span>
+                        <i class="fas fa-pencil" style="font-size:7px;opacity:.5;margin-left:2px;"></i>
+                    </div>
+                    <!-- Dropdown panel — built dynamically by jdOpenCat -->
+                    <div class="jdcat-panel" style="display:none;position:absolute;top:100%;left:0;width:240px;background:white;border:2px solid var(--accent-400);border-radius:8px;z-index:500;box-shadow:0 12px 28px rgba(0,0,0,0.28);margin-top:2px;">
+                        <div style="padding:6px 8px;background:var(--accent-50);border-bottom:1px solid var(--accent-200);border-radius:8px 8px 0 0;">
+                            <div style="font-size:8px;font-weight:700;color:var(--accent-700);text-transform:uppercase;margin-bottom:4px;"><i class="fas fa-folder-open" style="margin-right:3px;"></i>Assign Category</div>
+                            <input type="text" placeholder="Search or type new…" class="jdcat-search"
+                                style="width:100%;font-size:11px;border:1.5px solid var(--accent-300);border-radius:5px;padding:4px 7px;box-sizing:border-box;outline:none;"
+                                oninput="jdFilterInPanel(this)" onclick="event.stopPropagation()">
+                        </div>
+                        <div class="jdcat-list" style="max-height:200px;overflow-y:auto;"></div>
+                        <div style="padding:5px 8px;border-top:1px solid var(--neutral-100);background:var(--neutral-50);border-radius:0 0 8px 8px;">
+                            <button onclick="jdCreateFromPanel(this,event)"
+                                style="width:100%;background:var(--primary-700);color:white;border:none;border-radius:6px;padding:5px 8px;font-size:10px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px;">
+                                <i class="fas fa-plus"></i> Create & Assign New Category
+                            </button>
+                            <div style="font-size:8px;color:var(--neutral-500);text-align:center;margin-top:2px;">Type name above, then click</div>
+                        </div>
+                    </div>
+                </div>
                 <div style="text-align:center;background:${bColor}18;border:1.5px solid ${bColor};color:${bColor};border-radius:20px;padding:2px 6px;font-size:9px;font-weight:800;">${bLbl}</div>
             </div>
             <!-- Stats grid: PREV / INVOICED / CURRENT / NEW COUNT -->
@@ -43548,7 +43665,7 @@ function jdRender(){
             <!-- 2026 Spend strip (only if data exists) -->
             ${spendHtml}
             <!-- Save button -->
-            <div style="padding:5px 7px;background:var(--neutral-50);border-top:1px solid var(--neutral-100);flex-shrink:0;">
+            <div style="padding:5px 7px;background:var(--neutral-50);border-top:1px solid var(--neutral-100);flex-shrink:0;border-radius:0 0 12px 12px;">
                 <button onclick="jdSaveCount('${nameSafe}','${inputId}')"
                     id="jd-save-${name.replace(/[^a-zA-Z0-9]/g,'_')}"
                     style="width:100%;background:var(--primary-700);color:white;border:none;border-radius:6px;padding:5px 6px;font-size:10px;font-weight:700;cursor:pointer;">
@@ -43559,8 +43676,10 @@ function jdRender(){
     });
         grid.innerHTML=cards.join('');
     const cc=document.getElementById('jd-count');if(cc)cc.textContent=rows.length+' products';
-    ['jd-k-prods','jd-k-low','jd-k-watch','jd-k-ok','jd-k-recv'].forEach((id,i)=>{
-        const el=document.getElementById(id); if(el) el.textContent=[rows.length,low,watch,ok,recv][i];
+    const totalSpend2026=Object.values(JD.spendMap||{}).reduce((s,v)=>s+(v.total||0),0);
+    ['jd-k-prods','jd-k-low','jd-k-watch','jd-k-ok','jd-k-recv','jd-k-spend'].forEach((id,i)=>{
+        const el=document.getElementById(id);
+        if(el) el.textContent=[rows.length,low,watch,ok,recv,'$'+totalSpend2026.toFixed(0)][i];
     });
 }
 
@@ -43588,28 +43707,27 @@ function rdGroupPickerOptions(productName){
     return html;
 }
 
-function rdToggleGroupPicker(productName, evt){
+function rdToggleGroupPicker(cardIdx, evt){
     evt.stopPropagation();
-    const id='rdgp-'+productName.replace(/[^a-zA-Z0-9]/g,'_');
-    const panel=document.getElementById(id);
-    if(!panel) return;
-    // Close all others first
-    document.querySelectorAll('[id^="rdgp-"]').forEach(p=>{ if(p.id!==id) p.style.display='none'; });
-    const isOpen=panel.style.display==='block';
-    panel.style.display=isOpen?'none':'block';
+    const productName = RD.cardNames[cardIdx];
+    const panel = document.querySelector('[data-rdcard="'+cardIdx+'"]');
+    if(!panel){ console.error('[RD] panel not found for idx:', cardIdx, 'name:', productName); return; }
+    document.querySelectorAll('[data-rdcard]').forEach(p=>{ if(p!==panel) p.style.display='none'; });
+    const isOpen = panel.style.display==='block';
+    panel.style.display = isOpen?'none':'block';
     if(!isOpen){
-        // Refresh list
-        const listId='rdgp-list-'+productName.replace(/[^a-zA-Z0-9]/g,'_');
-        const listEl=document.getElementById(listId);
-        if(listEl) listEl.innerHTML=rdGroupPickerOptions(productName);
-        // Focus search
-        setTimeout(()=>document.getElementById('rdgp-search-'+productName.replace(/[^a-zA-Z0-9]/g,'_'))?.focus(),50);
+        const listEl = panel.querySelector('.rdgp-list');
+        if(listEl) listEl.innerHTML = rdGroupPickerOptions(productName);
+        setTimeout(()=>panel.querySelector('.rdgp-search-inp')?.focus(), 50);
+        console.log('[RD] Group picker opened for:', productName);
     }
 }
 
-function rdGroupPickerFilter(productName){
-    const srch=(document.getElementById('rdgp-search-'+productName.replace(/[^a-zA-Z0-9]/g,'_'))?.value||'').toLowerCase();
-    const listEl=document.getElementById('rdgp-list-'+productName.replace(/[^a-zA-Z0-9]/g,'_'));
+function rdGroupPickerFilter(cardIdx){
+    const productName = RD.cardNames[cardIdx];
+    const panel = document.querySelector('[data-rdcard="'+cardIdx+'"]');
+    const srch = (panel?.querySelector('.rdgp-search-inp')?.value||'').toLowerCase();
+    const listEl = panel?.querySelector('.rdgp-list');
     if(!listEl) return;
     const allGroups=[...new Set(Object.values(RD.groupMap))].filter(Boolean).sort().filter(g=>!srch||g.toLowerCase().includes(srch));
     const current=RD.groupMap[productName]||'';
@@ -43633,16 +43751,15 @@ async function rdAssignGroup(productName, groupName, evt){
     const cardId='rdc-'+productName.replace(/[^a-zA-Z0-9]/g,'_');
     const card=document.getElementById(cardId);
     if(card){
-        const bar=card.querySelector('[onclick*="rdToggleGroupPicker"]');
+        const bar=card.querySelector('[data-rdgb]');
         if(bar){
             bar.style.background=groupName?'var(--success-500)':'var(--neutral-600)';
             bar.innerHTML=`<i class="fas fa-check" style="margin-right:4px;"></i>${invEsc(groupName||'Saved!')} <i class="fas fa-chevron-down" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:8px;opacity:.7;"></i>`;
             setTimeout(()=>{ if(bar) { bar.style.background=groupName?'var(--accent-500)':'var(--neutral-600)'; bar.innerHTML=`<i class="fas fa-tag" style="margin-right:4px;opacity:.7;"></i>${invEsc(groupName||'(none)')} <i class="fas fa-chevron-down" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:8px;opacity:.7;"></i>`; }}, 1200);
         }
     }
-    // Close picker
-    const panel=document.getElementById('rdgp-'+productName.replace(/[^a-zA-Z0-9]/g,'_'));
-    if(panel) panel.style.display='none';
+    // Close picker — find by card index from the names map
+    document.querySelectorAll('[data-rdcard]').forEach(p=>{ p.style.display='none'; });
     // Save to Supabase
     const{error}=await invSB().from('inventory_management').update({custom_group:groupName||null}).eq('product_name',productName);
     if(error){
@@ -43661,16 +43778,160 @@ async function rdAssignGroup(productName, groupName, evt){
     }
 }
 
-async function rdCreateAndAssignGroup(productName, evt){
+async function rdCreateAndAssignGroup(cardIdx, evt){
     if(evt) evt.stopPropagation();
-    const inp=document.getElementById('rdgp-search-'+productName.replace(/[^a-zA-Z0-9]/g,'_'));
-    const newGroup=(inp?.value||'').trim();
-    if(!newGroup){ inp?.focus(); return; }
+    const productName = RD.cardNames[cardIdx];
+    const panel = evt?.target?.closest('[data-rdcard]') || document.querySelector('[data-rdcard="'+cardIdx+'"]');
+    const inp = panel?.querySelector('.rdgp-search-inp');
+    const newGroup = (inp?.value||'').trim();
+    console.log('[RD] Create group:', newGroup, 'for:', productName);
+    if(!newGroup){
+        if(inp){ inp.style.border='2px solid #dc2626'; inp.focus(); setTimeout(()=>{ if(inp) inp.style.border=''; },1000); }
+        return;
+    }
     await rdAssignGroup(productName, newGroup, null);
 }
 
+// ─── JULIO CATEGORY PICKER (data-product approach) ───────────
+const JD_CATS = [
+    'Alcoholic','Bags','Bathroom Supplies','Beans & Legumes',
+    'Beef','Beverages / Tea','Cleaning & Janitorial','Cleaning Supplies',
+    'Coffee','Containers - Foam','Dairy & Eggs','Disposables - BOH',
+    'Disposables - FOH','Dry Goods / Pantry','Exotic Produce',
+    'Fish & Seafood','Flour & Baking','Fresh Fruits','Fresh Herbs',
+    'Fresh Vegetables','Frozen Items','Frozen Meat','Frozen Seafood',
+    'Frozen Vegetables','Miscellaneous','Mushrooms','Noodles & Pasta',
+    'Office / Misc','Oils','Paper Goods','Pork','Poultry',
+    'Produce','Rice','Sauces - Asian','Sauces - Western',
+    'Sauces / Condiments','Seafood','Soft Drinks','Spices - Ground',
+    'Tea','To-Go Supplies','Uncategorized','Utensils',
+].sort();
+
+// Build category list HTML for a panel
+function _jdCatListHtml(currentCat, filter){
+    const f=(filter||'').toLowerCase();
+    const list=f ? JD_CATS.filter(c=>c.toLowerCase().includes(f)) : JD_CATS;
+    if(!list.length) return '<div style="padding:8px 10px;font-size:10px;color:var(--neutral-400);">No match — click Create below</div>';
+    return list.map(c=>{
+        const active=c===currentCat;
+        return `<div class="jdcat-opt" data-val="${c.replace(/"/g,'&quot;')}"
+            onclick="jdPickCatOpt(this,event)"
+            style="padding:6px 10px;font-size:10px;cursor:pointer;font-weight:${active?'700':'400'};
+                color:${active?'var(--accent-700)':'var(--neutral-800)'};
+                background:${active?'var(--accent-50)':''};"
+            onmouseover="this.style.background='var(--accent-50)'"
+            onmouseout="this.style.background='${active?'var(--accent-50)':''}'">
+            ${active?'<i class="fas fa-check" style="margin-right:5px;color:var(--accent-500);font-size:8px;"></i>':'<span style="display:inline-block;width:13px;"></span>'}${c}
+        </div>`;
+    }).join('');
+}
+
+// Open the category panel for a trigger element
+function jdOpenCat(triggerEl, evt){
+    evt.stopPropagation();
+    console.log('[JD] jdOpenCat fired, product:', triggerEl.dataset.product, 'cat:', triggerEl.dataset.cat);
+    const wrap=triggerEl.closest('.jdcat-wrap');
+    const panel=wrap?.querySelector('.jdcat-panel');
+    if(!panel){ console.error('[JD] .jdcat-panel not found in wrap'); return; }
+    // Close all other panels
+    document.querySelectorAll('.jdcat-panel').forEach(p=>{ if(p!==panel) p.style.display='none'; });
+    const isOpen=panel.style.display==='block';
+    if(isOpen){ panel.style.display='none'; return; }
+    // Build list
+    const currentCat=triggerEl.dataset.cat||'';
+    const listEl=panel.querySelector('.jdcat-list');
+    if(listEl) listEl.innerHTML=_jdCatListHtml(currentCat,'');
+    const searchEl=panel.querySelector('.jdcat-search');
+    if(searchEl){ searchEl.value=''; }
+    panel.style.display='block';
+    setTimeout(()=>searchEl?.focus(),50);
+}
+
+// Filter the list as user types
+function jdFilterInPanel(searchEl){
+    const panel=searchEl.closest('.jdcat-panel');
+    if(!panel) return;
+    const wrap=panel.closest('.jdcat-wrap');
+    const trigger=wrap?.querySelector('.jdcat-trigger');
+    const currentCat=trigger?.dataset.cat||'';
+    const listEl=panel.querySelector('.jdcat-list');
+    if(listEl) listEl.innerHTML=_jdCatListHtml(currentCat, searchEl.value);
+}
+
+// User clicked a category option
+function jdPickCatOpt(optEl, evt){
+    evt.stopPropagation();
+    const newCat=optEl.dataset.val;
+    const panel=optEl.closest('.jdcat-panel');
+    const wrap=panel?.closest('.jdcat-wrap');
+    if(!wrap||!newCat) return;
+    _jdApplyCat(wrap, newCat);
+}
+
+// User clicked "Create & Assign New Category"
+function jdCreateFromPanel(btnEl, evt){
+    evt.stopPropagation();
+    const panel=btnEl.closest('.jdcat-panel');
+    const wrap=panel?.closest('.jdcat-wrap');
+    const searchEl=panel?.querySelector('.jdcat-search');
+    const newCat=(searchEl?.value||'').trim();
+    if(!newCat){
+        if(searchEl){ searchEl.style.border='2px solid #dc2626'; searchEl.focus(); setTimeout(()=>{ if(searchEl) searchEl.style.border=''; },1000); }
+        return;
+    }
+    if(!JD_CATS.includes(newCat)){ JD_CATS.push(newCat); JD_CATS.sort(); }
+    _jdApplyCat(wrap, newCat);
+}
+
+// Core: apply category change to a card
+async function _jdApplyCat(wrap, newCat){
+    const trigger=wrap.querySelector('.jdcat-trigger');
+    const panel=wrap.querySelector('.jdcat-panel');
+    const productName=trigger?.dataset.product||'';
+    if(!productName) return;
+    // Decode HTML entities back to real name
+    const realName=productName.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'");
+    console.log('[JD] _jdApplyCat: saving category "'+newCat+'" for product "'+realName+'"');
+    // Close panel
+    if(panel) panel.style.display='none';
+    // Optimistic UI — green flash
+    const labelEl=wrap.querySelector('.jdcat-label');
+    if(labelEl) labelEl.textContent=newCat;
+    if(trigger){
+        trigger.dataset.cat=newCat;
+        trigger.style.background='#d1fae5'; trigger.style.borderColor='#16a34a'; trigger.style.color='#065f46';
+        setTimeout(()=>{
+            trigger.style.background='var(--accent-50)'; trigger.style.borderColor='var(--accent-200)'; trigger.style.color='var(--accent-700)';
+        },1500);
+    }
+    // Update local state
+    const prod=JD.products.find(p=>p.product_name===realName);
+    const oldCat=prod?.category||'';
+    if(prod) prod.category=newCat;
+    // Save to Supabase
+    const{error}=await invSB().from('inventory_management').update({category:newCat}).eq('product_name',realName);
+    if(error){
+        console.error('[JD] cat save error:',error);
+        invToast('Error saving category: '+error.message,'err');
+        if(prod) prod.category=oldCat;
+        if(labelEl) labelEl.textContent=oldCat;
+        return;
+    }
+    invToast('✅ Category: '+newCat,'ok');
+    // Update category filter dropdown
+    const cats=[...new Set(JD.products.map(r=>r.category).filter(Boolean))].sort();
+    const csel=document.getElementById('jd-cat');
+    if(csel){ const cur=csel.value; csel.innerHTML='<option value="">All Categories</option>';
+        cats.forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;csel.appendChild(o);}); csel.value=cur; }
+    // Re-sort after 400ms
+    setTimeout(()=>jdRender(),400);
+}
+
+// Close all panels on outside click
+document.addEventListener('click',()=>{ document.querySelectorAll('.jdcat-panel').forEach(p=>p.style.display='none'); });
+
 // Close group pickers when clicking outside
-document.addEventListener('click',()=>{ document.querySelectorAll('[id^="rdgp-"]').forEach(p=>p.style.display='none'); });
+document.addEventListener('click',()=>{ document.querySelectorAll('[data-rdcard]').forEach(p=>p.style.display='none'); });
 
 </script>
 
@@ -44365,9 +44626,9 @@ document.addEventListener('click',()=>{ document.querySelectorAll('[id^="rdgp-"]
 </div>
 
 <style>
-.jd-prod-card{background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(90,20,20,0.08);border:2px solid var(--neutral-200);cursor:pointer;transition:all .2s;display:flex;flex-direction:column;}
+.jd-prod-card{background:white;border-radius:12px;box-shadow:0 2px 8px rgba(90,20,20,0.08);border:2px solid var(--neutral-200);cursor:pointer;transition:all .2s;display:flex;flex-direction:column;position:relative;}
 .jd-prod-card:hover{transform:translateY(-4px);box-shadow:0 8px 24px rgba(90,20,20,0.18);border-color:var(--accent-400);}
-.jd-prod-img-wrap{position:relative;aspect-ratio:1;background:var(--neutral-50);overflow:hidden;border-bottom:2px solid var(--neutral-100);}
+.jd-prod-img-wrap{position:relative;aspect-ratio:1;background:var(--neutral-50);overflow:hidden;border-bottom:2px solid var(--neutral-100);border-radius:12px 12px 0 0;}
 .jd-prod-img-wrap img{width:100%;height:100%;object-fit:contain;}
 .jd-prod-badge{position:absolute;top:6px;right:6px;background:var(--primary-700);color:white;border-radius:20px;padding:2px 8px;font-size:10px;font-weight:700;}
 .jd-prod-body{padding:10px;flex:1;}
@@ -44412,23 +44673,49 @@ async function openProductChart(productName, section){
         if(data?.image_url) document.getElementById('pchart-img').src=resolveImage(data.image_url);
         if(data?.category) document.getElementById('pchart-meta').textContent='Category: '+data.category;
     }catch(e){ console.warn('[PCHART] meta load:', e); }
-    // Fetch all invoice rows for this product (24 months)
-    const cutoff=new Date();cutoff.setMonth(cutoff.getMonth()-24);
-    const cutoffStr=cutoff.toISOString().slice(0,10);
+    // Fetch all invoice_items for this product since Jan 2026
+    // Query invoice_items first (filtered by product), then join invoices for date/vendor
     let allRows=[];
     try{
-        const{data:invs,error:e1}=await invSB().from('invoices').select('id,invoice_date,vendor').gte('invoice_date',cutoffStr).order('invoice_date',{ascending:true}).limit(3000);
+        // Step 1: get all invoice_items for this product (include weight fields)
+        const{data:items,error:e1}=await invSB()
+            .from('invoice_items')
+            .select('product_name,quantity,unit_price,price_per_unit,invoice_id,weight,has_weight')
+            .eq('product_name',productName)
+            .limit(5000);
         if(e1) throw e1;
-        console.log('[PCHART] invoices found:', (invs||[]).length);
-        if(invs&&invs.length){
-            const idMap={};invs.forEach(i=>{idMap[i.id]=i;});
-            const{data:items,error:e2}=await invSB().from('invoice_items').select('product_name,quantity,unit_price,price_per_unit,invoice_id').eq('product_name',productName).in('invoice_id',invs.map(i=>i.id));
-            if(e2) throw e2;
-            console.log('[PCHART] invoice_items found:', (items||[]).length);
-            allRows=(items||[]).map(it=>{
-                const inv=idMap[it.invoice_id]||{};
-                return{date:inv.invoice_date||'',vendor:inv.vendor||'Unknown',qty:parseFloat(it.quantity||0),price:parseFloat(it.unit_price||it.price_per_unit||0)};
-            }).filter(r=>r.date);
+        console.log('[PCHART] invoice_items found:', (items||[]).length, 'for:', productName);
+        if(items&&items.length){
+            // Step 2: get invoices for those IDs (2026 only)
+            const invIds=[...new Set(items.map(it=>it.invoice_id))];
+            const allInvs=[];
+            for(let i=0;i<invIds.length;i+=200){
+                const{data:chunk}=await invSB().from('invoices')
+                    .select('id,invoice_date,vendor')
+                    .in('id',invIds.slice(i,i+200))
+                    .gte('invoice_date','2026-01-01');
+                if(chunk) allInvs.push(...chunk);
+            }
+            const idMap={};allInvs.forEach(inv=>{idMap[inv.id]=inv;});
+            console.log('[PCHART] invoices matched (2026):', allInvs.length);
+            allRows=items.map(it=>{
+                const inv=idMap[it.invoice_id]||null;
+                if(!inv) return null;
+                // Use weight as qty for weight-based items (same logic as reports)
+                const wv=parseFloat(it.weight||0);
+                const isWeight=!!(it.has_weight||wv>0);
+                const qty=isWeight?wv:parseFloat(it.quantity||0);
+                const ppUnit=parseFloat(it.price_per_unit||0);
+                const uPrice=parseFloat(it.unit_price||0);
+                const price=isWeight&&ppUnit>0?ppUnit:uPrice>0?uPrice:ppUnit;
+                return{
+                    date:inv.invoice_date||'',
+                    vendor:inv.vendor||'Unknown',
+                    qty,
+                    price
+                };
+            }).filter(r=>r&&r.date);
+            console.log('[PCHART] allRows after filter:', allRows.length, '| total qty:', allRows.reduce((s,r)=>s+r.qty,0).toFixed(2));
         }
     }catch(e){ console.error('[PCHART] invoice load error:', e); }
     console.log('[PCHART] allRows:', allRows.length);
@@ -44446,9 +44733,13 @@ async function openProductChart(productName, section){
         {lbl:'Order Months',val:orderMonths.length,col:'#0891b2'},
         {lbl:'Vendors',val:uniqueVendors.length,col:'#15803d'}
     ].map(k=>`<div style="padding:12px 16px;background:white;text-align:center;"><div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--neutral-500);">${k.lbl}</div><div style="font-size:1.35rem;font-weight:800;color:${k.col};font-family:var(--font-mono);">${k.val}</div></div>`).join('');
-    // Build 24-month labels
+    // Build month labels from Jan 2026 to current month
     const months24=[];
-    for(let i=23;i>=0;i--){const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-i);months24.push(d.toISOString().slice(0,7));}
+    const now2026=new Date();
+    const startD=new Date('2026-01-01');
+    for(let d=new Date(startD);d<=now2026;d.setMonth(d.getMonth()+1)){
+        months24.push(d.toISOString().slice(0,7));
+    }
     const monthLabel=m=>{const[y,mo]=m.split('-');return['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+mo-1]+' '+y.slice(2);};
     // Chart 1: Qty per month
     const qtyMap={};allRows.forEach(r=>{const m=r.date.slice(0,7);qtyMap[m]=(qtyMap[m]||0)+r.qty;});
@@ -44466,7 +44757,7 @@ async function openProductChart(productName, section){
     if(c3) _pch.vendor=new Chart(c3,{type:'doughnut',data:{labels:vsorted.map(([v])=>v),datasets:[{data:vsorted.map(([,c])=>c),backgroundColor:COLORS.slice(0,vsorted.length),borderWidth:2}]},options:{responsive:true,plugins:{legend:{display:false}},cutout:'58%'}});
     document.getElementById('pchart-vendor-legend').innerHTML=vsorted.map(([v,c],i)=>`<div style="display:flex;align-items:center;gap:5px;"><span style="width:10px;height:10px;border-radius:50%;background:${COLORS[i]||'#999'};flex-shrink:0;display:inline-block;"></span><span style="font-weight:600;color:var(--neutral-700);font-size:11px;">${v}</span><span style="color:var(--neutral-500);margin-left:auto;font-size:11px;">$${c.toFixed(0)}</span></div>`).join('');
     // Chart 4: Frequency last 12 months
-    const last12=months24.slice(12);
+    const last12=months24.slice(-Math.min(12,months24.length)); // last 12 months of 2026 data
     const freqMap={};allRows.forEach(r=>{const m=r.date.slice(0,7);freqMap[m]=(freqMap[m]||0)+1;});
     const c4=document.getElementById('pchart-freq-canvas');
     if(c4) _pch.freq=new Chart(c4,{type:'bar',data:{labels:last12.map(monthLabel),datasets:[{label:'Invoice Lines',data:last12.map(m=>freqMap[m]||0),backgroundColor:'rgba(107,68,68,0.65)',borderColor:'var(--primary-500)',borderWidth:2,borderRadius:4}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{stepSize:1,font:{size:10}}},x:{ticks:{font:{size:9},maxRotation:45}}}}});
@@ -44602,14 +44893,5 @@ async function grpToggle(productName, el){
 </script>
 
 </body>
-
-
-
-
-
-
-
-
-
 
 </html>
