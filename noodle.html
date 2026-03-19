@@ -417,6 +417,45 @@
     .rc-btn:hover { background: #c99200; }
     .report-filter-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
 
+    /* ── Analytics Table (interactive) ─────── */
+    .analytics-panel {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 22px 20px; margin-top: 28px;
+    }
+    .analytics-panel h3 {
+      font-family: 'Syne',sans-serif; font-weight: 800; font-size: 1rem;
+      letter-spacing: .05em; text-transform: uppercase; margin-bottom: 16px;
+    }
+    .filter-strip {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--border);
+    }
+    .filter-btn {
+      padding: 6px 14px; border-radius: 20px; font-size: .78rem; font-weight: 700;
+      border: 1px solid var(--border-md); background: var(--bg-hover);
+      color: var(--text-2); cursor: pointer; transition: all .18s; font-family:'DM Sans',sans-serif;
+    }
+    .filter-btn:hover  { border-color: var(--yellow); color: var(--text-1); }
+    .filter-btn.active { background: var(--yellow); color: #1a1a2e; border-color: var(--yellow); }
+    .filter-range { display: flex; gap: 6px; align-items: center; font-size:.8rem; color:var(--text-2); }
+    .filter-range input { background:var(--bg-card); border:1px solid var(--border-md); border-radius:7px; padding:5px 9px; font-size:.8rem; color:var(--text-1); font-family:'DM Sans',sans-serif; }
+    .filter-range input:focus { outline:none; border-color:var(--yellow); }
+    .analytics-tbl-wrap { overflow-x: auto; border-radius: 9px; border:1px solid var(--border); margin-bottom:20px; }
+    .analytics-tbl { width:100%; border-collapse:collapse; font-size:.83rem; }
+    .analytics-tbl th { background:rgba(0,0,0,0.04); padding:9px 12px; text-align:left; font-family:'Syne',sans-serif; font-size:.68rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text-2); border-bottom:1px solid var(--border); white-space:nowrap; }
+    .analytics-tbl td { padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:middle; }
+    .analytics-tbl tr:last-child td { border-bottom:none; }
+    .analytics-tbl tr:hover td { background:rgba(0,0,0,0.015); }
+    .atbl-stock { font-family:'Syne',sans-serif; font-weight:800; font-size:.95rem; }
+    .atbl-made  { color:var(--green-n); font-weight:600; font-size:.82rem; }
+    .atbl-sold  { color:var(--red);     font-weight:600; font-size:.82rem; }
+    .atbl-empty { text-align:center; color:var(--text-3); padding:28px !important; }
+    .atbl-total { background:rgba(0,0,0,.03); font-weight:700; }
+    .analytics-chart-wrap { margin-top:4px; }
+    .chart-type-row { display:flex; gap:6px; margin-bottom:12px; }
+    .chart-type-btn { padding:5px 12px; border-radius:6px; font-size:.75rem; font-weight:700; border:1px solid var(--border-md); background:var(--bg-hover); color:var(--text-2); cursor:pointer; transition:all .15s; font-family:'DM Sans',sans-serif; }
+    .chart-type-btn.active { background:var(--yellow); color:#1a1a2e; border-color:var(--yellow); }
+
     /* ══════════════════════════════════════════════
        HISTORY CONTROLS
     ══════════════════════════════════════════════ */
@@ -650,41 +689,66 @@ function normalizeSession(row) {
   };
 }
 
-/** Save a draft session to Supabase */
+/** Save a draft session to Supabase — ONE session per date, always */
 async function saveSessionToDB(draft) {
   try {
-    let sessionId = draft.id && typeof draft.id === 'string' && draft.id.includes('-') ? draft.id : null;
+    // ── Determine the real session ID ─────────────────────────────
+    // Priority: draft.id > S.editId > existing session for this date
+    // This is the ONLY check — never rely on S.editId alone
+    let sessionId = (draft.id && typeof draft.id === 'string' && draft.id.includes('-'))
+      ? draft.id
+      : S.editId || null;
 
-    if (S.editId) {
-      // UPDATE existing session
+    // Safety net: even if draft.id is missing, check the DB for an
+    // existing session on this date to prevent duplicate INSERTs
+    if (!sessionId) {
+      const { data: existing } = await sb
+        .from('inventory_sessions')
+        .select('id')
+        .eq('session_date', draft.date)
+        .maybeSingle();
+      if (existing?.id) {
+        sessionId = existing.id;
+        // Sync back into draft and state so future saves go UPDATE path
+        draft.id = sessionId;
+        S.editId = sessionId;
+        saveDraftLS();
+      }
+    }
+
+    if (sessionId) {
+      // ── UPDATE existing session ──────────────────────────────────
       const { error: e1 } = await sb
         .from('inventory_sessions')
         .update({ session_date: draft.date, notes: draft.notes, updated_at: new Date().toISOString() })
-        .eq('id', S.editId);
+        .eq('id', sessionId);
       if (e1) throw e1;
-      sessionId = S.editId;
-      // Delete old counts & production, re-insert
+      // Delete old child rows and re-insert fresh
       await sb.from('inventory_counts').delete().eq('session_id', sessionId);
       await sb.from('production_logs').delete().eq('session_id', sessionId);
     } else {
-      // INSERT new session
+      // ── INSERT new session (only if truly none exists for this date) ──
       const { data, error: e2 } = await sb
         .from('inventory_sessions')
         .insert({ session_date: draft.date, notes: draft.notes, status: 'completed' })
         .select().single();
       if (e2) throw e2;
       sessionId = data.id;
+      // Immediately store back so next autosave uses UPDATE
+      draft.id = sessionId;
+      S.editId = sessionId;
+      saveDraftLS();
     }
 
-    // Insert counts
+    // Insert counts (12 rows: 4 noodles × 3 stations)
     const counts = [];
-    NOODLES.forEach(n => STATIONS.forEach(s => {
-      counts.push({ session_id: sessionId, noodle_type: n.id, station: s.id, quantity: draft.inventory[n.id][s.id] || 0 });
+    NOODLES.forEach(n => STATIONS.forEach(st => {
+      counts.push({ session_id: sessionId, noodle_type: n.id, station: st.id, quantity: draft.inventory[n.id][st.id] || 0 });
     }));
     const { error: e3 } = await sb.from('inventory_counts').insert(counts);
     if (e3) throw e3;
 
-    // Insert production
+    // Insert production (4 rows: one per noodle)
     const prods = NOODLES.map(n => ({ session_id: sessionId, noodle_type: n.id, quantity_produced: draft.production[n.id] || 0 }));
     const { error: e4 } = await sb.from('production_logs').insert(prods);
     if (e4) throw e4;
@@ -723,10 +787,10 @@ function getPrev() {
 }
 function calcSold(sess) {
   if (sess._calcCache) return sess._calcCache;
-  // Find previous session (the one right before this session by date)
+  // Sort by session_date (YYYY-MM-DD) — more reliable than created_at timestamp
   const sortedBefore = S.sessions
-    .filter(s => s.timestamp < sess.timestamp)
-    .sort((a, b) => b.timestamp - a.timestamp);
+    .filter(s => s.date < sess.date || (s.date === sess.date && s.id !== sess.id && s.timestamp < sess.timestamp))
+    .sort((a, b) => b.date > a.date ? 1 : b.date < a.date ? -1 : b.timestamp - a.timestamp);
   const prev = sortedBefore[0] || null;
 
   const res = {};
@@ -766,7 +830,8 @@ function nav(view, opts = {}) {
   S.view = view;
   S.editId = opts.editId || null;
   // Destroy old chart
-  if (S.chartInst) { S.chartInst.destroy(); S.chartInst = null; }
+  if (S.chartInst)    { S.chartInst.destroy();    S.chartInst    = null; }
+  if (_analyticsChart){ _analyticsChart.destroy(); _analyticsChart = null; }
   // Update nav highlights
   document.querySelectorAll('[data-view]').forEach(el => {
     el.classList.toggle('active', el.dataset.view === view);
@@ -780,7 +845,7 @@ function nav(view, opts = {}) {
       break;
     case 'production': app.innerHTML = renderProd();  break;
     case 'history':    app.innerHTML = renderHist();  break;
-    case 'reports':    app.innerHTML = renderReports(); break;
+    case 'reports':    app.innerHTML = renderReports(); setTimeout(renderAnalytics, 0); break;
     default:           app.innerHTML = renderDash();  afterDash();
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -792,15 +857,16 @@ function nav(view, opts = {}) {
 function renderDash() {
   if (S.loading) return `<div class="loader-wrap"><div class="spinner"></div><span>Loading inventory…</span></div>`;
 
-  const latest = getPrev();
+  const sorted  = [...S.sessions].sort((a, b) => b.date > a.date ? 1 : b.date < a.date ? -1 : b.timestamp - a.timestamp);
+  const latest  = sorted[0] || null;
   const hasDraft = !!S.draft;
 
   const cards = NOODLES.map(n => {
     const current  = latest ? stTotal(latest.inventory, n.id) : 0;
-    const produced = latest ? (latest.production[n.id] || 0) : 0;
     const calc     = latest ? calcSold(latest) : null;
-    const sold     = calc ? (calc[n.id]?.sold || 0) : 0;
-    const pct      = Math.min(100, current / Math.max(1, current + sold) * 100).toFixed(0);
+    const produced = calc ? (calc[n.id]?.produced || 0) : 0;
+    const sold     = calc ? (calc[n.id]?.sold     || 0) : 0;
+    const pct      = Math.min(100, (current / Math.max(1, current + sold)) * 100).toFixed(0);
     return `
       <div class="noodle-card" style="--accent:${n.hex};--glow:${n.glow}">
         <div class="nc-label">${n.label}</div>
@@ -813,13 +879,16 @@ function renderDash() {
       </div>`;
   }).join('');
 
-  const sorted  = [...S.sessions].sort((a, b) => b.timestamp - a.timestamp);
   const recentRows = sorted.slice(0, 5).length
     ? sorted.slice(0, 5).map(r => {
         const c = calcSold(r);
         return `<tr>
-          <td class="date-col">${fmtDate(r.timestamp)}</td>
-          ${NOODLES.map(n => `<td><span class="hist-val" style="color:${n.hex}">${c[n.id]?.sold||0}</span><div class="hist-sub">+${c[n.id]?.produced||0} made</div></td>`).join('')}
+          <td class="date-col">${fmtDateShort(r.date)}</td>
+          ${NOODLES.map(n => `<td>
+            <span class="hist-val" style="color:${n.hex}">${stTotal(r.inventory,n.id)}</span>
+            <div class="hist-sub" style="color:var(--green-n)">+${c[n.id]?.produced||0} made</div>
+            <div class="hist-sub" style="color:var(--red)">−${c[n.id]?.sold||0} sold</div>
+          </td>`).join('')}
           <td><button class="btn-xs edit" onclick="editSession('${r.id}')">✏️ Edit</button></td>
         </tr>`;
       }).join('')
@@ -858,7 +927,10 @@ function renderDash() {
         </table>
       </div>
 
-      <div class="sec-head mt-xl"><h2 class="sec-title">Sales — Last 7 Days</h2></div>
+      <div class="sec-head mt-xl">
+        <h2 class="sec-title">Sales — Last 7 Sessions</h2>
+        <span class="sec-sub" style="font-size:.75rem;color:var(--text-3)">(only sessions with a previous count show sold data)</span>
+      </div>
       <div class="chart-card">
         <div class="chart-legend">
           ${NOODLES.map(n=>`<span class="leg-dot" style="background:${n.hex}"></span><span>${n.short}</span>`).join('')}
@@ -869,10 +941,16 @@ function renderDash() {
 }
 
 function afterDash() {
-  // Build Chart.js bar chart
   const canvas = document.getElementById('salesChart');
   if (!canvas) return;
-  const recs = [...S.sessions].sort((a,b) => a.timestamp - b.timestamp).slice(-7);
+  // Only sessions that have at least one earlier session (so sold can be calculated)
+  const allSorted = [...S.sessions].sort((a,b) => a.date > b.date ? 1 : a.date < b.date ? -1 : a.timestamp - b.timestamp);
+  const chartable = allSorted.filter((r, i) => i > 0); // skip the very first session
+  const recs = chartable.slice(-7);
+  if (!recs.length) {
+    canvas.parentElement.innerHTML = `<p style="color:var(--text-3);text-align:center;padding:32px;font-size:.85rem">Chart will appear once you have at least 2 inventory sessions.</p>`;
+    return;
+  }
   const labels = recs.map(r => new Date(r.date + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}));
   const datasets = NOODLES.map(n => ({
     label: n.short,
@@ -890,8 +968,8 @@ function afterDash() {
       responsive: true,
       plugins: { legend: { display: false }, tooltip: { mode: 'index' } },
       scales: {
-        x: { ticks: { color: '#666', font: { family: 'DM Sans', size: 11 } }, grid: { color: 'rgba(255,255,255,.04)' } },
-        y: { ticks: { color: '#666', font: { family: 'DM Sans', size: 11 } }, grid: { color: 'rgba(255,255,255,.06)' }, beginAtZero: true },
+        x: { ticks: { color: '#666', font: { family: 'DM Sans', size: 11 } }, grid: { color: 'rgba(0,0,0,.04)' } },
+        y: { ticks: { color: '#666', font: { family: 'DM Sans', size: 11 } }, grid: { color: 'rgba(0,0,0,.06)' }, beginAtZero: true },
       },
     },
   });
@@ -1134,12 +1212,32 @@ function setInv(nId, sId, v) {
    §9  PRODUCTION VIEW (Step 2)
 ══════════════════════════════════════════════════════ */
 function renderProd() {
+  // If no draft at all, go to count first
   if (!S.draft) { nav('count'); return ''; }
+
+  const sessionDates = [...S.sessions]
+    .sort((a,b) => b.date > a.date ? 1 : -1)
+    .map(s => s.date);
+
+  // Build date options for picker — only dates that have a saved session
+  const dateOptions = sessionDates.map(d =>
+    `<option value="${d}" ${d === S.draft.date ? 'selected' : ''}>${fmtDateShort(d)}</option>`
+  ).join('');
+
+  // Find the session BEFORE the current one so we can show est. sold
+  const allSorted = [...S.sessions].sort((a,b) => a.date > b.date ? 1 : -1);
+  const currentIdx = allSorted.findIndex(s => s.date === S.draft.date);
+  const prevSession = currentIdx > 0 ? allSorted[currentIdx - 1] : null;
+
   const cards = NOODLES.map(n => {
-    const prev    = S.draft.previousInventory ? stTotal(S.draft.previousInventory, n.id) : 0;
-    const curr    = stTotal(S.draft.inventory, n.id);
-    const prod    = S.draft.production[n.id] || 0;
-    const estSold = Math.max(0, (prev + prod) - curr);
+    const prevStock = prevSession ? stTotal(prevSession.inventory, n.id) : 0;
+    const currStock = stTotal(S.draft.inventory, n.id);
+    const prod      = S.draft.production[n.id] || 0;
+    const estSold   = prevStock + prod - currStock;
+    const soldColor = estSold > 0 ? 'var(--red)' : estSold < 0 ? '#0070c8' : 'var(--text-3)';
+    const soldLabel = estSold > 0 ? `Est. Sold: ${estSold}`
+                    : estSold < 0 ? `Net Added: ${Math.abs(estSold)}`
+                    : 'Est. Sold: 0';
     return `
       <div class="prod-card" style="--pc-accent:${n.hex};--pc-glow:${n.glow}">
         <div class="pc-lbl">${n.label}</div>
@@ -1149,27 +1247,84 @@ function renderProd() {
           <input type="number" inputmode="numeric" min="0"
             class="qty-inp lg" id="p-${n.id}"
             value="${prod}"
-            onchange="setProd('${n.id}',this.value)"
-            onblur="setProd('${n.id}',this.value)" />
+            oninput="setProd('${n.id}',this.value)" />
           <button class="qty-btn lg" onclick="adjProd('${n.id}',+1)">+</button>
           <button class="qty-btn lg" onclick="adjProd('${n.id}',+5)">+5</button>
         </div>
         <div class="pc-stats">
-          <span>Prev: <b>${prev}</b></span>
-          <span>Now: <b>${curr}</b></span>
-          <span class="pc-sold">Est. Sold: <b id="es-${n.id}">${estSold}</b></span>
+          <span>Prev Stock: <b style="color:${n.hex}">${prevStock}</b></span>
+          <span>Now: <b style="color:${n.hex}">${currStock}</b></span>
+          <span style="color:${soldColor};font-weight:700"><b id="es-${n.id}">${soldLabel}</b></span>
         </div>
       </div>`;
   }).join('');
+
+  // Summary bar: prev → production → current → sold
+  const summaryRows = NOODLES.map(n => {
+    const prevStock = prevSession ? stTotal(prevSession.inventory, n.id) : 0;
+    const currStock = stTotal(S.draft.inventory, n.id);
+    const prod      = S.draft.production[n.id] || 0;
+    const sold      = Math.max(0, prevStock + prod - currStock);
+    return `
+      <tr>
+        <td style="font-weight:700;color:${n.hex}">${n.short}</td>
+        <td style="text-align:center">${prevStock}</td>
+        <td style="text-align:center;color:var(--green-n);font-weight:700">+${prod}</td>
+        <td style="text-align:center;font-weight:700;color:${n.hex}">${currStock}</td>
+        <td style="text-align:center;color:var(--red);font-weight:700">${sold}</td>
+      </tr>`;
+  }).join('');
+
+  const noPrevWarning = !prevSession
+    ? `<div style="background:rgba(255,179,0,.09);border:1px solid rgba(255,179,0,.3);border-radius:9px;padding:11px 14px;font-size:.82rem;color:var(--amber);margin-bottom:16px">
+        ⚠️ <strong>${fmtDateShort(S.draft.date)}</strong> is the first session — no previous inventory to compare against. Est. Sold will be 0.
+       </div>` : '';
 
   return `
     <div class="step-view">
       <div class="step-hd">
         <div class="step-badge">Step 2 of 2</div>
         <h2 class="step-title">Production Numbers</h2>
-        <p class="step-desc">How many portions of each noodle were made today?</p>
+        <p class="step-desc">How many portions were made? Select a date to view or edit production for any session.</p>
       </div>
+
+      <!-- Date picker -->
+      <div class="date-row" style="flex-wrap:wrap;gap:10px;margin-bottom:18px">
+        <label style="font-weight:600">Session Date:</label>
+        <select id="prod-date-picker"
+          style="background:var(--bg-card);border:1px solid var(--border-md);border-radius:8px;padding:7px 12px;font-family:'DM Sans',sans-serif;font-size:.88rem;color:var(--text-1);cursor:pointer"
+          onchange="switchProdDate(this.value)">
+          ${dateOptions}
+          ${!sessionDates.includes(S.draft.date)
+            ? `<option value="${S.draft.date}" selected>📝 ${fmtDateShort(S.draft.date)} (unsaved)</option>`
+            : ''}
+        </select>
+        <span style="font-size:.8rem;color:var(--green-n);font-weight:600">● ${fmtDateShort(S.draft.date)}</span>
+      </div>
+
+      ${noPrevWarning}
+
       <div class="prod-grid">${cards}</div>
+
+      <!-- Quick summary table -->
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:20px">
+        <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3);margin-bottom:10px">Session Summary</div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:.85rem">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border)">
+                <th style="padding:7px 10px;text-align:left;font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-2)">Noodle</th>
+                <th style="padding:7px 10px;text-align:center;font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-2)">Prev Stock</th>
+                <th style="padding:7px 10px;text-align:center;font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--green-n)">+ Made</th>
+                <th style="padding:7px 10px;text-align:center;font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-2)">Current</th>
+                <th style="padding:7px 10px;text-align:center;font-size:.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--red)">Sold</th>
+              </tr>
+            </thead>
+            <tbody id="prod-summary-body">${summaryRows}</tbody>
+          </table>
+        </div>
+      </div>
+
       <div style="margin-bottom:20px">
         <label class="notes-lbl">📝 Session Notes (optional)</label>
         <textarea class="notes-inp" id="sess-notes"
@@ -1178,10 +1333,36 @@ function renderProd() {
         >${S.draft.notes||''}</textarea>
       </div>
       <div class="step-actions">
-        <button class="cta secondary" onclick="nav('count')">← Back</button>
-        <button class="cta primary" id="save-btn" onclick="saveSession()">✅ Save Record</button>
+        <button class="cta secondary" onclick="nav('count')">← Back to Count</button>
+        <button class="cta primary" id="save-btn" onclick="saveSession()">✅ Save Production</button>
       </div>
     </div>`;
+}
+
+/** Switch production view to a different date without losing current changes */
+function switchProdDate(date) {
+  // Save current draft first
+  if (S.draft) saveSession_silent();
+  // Load the session for the new date
+  const sess = S.sessions.find(s => s.date === date);
+  if (sess) {
+    S.draft  = JSON.parse(JSON.stringify(sess));
+    S.editId = sess.id;
+    delete S.draft._calcCache;
+    saveDraftLS();
+  }
+  // Re-render production page
+  document.getElementById('app').innerHTML = renderProd();
+}
+
+/** Save silently without nav — used when switching dates */
+async function saveSession_silent() {
+  if (!S.draft || !S.draft.id) return; // only save if already persisted
+  try {
+    await saveSessionToDB(S.draft);
+    await loadSessionsFromDB();
+    S.sessions.forEach(s => { delete s._calcCache; });
+  } catch(e) { /* silent */ }
 }
 
 function adjProd(nId, d) {
@@ -1202,11 +1383,42 @@ function setProd(nId, v) {
 }
 function updateEstSold(nId) {
   if (!S.draft) return;
-  const prev = S.draft.previousInventory ? stTotal(S.draft.previousInventory, nId) : 0;
-  const curr = stTotal(S.draft.inventory, nId);
-  const prod = Number(S.draft.production[nId]) || 0;
+  const allSorted = [...S.sessions].sort((a,b) => a.date > b.date ? 1 : -1);
+  const currentIdx = allSorted.findIndex(s => s.date === S.draft.date);
+  const prevSession = currentIdx > 0 ? allSorted[currentIdx - 1] : null;
+  const prevStock = prevSession ? stTotal(prevSession.inventory, nId) : 0;
+  const currStock = stTotal(S.draft.inventory, nId);
+  const prod      = Number(S.draft.production[nId]) || 0;
+  const estSold   = prevStock + prod - currStock;
+  const soldColor = estSold > 0 ? 'var(--red)' : estSold < 0 ? '#0070c8' : 'var(--text-3)';
+  const soldLabel = estSold > 0 ? `Est. Sold: ${estSold}`
+                  : estSold < 0 ? `Net Added: ${Math.abs(estSold)}`
+                  : 'Est. Sold: 0';
   const el = document.getElementById(`es-${nId}`);
-  if (el) el.textContent = Math.max(0, (prev + prod) - curr);
+  if (el) { el.textContent = soldLabel; el.style.color = soldColor; }
+  // Also refresh the summary table
+  refreshProdSummary();
+}
+
+function refreshProdSummary() {
+  const tbody = document.getElementById('prod-summary-body');
+  if (!tbody || !S.draft) return;
+  const allSorted = [...S.sessions].sort((a,b) => a.date > b.date ? 1 : -1);
+  const currentIdx = allSorted.findIndex(s => s.date === S.draft.date);
+  const prevSession = currentIdx > 0 ? allSorted[currentIdx - 1] : null;
+  tbody.innerHTML = NOODLES.map(n => {
+    const prevStock = prevSession ? stTotal(prevSession.inventory, n.id) : 0;
+    const currStock = stTotal(S.draft.inventory, n.id);
+    const prod      = S.draft.production[n.id] || 0;
+    const sold      = Math.max(0, prevStock + prod - currStock);
+    return `<tr>
+      <td style="padding:7px 10px;font-weight:700;color:${n.hex}">${n.short}</td>
+      <td style="padding:7px 10px;text-align:center">${prevStock}</td>
+      <td style="padding:7px 10px;text-align:center;color:var(--green-n);font-weight:700">+${prod}</td>
+      <td style="padding:7px 10px;text-align:center;font-weight:700;color:${n.hex}">${currStock}</td>
+      <td style="padding:7px 10px;text-align:center;color:var(--red);font-weight:700">${sold}</td>
+    </tr>`;
+  }).join('');
 }
 
 async function saveSession() {
@@ -1337,11 +1549,11 @@ function editSession(id) {
 ══════════════════════════════════════════════════════ */
 function renderReports() {
   const reportDefs = [
-    { key:'daily',    icon:'📋', title:'Daily Inventory Snapshot',     desc:'Full station-by-station breakdown for a selected date. Includes stock levels, production, and sold quantities.',      accent:'#FFD740', btn:'Generate Daily' },
-    { key:'weekly',   icon:'📈', title:'Weekly Sales Summary',         desc:'7-day aggregated view of production, consumption, and ending stock for all noodle types.',                            accent:'#00E676', btn:'Generate Weekly' },
-    { key:'station',  icon:'🏪', title:'Station Performance Report',   desc:'Per-station inventory analysis — identify which stations hold the most stock and potential waste areas.',            accent:'#FF8F00', btn:'Generate Station' },
-    { key:'trend',    icon:'📉', title:'Noodle Consumption Trends',    desc:'Historical consumption patterns, average daily sold, and velocity analysis across all noodle types.',               accent:'#e040fb', btn:'Generate Trends' },
-    { key:'exec',     icon:'📊', title:'Executive Monthly Overview',   desc:'C-suite ready monthly KPI summary: total production, total sold, efficiency ratios, and inventory turnover.',       accent:'#FF5252', btn:'Generate Executive' },
+    { key:'daily',    icon:'📋', title:'Daily Inventory Snapshot',   desc:'Full station-by-station breakdown for a selected date.',      accent:'#FFD740', btn:'Generate Daily' },
+    { key:'weekly',   icon:'📈', title:'Weekly Sales Summary',       desc:'7-day aggregated view of production, consumption, and stock.',  accent:'#00E676', btn:'Generate Weekly' },
+    { key:'station',  icon:'🏪', title:'Station Performance',        desc:'Per-station inventory analysis and waste identification.',       accent:'#FF8F00', btn:'Generate Station' },
+    { key:'trend',    icon:'📉', title:'Noodle Consumption Trends',  desc:'Historical patterns, average daily sold, velocity analysis.',   accent:'#e040fb', btn:'Generate Trends' },
+    { key:'exec',     icon:'📊', title:'Executive Monthly Overview', desc:'C-suite KPI summary: production, sold, efficiency, turnover.', accent:'#FF5252', btn:'Generate Executive' },
   ];
 
   const cards = reportDefs.map(r => `
@@ -1356,16 +1568,327 @@ function renderReports() {
     <div>
       <div class="step-hd">
         <h2 class="step-title">Reports & Analytics</h2>
-        <p class="step-desc">Generate professional PDF reports for management, compliance, and operations.</p>
+        <p class="step-desc">PDF reports and live interactive analytics with filters.</p>
       </div>
       <div class="report-filter-row">
-        <label style="color:var(--text-2);font-size:.88rem">Filter date (for Daily report):</label>
+        <label style="color:var(--text-2);font-size:.88rem">Date (for Daily PDF):</label>
         <input type="date" class="date-filter" id="rpt-date" value="${todayStr()}" />
       </div>
       <div class="reports-grid">${cards}</div>
+
       <hr class="divider" />
-      <p style="color:var(--text-3);font-size:.8rem;text-align:center">All reports are generated as PDF files using data from your Supabase database.</p>
+
+      <!-- ── Interactive Analytics ── -->
+      <div class="analytics-panel">
+        <h3>📊 Live Inventory Analytics</h3>
+
+        <div class="filter-strip" id="analytics-filters">
+          <button class="filter-btn" onclick="setAnalyticsFilter('week',this)">This Week</button>
+          <button class="filter-btn" onclick="setAnalyticsFilter('month',this)">This Month</button>
+          <button class="filter-btn" onclick="setAnalyticsFilter('year',this)">This Year</button>
+          <button class="filter-btn active" onclick="setAnalyticsFilter('all',this)">All Time</button>
+          <span class="filter-range">
+            <input type="date" id="af-from" onchange="setAnalyticsFilter('range',null)" />
+            <span style="color:var(--text-3)">→</span>
+            <input type="date" id="af-to"   onchange="setAnalyticsFilter('range',null)" />
+            <button class="filter-btn" onclick="applyCustomRange()">Apply Range</button>
+          </span>
+        </div>
+
+        <div id="analytics-table-wrap"></div>
+
+        <div class="analytics-chart-wrap" id="analytics-chart-section" style="display:none">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+            <div class="chart-type-row">
+              <button class="chart-type-btn active" id="ct-bar"  onclick="setChartType('bar')">Bar</button>
+              <button class="chart-type-btn"        id="ct-line" onclick="setChartType('line')">Line</button>
+            </div>
+            <div style="display:flex;gap:12px;font-size:.75rem;color:var(--text-2);align-items:center;flex-wrap:wrap">
+              ${NOODLES.map(n=>`<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${n.hex};margin-right:4px"></span>${n.short}</span>`).join('')}
+              <span style="color:var(--text-3)">■ sold &nbsp; □ made</span>
+            </div>
+          </div>
+          <div class="chart-card" style="margin-top:0">
+            <canvas id="analyticsChart" height="190"></canvas>
+          </div>
+        </div>
+      </div>
     </div>`;
+}
+
+/* ── Analytics state ─────────────────────── */
+let _analyticsFilter    = 'all';
+let _analyticsChart     = null;
+let _analyticsChartType = 'bar';
+
+function setAnalyticsFilter(filter, btn) {
+  _analyticsFilter = filter;
+  document.querySelectorAll('#analytics-filters .filter-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  renderAnalytics();
+}
+function applyCustomRange() {
+  _analyticsFilter = 'range';
+  document.querySelectorAll('#analytics-filters .filter-btn').forEach(b => b.classList.remove('active'));
+  renderAnalytics();
+}
+function setChartType(type) {
+  _analyticsChartType = type;
+  document.getElementById('ct-bar')?.classList.toggle('active', type === 'bar');
+  document.getElementById('ct-line')?.classList.toggle('active', type === 'line');
+  buildAnalyticsChart(_lastChartPeriods);
+}
+
+// All sessions sorted oldest→newest, used by analytics
+function getAllSortedSessions() {
+  return [...S.sessions].sort((a,b) => a.date > b.date ? 1 : a.date < b.date ? -1 : a.timestamp - b.timestamp);
+}
+
+function getFilterDates() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  if (_analyticsFilter === 'week') {
+    const dow = today.getDay();
+    const from = new Date(today); from.setDate(today.getDate() - dow);
+    const to   = new Date(today); to.setDate(from.getDate() + 6);
+    return { from, to };
+  }
+  if (_analyticsFilter === 'month') {
+    return { from: new Date(today.getFullYear(), today.getMonth(), 1),
+             to:   new Date(today.getFullYear(), today.getMonth()+1, 0) };
+  }
+  if (_analyticsFilter === 'year') {
+    return { from: new Date(today.getFullYear(), 0, 1),
+             to:   new Date(today.getFullYear(), 11, 31) };
+  }
+  if (_analyticsFilter === 'range') {
+    const fv = document.getElementById('af-from')?.value;
+    const tv = document.getElementById('af-to')?.value;
+    return { from: fv ? new Date(fv+'T00:00:00') : null,
+             to:   tv ? new Date(tv+'T23:59:59') : null };
+  }
+  return { from: null, to: null }; // all
+}
+
+/**
+ * Build PERIOD rows: each row = one "period" between two consecutive sessions.
+ * e.g. 03/16 → 03/19 is one row.
+ * sold = (start_stock + production_during) − end_stock
+ *
+ * The filter applies to the ENDING session date so any period that ends
+ * within the range is included.
+ */
+function buildPeriodRows() {
+  const all = getAllSortedSessions();
+  if (all.length < 2) return [];
+  const { from, to } = getFilterDates();
+  const periods = [];
+  for (let i = 1; i < all.length; i++) {
+    const prev = all[i-1];
+    const curr = all[i];
+    const endDate = new Date(curr.date + 'T12:00:00');
+    if (from && endDate < from) continue;
+    if (to   && endDate > to)   continue;
+    const nData = {};
+    NOODLES.forEach(n => {
+      const startStock = stTotal(prev.inventory, n.id);
+      const endStock   = stTotal(curr.inventory, n.id);
+      const produced   = curr.production[n.id] || 0;
+      const sold       = startStock + produced - endStock; // can be negative
+      nData[n.id] = { startStock, endStock, produced, sold };
+    });
+    periods.push({ from: prev, to: curr, nData });
+  }
+  return periods;
+}
+
+let _lastChartPeriods = [];
+
+function renderAnalytics() {
+  const wrap = document.getElementById('analytics-table-wrap');
+  if (!wrap) return;
+
+  const all = getAllSortedSessions();
+
+  if (all.length === 0) {
+    wrap.innerHTML = `<div class="atbl-empty">No inventory sessions yet.</div>`;
+    return;
+  }
+  if (all.length === 1) {
+    const s = all[0];
+    wrap.innerHTML = `
+      <div style="background:rgba(255,179,0,.08);border:1px solid rgba(255,179,0,.3);border-radius:10px;padding:16px 18px;font-size:.85rem;color:var(--amber);margin-bottom:16px">
+        <strong>Only 1 session found (${fmtDateShort(s.date)})</strong><br>
+        Sold quantities are calculated from the difference between two inventory counts.
+        Do your next count to see sold data.
+      </div>
+      ${buildSnapshotTable([s])}`;
+    document.getElementById('analytics-chart-section').style.display = 'none';
+    return;
+  }
+
+  const periods = buildPeriodRows();
+
+  if (!periods.length) {
+    wrap.innerHTML = `<div class="atbl-empty" style="color:var(--text-3);text-align:center;padding:24px">No periods found for this date range. Try "All Time".</div>`;
+    document.getElementById('analytics-chart-section').style.display = 'none';
+    return;
+  }
+
+  _lastChartPeriods = periods;
+
+  // Summary KPI bar
+  const totSold = {}, totMade = {}, totNetFlow = {};
+  NOODLES.forEach(n => { totSold[n.id]=0; totMade[n.id]=0; });
+  periods.forEach(p => NOODLES.forEach(n => {
+    totSold[n.id] += Math.max(0, p.nData[n.id].sold);
+    totMade[n.id] += p.nData[n.id].produced;
+  }));
+
+  const kpiCards = NOODLES.map(n => `
+    <div style="flex:1;min-width:110px;background:var(--bg-deep);border:1px solid var(--border);border-radius:10px;padding:12px 14px;border-top:3px solid ${n.hex}">
+      <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-2);margin-bottom:4px">${n.short}</div>
+      <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:1.6rem;color:${n.hex}">${totSold[n.id]}</div>
+      <div style="font-size:.72rem;color:var(--green-n);margin-top:2px">↑ ${totMade[n.id]} made</div>
+    </div>`).join('');
+
+  // Period table rows
+  const periodRows = periods.map(p => {
+    const noCols = NOODLES.map(n => {
+      const d = p.nData[n.id];
+      const soldColor = d.sold > 0 ? 'var(--red)' : d.sold < 0 ? '#0070c8' : 'var(--text-3)';
+      const soldLabel = d.sold > 0 ? `↓ ${d.sold} sold`
+                      : d.sold < 0 ? `+${Math.abs(d.sold)} net added`
+                      : '— 0 sold';
+      const prodWarn  = d.produced === 0 && d.sold < 0
+        ? `<div style="font-size:.65rem;color:var(--amber)" title="Production not logged for this period">⚠️ no production logged</div>`
+        : '';
+      return `<td style="min-width:110px">
+        <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
+          <span style="font-family:'Syne',sans-serif;font-weight:800;font-size:1rem;color:${n.hex}">${d.endStock}</span>
+          <span style="font-size:.7rem;color:var(--text-3)">(was ${d.startStock})</span>
+        </div>
+        <div style="font-size:.75rem;color:var(--green-n);margin-top:2px">↑ ${d.produced} made</div>
+        <div style="font-size:.78rem;font-weight:700;color:${soldColor};margin-top:1px">${soldLabel}</div>
+        ${prodWarn}
+      </td>`;
+    }).join('');
+
+    return `<tr>
+      <td style="white-space:nowrap;font-size:.8rem">
+        <div style="font-weight:700;color:var(--text-1)">${fmtDateShort(p.from.date)}</div>
+        <div style="color:var(--text-3);font-size:.72rem">↓</div>
+        <div style="font-weight:700;color:var(--text-1)">${fmtDateShort(p.to.date)}</div>
+      </td>
+      ${noCols}
+    </tr>`;
+  }).join('');
+
+  // Grand totals row
+  const totalCols = NOODLES.map(n => `
+    <td>
+      <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:1rem;color:${n.hex}">${totSold[n.id]}<span style="font-size:.7rem;font-weight:400;color:var(--text-3);margin-left:4px">sold</span></div>
+      <div style="font-size:.75rem;color:var(--green-n)">↑ ${totMade[n.id]} total made</div>
+    </td>`).join('');
+
+  wrap.innerHTML = `
+    <!-- KPI summary -->
+    <div style="margin-bottom:16px">
+      <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3);margin-bottom:8px">Total Sold This Period</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">${kpiCards}</div>
+    </div>
+
+    <!-- Period flow table -->
+    <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3);margin-bottom:8px;margin-top:18px">
+      Period-by-Period Breakdown
+      <span style="font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px">
+        stock = end-of-period · (was X) = start · sold = start + made − end
+      </span>
+    </div>
+    <div class="analytics-tbl-wrap">
+      <table class="analytics-tbl">
+        <thead><tr>
+          <th>Period</th>
+          ${NOODLES.map(n=>`<th style="color:${n.hex}">${n.label}<br><span style="font-weight:400;font-size:.65rem;color:var(--text-3)">stock · made · sold</span></th>`).join('')}
+        </tr></thead>
+        <tbody>
+          ${periodRows}
+          <tr class="atbl-total">
+            <td style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-2)">TOTAL</td>
+            ${totalCols}
+          </tr>
+        </tbody>
+      </table>
+    </div>`;
+
+  document.getElementById('analytics-chart-section').style.display = 'block';
+  buildAnalyticsChart(periods);
+}
+
+function buildSnapshotTable(sessions) {
+  const rows = sessions.map(r => {
+    const cells = NOODLES.map(n =>
+      `<td><span class="atbl-stock" style="color:${n.hex}">${stTotal(r.inventory,n.id)}</span></td>`
+    ).join('');
+    return `<tr><td class="date-col">${fmtDateShort(r.date)}</td>${cells}</tr>`;
+  }).join('');
+  return `<div class="analytics-tbl-wrap">
+    <table class="analytics-tbl">
+      <thead><tr><th>Date</th>${NOODLES.map(n=>`<th style="color:${n.hex}">${n.short}</th>`).join('')}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function buildAnalyticsChart(periods) {
+  const canvas = document.getElementById('analyticsChart');
+  if (!canvas || !periods || !periods.length) return;
+  if (_analyticsChart) { _analyticsChart.destroy(); _analyticsChart = null; }
+
+  const labels = periods.map(p =>
+    new Date(p.from.date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})
+    + ' → ' +
+    new Date(p.to.date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})
+  );
+
+  const datasets = NOODLES.flatMap(n => [
+    {
+      label: n.short + ' Sold',
+      data: periods.map(p => Math.max(0, p.nData[n.id].sold)),
+      backgroundColor: n.hex + 'e0',
+      borderColor: n.hex,
+      borderWidth: 2,
+      borderRadius: 4,
+      stack: 'sold',
+    },
+    {
+      label: n.short + ' Made',
+      data: periods.map(p => p.nData[n.id].produced),
+      backgroundColor: n.hex + '38',
+      borderColor: n.hex + '70',
+      borderWidth: 1,
+      borderRadius: 4,
+      stack: 'made',
+    },
+  ]);
+
+  _analyticsChart = new Chart(canvas, {
+    type: _analyticsChartType,
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          mode: 'index',
+          callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y}` }
+        }
+      },
+      scales: {
+        x: { ticks:{ color:'#666', font:{family:'DM Sans',size:10}, maxRotation:30 }, grid:{color:'rgba(0,0,0,.04)'} },
+        y: { ticks:{ color:'#666', font:{family:'DM Sans',size:11} }, grid:{color:'rgba(0,0,0,.06)'}, beginAtZero:true },
+      },
+    },
+  });
 }
 
 /* ══════════════════════════════════════════════════════
