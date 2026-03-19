@@ -443,6 +443,38 @@
        MISC
     ══════════════════════════════════════════════ */
     .hidden { display: none !important; }
+
+    /* ── Autosave indicator ─────────────────── */
+    .autosave-bar {
+      display: flex; align-items: center; gap: 9px;
+      padding: 9px 14px; border-radius: 9px; font-size: .82rem; font-weight: 600;
+      margin-bottom: 16px; transition: all .4s;
+    }
+    .autosave-bar.idle       { background: rgba(0,0,0,0.04); color: var(--text-3); }
+    .autosave-bar.saving     { background: rgba(255,179,0,.12); color: var(--amber); }
+    .autosave-bar.saved      { background: rgba(0,122,64,.10); color: var(--green-n); }
+    .autosave-bar.updated    { background: rgba(0,112,200,.10); color: #0070c8; }
+    .autosave-bar.error      { background: rgba(198,40,40,.09); color: var(--red); }
+    .autosave-dot {
+      width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+      background: currentColor; transition: background .4s;
+    }
+    .autosave-bar.saving .autosave-dot { animation: pulse .8s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* saved row flash — first save = green, re-save = blue */
+    .n-row.just-saved         { animation: rowSavedFirst  2s ease forwards; }
+    .n-row.just-updated       { animation: rowSavedUpdate 2s ease forwards; }
+    @keyframes rowSavedFirst  {
+      0%   { background: rgba(0,122,64,.22); border-left-color: #00b359; }
+      70%  { background: rgba(0,122,64,.10); }
+      100% { background: rgba(0,0,0,.02);   border-left-color: var(--row-accent); }
+    }
+    @keyframes rowSavedUpdate {
+      0%   { background: rgba(0,112,200,.18); border-left-color: #0070c8; }
+      70%  { background: rgba(0,112,200,.08); }
+      100% { background: rgba(0,0,0,.02);    border-left-color: var(--row-accent); }
+    }
     .tag {
       display: inline-block; border-radius: 20px; padding: 2px 8px;
       font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
@@ -531,13 +563,7 @@ const STATIONS = [
 ══════════════════════════════════════════════════════ */
 const SUPABASE_URL     = "https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: {
-    persistSession:     false,  // no auth tokens needed
-    autoRefreshToken:   false,  // no JWT refresh cycles
-    detectSessionInUrl: false,  // no OAuth callbacks — fixes DataCloneError
-  },
-});
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 /* ══════════════════════════════════════════════════════
    §3  APP STATE
@@ -559,19 +585,15 @@ let S = {
 async function loadSessionsFromDB() {
   S.loading = true;
   try {
-    // Fetch all three tables independently — avoids FK auto-detection issues
     const [sessRes, countsRes, prodsRes] = await Promise.all([
       sb.from('inventory_sessions').select('*').order('session_date', { ascending: false }),
       sb.from('inventory_counts').select('*'),
       sb.from('production_logs').select('*'),
     ]);
+    if (sessRes.error)   throw sessRes.error;
+    if (countsRes.error) throw countsRes.error;
+    if (prodsRes.error)  throw prodsRes.error;
 
-    // Surface the actual Supabase error message instead of [object Object]
-    if (sessRes.error)   { console.error('inventory_sessions error:', sessRes.error.message, sessRes.error);   throw new Error(`inventory_sessions: ${sessRes.error.message}`); }
-    if (countsRes.error) { console.error('inventory_counts error:',   countsRes.error.message, countsRes.error); throw new Error(`inventory_counts: ${countsRes.error.message}`); }
-    if (prodsRes.error)  { console.error('production_logs error:',    prodsRes.error.message, prodsRes.error);  throw new Error(`production_logs: ${prodsRes.error.message}`); }
-
-    // Index counts and production by session_id for fast lookup
     const countsMap = {};
     (countsRes.data || []).forEach(c => {
       (countsMap[c.session_id] = countsMap[c.session_id] || []).push(c);
@@ -581,20 +603,22 @@ async function loadSessionsFromDB() {
       (prodsMap[p.session_id] = prodsMap[p.session_id] || []).push(p);
     });
 
-    // Merge into the shape normalizeSession() expects
     S.sessions = (sessRes.data || []).map(row => normalizeSession({
       ...row,
       inventory_counts: countsMap[row.id] || [],
       production_logs:  prodsMap[row.id]  || [],
     }));
+
+    // Only cache after a SUCCESSFUL load — never overwrite good cache with empty data
+    try { localStorage.setItem('jengchi_sessions_cache', JSON.stringify(S.sessions)); } catch(e) {}
+
   } catch (e) {
-    // Log the real message — no more [object Object]
-    const msg = e?.message || e?.details || JSON.stringify(e);
-    console.error('Supabase load error:', msg, e);
-    // Graceful fallback: load from localStorage if Supabase fails
-    const raw = localStorage.getItem('jengchi_sessions_cache');
-    if (raw) S.sessions = JSON.parse(raw);
-    toast(`⚠️ DB error: ${msg.slice(0, 80)} — offline mode`, 'err');
+    console.error('Supabase load error:', e);
+    try {
+      const raw = localStorage.getItem('jengchi_sessions_cache');
+      if (raw) S.sessions = JSON.parse(raw);
+    } catch(le) { S.sessions = []; }
+    toast('⚠️ DB: ' + (e.message || 'connection failed') + ' — showing cached data', 'err');
   }
   S.loading = false;
 }
@@ -699,25 +723,18 @@ function getPrev() {
 }
 function calcSold(sess) {
   if (sess._calcCache) return sess._calcCache;
-  // Find the session that came immediately before this one
+  // Find previous session (the one right before this session by date)
   const sortedBefore = S.sessions
     .filter(s => s.timestamp < sess.timestamp)
     .sort((a, b) => b.timestamp - a.timestamp);
   const prev = sortedBefore[0] || null;
-
-  // If there's no prior session this is the initial count — sold is meaningless
-  const isFirst = !prev;
 
   const res = {};
   NOODLES.forEach(n => {
     const prevQty = prev ? stTotal(prev.inventory, n.id) : 0;
     const prodQty = Number(sess.production[n.id]) || 0;
     const currQty = stTotal(sess.inventory, n.id);
-    res[n.id] = {
-      prev: prevQty, produced: prodQty, current: currQty,
-      sold: isFirst ? 0 : Math.max(0, (prevQty + prodQty) - currQty),
-      isFirst,
-    };
+    res[n.id] = { prev: prevQty, produced: prodQty, current: currQty, sold: Math.max(0, (prevQty + prodQty) - currQty) };
   });
   sess._calcCache = res;
   return res;
@@ -725,13 +742,11 @@ function calcSold(sess) {
 
 function initDraft() {
   const prev = getPrev();
-  // Pre-fill inventory with previous session's counts so staff starts from last known values
-  const startInventory = prev
-    ? JSON.parse(JSON.stringify(prev.inventory))
-    : blankInventory();
+  // Pre-populate inventory from last session so staff see previous counts
+  const inv = prev ? JSON.parse(JSON.stringify(prev.inventory)) : blankInventory();
   return {
     id: null, date: todayStr(), timestamp: Date.now(),
-    inventory: startInventory, production: blankProduction(),
+    inventory: inv, production: blankProduction(),
     previousInventory: prev ? prev.inventory : null,
     notes: '', step: 1,
   };
@@ -759,7 +774,10 @@ function nav(view, opts = {}) {
   const app = document.getElementById('app');
   switch (view) {
     case 'dashboard':  app.innerHTML = renderDash();  afterDash();  break;
-    case 'count':      app.innerHTML = renderCount(); break;
+    case 'count':
+      if (!S.editId) loadDraftForDate((S.draft && S.draft.date) ? S.draft.date : todayStr());
+      app.innerHTML = renderCount();
+      break;
     case 'production': app.innerHTML = renderProd();  break;
     case 'history':    app.innerHTML = renderHist();  break;
     case 'reports':    app.innerHTML = renderReports(); break;
@@ -782,21 +800,14 @@ function renderDash() {
     const produced = latest ? (latest.production[n.id] || 0) : 0;
     const calc     = latest ? calcSold(latest) : null;
     const sold     = calc ? (calc[n.id]?.sold || 0) : 0;
-    const isFirst  = calc ? (calc[n.id]?.isFirst || false) : false;
-    // Show — for first-ever session OR when sold > prev stock (no real baseline yet)
-    const prevQty  = calc ? (calc[n.id]?.prev || 0) : 0;
-    const noBaseline = isFirst || prevQty === 0;
-    const soldLabel = noBaseline
-      ? '— <span style="font-size:.6rem;font-weight:400;opacity:.65">no baseline</span>'
-      : sold;
-    const pct      = Math.min(100, current / Math.max(1, current + (noBaseline ? 0 : sold)) * 100).toFixed(0);
+    const pct      = Math.min(100, current / Math.max(1, current + sold) * 100).toFixed(0);
     return `
       <div class="noodle-card" style="--accent:${n.hex};--glow:${n.glow}">
         <div class="nc-label">${n.label}</div>
         <div class="nc-val">${current}</div>
         <div class="nc-meta">
           <span class="nc-pill made">↑ ${produced} made</span>
-          <span class="nc-pill sold">↓ ${soldLabel} sold</span>
+          <span class="nc-pill sold">↓ ${sold} sold</span>
         </div>
         <div class="nc-bar-wrap"><div class="nc-bar" style="width:${pct}%"></div></div>
       </div>`;
@@ -829,6 +840,7 @@ function renderDash() {
         <button class="cta primary" onclick="startSession()"><span class="ico">📦</span>Start Count</button>
         <button class="cta secondary" onclick="nav('history')"><span class="ico">📊</span>History</button>
         <button class="cta ghost sm" onclick="nav('reports')"><span class="ico">📄</span>Reports</button>
+        <button class="cta ghost sm" id="sync-btn" onclick="syncDB()"><span class="ico">↻</span>Sync DB</button>
       </div>
 
       <div class="sec-head mt-xl">
@@ -886,49 +898,212 @@ function afterDash() {
 }
 
 /* ══════════════════════════════════════════════════════
-   §8  COUNT VIEW (Step 1)
+   §8  COUNT VIEW (Step 1) — autosave per field
 ══════════════════════════════════════════════════════ */
+
+// Debounce timer for autosave
+let _autosaveTimer  = null;
+let _autosaveStatus = 'idle';
+// Tracks which row keys have been saved at least once this session
+// key = "noodleId-stationId"  →  true once saved
+let _savedRowKeys   = {};
+
+function setAutosaveStatus(status, msg) {
+  _autosaveStatus = status;
+  const bar = document.getElementById('autosave-bar');
+  if (!bar) return;
+  const msgs = {
+    idle:    '— changes will auto-save',
+    saving:  '⏳ Saving to database…',
+    saved:   '🟢 Saved to database (new entry)',
+    updated: '🔵 Updated in database',
+    error:   msg || '🔴 Save failed — check connection',
+  };
+  bar.className = 'autosave-bar ' + status;
+  bar.innerHTML = `<span class="autosave-dot"></span>${msgs[status]}`;
+}
+
+/** Trigger a debounced autosave (400 ms after last change) */
+function triggerAutosave(flashRowKey) {
+  saveDraftLS();
+  setAutosaveStatus('saving');
+  clearTimeout(_autosaveTimer);
+  _autosaveTimer = setTimeout(async () => {
+    // Decide before the save whether this row was already saved before
+    const isUpdate = flashRowKey && !!_savedRowKeys[flashRowKey];
+    try {
+      const savedId = await saveSessionToDB(S.draft);
+      if (!S.draft.id || S.draft.id !== savedId) {
+        S.draft.id = savedId;
+        S.editId   = savedId;
+        saveDraftLS();
+      }
+      await loadSessionsFromDB();
+      S.sessions.forEach(s => { delete s._calcCache; });
+
+      // Show green (new) or blue (updated) on the bar
+      setAutosaveStatus(isUpdate ? 'updated' : 'saved');
+
+      // Flash the row
+      if (flashRowKey) {
+        const row = document.getElementById('row-' + flashRowKey);
+        if (row) {
+          // Remove both classes first to restart animation
+          row.classList.remove('just-saved', 'just-updated');
+          void row.offsetWidth; // force reflow
+          row.classList.add(isUpdate ? 'just-updated' : 'just-saved');
+        }
+        // Mark this row as having been saved at least once
+        _savedRowKeys[flashRowKey] = true;
+      }
+    } catch(e) {
+      setAutosaveStatus('error', 'Save failed: ' + (e.message || 'unknown error'));
+    }
+  }, 400);
+}
+
+/** Manual "Save Count" button — always saves immediately regardless of debounce */
+async function saveCountNow() {
+  const btn = document.getElementById('count-save-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Saving…'; }
+  clearTimeout(_autosaveTimer);
+  setAutosaveStatus('saving');
+  try {
+    const savedId = await saveSessionToDB(S.draft);
+    if (!S.draft.id || S.draft.id !== savedId) {
+      S.draft.id = savedId;
+      S.editId   = savedId;
+      saveDraftLS();
+    }
+    await loadSessionsFromDB();
+    S.sessions.forEach(s => { delete s._calcCache; });
+    setAutosaveStatus('saved');
+    toast('💾 Count saved to database!', 'ok');
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Save Count'; }
+  } catch(e) {
+    setAutosaveStatus('error', 'Save failed: ' + (e.message || 'unknown error'));
+    toast('❌ Save failed — check connection', 'err');
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Save Count'; }
+  }
+}
+
 function renderCount() {
-  if (!S.draft) S.draft = initDraft();
+  // ALWAYS load from DB by date — never trust the stale localStorage draft
+  const targetDate = (S.draft && S.draft.date) ? S.draft.date : todayStr();
+  loadDraftForDate(targetDate);
+
   const stBlocks = STATIONS.map(st => `
     <div class="station-block">
       <div class="station-lbl">${st.icon} ${st.label}</div>
       <div class="n-inputs">
         ${NOODLES.map(n => `
-          <div class="n-row" style="--row-accent:${n.hex}">
+          <div class="n-row" id="row-${n.id}-${st.id}" style="--row-accent:${n.hex}">
             <label class="n-lbl">${n.short}</label>
             <div class="qty-ctl">
               <button class="qty-btn" onclick="adjInv('${n.id}','${st.id}',-1)">−</button>
               <input type="number" inputmode="numeric" min="0"
                 class="qty-inp" id="i-${n.id}-${st.id}"
                 value="${S.draft.inventory[n.id][st.id]||0}"
-                onchange="setInv('${n.id}','${st.id}',this.value)"
-                onblur="setInv('${n.id}','${st.id}',this.value)" />
+                oninput="setInv('${n.id}','${st.id}',this.value)" />
               <button class="qty-btn" onclick="adjInv('${n.id}','${st.id}',+1)">+</button>
             </div>
           </div>`).join('')}
       </div>
     </div>`).join('');
 
+  const statusBadge = S.draft.id
+    ? `<span style="color:var(--green-n);font-weight:600;font-size:.82rem">● Loaded from database (${S.draft.date})</span>`
+    : `<span style="color:var(--amber);font-weight:600;font-size:.82rem">○ New session for ${S.draft.date}</span>`;
+
   return `
     <div class="step-view">
       <div class="step-hd">
         <div class="step-badge">Step 1 of 2</div>
         <h2 class="step-title">Count Inventory</h2>
-        <p class="step-desc">Count noodles at each station and enter quantities below.</p>
+        <p class="step-desc">Select a date to load existing data, or enter a new count. Changes auto-save.</p>
       </div>
-      <div class="date-row">
+      <div class="date-row" style="flex-wrap:wrap;gap:10px">
         <label>Session Date:</label>
         <input type="date" id="sess-date" value="${S.draft.date}"
-          onchange="S.draft.date=this.value;saveDraftLS()" />
+          onchange="switchCountDate(this.value)" />
+        ${statusBadge}
+      </div>
+      <div class="autosave-bar idle" id="autosave-bar">
+        <span class="autosave-dot"></span>— changes will auto-save
+      </div>
+      <div style="display:flex;gap:16px;font-size:.72rem;color:var(--text-3);margin-bottom:14px;flex-wrap:wrap">
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(0,122,64,.22);margin-right:4px"></span>🟢 Green = Saved (new entry)</span>
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(0,112,200,.18);margin-right:4px"></span>🔵 Blue = Updated (existing entry)</span>
       </div>
       ${stBlocks}
       <div class="totals-bar" id="tot-bar">${buildTotBar()}</div>
       <div class="step-actions">
         <button class="cta secondary" onclick="nav('dashboard')">← Back</button>
-        <button class="cta primary" onclick="nav('production')">Next: Production →</button>
+        <button class="cta primary" id="count-save-btn" onclick="saveCountNow()">💾 Save Count</button>
+        <button class="cta primary" style="background:#1a3a6e" onclick="nav('production')">Next: Production →</button>
       </div>
     </div>`;
+}
+
+/**
+ * Load (or create) a draft for a specific date.
+ * If a saved session exists for that date → load it as the draft (edit mode).
+ * If no session exists → create a fresh draft pre-populated from the most recent session.
+ * This is the SINGLE source of truth for what appears in the count fields.
+ */
+function loadDraftForDate(date) {
+  // Reset per-row save tracking whenever we switch sessions
+  _savedRowKeys = {};
+  const existing = S.sessions.find(s => s.date === date);
+  if (existing) {
+    // Load the saved session — staff are editing existing data
+    S.draft  = JSON.parse(JSON.stringify(existing));
+    S.editId = existing.id;
+    delete S.draft._calcCache;
+    // All rows already exist in DB → first edit on any row = UPDATE (blue)
+    NOODLES.forEach(n => STATIONS.forEach(st => {
+      _savedRowKeys[n.id + '-' + st.id] = true;
+    }));
+  } else {
+    // No session for this date — create a new draft
+    // Pre-populate inventory from the most recent session so staff see last known state
+    const prev = getPrev();
+    S.draft = {
+      id:                null,
+      date:              date,
+      timestamp:         Date.now(),
+      inventory:         prev ? JSON.parse(JSON.stringify(prev.inventory)) : blankInventory(),
+      production:        blankProduction(),
+      previousInventory: prev ? prev.inventory : null,
+      notes:             '',
+      step:              1,
+    };
+    S.editId = null;
+  }
+  saveDraftLS();
+}
+
+/** Called when the date picker changes — reload fields for the new date */
+function switchCountDate(newDate) {
+  loadDraftForDate(newDate);
+  // Re-render just the input values and status badge without full page reload
+  STATIONS.forEach(st => {
+    NOODLES.forEach(n => {
+      const el = document.getElementById(`i-${n.id}-${st.id}`);
+      if (el) el.value = S.draft.inventory[n.id][st.id] || 0;
+    });
+  });
+  const tb = document.getElementById('tot-bar');
+  if (tb) tb.innerHTML = buildTotBar();
+  // Update status badge
+  const badge = document.querySelector('.date-row span[style]');
+  if (badge) {
+    badge.style.color   = S.draft.id ? 'var(--green-n)' : 'var(--amber)';
+    badge.textContent   = S.draft.id
+      ? '● Loaded from database (' + newDate + ')'
+      : '○ New session for ' + newDate;
+  }
+  setAutosaveStatus('idle');
 }
 
 function buildTotBar() {
@@ -939,20 +1114,20 @@ function buildTotBar() {
 function adjInv(nId, sId, d) {
   const next = Math.max(0, (S.draft.inventory[nId][sId]||0) + d);
   S.draft.inventory[nId][sId] = next;
-  saveDraftLS();
   const el = document.getElementById(`i-${nId}-${sId}`);
   if (el) { el.value = next; el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'),300); }
   const tb = document.getElementById('tot-bar');
   if (tb) tb.innerHTML = buildTotBar();
+  triggerAutosave(`${nId}-${sId}`);
 }
 function setInv(nId, sId, v) {
   const next = Math.max(0, parseInt(v)||0);
   S.draft.inventory[nId][sId] = next;
   const el = document.getElementById(`i-${nId}-${sId}`);
   if (el) el.value = next;
-  saveDraftLS();
   const tb = document.getElementById('tot-bar');
   if (tb) tb.innerHTML = buildTotBar();
+  triggerAutosave(`${nId}-${sId}`);
 }
 
 /* ══════════════════════════════════════════════════════
@@ -999,7 +1174,7 @@ function renderProd() {
         <label class="notes-lbl">📝 Session Notes (optional)</label>
         <textarea class="notes-inp" id="sess-notes"
           placeholder="e.g. Low on white noodles, extra yellow batch…"
-          onchange="S.draft.notes=this.value;saveDraftLS()"
+          oninput="S.draft.notes=this.value;saveDraftLS()"
         >${S.draft.notes||''}</textarea>
       </div>
       <div class="step-actions">
@@ -1150,9 +1325,10 @@ async function delSession(id) {
 function editSession(id) {
   const rec = S.sessions.find(s => s.id === id);
   if (!rec) return;
-  S.draft  = { ...rec, id: rec.id };
+  S.draft  = JSON.parse(JSON.stringify(rec));
   S.editId = id;
-  S.draft._calcCache = undefined;
+  delete S.draft._calcCache;
+  saveDraftLS();
   nav('count');
 }
 
@@ -1833,19 +2009,33 @@ function pdfExecReport() {
    §13  SESSION MANAGEMENT
 ══════════════════════════════════════════════════════ */
 function startSession() {
-  S.draft  = initDraft();
+  // Load existing session for today, or create a fresh one
+  S.draft  = null;
   S.editId = null;
-  saveDraftLS();
+  loadDraftForDate(todayStr());
   nav('count');
 }
 
 function saveDraftLS() {
-  if (S.draft) localStorage.setItem('jc_draft', JSON.stringify(S.draft));
-  else localStorage.removeItem('jc_draft');
+  try {
+    if (S.draft) localStorage.setItem('jc_draft', JSON.stringify(S.draft));
+    else localStorage.removeItem('jc_draft');
+  } catch(e) { console.warn('Draft save failed:', e); }
 }
 function loadDraftLS() {
   try { const raw = localStorage.getItem('jc_draft'); return raw ? JSON.parse(raw) : null; }
   catch { return null; }
+}
+
+async function syncDB() {
+  const btn = document.getElementById('sync-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="ico">⏳</span>Syncing…'; }
+  await loadSessionsFromDB();
+  S.sessions.forEach(s => { delete s._calcCache; });
+  toast(S.sessions.length
+    ? '✅ Loaded ' + S.sessions.length + ' session(s) from database'
+    : '⚠️ No sessions found in database', S.sessions.length ? 'ok' : 'err');
+  nav('dashboard');
 }
 
 function exportCSV() {
@@ -1900,25 +2090,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load draft from localStorage
   S.draft = loadDraftLS();
 
-  // Load sessions from Supabase
+  // Load sessions from Supabase (cache written inside loadSessionsFromDB on success only)
   await loadSessionsFromDB();
-
-  // Cache sessions locally as fallback
-  localStorage.setItem('jengchi_sessions_cache', JSON.stringify(S.sessions));
-
-  // Patch stale draft: if a saved draft has all-zero inventory (saved before the
-  // preload fix), repopulate it from the latest DB session so Resume shows real values.
-  if (S.draft) {
-    const draftIsBlank = NOODLES.every(n => STATIONS.every(s => !S.draft.inventory[n.id][s.id]));
-    if (draftIsBlank) {
-      const prev = getPrev();
-      if (prev) {
-        S.draft.inventory         = JSON.parse(JSON.stringify(prev.inventory));
-        S.draft.previousInventory = prev.inventory;
-        saveDraftLS();
-      }
-    }
-  }
 
   // Render dashboard
   nav('dashboard');
