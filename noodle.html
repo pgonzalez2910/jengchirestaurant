@@ -521,6 +521,42 @@
     .tag.ok { background: rgba(0,122,64,.10); color: var(--green-n); }
     .tag.warn { background: rgba(255,179,0,.12); color: var(--amber); }
     hr.divider { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+
+    /* ══════════════════════════════════════════════
+       PACKING MODULE
+    ══════════════════════════════════════════════ */
+    .pack-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+    @media(min-width:640px) { .pack-grid { grid-template-columns: repeat(4,1fr); } }
+    .pack-card {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-top: 3px solid var(--pc-accent,#aaa);
+      border-radius: var(--radius); padding: 16px 14px;
+      display: flex; flex-direction: column; gap: 10px; position: relative;
+    }
+    .pack-card-lbl { font-family:'Syne',sans-serif; font-weight:800; font-size:.78rem; letter-spacing:.08em; text-transform:uppercase; color:var(--pc-accent,#aaa); }
+    .pack-size-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .pack-size-lbl { font-size:.75rem; color:var(--text-3); white-space:nowrap; }
+    .pack-size-inp {
+      width:60px; text-align:center; background:rgba(0,0,0,0.05);
+      border:1px solid var(--border-md); color:var(--text-1);
+      border-radius:7px; padding:5px 2px; font-family:'Syne',sans-serif;
+      font-size:.95rem; font-weight:700;
+    }
+    .pack-size-inp:focus { outline:none; border-color:var(--yellow); }
+    .pack-qty-row { display:flex; align-items:center; gap:5px; }
+    .pack-total {
+      font-family:'Syne',sans-serif; font-size:1.5rem; font-weight:800;
+      color:var(--pc-accent,#aaa); text-align:center;
+    }
+    .pack-total-sub { font-size:.7rem; color:var(--text-3); text-align:center; margin-top:-4px; }
+
+    .pack-log-wrap { overflow-x:auto; border-radius:var(--radius); border:1px solid var(--border); margin-top:24px; }
+    .pack-log-tbl { width:100%; border-collapse:collapse; font-size:.83rem; }
+    .pack-log-tbl th { background:rgba(0,0,0,.04); padding:9px 12px; text-align:left; font-family:'Syne',sans-serif; font-size:.68rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text-2); border-bottom:1px solid var(--border); white-space:nowrap; }
+    .pack-log-tbl td { padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:middle; }
+    .pack-log-tbl tr:last-child td { border-bottom:none; }
+    .pack-log-tbl tr:hover td { background:rgba(0,0,0,.015); }
+    .pack-badge { display:inline-block; border-radius:20px; padding:2px 9px; font-size:.7rem; font-weight:700; background:rgba(0,112,200,.1); color:#0070c8; }
   </style>
 </head>
 <body>
@@ -541,6 +577,7 @@
     <button class="nav-btn" data-view="dashboard">Dashboard</button>
     <button class="nav-btn" data-view="count">Count</button>
     <button class="nav-btn" data-view="production">Production</button>
+    <button class="nav-btn" data-view="packing">Packing</button>
     <button class="nav-btn" data-view="history">History</button>
     <button class="nav-btn" data-view="reports">Reports</button>
   </div>
@@ -554,6 +591,7 @@
   <button class="nav-btn" data-view="dashboard">🏠 Dashboard</button>
   <button class="nav-btn" data-view="count">📦 Count Inventory</button>
   <button class="nav-btn" data-view="production">🍜 Log Production</button>
+  <button class="nav-btn" data-view="packing">📦 Packing Log</button>
   <button class="nav-btn" data-view="history">📊 History</button>
   <button class="nav-btn" data-view="reports">📄 Reports</button>
 </div>
@@ -570,6 +608,7 @@
   <button class="btm-btn" data-view="dashboard"><span class="ico">🏠</span>Home</button>
   <button class="btm-btn" data-view="count"><span class="ico">📦</span>Count</button>
   <button class="btm-btn" data-view="production"><span class="ico">🍜</span>Prod.</button>
+  <button class="btm-btn" data-view="packing"><span class="ico">📫</span>Pack</button>
   <button class="btm-btn" data-view="history"><span class="ico">📊</span>History</button>
   <button class="btm-btn" data-view="reports"><span class="ico">📄</span>Reports</button>
 </nav>
@@ -844,6 +883,7 @@ function nav(view, opts = {}) {
       app.innerHTML = renderCount();
       break;
     case 'production': app.innerHTML = renderProd();  break;
+    case 'packing':    app.innerHTML = renderPacking(); setTimeout(loadPackingLogs, 0); break;
     case 'history':    app.innerHTML = renderHist();  break;
     case 'reports':    app.innerHTML = renderReports(); setTimeout(renderAnalytics, 0); break;
     default:           app.innerHTML = renderDash();  afterDash();
@@ -1439,6 +1479,252 @@ async function saveSession() {
     if (btn) { btn.disabled = false; btn.textContent = '✅ Save Record'; }
   }
 }
+
+/* ══════════════════════════════════════════════════════
+   §9b  PACKING MODULE
+   — Tracks how many bags/packs were packed per noodle
+   — Independent of inventory count (does NOT affect stock)
+   — Each entry: date, noodle_type, pack_size, packs_count
+   — Stored in Supabase table: packing_logs
+══════════════════════════════════════════════════════ */
+
+// Default pack sizes per noodle (units per pack) — editable by staff
+const PACK_DEFAULTS = { white: 10, yellow: 10, turmeric: 10, green: 10 };
+
+// In-memory packing state for current entry
+let _packState = {
+  date:    null,
+  packs:   {}, // noodle_id → { packSize, count }
+};
+
+function initPackState(date) {
+  _packState.date = date || todayStr();
+  NOODLES.forEach(n => {
+    _packState.packs[n.id] = { packSize: PACK_DEFAULTS[n.id] || 10, count: 0 };
+  });
+}
+
+function renderPacking() {
+  if (!_packState.date) initPackState(todayStr());
+
+  const sessionDates = [...new Set(
+    [...S.sessions].map(s => s.date).concat([todayStr()])
+  )].sort((a,b) => b > a ? 1 : -1);
+
+  const dateOptions = sessionDates.map(d =>
+    `<option value="${d}" ${d === _packState.date ? 'selected' : ''}>${fmtDateShort(d)}</option>`
+  ).join('');
+
+  const cards = NOODLES.map(n => {
+    const ps = _packState.packs[n.id] || { packSize:10, count:0 };
+    const totalUnits = ps.packSize * ps.count;
+    return `
+      <div class="pack-card" style="--pc-accent:${n.hex}">
+        <div class="pack-card-lbl">${n.short}</div>
+        <div class="pack-size-row">
+          <span class="pack-size-lbl">Units/pack:</span>
+          <input type="number" class="pack-size-inp" id="ps-${n.id}"
+            value="${ps.packSize}" min="1"
+            oninput="setPackSize('${n.id}',this.value)" />
+        </div>
+        <div class="pack-qty-row">
+          <button class="qty-btn" onclick="adjPack('${n.id}',-1)">−</button>
+          <input type="number" inputmode="numeric" min="0"
+            class="qty-inp" id="pk-${n.id}" value="${ps.count}"
+            oninput="setPack('${n.id}',this.value)" />
+          <button class="qty-btn" onclick="adjPack('${n.id}',+1)">+</button>
+        </div>
+        <div class="pack-total" style="color:${n.hex}">${ps.count}</div>
+        <div class="pack-total-sub">packs · ${totalUnits} units total</div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="step-view">
+      <div class="step-hd">
+        <div class="step-badge">Packing Log</div>
+        <h2 class="step-title">📫 Packing</h2>
+        <p class="step-desc">Record how many packs were packed per noodle type. This is tracked separately and does not affect inventory counts.</p>
+      </div>
+
+      <div class="date-row" style="flex-wrap:wrap;gap:10px;margin-bottom:20px">
+        <label style="font-weight:600">Packing Date:</label>
+        <select id="pack-date-picker"
+          style="background:var(--bg-card);border:1px solid var(--border-md);border-radius:8px;padding:7px 12px;font-family:'DM Sans',sans-serif;font-size:.88rem;color:var(--text-1);cursor:pointer"
+          onchange="switchPackDate(this.value)">
+          ${dateOptions}
+        </select>
+      </div>
+
+      <div class="pack-grid">${cards}</div>
+
+      <div style="margin-bottom:20px">
+        <label class="notes-lbl">📝 Packing Notes (optional)</label>
+        <textarea class="notes-inp" id="pack-notes"
+          placeholder="e.g. Extra green batch packed for weekend, white packs short…"
+          style="min-height:60px"
+        ></textarea>
+      </div>
+
+      <div class="step-actions" style="margin-bottom:28px">
+        <button class="cta secondary" onclick="nav('production')">← Production</button>
+        <button class="cta primary" id="pack-save-btn" onclick="savePackingLog()">📫 Save Packing Log</button>
+      </div>
+
+      <hr class="divider" />
+      <div class="sec-head">
+        <h2 class="sec-title" style="font-size:.95rem">Packing History</h2>
+        <span class="sec-sub" id="pack-log-count">Loading…</span>
+      </div>
+      <div class="pack-log-wrap">
+        <table class="pack-log-tbl">
+          <thead><tr>
+            <th>Date</th>
+            ${NOODLES.map(n=>`<th style="color:${n.hex}">${n.short}</th>`).join('')}
+            <th>Notes</th>
+          </tr></thead>
+          <tbody id="pack-log-body">
+            <tr><td colspan="${NOODLES.length+2}" style="text-align:center;color:var(--text-3);padding:24px">Loading packing history…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function setPackSize(nId, v) {
+  const n = Math.max(1, parseInt(v)||1);
+  _packState.packs[nId].packSize = n;
+  refreshPackCard(nId);
+}
+function adjPack(nId, d) {
+  _packState.packs[nId].count = Math.max(0, (_packState.packs[nId].count||0) + d);
+  const el = document.getElementById(`pk-${nId}`);
+  if (el) { el.value = _packState.packs[nId].count; el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'),300); }
+  refreshPackCard(nId);
+}
+function setPack(nId, v) {
+  _packState.packs[nId].count = Math.max(0, parseInt(v)||0);
+  refreshPackCard(nId);
+}
+function refreshPackCard(nId) {
+  const ps = _packState.packs[nId];
+  const tot = document.getElementById(`pk-total-${nId}`);
+  // Update the pack total display (re-render just those elements)
+  const card = document.getElementById(`pk-${nId}`)?.closest('.pack-card');
+  if (card) {
+    const totEl  = card.querySelector('.pack-total');
+    const subEl  = card.querySelector('.pack-total-sub');
+    if (totEl) totEl.textContent = ps.count;
+    if (subEl) subEl.textContent = `packs · ${ps.packSize * ps.count} units total`;
+  }
+}
+function switchPackDate(date) {
+  initPackState(date);
+  // Try to load existing packing log for this date
+  loadPackingForDate(date);
+}
+
+async function loadPackingLogs() {
+  try {
+    const { data, error } = await sb
+      .from('packing_logs')
+      .select('*')
+      .order('pack_date', { ascending: false })
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+
+    // Group by date
+    const byDate = {};
+    (data || []).forEach(row => {
+      if (!byDate[row.pack_date]) byDate[row.pack_date] = { notes: row.notes || '', noodles: {} };
+      byDate[row.pack_date].noodles[row.noodle_type] = { packs: row.packs_count, size: row.pack_size, units: row.packs_count * row.pack_size };
+    });
+
+    const dates = Object.keys(byDate).sort((a,b) => b > a ? 1 : -1);
+    const tbody = document.getElementById('pack-log-body');
+    const countEl = document.getElementById('pack-log-count');
+    if (countEl) countEl.textContent = dates.length + ' entries';
+    if (!tbody) return;
+
+    if (!dates.length) {
+      tbody.innerHTML = `<tr><td colspan="${NOODLES.length+2}" style="text-align:center;color:var(--text-3);padding:24px">No packing logs yet.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = dates.map(d => {
+      const entry = byDate[d];
+      const cells = NOODLES.map(n => {
+        const nd = entry.noodles[n.id];
+        if (!nd) return `<td style="color:var(--text-3)">—</td>`;
+        return `<td>
+          <span style="font-family:'Syne',sans-serif;font-weight:800;color:${n.hex}">${nd.packs}</span>
+          <span class="pack-badge" style="margin-left:4px">${nd.size}/pack</span>
+          <div style="font-size:.7rem;color:var(--text-3)">${nd.units} units</div>
+        </td>`;
+      }).join('');
+      return `<tr>
+        <td class="date-col" style="font-weight:600">${fmtDateShort(d)}</td>
+        ${cells}
+        <td style="font-size:.78rem;color:var(--text-2);max-width:160px">${entry.notes || '—'}</td>
+      </tr>`;
+    }).join('');
+
+  } catch(e) {
+    console.error('Packing load error:', e);
+    const tbody = document.getElementById('pack-log-body');
+    if (tbody) tbody.innerHTML = `<tr><td colspan="${NOODLES.length+2}" style="text-align:center;color:var(--red);padding:16px">Could not load packing history.</td></tr>`;
+  }
+}
+
+async function loadPackingForDate(date) {
+  try {
+    const { data, error } = await sb
+      .from('packing_logs')
+      .select('*')
+      .eq('pack_date', date);
+    if (error || !data?.length) return;
+    data.forEach(row => {
+      if (_packState.packs[row.noodle_type]) {
+        _packState.packs[row.noodle_type].count    = row.packs_count;
+        _packState.packs[row.noodle_type].packSize = row.pack_size;
+        const el = document.getElementById(`pk-${row.noodle_type}`);
+        const se = document.getElementById(`ps-${row.noodle_type}`);
+        if (el) el.value = row.packs_count;
+        if (se) se.value = row.pack_size;
+        refreshPackCard(row.noodle_type);
+      }
+    });
+  } catch(e) { /* silent */ }
+}
+
+async function savePackingLog() {
+  const btn = document.getElementById('pack-save-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Saving…'; }
+  const notes = document.getElementById('pack-notes')?.value || '';
+  try {
+    // Delete existing entries for this date (upsert pattern)
+    await sb.from('packing_logs').delete().eq('pack_date', _packState.date);
+
+    // Insert one row per noodle
+    const rows = NOODLES.map(n => ({
+      pack_date:    _packState.date,
+      noodle_type:  n.id,
+      pack_size:    _packState.packs[n.id].packSize,
+      packs_count:  _packState.packs[n.id].count,
+      notes:        notes,
+    }));
+    const { error } = await sb.from('packing_logs').insert(rows);
+    if (error) throw error;
+
+    toast('📫 Packing log saved!', 'ok');
+    if (btn) { btn.disabled = false; btn.textContent = '📫 Save Packing Log'; }
+    await loadPackingLogs();
+  } catch(e) {
+    toast('❌ Packing save failed: ' + (e.message || 'unknown'), 'err');
+    if (btn) { btn.disabled = false; btn.textContent = '📫 Save Packing Log'; }
+  }
+}
+
 
 /* ══════════════════════════════════════════════════════
    §10  HISTORY VIEW
