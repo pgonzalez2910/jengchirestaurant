@@ -648,12 +648,67 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 ══════════════════════════════════════════════════════ */
 let S = {
   view:      'dashboard',
-  sessions:  [],       // all sessions from Supabase
-  draft:     null,     // current working draft (localStorage)
+  sessions:  [],
+  draft:     null,
   editId:    null,
   loading:   false,
-  chartInst: null,     // Chart.js instance
+  chartInst: null,
 };
+
+/* ── Dashboard chart state ─────────────────── */
+let _dashFilter  = 'all';    // 'day'|'week'|'month'|'year'|'all'
+let _dashMetric  = 'sold';   // 'sold'|'stock'|'made'
+let _dashNoodles = new Set(['white','yellow','turmeric','green']);
+
+/* ── Chart.js data-label inline plugin ─────── */
+const DATALABEL_PLUGIN = {
+  id:'jcLabels',
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    chart.data.datasets.forEach((ds, di) => {
+      const meta = chart.getDatasetMeta(di);
+      if (meta.hidden) return;
+      meta.data.forEach((bar, bi) => {
+        const val = ds.data[bi];
+        if (!val && val !== 0) return;
+        if (val === 0) return;
+        ctx.save();
+        ctx.font = 'bold 10px "DM Sans",sans-serif';
+        ctx.fillStyle = '#333';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(val, bar.x, bar.y - 2);
+        ctx.restore();
+      });
+    });
+  }
+};
+
+/* ── PDF chart-image helper ─────────────────── */
+function makePDFChartImg(type, labels, datasets, width=500, height=200, title='') {
+  const c = document.createElement('canvas');
+  c.width = width * 2; c.height = height * 2;
+  c.style.cssText = 'position:absolute;left:-9999px;top:-9999px';
+  document.body.appendChild(c);
+  const ch = new Chart(c, {
+    type,
+    data: { labels, datasets },
+    options: {
+      responsive:false, animation:false,
+      plugins: {
+        legend:{ display:true, position:'bottom', labels:{ font:{size:13}, color:'#333', padding:10 } },
+        title: title ? { display:true, text:title, font:{size:14,weight:'bold'}, color:'#1a2340', padding:{bottom:10} } : { display:false }
+      },
+      scales: {
+        y:{ beginAtZero:true, grid:{color:'rgba(0,0,0,0.07)'}, ticks:{color:'#555',font:{size:12}} },
+        x:{ grid:{color:'rgba(0,0,0,0.04)'}, ticks:{color:'#555',font:{size:12},maxRotation:30} }
+      }
+    }
+  });
+  const img = c.toDataURL('image/png',1.0);
+  ch.destroy(); document.body.removeChild(c);
+  return img;
+}
 
 /* ══════════════════════════════════════════════════════
    §4  SUPABASE DB OPERATIONS
@@ -967,50 +1022,148 @@ function renderDash() {
         </table>
       </div>
 
-      <div class="sec-head mt-xl">
-        <h2 class="sec-title">Sales — Last 7 Sessions</h2>
-        <span class="sec-sub" style="font-size:.75rem;color:var(--text-3)">(only sessions with a previous count show sold data)</span>
+      <div class="sec-head mt-xl" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <h2 class="sec-title">Sales Overview</h2>
+        <div style="display:flex;gap:5px;flex-wrap:wrap;margin-left:auto">
+          <button class="filter-btn ${_dashFilter==='day'  ?'active':''}" onclick="setDashFilter('day')">Today</button>
+          <button class="filter-btn ${_dashFilter==='week' ?'active':''}" onclick="setDashFilter('week')">Week</button>
+          <button class="filter-btn ${_dashFilter==='month'?'active':''}" onclick="setDashFilter('month')">Month</button>
+          <button class="filter-btn ${_dashFilter==='year' ?'active':''}" onclick="setDashFilter('year')">Year</button>
+          <button class="filter-btn ${_dashFilter==='all'  ?'active':''}" onclick="setDashFilter('all')">All</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
+        <span style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3);margin-right:4px">Noodles:</span>
+        ${NOODLES.map(n=>`<button id="dnb-${n.id}" class="filter-btn ${_dashNoodles.has(n.id)?'active':''}"
+          style="${_dashNoodles.has(n.id)?`background:${n.hex};color:#fff;border-color:${n.hex}`:''}"
+          onclick="toggleDashNoodle('${n.id}','${n.hex}')">${n.short}</button>`).join('')}
+        <span style="margin-left:8px;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3)">Show:</span>
+        <button class="filter-btn ${_dashMetric==='sold' ?'active':''}" onclick="setDashMetric('sold')">Sold</button>
+        <button class="filter-btn ${_dashMetric==='stock'?'active':''}" onclick="setDashMetric('stock')">Stock</button>
+        <button class="filter-btn ${_dashMetric==='made' ?'active':''}" onclick="setDashMetric('made')">Made</button>
       </div>
       <div class="chart-card">
-        <div class="chart-legend">
-          ${NOODLES.map(n=>`<span class="leg-dot" style="background:${n.hex}"></span><span>${n.short}</span>`).join('')}
-        </div>
-        <canvas id="salesChart" height="160"></canvas>
+        <canvas id="salesChart" height="200"></canvas>
       </div>
     </div>`;
 }
 
-function afterDash() {
+function afterDash() { buildDashChart(); }
+
+function setDashFilter(f) {
+  _dashFilter = f;
+  // Re-render just the chart area
+  const app = document.getElementById('app');
+  if (app) { app.innerHTML = renderDash(); afterDash(); }
+}
+function setDashMetric(m) {
+  _dashMetric = m;
+  const app = document.getElementById('app');
+  if (app) { app.innerHTML = renderDash(); afterDash(); }
+}
+function toggleDashNoodle(id, hex) {
+  if (_dashNoodles.has(id)) { if (_dashNoodles.size > 1) _dashNoodles.delete(id); }
+  else _dashNoodles.add(id);
+  const app = document.getElementById('app');
+  if (app) { app.innerHTML = renderDash(); afterDash(); }
+}
+
+function getDashSessions() {
+  const allSorted = [...S.sessions].sort((a,b) => a.date > b.date ? 1 : a.date < b.date ? -1 : 0);
+  // Dedup by date — keep latest per date
+  const byDate = {};
+  allSorted.forEach(s => { byDate[s.date] = s; });
+  const deduped = Object.values(byDate).sort((a,b) => a.date > b.date ? 1 : -1);
+
+  const today = new Date(); today.setHours(0,0,0,0);
+  let from = null;
+  if (_dashFilter === 'day') {
+    from = new Date(today);
+  } else if (_dashFilter === 'week') {
+    from = new Date(today); from.setDate(today.getDate() - 7);
+  } else if (_dashFilter === 'month') {
+    from = new Date(today.getFullYear(), today.getMonth(), 1);
+  } else if (_dashFilter === 'year') {
+    from = new Date(today.getFullYear(), 0, 1);
+  }
+  return from
+    ? deduped.filter(s => new Date(s.date+'T12:00:00') >= from)
+    : deduped;
+}
+
+function buildDashChart() {
   const canvas = document.getElementById('salesChart');
   if (!canvas) return;
-  // Only sessions that have at least one earlier session (so sold can be calculated)
-  const allSorted = [...S.sessions].sort((a,b) => a.date > b.date ? 1 : a.date < b.date ? -1 : a.timestamp - b.timestamp);
-  const chartable = allSorted.filter((r, i) => i > 0); // skip the very first session
-  const recs = chartable.slice(-7);
-  if (!recs.length) {
-    canvas.parentElement.innerHTML = `<p style="color:var(--text-3);text-align:center;padding:32px;font-size:.85rem">Chart will appear once you have at least 2 inventory sessions.</p>`;
+  if (S.chartInst) { S.chartInst.destroy(); S.chartInst = null; }
+
+  // Need at least 1 session to show stock; 2 for sold/made
+  const all = getDashSessions();
+  if (!all.length) {
+    canvas.parentElement.innerHTML = `<p style="text-align:center;color:var(--text-3);padding:36px;font-size:.85rem">No sessions in this period.</p>`;
     return;
   }
-  const labels = recs.map(r => new Date(r.date + 'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}));
-  const datasets = NOODLES.map(n => ({
-    label: n.short,
-    data: recs.map(r => calcSold(r)[n.id]?.sold || 0),
-    backgroundColor: n.hex + 'cc',
-    borderColor: n.hex,
-    borderWidth: 1.5,
-    borderRadius: 4,
-  }));
-  if (S.chartInst) S.chartInst.destroy();
+
+  // For sold/made we need a previous session context
+  const allSorted = Object.values((() => {
+    const m = {}; [...S.sessions].forEach(s => { m[s.date]=s; }); return m;
+  })()).sort((a,b) => a.date > b.date ? 1 : -1);
+
+  const recs = _dashMetric === 'stock'
+    ? all
+    : all.filter((r, idx) => {
+        const globalIdx = allSorted.findIndex(s => s.date === r.date);
+        return globalIdx > 0; // must have a previous session
+      });
+
+  if (!recs.length && _dashMetric !== 'stock') {
+    canvas.parentElement.innerHTML = `<p style="text-align:center;color:var(--text-3);padding:36px;font-size:.85rem">Need at least 2 inventory sessions to show ${_dashMetric} data.</p>`;
+    return;
+  }
+
+  const useRecs = _dashMetric === 'stock' ? all : recs;
+  const labels = useRecs.map(r => new Date(r.date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}));
+
+  const activeNoodles = NOODLES.filter(n => _dashNoodles.has(n.id));
+  const datasets = activeNoodles.map(n => {
+    const data = useRecs.map(r => {
+      if (_dashMetric === 'stock') return stTotal(r.inventory, n.id);
+      if (_dashMetric === 'made')  return calcSold(r)[n.id]?.produced || 0;
+      return calcSold(r)[n.id]?.sold || 0; // sold
+    });
+    return {
+      label: n.short,
+      data,
+      backgroundColor: n.hex + 'cc',
+      borderColor: n.hex,
+      borderWidth: 1.5,
+      borderRadius: 4,
+    };
+  });
+
+  const metricLabel = _dashMetric === 'stock' ? 'Stock' : _dashMetric === 'made' ? 'Made' : 'Sold';
+
   S.chartInst = new Chart(canvas, {
     type: 'bar',
+    plugins: [DATALABEL_PLUGIN],
     data: { labels, datasets },
     options: {
       responsive: true,
-      plugins: { legend: { display: false }, tooltip: { mode: 'index' } },
-      scales: {
-        x: { ticks: { color: '#666', font: { family: 'DM Sans', size: 11 } }, grid: { color: 'rgba(0,0,0,.04)' } },
-        y: { ticks: { color: '#666', font: { family: 'DM Sans', size: 11 } }, grid: { color: 'rgba(0,0,0,.06)' }, beginAtZero: true },
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          labels: { color:'#555', font:{family:'DM Sans',size:11}, padding:14, usePointStyle:true }
+        },
+        tooltip: { mode:'index', callbacks:{ label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y} ${metricLabel}` } }
       },
+      scales: {
+        x: { ticks:{color:'#666',font:{family:'DM Sans',size:11}}, grid:{color:'rgba(0,0,0,.04)'} },
+        y: {
+          ticks:{color:'#666',font:{family:'DM Sans',size:11}}, grid:{color:'rgba(0,0,0,.06)'}, beginAtZero:true,
+          title:{ display:true, text:metricLabel+' (qty)', color:'#999', font:{size:10} }
+        },
+      },
+      layout: { padding: { top: 20 } }
     },
   });
 }
@@ -1252,8 +1405,18 @@ function setInv(nId, sId, v) {
    §9  PRODUCTION VIEW (Step 2)
 ══════════════════════════════════════════════════════ */
 function renderProd() {
-  // If no draft at all, go to count first
   if (!S.draft) { nav('count'); return ''; }
+
+  // Always sync production values from DB session if available
+  // This ensures preloaded values appear even after page refresh
+  const savedSess = S.sessions.find(s => s.date === S.draft.date);
+  if (savedSess) {
+    NOODLES.forEach(n => {
+      if (savedSess.production[n.id] !== undefined) {
+        S.draft.production[n.id] = savedSess.production[n.id];
+      }
+    });
+  }
 
   const sessionDates = [...S.sessions]
     .sort((a,b) => b.date > a.date ? 1 : -1)
@@ -1569,6 +1732,7 @@ function renderPacking() {
       <div class="step-actions" style="margin-bottom:28px">
         <button class="cta secondary" onclick="nav('production')">← Production</button>
         <button class="cta primary" id="pack-save-btn" onclick="savePackingLog()">📫 Save Packing Log</button>
+        <span id="pack-autosave-bar" style="font-size:.8rem;color:var(--text-3);align-self:center;margin-left:8px">Changes auto-save</span>
       </div>
 
       <hr class="divider" />
@@ -1601,10 +1765,39 @@ function adjPack(nId, d) {
   const el = document.getElementById(`pk-${nId}`);
   if (el) { el.value = _packState.packs[nId].count; el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'),300); }
   refreshPackCard(nId);
+  triggerPackAutosave();
 }
 function setPack(nId, v) {
   _packState.packs[nId].count = Math.max(0, parseInt(v)||0);
   refreshPackCard(nId);
+  triggerPackAutosave();
+}
+
+let _packSaveTimer = null;
+function triggerPackAutosave() {
+  clearTimeout(_packSaveTimer);
+  _packSaveTimer = setTimeout(() => {
+    const notes = document.getElementById('pack-notes')?.value || '';
+    savePackingLogSilent(notes);
+  }, 600);
+}
+async function savePackingLogSilent(notes) {
+  try {
+    await sb.from('packing_logs').delete().eq('pack_date', _packState.date);
+    const rows = NOODLES.map(n => ({
+      pack_date:   _packState.date,
+      noodle_type: n.id,
+      pack_size:   _packState.packs[n.id].packSize,
+      packs_count: _packState.packs[n.id].count,
+      notes,
+    }));
+    await sb.from('packing_logs').insert(rows);
+    const bar = document.getElementById('pack-autosave-bar');
+    if (bar) { bar.textContent = '✅ Saved automatically'; bar.style.color = 'var(--green-n)'; }
+  } catch(e) {
+    const bar = document.getElementById('pack-autosave-bar');
+    if (bar) { bar.textContent = '❌ Save failed'; bar.style.color = 'var(--red)'; }
+  }
 }
 function refreshPackCard(nId) {
   const ps = _packState.packs[nId];
@@ -1731,7 +1924,12 @@ async function savePackingLog() {
 ══════════════════════════════════════════════════════ */
 let histFilter = '';
 function renderHist() {
-  const sorted = [...S.sessions].sort((a,b) => b.timestamp - a.timestamp);
+  // Dedup: one session per date (keep the one with the most data / most recent)
+  const byDate = {};
+  [...S.sessions].forEach(s => {
+    if (!byDate[s.date] || s.timestamp > byDate[s.date].timestamp) byDate[s.date] = s;
+  });
+  const sorted = Object.values(byDate).sort((a,b) => b.date > a.date ? 1 : -1);
   const filtered = histFilter ? sorted.filter(r => r.date === histFilter) : sorted;
 
   const rows = filtered.length
@@ -2178,10 +2376,9 @@ function buildAnalyticsChart(periods) {
 }
 
 /* ══════════════════════════════════════════════════════
-   §12  PDF REPORT GENERATORS
+   §12  PDF REPORT GENERATORS  (Light, clean theme)
 ══════════════════════════════════════════════════════ */
 
-/** Route to correct report generator */
 function genReport(key) {
   if (!S.sessions.length) { toast('⚠️ No data to report yet', 'err'); return; }
   const dateEl = document.getElementById('rpt-date');
@@ -2195,131 +2392,136 @@ function genReport(key) {
   }
 }
 
-/* ── SHARED PDF HELPERS ─────────────────── */
+/* ── Shared PDF helpers ─────────────────────── */
 function pdfBase() {
   const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
-  return doc;
+  return new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
 }
 
-/**
- * Draw a corporate PDF header.
- * @param {jsPDF} doc
- * @param {string} reportTitle
- * @param {string} subtitle
- * @param {string} period
- */
-function pdfHeader(doc, reportTitle, subtitle, period) {
+// Light, clean header — white bg, amber accent bar on top
+function pdfHeader(doc, title, subtitle, period) {
   const W = doc.internal.pageSize.getWidth();
+  // White background
+  doc.setFillColor(255,255,255);
+  doc.rect(0, 0, W, 46, 'F');
+  // Amber top accent bar
+  doc.setFillColor(230, 168, 0);
+  doc.rect(0, 0, W, 5, 'F');
+  // Amber left vertical stripe
+  doc.setFillColor(230, 168, 0);
+  doc.rect(0, 5, 4, 41, 'F');
+  // Bottom separator line
+  doc.setDrawColor(230, 168, 0);
+  doc.setLineWidth(0.4);
+  doc.line(0, 46, W, 46);
 
-  // Dark header band
-  doc.setFillColor(26, 35, 64);
-  doc.rect(0, 0, W, 42, 'F');
-
-  // Amber accent bar
-  doc.setFillColor(255, 179, 0);
-  doc.rect(0, 42, W, 3, 'F');
-
-  // Brand name
-  doc.setTextColor(255, 215, 64);
+  // Restaurant name
+  doc.setTextColor(26, 35, 64);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(15);
-  doc.text('JENG CHI RESTAURANT', 14, 14);
-
+  doc.text('JENG CHI RESTAURANT', 12, 17);
   // Tagline
-  doc.setTextColor(140, 140, 130);
+  doc.setTextColor(150, 150, 150);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
-  doc.text('INVENTORY MANAGEMENT SYSTEM', 14, 20);
+  doc.text('NOODLE INVENTORY MANAGEMENT', 12, 23);
 
-  // Report title (right-aligned)
-  doc.setTextColor(240, 240, 236);
+  // Report title (right side)
+  doc.setTextColor(26, 35, 64);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(13);
-  doc.text(reportTitle.toUpperCase(), W - 14, 13, { align:'right' });
-
+  doc.setFontSize(14);
+  doc.text(title.toUpperCase(), W - 12, 16, { align:'right' });
   // Subtitle
-  doc.setTextColor(160, 160, 150);
+  doc.setTextColor(120, 120, 120);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
-  doc.text(subtitle, W - 14, 20, { align:'right' });
-
-  // Period tag
-  doc.setTextColor(255, 215, 64);
+  doc.text(subtitle, W - 12, 22, { align:'right' });
+  // Period pill
+  doc.setFillColor(230, 168, 0);
+  const pillW = Math.min(70, period.length * 2.2 + 10);
+  doc.roundedRect(W - 12 - pillW, 27, pillW+2, 8, 2, 2, 'F');
+  doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
-  doc.text(period, W - 14, 27, { align:'right' });
+  doc.setFontSize(7.5);
+  doc.text(period, W - 11, 32.5, { align:'right' });
 
-  // Gen timestamp
-  doc.setTextColor(90, 90, 80);
+  // Generated timestamp
+  doc.setTextColor(170, 170, 170);
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7);
-  doc.text(`Generated: ${new Date().toLocaleString('en-US')}`, 14, 38);
-  doc.text('CONFIDENTIAL — INTERNAL USE ONLY', W - 14, 38, { align:'right' });
+  doc.setFontSize(6.5);
+  doc.text(`Generated: ${new Date().toLocaleString('en-US')}  |  CONFIDENTIAL — INTERNAL USE ONLY`, 12, 42);
 }
 
-/** Draw KPI stat box */
+// Light KPI box — white bg, colored top border, colored large number
 function pdfKPI(doc, x, y, w, h, label, value, sub, accentRGB) {
   const [r,g,b] = accentRGB;
-  // Box
-  doc.setFillColor(24, 24, 24);
-  doc.setDrawColor(50, 50, 50);
+  // White box with light border
+  doc.setFillColor(255, 255, 255);
+  doc.setDrawColor(220, 220, 220);
   doc.setLineWidth(0.3);
   doc.roundedRect(x, y, w, h, 3, 3, 'FD');
-  // Accent top
+  // Colored top accent
   doc.setFillColor(r, g, b);
-  doc.roundedRect(x, y, w, 2, 1, 1, 'F');
+  doc.roundedRect(x, y, w, 2.5, 1, 1, 'F');
   // Label
-  doc.setTextColor(110, 110, 100);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.5);
-  doc.text(label.toUpperCase(), x + w/2, y + 9, { align:'center' });
-  // Value
-  doc.setTextColor(r, g, b);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(18);
-  doc.text(String(value), x + w/2, y + 20, { align:'center' });
-  // Sub
-  doc.setTextColor(100, 100, 90);
+  doc.setTextColor(130, 130, 130);
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7);
-  doc.text(sub, x + w/2, y + 27, { align:'center' });
+  doc.text(label.toUpperCase(), x + w/2, y + 9, { align:'center' });
+  // Value — large, colored
+  doc.setTextColor(r, g, b);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(20);
+  doc.text(String(value), x + w/2, y + 21, { align:'center' });
+  // Sub label
+  doc.setTextColor(160, 160, 160);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.5);
+  doc.text(sub, x + w/2, y + 28, { align:'center' });
 }
 
-/** Draw section title in PDF */
+// Light section header — cream bg, amber left border
 function pdfSection(doc, y, title) {
   const W = doc.internal.pageSize.getWidth();
-  doc.setFillColor(26, 26, 26);
+  doc.setFillColor(255, 248, 224); // light amber cream
   doc.rect(14, y, W - 28, 8, 'F');
-  doc.setFillColor(255, 179, 0);
+  doc.setFillColor(230, 168, 0);
   doc.rect(14, y, 3, 8, 'F');
-  doc.setTextColor(220, 220, 210);
+  doc.setTextColor(26, 35, 64);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
   doc.text(title.toUpperCase(), 21, y + 5.5);
   return y + 12;
 }
 
-/** Draw page footer */
+// Light footer — cream bottom bar
 function pdfFooter(doc) {
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
-  const pages = doc.internal.getNumberOfPages();
-  for (let i = 1; i <= pages; i++) {
+  for (let i = 1; i <= doc.internal.getNumberOfPages(); i++) {
     doc.setPage(i);
-    doc.setFillColor(26, 35, 64);
-    doc.rect(0, H - 12, W, 12, 'F');
-    doc.setFillColor(255, 179, 0);
-    doc.rect(0, H - 12, W, 0.5, 'F');
-    doc.setTextColor(80, 80, 70);
+    doc.setFillColor(255, 253, 240);
+    doc.rect(0, H - 10, W, 10, 'F');
+    doc.setDrawColor(230, 168, 0);
+    doc.setLineWidth(0.3);
+    doc.line(0, H - 10, W, H - 10);
+    doc.setTextColor(150, 150, 150);
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    doc.text('JengChi Noodle Kitchen — Inventory Management System', 14, H - 5);
-    doc.text(`Page ${i} of ${pages}`, W - 14, H - 5, { align:'right' });
+    doc.setFontSize(6.5);
+    doc.text('Jeng Chi Restaurant — Noodle Inventory Management System', 14, H - 4);
+    doc.text(`Page ${i} of ${doc.internal.getNumberOfPages()}`, W - 14, H - 4, { align:'right' });
   }
 }
 
-/** Noodle color RGB tuples for PDF */
+// Light table styles
+const PDF_TABLE_STYLES = {
+  theme: 'grid',
+  styles: { font:'helvetica', fontSize:9, textColor:[40,40,60], fillColor:[255,255,255], lineColor:[220,220,225], lineWidth:0.2 },
+  headStyles: { fillColor:[230,168,0], textColor:[26,35,64], fontStyle:'bold', fontSize:8.5 },
+  alternateRowStyles: { fillColor:[252,252,250] },
+  margin: { left:14, right:14 },
+};
+
 const N_RGB = {
   white:    [90, 90, 110],
   yellow:   [176, 120, 0],
@@ -2331,122 +2533,100 @@ const N_RGB = {
    REPORT 1 — DAILY INVENTORY SNAPSHOT
 ───────────────────────────────────────────── */
 function pdfDailyReport(dateStr) {
+  // Dedup — most recent session for this date
   const sess = [...S.sessions]
     .filter(s => s.date === dateStr)
     .sort((a,b) => b.timestamp - a.timestamp)[0];
 
   const doc = pdfBase();
-  pdfHeader(doc, 'Daily Inventory Snapshot', 'Station-by-Station Breakdown', fmtDateShort(dateStr));
-
-  let y = 52;
+  pdfHeader(doc, 'Daily Snapshot', 'Station-by-Station Breakdown', fmtDateShort(dateStr));
+  let y = 54;
 
   if (!sess) {
-    doc.setTextColor(160, 80, 80);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(12);
-    doc.text(`No session found for ${fmtDateShort(dateStr)}`, 14, y + 20);
-    pdfFooter(doc);
-    doc.save(`JengChi-Daily-${dateStr}.pdf`);
-    return;
+    doc.setTextColor(200,80,80); doc.setFont('helvetica','bold'); doc.setFontSize(11);
+    doc.text(`No session found for ${fmtDateShort(dateStr)}`, 14, y+20);
+    pdfFooter(doc); doc.save(`JengChi-Daily-${dateStr}.pdf`); return;
   }
 
   const calc = calcSold(sess);
 
   // ── KPI Row ───────────────────────────────
-  const kpiW = 42, kpiH = 32, kpiGap = 3;
-  const kpiStartX = 14;
-  NOODLES.forEach((n, i) => {
+  const kpiW=44, kpiH=34, kpiGap=3;
+  NOODLES.forEach((n,i) => {
     const c = calc[n.id];
-    pdfKPI(doc, kpiStartX + i*(kpiW+kpiGap), y, kpiW, kpiH,
-      n.short, c.current, `+${c.produced} made / −${c.sold} sold`, N_RGB[n.id]);
+    pdfKPI(doc, 14+i*(kpiW+kpiGap), y, kpiW, kpiH,
+      n.short, c.current, `+${c.produced} made  −${c.sold} sold`, N_RGB[n.id]);
   });
-  y += kpiH + 8;
+  y += kpiH + 10;
 
   // ── Station Breakdown ─────────────────────
-  y = pdfSection(doc, y, 'Station-by-Station Inventory Count');
-
-  const stHead = ['Station', ...NOODLES.map(n => n.short), 'TOTAL'];
+  y = pdfSection(doc, y, `Station-by-Station Count — ${fmtDateShort(dateStr)}`);
+  const stHead = ['Station',...NOODLES.map(n=>n.short),'TOTAL'];
   const stBody = STATIONS.map(st => {
-    const row = [st.label];
-    let total = 0;
-    NOODLES.forEach(n => {
-      const v = sess.inventory[n.id][st.id] || 0;
-      total += v;
-      row.push(v);
-    });
-    row.push(total);
-    return row;
+    let t=0; const row=[`${st.icon} ${st.label}`];
+    NOODLES.forEach(n=>{const v=sess.inventory[n.id][st.id]||0;t+=v;row.push(v);}); row.push(t); return row;
   });
-  // Totals row
-  const totRow = ['TOTAL STOCK'];
-  let grandT = 0;
-  NOODLES.forEach(n => { const t = stTotal(sess.inventory, n.id); totRow.push(t); grandT += t; });
-  totRow.push(grandT);
+  const totRow=['TOTAL STOCK']; let gt=0;
+  NOODLES.forEach(n=>{const t=stTotal(sess.inventory,n.id);totRow.push(t);gt+=t;}); totRow.push(gt);
 
-  doc.autoTable({
-    startY: y,
-    head: [stHead],
-    body: [...stBody, totRow],
-    theme: 'grid',
-    styles: { font:'helvetica', fontSize:9, textColor:[30,35,60], fillColor:[255,255,255], lineColor:[210,215,225], lineWidth:0.2 },
-    headStyles: { fillColor:[26,35,64], textColor:[230,168,0], fontStyle:'bold', fontSize:8.5 },
-    columnStyles: { 0: { fontStyle:'bold', textColor:[160,160,150] } },
-    didParseCell: (d) => {
-      if (d.row.index === stBody.length) { // totals row
-        d.cell.styles.fillColor = [30,30,24];
-        d.cell.styles.fontStyle = 'bold';
-        d.cell.styles.textColor = [255,215,64];
-      }
-    },
-    margin: { left:14, right:14 },
+  doc.autoTable({ startY:y, head:[stHead], body:[...stBody,totRow], ...PDF_TABLE_STYLES,
+    didParseCell:(d)=>{
+      if(d.row.index===stBody.length){d.cell.styles.fillColor=[255,248,224];d.cell.styles.fontStyle='bold';d.cell.styles.textColor=[150,90,0];}
+      if(d.section==='body'&&d.column.index===0){d.cell.styles.textColor=[80,80,100];d.cell.styles.fontStyle='bold';}
+    }
   });
   y = doc.lastAutoTable.finalY + 8;
 
   // ── Production & Sales Summary ────────────
   y = pdfSection(doc, y, 'Production & Sales Summary');
-
-  const psHead = ['Noodle Type', 'Prev. Stock', 'Produced', 'Current Stock', 'Est. Sold', 'Turnover %'];
-  const psBody = NOODLES.map(n => {
-    const c = calc[n.id];
-    const turnover = c.prev + c.produced > 0 ? ((c.sold / (c.prev + c.produced)) * 100).toFixed(1) + '%' : '—';
-    return [n.label, c.prev, c.produced, c.current, c.sold, turnover];
+  const psHead=['Noodle','Prev. Stock','Produced','Current Stock','Est. Sold','Turnover'];
+  const psBody=NOODLES.map(n=>{
+    const c=calc[n.id];
+    const to=c.prev+c.produced>0?((c.sold/(c.prev+c.produced))*100).toFixed(1)+'%':'—';
+    return [n.label,c.prev,c.produced,c.current,c.sold,to];
   });
-
-  doc.autoTable({
-    startY: y,
-    head: [psHead],
-    body: psBody,
-    theme: 'grid',
-    styles: { font:'helvetica', fontSize:9, textColor:[30,35,60], fillColor:[255,255,255], lineColor:[210,215,225], lineWidth:0.2 },
-    headStyles: { fillColor:[26,35,64], textColor:[230,168,0], fontStyle:'bold', fontSize:8.5 },
-    didParseCell: (d) => {
-      if (d.section === 'body') {
-        const nId = NOODLES[d.row.index]?.id;
-        if (nId && d.column.index === 0) {
-          const [r,g,b] = N_RGB[nId];
-          d.cell.styles.textColor = [r,g,b];
-          d.cell.styles.fontStyle = 'bold';
-        }
-        if (d.column.index === 4) { // sold col
-          d.cell.styles.textColor = [239,154,154];
-        }
+  doc.autoTable({ startY:y, head:[psHead], body:psBody, ...PDF_TABLE_STYLES,
+    didParseCell:(d)=>{
+      if(d.section==='body'){
+        const nId=NOODLES[d.row.index]?.id;
+        if(nId&&d.column.index===0){const[r,g,b]=N_RGB[nId];d.cell.styles.textColor=[r,g,b];d.cell.styles.fontStyle='bold';}
+        if(d.column.index===4&&d.section==='body'){d.cell.styles.textColor=[180,40,40];d.cell.styles.fontStyle='bold';}
       }
-    },
-    margin: { left:14, right:14 },
+    }
   });
-  y = doc.lastAutoTable.finalY + 8;
+  y = doc.lastAutoTable.finalY + 10;
 
-  // Notes
+  // ── Bar chart of current stock ────────────
+  if (y < 220) {
+    y = pdfSection(doc, y, 'Current Stock Chart');
+    const chartImg = makePDFChartImg('bar',
+      NOODLES.map(n=>n.short),
+      NOODLES.map(n=>({ label:n.short, data:[stTotal(sess.inventory,n.id)], backgroundColor:N_RGB[n.id].map(v=>v/255).reduce((a,v,i)=>i===0?`rgba(${N_RGB[NOODLES.find(x=>x.short===n.short)?.id]}`:a)+',0.8)' })),
+      460, 180
+    );
+    // Simpler approach for the chart:
+    const chartImg2 = makePDFChartImg('bar',
+      NOODLES.map(n=>n.short),
+      [{
+        label:'Current Stock',
+        data: NOODLES.map(n=>stTotal(sess.inventory,n.id)),
+        backgroundColor: NOODLES.map(n=>{const[r,g,b]=N_RGB[n.id];return `rgba(${r},${g},${b},0.75)`}),
+        borderColor: NOODLES.map(n=>{const[r,g,b]=N_RGB[n.id];return `rgb(${r},${g},${b})`}),
+        borderWidth:2, borderRadius:5
+      }],
+      460, 180, `Stock as of ${fmtDateShort(dateStr)}`
+    );
+    doc.addImage(chartImg2, 'PNG', 14, y, 182, 65);
+    y += 70;
+  }
+
   if (sess.notes) {
-    y = pdfSection(doc, y, 'Session Notes');
-    doc.setTextColor(160, 160, 150);
-    doc.setFont('helvetica', 'italic');
-    doc.setFontSize(9);
+    y = pdfSection(doc, y, 'Notes');
+    doc.setTextColor(100,100,100); doc.setFont('helvetica','italic'); doc.setFontSize(9);
     doc.text(sess.notes, 18, y);
   }
 
-  pdfFooter(doc);
-  doc.save(`JengChi-Daily-${dateStr}.pdf`);
+  pdfFooter(doc); doc.save(`JengChi-Daily-${dateStr}.pdf`);
   toast('📋 Daily Report downloaded!', 'ok');
 }
 
@@ -2456,176 +2636,107 @@ function pdfDailyReport(dateStr) {
 function pdfWeeklyReport() {
   const doc = pdfBase();
   const now = new Date();
-  const weekAgo = new Date(now - 7 * 86400000);
-  const recs = [...S.sessions]
-    .filter(s => new Date(s.date) >= weekAgo)
-    .sort((a,b) => a.timestamp - b.timestamp);
-
+  const weekAgo = new Date(now - 7*86400000);
+  // Dedup sessions first
+  const byDate={};
+  [...S.sessions].forEach(s=>{if(!byDate[s.date]||s.timestamp>byDate[s.date].timestamp)byDate[s.date]=s;});
+  const recs = Object.values(byDate).filter(s=>new Date(s.date)>=weekAgo).sort((a,b)=>a.date>b.date?1:-1);
   const weekLabel = `${weekAgo.toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${now.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`;
-  pdfHeader(doc, 'Weekly Sales Summary', '7-Day Production & Consumption Report', weekLabel);
 
-  let y = 52;
+  pdfHeader(doc, 'Weekly Sales', '7-Day Production & Consumption', weekLabel);
+  let y = 54;
 
-  // ── KPI totals ────────────────────────────
-  const totals = {};
-  NOODLES.forEach(n => { totals[n.id] = { produced:0, sold:0, sessions:0 }; });
-  recs.forEach(r => {
-    const c = calcSold(r);
-    NOODLES.forEach(n => {
-      totals[n.id].produced += c[n.id].produced;
-      totals[n.id].sold     += c[n.id].sold;
-      totals[n.id].sessions++;
-    });
+  const tots={};
+  NOODLES.forEach(n=>{tots[n.id]={produced:0,sold:0};});
+  recs.forEach(r=>{const c=calcSold(r);NOODLES.forEach(n=>{tots[n.id].produced+=c[n.id].produced;tots[n.id].sold+=c[n.id].sold;});});
+
+  // KPI
+  const kpiW=44, kpiH=34, kpiGap=3;
+  NOODLES.forEach((n,i)=>{
+    pdfKPI(doc,14+i*(kpiW+kpiGap),y,kpiW,kpiH,n.short+' Sold',tots[n.id].sold,`${tots[n.id].produced} produced`,N_RGB[n.id]);
+  });
+  y += kpiH + 10;
+
+  // Sales bar chart
+  y = pdfSection(doc, y, 'Units Sold by Noodle Type');
+  const chartImg = makePDFChartImg('bar',
+    NOODLES.map(n=>n.short),
+    [
+      { label:'Sold', data:NOODLES.map(n=>tots[n.id].sold), backgroundColor:NOODLES.map(n=>{const[r,g,b]=N_RGB[n.id];return `rgba(${r},${g},${b},0.8)`}), borderRadius:5, borderWidth:2, borderColor:NOODLES.map(n=>{const[r,g,b]=N_RGB[n.id];return `rgb(${r},${g},${b})`}) },
+      { label:'Produced', data:NOODLES.map(n=>tots[n.id].produced), backgroundColor:NOODLES.map(n=>{const[r,g,b]=N_RGB[n.id];return `rgba(${r},${g},${b},0.25)`}), borderRadius:5, borderWidth:2, borderColor:NOODLES.map(n=>{const[r,g,b]=N_RGB[n.id];return `rgb(${r},${g},${b})`}) },
+    ],
+    460, 200, 'Weekly Production vs Sold'
+  );
+  doc.addImage(chartImg, 'PNG', 14, y, 182, 72);
+  y += 78;
+
+  // Daily table
+  y = pdfSection(doc, y, 'Daily Breakdown');
+  const head=['Date',...NOODLES.map(n=>n.short+' Sold'),'Total'];
+  const body=recs.map(r=>{const c=calcSold(r);let t=0;const row=[fmtDateShort(r.date)];NOODLES.forEach(n=>{row.push(c[n.id].sold);t+=c[n.id].sold;});row.push(t);return row;});
+  if(!body.length)body.push(['No data','—','—','—','—','—']);
+  const totRow=['TOTAL',...NOODLES.map(n=>tots[n.id].sold),NOODLES.reduce((s,n)=>s+tots[n.id].sold,0)];
+  doc.autoTable({startY:y,head:[head],body:[...body,totRow],...PDF_TABLE_STYLES,
+    didParseCell:(d)=>{if(d.row.index===body.length){d.cell.styles.fillColor=[255,248,224];d.cell.styles.fontStyle='bold';d.cell.styles.textColor=[150,90,0];}}
   });
 
-  const kpiW = 42, kpiH = 32, kpiGap = 3;
-  NOODLES.forEach((n, i) => {
-    pdfKPI(doc, 14 + i*(kpiW+kpiGap), y, kpiW, kpiH,
-      n.short + ' Sold', totals[n.id].sold, `${totals[n.id].produced} produced`, N_RGB[n.id]);
-  });
-  y += kpiH + 8;
-
-  // ── Daily breakdown table ─────────────────
-  y = pdfSection(doc, y, 'Daily Breakdown — Units Sold');
-  const head = ['Date', ...NOODLES.map(n=>n.short+' Sold'), 'Total'];
-  const body = recs.map(r => {
-    const c = calcSold(r);
-    let t = 0;
-    const row = [fmtDateShort(r.date)];
-    NOODLES.forEach(n => { row.push(c[n.id].sold); t += c[n.id].sold; });
-    row.push(t);
-    return row;
-  });
-  if (!body.length) body.push(['No data in this period', '—','—','—','—','—']);
-
-  // Weekly totals row
-  const totRow = ['WEEKLY TOTAL'];
-  let wGrand = 0;
-  NOODLES.forEach(n => { totRow.push(totals[n.id].sold); wGrand += totals[n.id].sold; });
-  totRow.push(wGrand);
-
-  doc.autoTable({
-    startY: y, head:[head], body:[...body, totRow], theme:'grid',
-    styles:{font:'helvetica',fontSize:9,textColor:[30,35,60],fillColor:[255,255,255],lineColor:[210,215,225],lineWidth:.2},
-    headStyles:{fillColor:[26,35,64],textColor:[230,168,0],fontStyle:'bold',fontSize:8.5},
-    didParseCell:(d)=>{
-      if(d.row.index===body.length){d.cell.styles.fillColor=[242,244,248];d.cell.styles.fontStyle='bold';d.cell.styles.textColor=[160,100,0];}
-    },
-    margin:{left:14,right:14},
-  });
-  y = doc.lastAutoTable.finalY + 8;
-
-  // ── Production vs sold ────────────────────
-  y = pdfSection(doc, y, 'Production vs. Consumption Summary');
-  const pvHead = ['Noodle Type','Total Produced','Total Sold','Surplus','Sell-Through %'];
-  const pvBody = NOODLES.map(n => {
-    const surplus = totals[n.id].produced - totals[n.id].sold;
-    const pct     = totals[n.id].produced > 0 ? ((totals[n.id].sold/totals[n.id].produced)*100).toFixed(1)+'%' : '—';
-    return [n.label, totals[n.id].produced, totals[n.id].sold, surplus >= 0 ? '+'+surplus : surplus, pct];
-  });
-  doc.autoTable({
-    startY:y, head:[pvHead], body:pvBody, theme:'grid',
-    styles:{font:'helvetica',fontSize:9,textColor:[30,35,60],fillColor:[255,255,255],lineColor:[210,215,225],lineWidth:.2},
-    headStyles:{fillColor:[26,35,64],textColor:[230,168,0],fontStyle:'bold',fontSize:8.5},
-    didParseCell:(d)=>{
-      if(d.section==='body'){
-        const nId=NOODLES[d.row.index]?.id;
-        if(nId&&d.column.index===0){const[r,g,b]=N_RGB[nId];d.cell.styles.textColor=[r,g,b];d.cell.styles.fontStyle='bold';}
-      }
-    },
-    margin:{left:14,right:14},
-  });
-
-  pdfFooter(doc);
-  doc.save(`JengChi-Weekly-${todayStr()}.pdf`);
+  pdfFooter(doc); doc.save(`JengChi-Weekly-${todayStr()}.pdf`);
   toast('📈 Weekly Report downloaded!', 'ok');
 }
 
 /* ─────────────────────────────────────────────
-   REPORT 3 — STATION PERFORMANCE ANALYSIS
+   REPORT 3 — STATION PERFORMANCE
 ───────────────────────────────────────────── */
 function pdfStationReport(dateStr) {
-  const recs = [...S.sessions].sort((a,b) => b.timestamp - a.timestamp);
-  const latest = recs[0];
-
   const doc = pdfBase();
-  pdfHeader(doc, 'Station Performance Analysis', 'Inventory Distribution by Kitchen Station', fmtDateShort(latest?.date || dateStr));
+  const byDate={};
+  [...S.sessions].forEach(s=>{if(!byDate[s.date]||s.timestamp>byDate[s.date].timestamp)byDate[s.date]=s;});
+  const latest = byDate[dateStr] || Object.values(byDate).sort((a,b)=>b.date>a.date?1:-1)[0];
 
-  let y = 52;
+  pdfHeader(doc, 'Station Performance', 'Per-Station Inventory Analysis', fmtDateShort(latest?.date||dateStr));
+  let y = 54;
 
-  if (!latest) {
-    doc.setTextColor(160,80,80); doc.setFontSize(12);
-    doc.text('No data available.', 14, y + 20);
-    pdfFooter(doc); doc.save('JengChi-Station.pdf'); return;
-  }
+  if (!latest) { doc.setTextColor(200,80,80);doc.text('No data available.',14,y+20);pdfFooter(doc);doc.save(`JengChi-Station-${dateStr}.pdf`);return; }
 
-  // ── Station KPIs ──────────────────────────
-  const stKPIs = STATIONS.map(st => {
-    let total = 0;
-    NOODLES.forEach(n => { total += latest.inventory[n.id][st.id] || 0; });
-    return { station: st, total };
+  // Station totals KPIs
+  const stTots = STATIONS.map(st=>({st,total:NOODLES.reduce((s,n)=>s+(latest.inventory[n.id][st.id]||0),0)}));
+  const grand = stTots.reduce((s,x)=>s+x.total,0);
+  const kpiW=55,kpiH=34,kpiGap=4;
+  stTots.forEach((x,i)=>{
+    pdfKPI(doc,14+i*(kpiW+kpiGap),y,kpiW,kpiH,x.st.label,x.total,`${grand>0?((x.total/grand)*100).toFixed(1):0}% of total`,[255,143,0]);
   });
-  const grandTotal = stKPIs.reduce((s,k) => s+k.total, 0);
+  y += kpiH + 10;
 
-  const kpiW = 55, kpiH = 32, kpiGap = 4;
-  stKPIs.forEach((k, i) => {
-    pdfKPI(doc, 14 + i*(kpiW+kpiGap), y, kpiW, kpiH,
-      k.station.label, k.total,
-      `${grandTotal > 0 ? ((k.total/grandTotal)*100).toFixed(1) : 0}% of total`, [255,179,0]);
-  });
-  y += kpiH + 8;
+  // Pie-style donut chart replaced with grouped bar
+  y = pdfSection(doc, y, 'Station × Noodle Matrix');
+  const chartImg = makePDFChartImg('bar',
+    NOODLES.map(n=>n.short),
+    STATIONS.map(st=>({
+      label:st.label,
+      data:NOODLES.map(n=>latest.inventory[n.id][st.id]||0),
+      backgroundColor:`rgba(${st.id==='lineCook'?'255,143,0':st.id==='cooler'?'0,122,200':'100,180,100'},0.75)`,
+      borderRadius:4
+    })),
+    460, 200, 'Stock by Station & Noodle Type'
+  );
+  doc.addImage(chartImg, 'PNG', 14, y, 182, 72);
+  y += 78;
 
-  // ── Station × Noodle matrix ───────────────
-  y = pdfSection(doc, y, 'Station × Noodle Matrix — Current Stock');
-  const matHead = ['Station / Noodle', ...NOODLES.map(n=>n.short), 'Station Total', '% Share'];
-  const matBody = STATIONS.map(st => {
-    let t = 0;
-    const row = [`${st.icon} ${st.label}`];
-    NOODLES.forEach(n => { const v = latest.inventory[n.id][st.id]||0; row.push(v); t+=v; });
-    row.push(t);
-    row.push(grandTotal > 0 ? ((t/grandTotal)*100).toFixed(1)+'%' : '0%');
-    return row;
+  // Matrix table
+  const matHead=['Station / Noodle',...NOODLES.map(n=>n.short),'Station Total','%'];
+  const matBody=STATIONS.map(st=>{
+    let t=0;const row=[`${st.icon} ${st.label}`];
+    NOODLES.forEach(n=>{const v=latest.inventory[n.id][st.id]||0;row.push(v);t+=v;});
+    row.push(t); row.push(grand>0?((t/grand)*100).toFixed(1)+'%':'0%'); return row;
   });
-  // Noodle totals row
-  const nTotRow = ['NOODLE TOTAL'];
-  let nGrand = 0;
-  NOODLES.forEach(n => { const t = stTotal(latest.inventory, n.id); nTotRow.push(t); nGrand += t; });
-  nTotRow.push(nGrand, '100%');
-
-  doc.autoTable({
-    startY:y, head:[matHead], body:[...matBody, nTotRow], theme:'grid',
-    styles:{font:'helvetica',fontSize:9,textColor:[30,35,60],fillColor:[255,255,255],lineColor:[210,215,225],lineWidth:.2},
-    headStyles:{fillColor:[26,35,64],textColor:[230,168,0],fontStyle:'bold',fontSize:8.5},
-    didParseCell:(d)=>{
-      if(d.row.index===matBody.length){d.cell.styles.fillColor=[242,244,248];d.cell.styles.fontStyle='bold';d.cell.styles.textColor=[160,100,0];}
-    },
-    margin:{left:14,right:14},
-  });
-  y = doc.lastAutoTable.finalY + 10;
-
-  // ── Historical station trends (last 5 sessions) ──
-  y = pdfSection(doc, y, 'Recent Session History — Station Totals');
-  const histHead = ['Date', ...STATIONS.map(s=>s.label), 'Total'];
-  const histBody = recs.slice(0,5).map(r => {
-    const row = [fmtDateShort(r.date)];
-    let total = 0;
-    STATIONS.forEach(st => {
-      let t = 0;
-      NOODLES.forEach(n => { t += r.inventory[n.id][st.id]||0; });
-      row.push(t); total += t;
-    });
-    row.push(total);
-    return row;
-  });
-  doc.autoTable({
-    startY:y, head:[histHead], body:histBody, theme:'grid',
-    styles:{font:'helvetica',fontSize:9,textColor:[30,35,60],fillColor:[255,255,255],lineColor:[210,215,225],lineWidth:.2},
-    headStyles:{fillColor:[26,35,64],textColor:[230,168,0],fontStyle:'bold',fontSize:8.5},
-    margin:{left:14,right:14},
+  const nTotRow=['NOODLE TOTAL']; let ng=0;
+  NOODLES.forEach(n=>{const t=stTotal(latest.inventory,n.id);nTotRow.push(t);ng+=t;});
+  nTotRow.push(ng,'100%');
+  doc.autoTable({startY:y,head:[matHead],body:[...matBody,nTotRow],...PDF_TABLE_STYLES,
+    didParseCell:(d)=>{if(d.row.index===matBody.length){d.cell.styles.fillColor=[255,248,224];d.cell.styles.fontStyle='bold';d.cell.styles.textColor=[150,90,0];}}
   });
 
-  pdfFooter(doc);
-  doc.save(`JengChi-Station-${todayStr()}.pdf`);
+  pdfFooter(doc); doc.save(`JengChi-Station-${dateStr}.pdf`);
   toast('🏪 Station Report downloaded!', 'ok');
 }
 
@@ -2634,184 +2745,133 @@ function pdfStationReport(dateStr) {
 ───────────────────────────────────────────── */
 function pdfTrendReport() {
   const doc = pdfBase();
-  const recs = [...S.sessions].sort((a,b) => a.timestamp - b.timestamp);
-  const period = recs.length > 1
-    ? `${fmtDateShort(recs[0].date)} – ${fmtDateShort(recs[recs.length-1].date)}`
-    : fmtDateShort(recs[0]?.date || todayStr());
+  const byDate={};
+  [...S.sessions].forEach(s=>{if(!byDate[s.date]||s.timestamp>byDate[s.date].timestamp)byDate[s.date]=s;});
+  const recs=Object.values(byDate).sort((a,b)=>a.date>b.date?1:-1);
+  const period=recs.length>1?`${fmtDateShort(recs[0].date)} – ${fmtDateShort(recs[recs.length-1].date)}`:'All Sessions';
 
-  pdfHeader(doc, 'Noodle Consumption Trends', 'Historical Usage & Velocity Analysis', period);
+  pdfHeader(doc,'Consumption Trends','Historical Sales Velocity Analysis',period);
+  let y=54;
 
-  let y = 52;
+  // Trend line chart
+  const chartable=recs.filter((_,i)=>i>0);
+  if(chartable.length){
+    y=pdfSection(doc,y,'Sales Trend — Units Sold per Session');
+    const chartImg=makePDFChartImg('line',
+      chartable.map(r=>fmtDateShort(r.date)),
+      NOODLES.map(n=>({
+        label:n.short,
+        data:chartable.map(r=>calcSold(r)[n.id]?.sold||0),
+        borderColor:`rgb(${N_RGB[n.id].join(',')})`,
+        backgroundColor:`rgba(${N_RGB[n.id].join(',')},0.1)`,
+        borderWidth:2.5, tension:0.3, pointRadius:5, fill:true
+      })),
+      460,200,'Noodle Sales Trend'
+    );
+    doc.addImage(chartImg,'PNG',14,y,182,72); y+=78;
+  }
 
-  // ── Average daily sold ────────────────────
-  const avgSold = {};
-  NOODLES.forEach(n => {
-    const total = recs.reduce((s,r) => s + (calcSold(r)[n.id]?.sold||0), 0);
-    avgSold[n.id] = recs.length > 0 ? (total/recs.length).toFixed(1) : 0;
+  // Summary stats table
+  y=pdfSection(doc,y,'Noodle Performance Summary');
+  const sumHead=['Noodle','Sessions','Total Sold','Total Produced','Avg/Session','Best Session'];
+  const sumBody=NOODLES.map(n=>{
+    const data=chartable.map(r=>calcSold(r)[n.id]?.sold||0);
+    const total=data.reduce((s,v)=>s+v,0);
+    const prod=chartable.reduce((s,r)=>s+(r.production[n.id]||0),0);
+    const avg=data.length>0?(total/data.length).toFixed(1):'—';
+    const best=data.length>0?Math.max(...data):'—';
+    return[n.label,chartable.length,total,prod,avg,best];
   });
-
-  const kpiW = 42, kpiH = 32, kpiGap = 3;
-  NOODLES.forEach((n, i) => {
-    pdfKPI(doc, 14 + i*(kpiW+kpiGap), y, kpiW, kpiH,
-      n.short + ' Avg/Day', avgSold[n.id], `over ${recs.length} sessions`, N_RGB[n.id]);
+  doc.autoTable({startY:y,head:[sumHead],body:sumBody,...PDF_TABLE_STYLES,
+    didParseCell:(d)=>{if(d.section==='body'&&d.column.index===0){const[r,g,b]=N_RGB[NOODLES[d.row.index]?.id]||[80,80,80];d.cell.styles.textColor=[r,g,b];d.cell.styles.fontStyle='bold';}}
   });
-  y += kpiH + 8;
+  y=doc.lastAutoTable.finalY+10;
 
-  // ── Full trend table ──────────────────────
-  y = pdfSection(doc, y, 'Session-by-Session Consumption Log');
-  const head = ['Date', ...NOODLES.map(n=>n.short+' Sold'), ...NOODLES.map(n=>n.short+' Prod.'), 'Total Sold'];
-  const body = recs.map(r => {
-    const c = calcSold(r);
-    let tot = 0;
-    const row = [fmtDateShort(r.date)];
-    NOODLES.forEach(n => { row.push(c[n.id].sold); tot += c[n.id].sold; });
-    NOODLES.forEach(n => row.push(c[n.id].produced));
-    row.push(tot);
-    return row;
-  });
-  if (!body.length) body.push(['No data','—','—','—','—','—','—','—','—','—']);
+  // Session log
+  y=pdfSection(doc,y,'Session Log');
+  const logHead=['Date','White Sold','Yellow Sold','Turmeric Sold','Green Sold','Total'];
+  const logBody=recs.map(r=>{const c=calcSold(r);let t=0;const row=[fmtDateShort(r.date)];NOODLES.forEach(n=>{row.push(c[n.id].sold);t+=c[n.id].sold;});row.push(t);return row;});
+  doc.autoTable({startY:y,head:[logHead],body:logBody,...PDF_TABLE_STYLES});
 
-  doc.autoTable({
-    startY:y, head:[head], body, theme:'grid',
-    styles:{font:'helvetica',fontSize:8,textColor:[30,35,60],fillColor:[255,255,255],lineColor:[210,215,225],lineWidth:.2},
-    headStyles:{fillColor:[26,26,26],textColor:[255,179,0],fontStyle:'bold',fontSize:7.5},
-    margin:{left:14,right:14},
-  });
-  y = doc.lastAutoTable.finalY + 8;
-
-  // ── Velocity summary ──────────────────────
-  y = pdfSection(doc, y, 'Velocity & Reorder Analysis');
-  const velHead = ['Noodle Type','Total Sold','Avg/Session','Peak Day','Min Day','Reorder Signal'];
-  const velBody = NOODLES.map(n => {
-    const soldArr = recs.map(r => calcSold(r)[n.id]?.sold || 0);
-    const total   = soldArr.reduce((s,v)=>s+v,0);
-    const avg     = recs.length ? (total/recs.length).toFixed(1) : 0;
-    const peak    = Math.max(...soldArr, 0);
-    const min     = soldArr.length ? Math.min(...soldArr) : 0;
-    const signal  = avg > 10 ? '🔴 High Demand' : avg > 5 ? '🟡 Moderate' : '🟢 Low';
-    return [n.label, total, avg, peak, min, signal];
-  });
-  doc.autoTable({
-    startY:y, head:[velHead], body:velBody, theme:'grid',
-    styles:{font:'helvetica',fontSize:9,textColor:[30,35,60],fillColor:[255,255,255],lineColor:[210,215,225],lineWidth:.2},
-    headStyles:{fillColor:[26,35,64],textColor:[230,168,0],fontStyle:'bold',fontSize:8.5},
-    didParseCell:(d)=>{
-      if(d.section==='body'){const nId=NOODLES[d.row.index]?.id;if(nId&&d.column.index===0){const[r,g,b]=N_RGB[nId];d.cell.styles.textColor=[r,g,b];d.cell.styles.fontStyle='bold';}}
-    },
-    margin:{left:14,right:14},
-  });
-
-  pdfFooter(doc);
-  doc.save(`JengChi-Trends-${todayStr()}.pdf`);
-  toast('📉 Trend Report downloaded!', 'ok');
+  pdfFooter(doc); doc.save(`JengChi-Trends-${todayStr()}.pdf`);
+  toast('📉 Trends Report downloaded!','ok');
 }
 
 /* ─────────────────────────────────────────────
    REPORT 5 — EXECUTIVE MONTHLY OVERVIEW
 ───────────────────────────────────────────── */
 function pdfExecReport() {
-  const doc = pdfBase();
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const monthLabel = now.toLocaleDateString('en-US',{month:'long',year:'numeric'});
+  const doc=pdfBase();
+  const now=new Date();
+  const monthStart=new Date(now.getFullYear(),now.getMonth(),1);
+  const monthLabel=now.toLocaleDateString('en-US',{month:'long',year:'numeric'});
+  const byDate={};
+  [...S.sessions].forEach(s=>{if(!byDate[s.date]||s.timestamp>byDate[s.date].timestamp)byDate[s.date]=s;});
+  const allRecs=Object.values(byDate).sort((a,b)=>a.date>b.date?1:-1);
+  const recs=allRecs.filter(s=>new Date(s.date+'T12:00:00')>=monthStart);
 
-  const recs = [...S.sessions]
-    .filter(s => new Date(s.date) >= monthStart)
-    .sort((a,b) => a.timestamp - b.timestamp);
-  const allRecs = [...S.sessions];
+  pdfHeader(doc,'Executive Overview','Monthly KPI Summary',monthLabel);
+  let y=54;
 
-  pdfHeader(doc, 'Executive Monthly Overview', 'C-Suite KPI Summary & Operational Intelligence', monthLabel);
+  const latestRec=allRecs[allRecs.length-1]||null;
+  const currentStock=latestRec?NOODLES.reduce((s,n)=>s+stTotal(latestRec.inventory,n.id),0):0;
+  const totalSold=recs.reduce((s,r)=>s+NOODLES.reduce((s2,n)=>s2+(calcSold(r)[n.id]?.sold||0),0),0);
+  const totalProduced=recs.reduce((s,r)=>s+NOODLES.reduce((s2,n)=>s2+(r.production[n.id]||0),0),0);
+  const sellThru=totalProduced>0?((totalSold/totalProduced)*100).toFixed(1)+'%':'—';
 
-  let y = 52;
-
-  // ── Exec KPIs ─────────────────────────────
-  const totalProduced = NOODLES.reduce((s,n) => s + recs.reduce((ss,r)=>ss+(r.production[n.id]||0),0), 0);
-  const totalSold     = NOODLES.reduce((s,n) => s + recs.reduce((ss,r)=>ss+(calcSold(r)[n.id]?.sold||0),0), 0);
-  const latestRec     = allRecs.sort((a,b)=>b.timestamp-a.timestamp)[0];
-  const currentStock  = latestRec ? NOODLES.reduce((s,n)=>s+stTotal(latestRec.inventory,n.id),0) : 0;
-  const sellThru      = totalProduced > 0 ? ((totalSold/totalProduced)*100).toFixed(0)+'%' : '—';
-
-  const execKPIs = [
-    { label:'Sessions This Month', val: recs.length, sub:'count', rgb:[255,215,64] },
-    { label:'Total Produced',      val: totalProduced, sub:'portions', rgb:[0,230,118] },
-    { label:'Total Sold',          val: totalSold, sub:'portions', rgb:[239,154,154] },
-    { label:'Sell-Through Rate',   val: sellThru, sub:'of production', rgb:[255,143,0] },
+  // KPI row
+  const execKPIs=[
+    {label:'Current Stock',val:currentStock,sub:'total portions',rgb:[26,35,64]},
+    {label:'Total Sold',val:totalSold,sub:'this month',rgb:[180,40,40]},
+    {label:'Total Produced',val:totalProduced,sub:'this month',rgb:[0,122,64]},
+    {label:'Sell-Through',val:sellThru,sub:'efficiency',rgb:[230,168,0]},
   ];
-  const kpiW = 42, kpiH = 32, kpiGap = 3.5;
-  execKPIs.forEach((k, i) => {
-    pdfKPI(doc, 14 + i*(kpiW+kpiGap), y, kpiW, kpiH, k.label, k.val, k.sub, k.rgb);
-  });
-  y += kpiH + 8;
+  const kpiW=42,kpiH=34,kpiGap=3.5;
+  execKPIs.forEach((k,i)=>{pdfKPI(doc,14+i*(kpiW+kpiGap),y,kpiW,kpiH,k.label,k.val,k.sub,k.rgb);});
+  y+=kpiH+10;
 
-  // ── Current stock summary ─────────────────
-  y = pdfSection(doc, y, `Current Stock Position — ${fmtDateShort(latestRec?.date || todayStr())}`);
-  const csHead = ['Noodle Type','Current Stock','This Month Sold','This Month Produced','Sell-Through','Status'];
-  const csBody = NOODLES.map(n => {
-    const stock = latestRec ? stTotal(latestRec.inventory, n.id) : 0;
-    const mSold = recs.reduce((s,r)=>s+(calcSold(r)[n.id]?.sold||0),0);
-    const mProd = recs.reduce((s,r)=>s+(r.production[n.id]||0),0);
-    const pct   = mProd > 0 ? ((mSold/mProd)*100).toFixed(0)+'%' : '—';
-    const status= stock < 5 ? '🔴 Low' : stock < 20 ? '🟡 OK' : '🟢 Good';
-    return [n.label, stock, mSold, mProd, pct, status];
-  });
-  doc.autoTable({
-    startY:y, head:[csHead], body:csBody, theme:'grid',
-    styles:{font:'helvetica',fontSize:9,textColor:[30,35,60],fillColor:[255,255,255],lineColor:[210,215,225],lineWidth:.2},
-    headStyles:{fillColor:[26,35,64],textColor:[230,168,0],fontStyle:'bold',fontSize:8.5},
-    didParseCell:(d)=>{
-      if(d.section==='body'){const nId=NOODLES[d.row.index]?.id;if(nId&&d.column.index===0){const[r,g,b]=N_RGB[nId];d.cell.styles.textColor=[r,g,b];d.cell.styles.fontStyle='bold';}}
-    },
-    margin:{left:14,right:14},
-  });
-  y = doc.lastAutoTable.finalY + 8;
-
-  // ── Monthly session log ────────────────────
-  y = pdfSection(doc, y, 'Monthly Session Log');
-  const mlHead = ['Date','White','Yellow','Turmeric','Green','Total Sold','Notes'];
-  const mlBody = recs.map(r => {
-    const c = calcSold(r);
-    let tot = 0;
-    const row = [fmtDateShort(r.date)];
-    NOODLES.forEach(n => { row.push(c[n.id].sold); tot += c[n.id].sold; });
-    row.push(tot);
-    row.push(r.notes ? r.notes.slice(0,30)+(r.notes.length>30?'…':'') : '—');
-    return row;
-  });
-  if (!mlBody.length) mlBody.push(['No sessions this month','—','—','—','—','—','—']);
-
-  doc.autoTable({
-    startY:y, head:[mlHead], body:mlBody, theme:'grid',
-    styles:{font:'helvetica',fontSize:8.5,textColor:[30,35,60],fillColor:[255,255,255],lineColor:[210,215,225],lineWidth:.2},
-    headStyles:{fillColor:[26,35,64],textColor:[230,168,0],fontStyle:'bold',fontSize:8},
-    margin:{left:14,right:14},
-  });
-  y = doc.lastAutoTable.finalY + 8;
-
-  // ── Executive narrative ───────────────────
-  if (y < 240) {
-    y = pdfSection(doc, y, 'Performance Commentary');
-    const dominant = NOODLES.reduce((a,n) => {
-      const sold = recs.reduce((s,r)=>s+(calcSold(r)[n.id]?.sold||0),0);
-      return sold > (a.sold||0) ? {name:n.label,sold} : a;
-    }, {});
-    const commentary = [
-      `This report covers ${recs.length} inventory session(s) during ${monthLabel}.`,
-      `Total of ${totalProduced} noodle portions were produced, with ${totalSold} sold — a ${sellThru} sell-through rate.`,
-      dominant.name
-        ? `Highest demand: ${dominant.name} with ${dominant.sold} units sold this month.`
-        : 'Insufficient data for demand analysis.',
-      `Current total stock position: ${currentStock} portions across all stations.`,
-      `Report generated automatically by JengChi Inventory Management System.`,
-    ];
-    doc.setTextColor(80, 85, 110);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8.5);
-    commentary.forEach((line, i) => { doc.text('• ' + line, 18, y + i * 7); });
+  // Executive chart
+  if(recs.length>0){
+    y=pdfSection(doc,y,'Monthly Sales by Noodle Type');
+    const chartImg=makePDFChartImg('bar',
+      NOODLES.map(n=>n.short),
+      [{
+        label:'Total Sold This Month',
+        data:NOODLES.map(n=>recs.reduce((s,r)=>s+(calcSold(r)[n.id]?.sold||0),0)),
+        backgroundColor:NOODLES.map(n=>{const[r,g,b]=N_RGB[n.id];return `rgba(${r},${g},${b},0.8)`}),
+        borderColor:NOODLES.map(n=>{const[r,g,b]=N_RGB[n.id];return `rgb(${r},${g},${b})`}),
+        borderWidth:2,borderRadius:5
+      }],
+      460,200,'Units Sold — '+monthLabel
+    );
+    doc.addImage(chartImg,'PNG',14,y,182,72); y+=78;
   }
 
-  pdfFooter(doc);
-  doc.save(`JengChi-Executive-${todayStr()}.pdf`);
-  toast('📊 Executive Report downloaded!', 'ok');
+  // Current stock table
+  y=pdfSection(doc,y,`Current Stock — ${fmtDateShort(latestRec?.date||todayStr())}`);
+  const csHead=['Noodle','Current Stock','Month Sold','Month Produced','Sell-Through','Status'];
+  const csBody=NOODLES.map(n=>{
+    const stock=latestRec?stTotal(latestRec.inventory,n.id):0;
+    const mSold=recs.reduce((s,r)=>s+(calcSold(r)[n.id]?.sold||0),0);
+    const mProd=recs.reduce((s,r)=>s+(r.production[n.id]||0),0);
+    const pct=mProd>0?((mSold/mProd)*100).toFixed(0)+'%':'—';
+    const status=stock<5?'🔴 Low':stock<20?'🟡 OK':'🟢 Good';
+    return[n.label,stock,mSold,mProd,pct,status];
+  });
+  doc.autoTable({startY:y,head:[csHead],body:csBody,...PDF_TABLE_STYLES,
+    didParseCell:(d)=>{if(d.section==='body'&&d.column.index===0){const[r,g,b]=N_RGB[NOODLES[d.row.index]?.id]||[80,80,80];d.cell.styles.textColor=[r,g,b];d.cell.styles.fontStyle='bold';}}
+  });
+  y=doc.lastAutoTable.finalY+8;
+
+  // Session log
+  y=pdfSection(doc,y,'Session Log');
+  const mlHead=['Date','White','Yellow','Turmeric','Green','Total Sold','Notes'];
+  const mlBody=recs.map(r=>{const c=calcSold(r);let tot=0;const row=[fmtDateShort(r.date)];NOODLES.forEach(n=>{row.push(c[n.id].sold);tot+=c[n.id].sold;});row.push(tot);row.push(r.notes?r.notes.slice(0,28)+(r.notes.length>28?'…':''):'—');return row;});
+  if(!mlBody.length)mlBody.push(['No sessions this month','—','—','—','—','—','—']);
+  doc.autoTable({startY:y,head:[mlHead],body:mlBody,...PDF_TABLE_STYLES});
+
+  pdfFooter(doc); doc.save(`JengChi-Executive-${todayStr()}.pdf`);
+  toast('📊 Executive Report downloaded!','ok');
 }
 
 /* ══════════════════════════════════════════════════════
