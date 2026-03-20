@@ -811,6 +811,8 @@ canvas.sig-canvas {
       </div>
       <div class="card-body">
         <div class="score-summary-grid" id="scoreSummaryGrid"></div>
+
+        <!-- ── Standard charts (all review types) ─────────────────── -->
         <div class="charts-grid">
           <div class="chart-card col-span-1">
             <div class="chart-title">Competency Radar</div>
@@ -834,8 +836,48 @@ canvas.sig-canvas {
             </div>
           </div>
         </div>
+
+        <!-- ── Probation Comparison Panel (progress reviews only) ──── -->
+        <div id="probationComparePanel" style="display:none;margin-top:28px">
+          <div style="padding:14px 20px;background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);border-radius:12px 12px 0 0;display:flex;align-items:center;gap:12px">
+            <span style="font-size:20px">📊</span>
+            <div>
+              <div style="font-weight:800;font-size:14px;color:#fff">Progress / Probation Comparison</div>
+              <div style="font-size:11px;color:#bfdbfe;margin-top:2px">Previous review vs. current assessment — see exactly where improvement, decline, or stagnation occurred</div>
+            </div>
+          </div>
+          <!-- Score headline row -->
+          <div id="probCompareScoreBanner" style="background:#f0f7ff;border:1px solid #bfdbfe;padding:16px 20px;display:grid;grid-template-columns:1fr auto 1fr;gap:16px;align-items:center"></div>
+          <!-- 3 comparison charts -->
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;background:#f8faff;border:1px solid #e2e8f0;border-top:none;padding:20px">
+            <div class="chart-card" style="margin:0">
+              <div class="chart-title" style="color:#1e40af">📋 Previous Review</div>
+              <div class="chart-subtitle" id="prevChartSubtitle">Prior submission</div>
+              <div class="chart-container" style="height:240px">
+                <canvas id="prevRadarChart"></canvas>
+              </div>
+            </div>
+            <div class="chart-card" style="margin:0">
+              <div class="chart-title" style="color:#059669">📋 Current Assessment</div>
+              <div class="chart-subtitle">Today's probation ratings</div>
+              <div class="chart-container" style="height:240px">
+                <canvas id="currRadarChart"></canvas>
+              </div>
+            </div>
+            <div class="chart-card" style="margin:0">
+              <div class="chart-title" style="color:#7c3aed">📊 Performance Delta</div>
+              <div class="chart-subtitle">Change per category (▲ ▼ =)</div>
+              <div class="chart-container" style="height:240px">
+                <canvas id="deltaBarChart"></canvas>
+              </div>
+            </div>
+          </div>
+          <!-- Per-category comparison table -->
+          <div id="probCompareCategoryTable" style="background:#fff;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;padding:20px"></div>
+        </div>
+
         <!-- Category Progress Bars -->
-        <div id="categoryProgressBars"></div>
+        <div id="categoryProgressBars" style="margin-top:16px"></div>
       </div>
     </div>
 
@@ -3442,28 +3484,45 @@ function selectReviewType(type) {
 
 async function loadPreviousReviewsForEmployee(empId) {
   const sel = document.getElementById('probationPrevReviewId');
-  if (!sel || !sb || !empId) return;
+  if (!sel || !sb) return;
+
+  // Query by employee_name — always stored reliably. No status filter so both
+  // submitted AND draft reviews appear (labeled accordingly in the dropdown).
+  const empName = state.employee?.name;
+  if (!empName) {
+    sel.innerHTML = '<option value="">No employee selected</option>';
+    return;
+  }
+
   sel.innerHTML = '<option value="">Loading...</option>';
   try {
     const {data, error} = await sb.from('performance_reviews')
-      .select('id, review_type, review_date, period_start, period_end, status')
-      .eq('employee_id', parseInt(empId))
-      .eq('status', 'submitted')
+      .select('id, employee_name, review_type, review_date, period_start, period_end, status')
+      .eq('employee_name', empName)
       .order('review_date', {ascending: false});
-    if (error || !data || !data.length) {
-      sel.innerHTML = '<option value="">No previous submitted reviews found</option>';
+
+    if (error) throw error;
+
+    if (!data || !data.length) {
+      sel.innerHTML = '<option value="">No previous reviews found for this employee</option>';
       return;
     }
-    sel.innerHTML = '<option value="">-- Select a previous review --</option>' +
-      data.map(r => {
-        const dt = r.review_date ? new Date(r.review_date+'T12:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : '—';
-        const period = r.period_start ? ` (${new Date(r.period_start+'T12:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'})} – ${new Date(r.period_end+'T12:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'})})` : '';
-        const typeLabel = {annual:'Annual Review',coaching:'Coaching Plan',progress:'Probation Review'}[r.review_type] || r.review_type;
-        return `<option value="${r.id}">${typeLabel} — ${dt}${period}</option>`;
-      }).join('');
+    sel.innerHTML = buildPrevOptions(data);
   } catch(e) {
+    console.error('loadPreviousReviewsForEmployee error:', e.message);
     sel.innerHTML = '<option value="">Unable to load previous reviews</option>';
   }
+}
+
+function buildPrevOptions(rows) {
+  return '<option value="">-- Select a previous review --</option>' +
+    rows.map(r => {
+      const dt = r.review_date ? new Date(r.review_date+'T12:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : '—';
+      const period = r.period_start ? ` (${new Date(r.period_start+'T12:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'})} – ${new Date(r.period_end+'T12:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'})})` : '';
+      const typeLabel = {annual:'Annual Review',coaching:'Coaching Plan',progress:'Probation Review'}[r.review_type] || r.review_type;
+      const statusBadge = r.status === 'submitted' ? ' ✅ Submitted' : ' 📝 Draft';
+      return `<option value="${r.id}">${typeLabel} — ${dt}${period}${statusBadge}</option>`;
+    }).join('');
 }
 
 async function loadPreviousReviewData(reviewId) {
@@ -3471,7 +3530,7 @@ async function loadPreviousReviewData(reviewId) {
   try {
     const {data, error} = await sb.from('performance_reviews')
       .select('id, review_type, review_date, responses, category_scores, overall_score, performance_band, strengths, development, goals')
-      .eq('id', parseInt(reviewId))
+      .eq('id', reviewId)
       .single();
     if (error || !data) return null;
     // responses may be stored as JSON string or object
@@ -3798,7 +3857,7 @@ function setRating(qId, val) {
 const CHART_COLORS = ['#1a2744','#c9a84c','#2563eb','#059669','#d97706','#7c3aed','#dc2626','#0ea5e9'];
 
 function initCharts(dept) {
-  ['radar','bar','doughnut'].forEach(k => { if (state.charts[k]) { state.charts[k].destroy(); state.charts[k]=null; } });
+  ['radar','bar','doughnut','prevRadar','currRadar','deltaBar'].forEach(k => { if (state.charts[k]) { state.charts[k].destroy(); state.charts[k]=null; } });
   const template = getTemplate(dept, state.reviewType);
   const labels = template.map(s => s.chartLabel || s.title.split(' ').slice(0,2).join(' '));
   const zeros = labels.map(()=>0);
@@ -3836,6 +3895,47 @@ function initCharts(dept) {
     data:{labels:['Outstanding (5)','Exceeds (4)','Meets (3)','Below (2)','Poor (1)','Not Rated'],datasets:[{data:[0,0,0,0,0,1],backgroundColor:['#059669','#2563eb','#7c3aed','#d97706','#dc2626','#e2e6ef'],borderWidth:2,borderColor:'#fff'}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{font:{size:9,family:'DM Sans'},padding:6}}}}
   });
+
+  // ── Probation comparison charts ──────────────────────────────────
+  if (state.reviewType === 'progress') {
+    const template = getTemplate(dept, 'progress');
+    const catLabels = template.map(s => s.chartLabel || s.title.split(' ').slice(0,2).join(' '));
+    const zeros = catLabels.map(()=>0);
+    const radarOpts = (color, title) => ({
+      responsive:true, maintainAspectRatio:false,
+      scales:{r:{min:0,max:5,ticks:{stepSize:1,font:{size:9},color:'#6b7280',backdropColor:'transparent'},grid:{color:'#e2e6ef'},angleLines:{color:'#d1d5db'},pointLabels:{font:{size:10,family:'DM Sans',weight:'600'},color:'#1a2744',padding:6}}},
+      plugins:{legend:{display:false},title:{display:true,text:title,font:{size:11,weight:'700',family:'DM Sans'},color:color,padding:{bottom:4}},tooltip:{callbacks:{label:ctx=>' Score: '+ctx.raw.toFixed(1)+'/5'}}}
+    });
+    state.charts.prevRadar = new Chart(document.getElementById('prevRadarChart'),{
+      type:'radar',
+      data:{labels:catLabels,datasets:[{label:'Prev',data:[...zeros],backgroundColor:'rgba(37,99,235,0.12)',borderColor:'#2563eb',borderWidth:2,pointBackgroundColor:'#2563eb',pointRadius:4}]},
+      options:radarOpts('#1e40af','Previous')
+    });
+    state.charts.currRadar = new Chart(document.getElementById('currRadarChart'),{
+      type:'radar',
+      data:{labels:catLabels,datasets:[{label:'Current',data:[...zeros],backgroundColor:'rgba(5,150,105,0.12)',borderColor:'#059669',borderWidth:2,pointBackgroundColor:'#059669',pointRadius:4}]},
+      options:radarOpts('#065f46','Current')
+    });
+    state.charts.deltaBar = new Chart(document.getElementById('deltaBarChart'),{
+      type:'bar',
+      data:{labels:catLabels,datasets:[{label:'Δ Change',data:[...zeros],backgroundColor:zeros.map(()=>'#d1d5db'),borderRadius:5,borderSkipped:false}]},
+      options:{
+        responsive:true,maintainAspectRatio:false,indexAxis:'y',
+        scales:{
+          x:{min:-5,max:5,ticks:{stepSize:1,font:{size:9},color:'#6b7280'},grid:{color:'#f0f0f0'},
+             title:{display:true,text:'Δ Change (-5 to +5)',font:{size:9},color:'#9ca3af'},
+             afterDataLimits:scale=>{scale.min=-5;scale.max=5;}},
+          y:{ticks:{font:{size:9,family:'DM Sans',weight:'600'},color:'#1a2744'},grid:{display:false}}
+        },
+        plugins:{legend:{display:false},
+          title:{display:true,text:'Performance Delta',font:{size:11,weight:'700',family:'DM Sans'},color:'#7c3aed',padding:{bottom:4}},
+          tooltip:{callbacks:{label:ctx=>{const v=ctx.raw;return v>0?` ▲ +${v.toFixed(2)} Improved`:v<0?` ▼ ${v.toFixed(2)} Declined`:' = No Change';}}}}
+      }
+    });
+    document.getElementById('probationComparePanel').style.display = 'block';
+  } else {
+    document.getElementById('probationComparePanel').style.display = 'none';
+  }
 }
 
 function updateCharts() {
@@ -3909,6 +4009,88 @@ function updateCharts() {
       <div style="width:44px;text-align:right;font-size:13px;font-weight:700;color:var(--navy)">${sectionAvgs[i]>0?sectionAvgs[i].toFixed(1):'—'}</div>
     </div>`).join('');
   document.getElementById('categoryProgressBars').innerHTML = '<div style="padding:6px 0">'+pbHtml+'</div>';
+
+  // ── Probation comparison charts update ─────────────────────────────
+  if (state.reviewType === 'progress' && state.prevReviewData && state.charts.prevRadar) {
+    const prevResponses = state.prevReviewData.responses || {};
+    const prevSectionAvgs = template.map(section => {
+      const rqs = section.questions.filter(q => !q.type || q.type==='rating');
+      const vals = rqs.map(q => parseInt(prevResponses[q.id])||0).filter(v=>v>0);
+      return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : 0;
+    });
+    const deltas = sectionAvgs.map((curr,i) => {
+      if (curr === 0) return 0;
+      return parseFloat((curr - prevSectionAvgs[i]).toFixed(2));
+    });
+    const deltaColors = deltas.map(d => d > 0.1 ? '#059669' : d < -0.1 ? '#dc2626' : '#94a3b8');
+
+    if (state.charts.prevRadar) {
+      state.charts.prevRadar.data.datasets[0].data = prevSectionAvgs;
+      state.charts.prevRadar.update('none');
+    }
+    if (state.charts.currRadar) {
+      state.charts.currRadar.data.datasets[0].data = sectionAvgs;
+      state.charts.currRadar.update('none');
+    }
+    if (state.charts.deltaBar) {
+      state.charts.deltaBar.data.datasets[0].data = deltas;
+      state.charts.deltaBar.data.datasets[0].backgroundColor = deltaColors;
+      state.charts.deltaBar.update('none');
+    }
+
+    // Score banner
+    const prevOvrAll = Object.values(prevResponses).map(v=>parseInt(v)).filter(v=>v>0);
+    const prevAvg = prevOvrAll.length ? (prevOvrAll.reduce((a,b)=>a+b,0)/prevOvrAll.length) : 0;
+    const currAvg = globalAvg;
+    const diff = currAvg > 0 ? (currAvg - prevAvg) : 0;
+    const diffStr = diff > 0.05 ? `<span style="color:#059669;font-size:22px;font-weight:800">▲ +${diff.toFixed(2)}</span><div style="font-size:11px;color:#059669;font-weight:700">IMPROVED</div>`
+                 : diff < -0.05 ? `<span style="color:#dc2626;font-size:22px;font-weight:800">▼ ${diff.toFixed(2)}</span><div style="font-size:11px;color:#dc2626;font-weight:700">DECLINED</div>`
+                 : `<span style="color:#6366f1;font-size:22px;font-weight:800">= 0.00</span><div style="font-size:11px;color:#6366f1;font-weight:700">NO CHANGE</div>`;
+    const prevTypeLabel = {annual:'Annual Review',coaching:'Coaching Plan',progress:'Probation Review'}[state.prevReviewData.review_type]||'Previous';
+    const prevDateStr = state.prevReviewData.review_date ? new Date(state.prevReviewData.review_date+'T12:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : '—';
+    document.getElementById('prevChartSubtitle').textContent = prevTypeLabel + ' · ' + prevDateStr;
+    document.getElementById('probCompareScoreBanner').innerHTML = `
+      <div style="text-align:center;padding:8px 16px;background:#eff6ff;border-radius:10px">
+        <div style="font-size:11px;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">📋 Previous Score</div>
+        <div style="font-size:28px;font-weight:800;color:#1e40af">${prevAvg>0?prevAvg.toFixed(2):'—'}</div>
+        <div style="font-size:10px;color:#3b82f6">${prevTypeLabel} · ${prevDateStr}</div>
+      </div>
+      <div style="text-align:center;padding:12px">${diffStr}</div>
+      <div style="text-align:center;padding:8px 16px;background:#ecfdf5;border-radius:10px">
+        <div style="font-size:11px;font-weight:700;color:#065f46;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">📊 Current Score</div>
+        <div style="font-size:28px;font-weight:800;color:#059669">${currAvg>0?currAvg.toFixed(2):'—'}</div>
+        <div style="font-size:10px;color:#059669">Probation Review · Today</div>
+      </div>`;
+
+    // Per-category comparison table
+    const tblRows = template.map((s,i) => {
+      const prev = prevSectionAvgs[i];
+      const curr = sectionAvgs[i];
+      const d = curr > 0 ? (curr - prev) : null;
+      const dColor = d === null ? '#94a3b8' : d > 0.1 ? '#059669' : d < -0.1 ? '#dc2626' : '#6366f1';
+      const dText  = d === null ? '—' : d > 0.1 ? `▲ +${d.toFixed(2)}` : d < -0.1 ? `▼ ${d.toFixed(2)}` : `= ${d.toFixed(2)}`;
+      const verdict = d === null ? '' : d > 0.1 ? 'Improved' : d < -0.1 ? 'Declined' : 'No Change';
+      return `<tr style="border-bottom:1px solid #f1f5f9">
+        <td style="padding:8px 10px;font-size:12px;font-weight:600;color:#1a2744">${s.title}</td>
+        <td style="padding:8px 10px;text-align:center;font-size:13px;font-weight:700;color:#2563eb">${prev>0?prev.toFixed(1):'—'}</td>
+        <td style="padding:8px 10px;text-align:center;font-size:13px;font-weight:700;color:#059669">${curr>0?curr.toFixed(1):'—'}</td>
+        <td style="padding:8px 10px;text-align:center;font-size:13px;font-weight:800;color:${dColor}">${dText}</td>
+        <td style="padding:8px 10px;text-align:center"><span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:${dColor}22;color:${dColor}">${verdict}</span></td>
+      </tr>`;
+    }).join('');
+    document.getElementById('probCompareCategoryTable').innerHTML = `
+      <div style="font-size:12px;font-weight:700;color:#1a2744;margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em">Category Breakdown</div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:#f8fafc">
+          <th style="padding:8px 10px;text-align:left;font-size:11px;color:#6b7280;font-weight:600">Category</th>
+          <th style="padding:8px 10px;text-align:center;font-size:11px;color:#2563eb;font-weight:600">Previous</th>
+          <th style="padding:8px 10px;text-align:center;font-size:11px;color:#059669;font-weight:600">Current</th>
+          <th style="padding:8px 10px;text-align:center;font-size:11px;color:#7c3aed;font-weight:600">Delta</th>
+          <th style="padding:8px 10px;text-align:center;font-size:11px;color:#6b7280;font-weight:600">Verdict</th>
+        </tr></thead>
+        <tbody>${tblRows}</tbody>
+      </table>`;
+  }
 }
 
 function getBand(avg) {
@@ -3981,7 +4163,7 @@ async function doSave(isFinal=false) {
   // Core columns — guaranteed to exist in every version of the table
   const corePayload = {
     employee_name:     emp.name,
-    employee_id:       parseInt(emp.id || emp.employee_id) || null,
+    employee_id:       (() => { const n = parseInt(emp.id); return (!isNaN(n) && n > 0) ? n : (parseInt(emp.employee_id) || null); })(),
     employee_position: emp.position || emp.job_title || null,
     department:        detectDepartment(emp),
     is_management:     !!(emp.is_management || emp.IsManagement),
@@ -4141,8 +4323,19 @@ async function submitReview() {
         return;
       }
 
-      // Confirmed in DB ✅
-      showToast('✅ ' + verify.employee_name + '\'s review saved to database! ID: ' + verify.id, 'success');
+      // Confirmed in DB ✅ — show unmissable modal
+      const modal = document.getElementById('submitSuccessModal');
+      if (modal) {
+        const typeLabels = {annual:'Annual Performance Review', coaching:'Coaching Plan', progress:'Progress / Probation Review'};
+        document.getElementById('submitModalName').textContent = verify.employee_name + '\'s review has been saved.';
+        document.getElementById('submitModalType').textContent = typeLabels[state.reviewType] || state.reviewType;
+        document.getElementById('submitModalEmp').textContent = verify.employee_name;
+        document.getElementById('submitModalId').textContent = verify.id;
+        document.getElementById('submitModalDate').textContent = new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
+        modal.style.display = 'flex';
+      } else {
+        showToast('✅ ' + verify.employee_name + '\'s review submitted! ID: ' + verify.id, 'success');
+      }
       if (statusEl) { statusEl.textContent = '✅ Submitted'; statusEl.className = 'status-badge status-submitted'; }
       if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '✅ Submitted'; submitBtn.style.background = '#059669'; }
 
@@ -4300,7 +4493,7 @@ async function exportPDF() {
     doc.text(`Overall Score: ${avgScore}/5.00  ·  Band: ${getBand(parseFloat(avgScore)||0).label.replace(/[⭐✅✔⚠❌]/g,'').trim()}  ·  Reviewed by: ${document.getElementById('mgrSigName')?.value||'—'}`, margin+54, y+64);
     y += 92;
 
-    // Charts
+    // Charts — standard 3 charts
     try {
       const radarWrap = document.getElementById('radarChart').closest('.chart-card');
       const barWrap = document.getElementById('barChart').closest('.chart-card');
@@ -4319,8 +4512,180 @@ async function exportPDF() {
 
     const template = getTemplate(dept, state.reviewType);
 
+    // ── Probation: Comparison page ─────────────────────────────────
+    if (state.reviewType === 'progress' && state.prevReviewData) {
+      doc.addPage();
+      y = margin;
+
+      // Header bar
+      doc.setFillColor(30,58,95);
+      doc.roundedRect(margin, y, pw-margin*2, 32, 5, 5, 'F');
+      doc.setTextColor(255,255,255); doc.setFontSize(11); doc.setFont('helvetica','bold');
+      doc.text('PROGRESS / PROBATION COMPARISON — PREVIOUS vs. CURRENT', margin+14, y+21);
+      y += 44;
+
+      // Score summary boxes
+      const prevResponses = state.prevReviewData.responses || {};
+      const prevVals = Object.values(prevResponses).map(v=>parseInt(v)).filter(v=>v>0);
+      const prevAvg = prevVals.length ? (prevVals.reduce((a,b)=>a+b,0)/prevVals.length) : 0;
+      const currVals = Object.entries(state.responses).filter(([k,v])=>typeof v==='number'&&v>0).map(([,v])=>v);
+      const currAvg = currVals.length ? (currVals.reduce((a,b)=>a+b,0)/currVals.length) : 0;
+      const diff = currAvg - prevAvg;
+      const prevTypeLabel = {annual:'Annual Review',coaching:'Coaching Plan',progress:'Probation Review'}[state.prevReviewData.review_type]||'Previous';
+      const prevDatePDF = state.prevReviewData.review_date ? new Date(state.prevReviewData.review_date+'T12:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : '—';
+      const boxW = (pw-margin*2-24)/3;
+
+      // Prev box
+      doc.setFillColor(239,246,255);
+      doc.roundedRect(margin, y, boxW, 58, 4, 4, 'F');
+      doc.setTextColor(30,64,175); doc.setFontSize(8); doc.setFont('helvetica','bold');
+      doc.text('PREVIOUS SCORE', margin+8, y+14);
+      doc.setFontSize(22); doc.text(prevAvg>0?prevAvg.toFixed(2):'—', margin+8, y+38);
+      doc.setFontSize(7); doc.setFont('helvetica','normal'); doc.setTextColor(96,165,250);
+      doc.text(prevTypeLabel+' · '+prevDatePDF, margin+8, y+52);
+
+      // Delta box
+      const dColor = diff > 0.05 ? [5,150,105] : diff < -0.05 ? [220,53,69] : [99,102,241];
+      const dLabel = diff > 0.05 ? '▲ IMPROVED' : diff < -0.05 ? '▼ DECLINED' : '= NO CHANGE';
+      doc.setFillColor(dColor[0]+'22'||240,240,240);
+      doc.setFillColor(...dColor.map(c=>Math.min(255,c+180)));
+      doc.roundedRect(margin+boxW+12, y, boxW, 58, 4, 4, 'F');
+      doc.setTextColor(...dColor); doc.setFontSize(8); doc.setFont('helvetica','bold');
+      doc.text('PERFORMANCE CHANGE', margin+boxW+20, y+14);
+      doc.setFontSize(18); doc.text((diff>=0?'+':'')+diff.toFixed(2), margin+boxW+20, y+36);
+      doc.setFontSize(9); doc.text(dLabel, margin+boxW+20, y+50);
+
+      // Current box
+      doc.setFillColor(236,253,245);
+      doc.roundedRect(margin+boxW*2+24, y, boxW, 58, 4, 4, 'F');
+      doc.setTextColor(6,95,70); doc.setFontSize(8); doc.setFont('helvetica','bold');
+      doc.text('CURRENT SCORE', margin+boxW*2+32, y+14);
+      doc.setFontSize(22); doc.text(currAvg>0?currAvg.toFixed(2):'—', margin+boxW*2+32, y+38);
+      doc.setFontSize(7); doc.setFont('helvetica','normal'); doc.setTextColor(16,185,129);
+      doc.text('Probation Review · Today', margin+boxW*2+32, y+52);
+      y += 74;
+
+      // Comparison charts (prev radar, curr radar, delta bar)
+      try {
+        const prevWrap = document.getElementById('prevRadarChart').closest('.chart-card');
+        const currWrap = document.getElementById('currRadarChart').closest('.chart-card');
+        const deltaWrap = document.getElementById('deltaBarChart').closest('.chart-card');
+        const [pc, cc, dbc] = await Promise.all([
+          html2canvas(prevWrap,{scale:1.5,backgroundColor:'#fff',logging:false}),
+          html2canvas(currWrap,{scale:1.5,backgroundColor:'#fff',logging:false}),
+          html2canvas(deltaWrap,{scale:1.5,backgroundColor:'#fff',logging:false})
+        ]);
+        const cw2 = (pw-margin*2-16)/3;
+        doc.addImage(pc.toDataURL(),'PNG',margin,y,cw2,cw2*1.05);
+        doc.addImage(cc.toDataURL(),'PNG',margin+cw2+8,y,cw2,cw2*1.05);
+        doc.addImage(dbc.toDataURL(),'PNG',margin+cw2*2+16,y,cw2,cw2*1.05);
+        y += cw2*1.05+20;
+      } catch(e) { y += 10; }
+
+      // Per-category comparison table
+      if (y > ph-160) { doc.addPage(); y = margin; }
+      doc.setFillColor(30,58,95);
+      doc.roundedRect(margin, y, pw-margin*2, 22, 3, 3, 'F');
+      doc.setTextColor(255,255,255); doc.setFontSize(9); doc.setFont('helvetica','bold');
+      doc.text('CATEGORY-BY-CATEGORY COMPARISON', margin+10, y+15);
+      y += 28;
+
+      // Table headers
+      const colX = [margin, margin+200, margin+270, margin+330, margin+410];
+      const colW = [190, 60, 60, 70, 100];
+      doc.setFillColor(248,250,252);
+      doc.rect(margin, y, pw-margin*2, 18, 'F');
+      doc.setTextColor(100,116,139); doc.setFontSize(7.5); doc.setFont('helvetica','bold');
+      ['CATEGORY','PREVIOUS','CURRENT','DELTA','VERDICT'].forEach((h,i)=>{
+        doc.text(h, colX[i]+4, y+13);
+      });
+      y += 22;
+
+      template.forEach((section, i) => {
+        if (y > ph-50) { doc.addPage(); y = margin; }
+        const prevRqs = section.questions.filter(q=>!q.type||q.type==='rating');
+        const pVals = prevRqs.map(q=>parseInt(prevResponses[q.id])||0).filter(v=>v>0);
+        const cVals = prevRqs.map(q=>state.responses[q.id]).filter(v=>v>0);
+        const pAvg = pVals.length ? (pVals.reduce((a,b)=>a+b,0)/pVals.length) : 0;
+        const cAvg = cVals.length ? (cVals.reduce((a,b)=>a+b,0)/cVals.length) : 0;
+        const d = cAvg > 0 ? (cAvg - pAvg) : null;
+        const dC = d===null?[148,163,184]:d>0.1?[5,150,105]:d<-0.1?[220,53,69]:[99,102,241];
+        const verdict = d===null?'—':d>0.1?'Improved':d<-0.1?'Declined':'No Change';
+        const rowBg = i%2===0?[255,255,255]:[248,250,252];
+        doc.setFillColor(...rowBg); doc.rect(margin, y, pw-margin*2, 18, 'F');
+        doc.setTextColor(26,39,68); doc.setFontSize(8); doc.setFont('helvetica','bold');
+        doc.text(section.title.substring(0,28), colX[0]+4, y+13);
+        doc.setTextColor(30,64,175); doc.setFont('helvetica','normal');
+        doc.text(pAvg>0?pAvg.toFixed(2):'—', colX[1]+4, y+13);
+        doc.setTextColor(5,150,105);
+        doc.text(cAvg>0?cAvg.toFixed(2):'—', colX[2]+4, y+13);
+        doc.setTextColor(...dC); doc.setFont('helvetica','bold');
+        doc.text(d===null?'—':(d>=0?'+':'')+d.toFixed(2), colX[3]+4, y+13);
+        doc.text(verdict, colX[4]+4, y+13);
+        y += 18;
+      });
+      y += 14;
+
+      // Per-question comparison (previous + current side by side)
+      if (y > ph-120) { doc.addPage(); y = margin; }
+      doc.setFillColor(30,58,95);
+      doc.roundedRect(margin, y, pw-margin*2, 22, 3, 3, 'F');
+      doc.setTextColor(255,255,255); doc.setFontSize(9); doc.setFont('helvetica','bold');
+      doc.text('QUESTION-BY-QUESTION COMPARISON', margin+10, y+15);
+      y += 30;
+
+      template.forEach((section, sIdx) => {
+        if (y > ph-80) { doc.addPage(); y = margin; }
+        doc.setFillColor(248,246,240); doc.roundedRect(margin,y,pw-margin*2,22,3,3,'F');
+        doc.setTextColor(26,39,68); doc.setFontSize(9); doc.setFont('helvetica','bold');
+        doc.text(`${sIdx+1}. ${section.title}`, margin+8, y+15);
+        y += 28;
+
+        section.questions.filter(q=>!q.type||q.type==='rating').forEach((q, qIdx) => {
+          if (y > ph-50) { doc.addPage(); y = margin; }
+          const pVal = parseInt(prevResponses[q.id])||0;
+          const cVal = state.responses[q.id]||0;
+          const d2 = (cVal>0 && pVal>0) ? cVal-pVal : null;
+          const d2C = d2===null?[148,163,184]:d2>0?[5,150,105]:d2<0?[220,53,69]:[99,102,241];
+          const qLines = doc.splitTextToSize(`${qIdx+1}. ${q.label}`, pw-margin*2-8);
+          doc.setTextColor(30,40,60); doc.setFontSize(7.5); doc.setFont('helvetica','bold');
+          doc.text(qLines[0], margin+6, y);
+          y += 12;
+          // Score bars row: PREV  CURR  DELTA
+          const bw = 16;
+          // Prev circles
+          doc.setTextColor(100,116,139); doc.setFontSize(6.5); doc.setFont('helvetica','normal');
+          doc.text('PREV:', margin+6, y+7);
+          for(let n=1;n<=5;n++){
+            if(pVal>0&&n<=pVal){doc.setFillColor(37,99,235);}else{doc.setFillColor(226,232,240);}
+            doc.circle(margin+42+(n-1)*bw, y+5, 6, 'F');
+            if(pVal>0&&n<=pVal){doc.setTextColor(255,255,255);}else{doc.setTextColor(180,185,195);}
+            doc.setFontSize(6); doc.text(String(n), margin+39+(n-1)*bw, y+8);
+          }
+          doc.setTextColor(37,99,235); doc.setFontSize(7); doc.setFont('helvetica','bold');
+          doc.text(pVal>0?pVal+'/5':'—', margin+130, y+7);
+          // Curr circles
+          doc.setTextColor(100,116,139); doc.setFontSize(6.5); doc.setFont('helvetica','normal');
+          doc.text('NOW:', margin+155, y+7);
+          for(let n=1;n<=5;n++){
+            if(cVal>0&&n<=cVal){doc.setFillColor(5,150,105);}else{doc.setFillColor(226,232,240);}
+            doc.circle(margin+191+(n-1)*bw, y+5, 6, 'F');
+            if(cVal>0&&n<=cVal){doc.setTextColor(255,255,255);}else{doc.setTextColor(180,185,195);}
+            doc.setFontSize(6); doc.text(String(n), margin+188+(n-1)*bw, y+8);
+          }
+          doc.setTextColor(5,150,105); doc.setFontSize(7); doc.setFont('helvetica','bold');
+          doc.text(cVal>0?cVal+'/5':'—', margin+280, y+7);
+          // Delta badge
+          doc.setTextColor(...d2C); doc.setFontSize(8); doc.setFont('helvetica','bold');
+          const d2Str = d2===null?'—':d2>0?'▲ +'+d2:d2<0?'▼ '+d2:'= 0';
+          doc.text(d2Str, margin+305, y+7);
+          y += 18;
+        });
+      });
+    }
+
     function addSectionHeader(title, num) {
-      if (y > ph-80) { addPageWithFooter(doc, pw, ph, margin, pages_ref, cstDateStr, cstTimeStr); y = margin + 10; }
+      if (y > ph-80) { doc.addPage(); y = margin + 10; }
       doc.setFillColor(248,246,240);  // light warm background
       doc.roundedRect(margin,y,pw-margin*2,28,4,4,'F');
       doc.setFillColor(201,168,76); doc.circle(margin+18,y+14,11,'F');
@@ -7521,12 +7886,58 @@ function qsPrint() {
     }
   </style>
 </head>
-<body>${content}</body>
+<body>${content}
+<!-- ── Submission Confirmation Modal ─────────────────────────────── -->
+<div id="submitSuccessModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.65);backdrop-filter:blur(4px);align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:20px;padding:48px 40px;max-width:520px;width:92%;text-align:center;box-shadow:0 24px 80px rgba(0,0,0,0.35);position:relative;">
+    <div style="font-size:72px;margin-bottom:12px;line-height:1">✅</div>
+    <h2 style="font-size:26px;font-weight:800;color:#065f46;margin:0 0 8px">Review Submitted!</h2>
+    <div id="submitModalName" style="font-size:16px;color:#374151;font-weight:600;margin-bottom:6px"></div>
+    <div id="submitModalType" style="font-size:13px;color:#6b7280;margin-bottom:20px"></div>
+    <div style="background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:12px;padding:16px 20px;margin-bottom:24px;text-align:left">
+      <div style="font-size:12px;font-weight:700;color:#065f46;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">📋 Saved to Database</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:13px;color:#374151">
+        <div><span style="color:#6b7280">Employee:</span> <strong id="submitModalEmp"></strong></div>
+        <div><span style="color:#6b7280">Status:</span> <strong style="color:#059669">✅ Submitted</strong></div>
+        <div><span style="color:#6b7280">Review ID:</span> <span id="submitModalId" style="font-family:monospace;font-size:11px;color:#6b7280"></span></div>
+        <div><span style="color:#6b7280">Date:</span> <strong id="submitModalDate"></strong></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:12px;justify-content:center">
+      <button onclick="document.getElementById('submitSuccessModal').style.display='none'" style="padding:12px 28px;border-radius:10px;border:2px solid #d1d5db;background:#fff;color:#374151;font-weight:700;font-size:14px;cursor:pointer">Close</button>
+      <button onclick="document.getElementById('submitSuccessModal').style.display='none';window.scrollTo({top:0,behavior:'smooth'})" style="padding:12px 28px;border-radius:10px;border:none;background:#1e3a5f;color:#fff;font-weight:700;font-size:14px;cursor:pointer">Back to Top</button>
+    </div>
+  </div>
+</div>
+</body>
 </html>`);
   win.document.close();
   win.focus();
   setTimeout(() => { win.print(); }, 400);
 }
 </script>
+
+<!-- ── Submission Confirmation Modal ─────────────────────────────── -->
+<div id="submitSuccessModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.65);backdrop-filter:blur(4px);align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:20px;padding:48px 40px;max-width:520px;width:92%;text-align:center;box-shadow:0 24px 80px rgba(0,0,0,0.35);position:relative;">
+    <div style="font-size:72px;margin-bottom:12px;line-height:1">✅</div>
+    <h2 style="font-size:26px;font-weight:800;color:#065f46;margin:0 0 8px">Review Submitted!</h2>
+    <div id="submitModalName" style="font-size:16px;color:#374151;font-weight:600;margin-bottom:6px"></div>
+    <div id="submitModalType" style="font-size:13px;color:#6b7280;margin-bottom:20px"></div>
+    <div style="background:#ecfdf5;border:1.5px solid #6ee7b7;border-radius:12px;padding:16px 20px;margin-bottom:24px;text-align:left">
+      <div style="font-size:12px;font-weight:700;color:#065f46;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">📋 Saved to Database</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:13px;color:#374151">
+        <div><span style="color:#6b7280">Employee:</span> <strong id="submitModalEmp"></strong></div>
+        <div><span style="color:#6b7280">Status:</span> <strong style="color:#059669">✅ Submitted</strong></div>
+        <div><span style="color:#6b7280">Review ID:</span> <span id="submitModalId" style="font-family:monospace;font-size:11px;color:#6b7280"></span></div>
+        <div><span style="color:#6b7280">Date:</span> <strong id="submitModalDate"></strong></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:12px;justify-content:center">
+      <button onclick="document.getElementById('submitSuccessModal').style.display='none'" style="padding:12px 28px;border-radius:10px;border:2px solid #d1d5db;background:#fff;color:#374151;font-weight:700;font-size:14px;cursor:pointer">Close</button>
+      <button onclick="document.getElementById('submitSuccessModal').style.display='none';window.scrollTo({top:0,behavior:'smooth'})" style="padding:12px 28px;border-radius:10px;border:none;background:#1e3a5f;color:#fff;font-weight:700;font-size:14px;cursor:pointer">Back to Top</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
