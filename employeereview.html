@@ -4177,6 +4177,7 @@ async function doSave(isFinal=false) {
     development:       gVal('overallDevelopment'),
     goals:             gVal('overallGoals'),
     status:            isFinal ? 'submitted' : 'draft',
+    compared_review_id: gVal('probationPrevReviewId') || null,  // CORE — always save so comparison PDF works
     updated_at:        new Date().toISOString()
   };
 
@@ -4189,7 +4190,6 @@ async function doSave(isFinal=false) {
     category_comments:  formData.categoryComments,
     performance_band:   formData.band,
     recommendation:     gVal('overallRecommendation') || gVal('q-recommendation'),
-    compared_review_id: gVal('probationPrevReviewId') || null,
     employee_sig_name:  gVal('empSigName'),
     employee_sig_date:  gVal('empSigDate'),
     manager_sig_name:   gVal('mgrSigName'),
@@ -4493,36 +4493,36 @@ async function exportPDF() {
     doc.text(`Overall Score: ${avgScore}/5.00  ·  Band: ${getBand(parseFloat(avgScore)||0).label.replace(/[⭐✅✔⚠❌]/g,'').trim()}  ·  Reviewed by: ${document.getElementById('mgrSigName')?.value||'—'}`, margin+54, y+64);
     y += 92;
 
-    // Charts — standard 3 charts
-    try {
-      const radarWrap = document.getElementById('radarChart').closest('.chart-card');
-      const barWrap = document.getElementById('barChart').closest('.chart-card');
-      const doughWrap = document.getElementById('doughnutChart').closest('.chart-card');
-      const [rc, bc, dc] = await Promise.all([
-        html2canvas(radarWrap,{scale:1.5,backgroundColor:'#fff',logging:false}),
-        html2canvas(barWrap,{scale:1.5,backgroundColor:'#fff',logging:false}),
-        html2canvas(doughWrap,{scale:1.5,backgroundColor:'#fff',logging:false})
-      ]);
-      const cw = (pw-margin*2-16)/3;
-      doc.addImage(rc.toDataURL(),'PNG',margin,y,cw,cw*0.95);
-      doc.addImage(bc.toDataURL(),'PNG',margin+cw+8,y,cw,cw*0.95);
-      doc.addImage(dc.toDataURL(),'PNG',margin+cw*2+16,y,cw,cw*0.95);
-      y += cw*0.95 + 20;
-    } catch(e) { y += 10; }
-
     const template = getTemplate(dept, state.reviewType);
+    const isProbationComparison = state.reviewType === 'progress' && state.prevReviewData;
 
-    // ── Probation: Comparison page ─────────────────────────────────
-    if (state.reviewType === 'progress' && state.prevReviewData) {
-      doc.addPage();
-      y = margin;
+    if (!isProbationComparison) {
+      // ── Standard 3 charts (Annual / Coaching / Probation without previous) ──
+      try {
+        const radarWrap = document.getElementById('radarChart').closest('.chart-card');
+        const barWrap   = document.getElementById('barChart').closest('.chart-card');
+        const doughWrap = document.getElementById('doughnutChart').closest('.chart-card');
+        const [rc, bc, dc] = await Promise.all([
+          html2canvas(radarWrap,{scale:1.5,backgroundColor:'#fff',logging:false}),
+          html2canvas(barWrap,  {scale:1.5,backgroundColor:'#fff',logging:false}),
+          html2canvas(doughWrap,{scale:1.5,backgroundColor:'#fff',logging:false})
+        ]);
+        const cw = (pw-margin*2-16)/3;
+        doc.addImage(rc.toDataURL(),'PNG',margin,         y, cw, cw*0.95);
+        doc.addImage(bc.toDataURL(),'PNG',margin+cw+8,    y, cw, cw*0.95);
+        doc.addImage(dc.toDataURL(),'PNG',margin+cw*2+16, y, cw, cw*0.95);
+        y += cw*0.95 + 20;
+      } catch(e) { y += 10; }
+    }
 
-      // Header bar
+    // ── Probation Comparison section (replaces standard charts entirely) ─────
+    if (isProbationComparison) {
+      // Comparison header — inline on same page right after employee header
       doc.setFillColor(30,58,95);
-      doc.roundedRect(margin, y, pw-margin*2, 32, 5, 5, 'F');
-      doc.setTextColor(255,255,255); doc.setFontSize(11); doc.setFont('helvetica','bold');
-      doc.text('PROGRESS / PROBATION COMPARISON — PREVIOUS vs. CURRENT', margin+14, y+21);
-      y += 44;
+      doc.roundedRect(margin, y, pw-margin*2, 28, 5, 5, 'F');
+      doc.setTextColor(255,255,255); doc.setFontSize(10); doc.setFont('helvetica','bold');
+      doc.text('PROGRESS / PROBATION COMPARISON — PREVIOUS vs. CURRENT', margin+14, y+19);
+      y += 38;
 
       // Score summary boxes
       const prevResponses = state.prevReviewData.responses || {};
@@ -4534,52 +4534,66 @@ async function exportPDF() {
       const prevTypeLabel = {annual:'Annual Review',coaching:'Coaching Plan',progress:'Probation Review'}[state.prevReviewData.review_type]||'Previous';
       const prevDatePDF = state.prevReviewData.review_date ? new Date(state.prevReviewData.review_date+'T12:00:00').toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}) : '—';
       const boxW = (pw-margin*2-24)/3;
+      const boxH = 68;
 
-      // Prev box
+      // Prev box (blue)
       doc.setFillColor(239,246,255);
-      doc.roundedRect(margin, y, boxW, 58, 4, 4, 'F');
-      doc.setTextColor(30,64,175); doc.setFontSize(8); doc.setFont('helvetica','bold');
-      doc.text('PREVIOUS SCORE', margin+8, y+14);
-      doc.setFontSize(22); doc.text(prevAvg>0?prevAvg.toFixed(2):'—', margin+8, y+38);
-      doc.setFontSize(7); doc.setFont('helvetica','normal'); doc.setTextColor(96,165,250);
-      doc.text(prevTypeLabel+' · '+prevDatePDF, margin+8, y+52);
+      doc.roundedRect(margin, y, boxW, boxH, 4, 4, 'F');
+      doc.setTextColor(30,64,175); doc.setFontSize(7.5); doc.setFont('helvetica','bold');
+      doc.text('PREVIOUS SCORE', margin+8, y+13);
+      doc.setFontSize(24); doc.text(prevAvg>0?prevAvg.toFixed(2):'—', margin+8, y+40);
+      doc.setFontSize(6.5); doc.setFont('helvetica','normal'); doc.setTextColor(96,165,250);
+      doc.text(prevTypeLabel, margin+8, y+53);
+      doc.text(prevDatePDF, margin+8, y+62);
 
-      // Delta box
+      // Delta box (center)
       const dColor = diff > 0.05 ? [5,150,105] : diff < -0.05 ? [220,53,69] : [99,102,241];
-      const dLabel = diff > 0.05 ? '▲ IMPROVED' : diff < -0.05 ? '▼ DECLINED' : '= NO CHANGE';
-      doc.setFillColor(dColor[0]+'22'||240,240,240);
-      doc.setFillColor(...dColor.map(c=>Math.min(255,c+180)));
-      doc.roundedRect(margin+boxW+12, y, boxW, 58, 4, 4, 'F');
-      doc.setTextColor(...dColor); doc.setFontSize(8); doc.setFont('helvetica','bold');
-      doc.text('PERFORMANCE CHANGE', margin+boxW+20, y+14);
-      doc.setFontSize(18); doc.text((diff>=0?'+':'')+diff.toFixed(2), margin+boxW+20, y+36);
-      doc.setFontSize(9); doc.text(dLabel, margin+boxW+20, y+50);
+      const dLabel = diff > 0.05 ? 'IMPROVED' : diff < -0.05 ? 'DECLINED' : 'NO CHANGE';
+      const dBg = dColor.map(c=>Math.min(255,c+175));
+      doc.setFillColor(...dBg);
+      doc.roundedRect(margin+boxW+12, y, boxW, boxH, 4, 4, 'F');
+      doc.setTextColor(...dColor); doc.setFontSize(7.5); doc.setFont('helvetica','bold');
+      doc.text('PERFORMANCE CHANGE', margin+boxW+20, y+13);
+      doc.setFontSize(20); doc.text((diff>=0?'+':'')+diff.toFixed(2), margin+boxW+20, y+38);
+      doc.setFontSize(9); doc.text(dLabel, margin+boxW+20, y+54);
 
-      // Current box
+      // Current box (green)
       doc.setFillColor(236,253,245);
-      doc.roundedRect(margin+boxW*2+24, y, boxW, 58, 4, 4, 'F');
-      doc.setTextColor(6,95,70); doc.setFontSize(8); doc.setFont('helvetica','bold');
-      doc.text('CURRENT SCORE', margin+boxW*2+32, y+14);
-      doc.setFontSize(22); doc.text(currAvg>0?currAvg.toFixed(2):'—', margin+boxW*2+32, y+38);
-      doc.setFontSize(7); doc.setFont('helvetica','normal'); doc.setTextColor(16,185,129);
-      doc.text('Probation Review · Today', margin+boxW*2+32, y+52);
-      y += 74;
+      doc.roundedRect(margin+boxW*2+24, y, boxW, boxH, 4, 4, 'F');
+      doc.setTextColor(6,95,70); doc.setFontSize(7.5); doc.setFont('helvetica','bold');
+      doc.text('CURRENT SCORE', margin+boxW*2+32, y+13);
+      doc.setFontSize(24); doc.text(currAvg>0?currAvg.toFixed(2):'—', margin+boxW*2+32, y+40);
+      doc.setFontSize(6.5); doc.setFont('helvetica','normal'); doc.setTextColor(16,185,129);
+      doc.text('Progress / Probation Review', margin+boxW*2+32, y+53);
+      doc.text(new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}), margin+boxW*2+32, y+62);
+      y += boxH + 16;
 
-      // Comparison charts (prev radar, curr radar, delta bar)
+      // Comparison charts — new page so they have full width with no overlap
+      doc.addPage();
+      y = margin;
+
+      // Re-draw comparison header on new page
+      doc.setFillColor(30,58,95);
+      doc.roundedRect(margin, y, pw-margin*2, 24, 4, 4, 'F');
+      doc.setTextColor(255,255,255); doc.setFontSize(9); doc.setFont('helvetica','bold');
+      doc.text('COMPARISON CHARTS — Previous (Blue) · Current (Green) · Delta (Purple)', margin+12, y+16);
+      y += 32;
+
       try {
-        const prevWrap = document.getElementById('prevRadarChart').closest('.chart-card');
-        const currWrap = document.getElementById('currRadarChart').closest('.chart-card');
+        const prevWrap  = document.getElementById('prevRadarChart').closest('.chart-card');
+        const currWrap  = document.getElementById('currRadarChart').closest('.chart-card');
         const deltaWrap = document.getElementById('deltaBarChart').closest('.chart-card');
         const [pc, cc, dbc] = await Promise.all([
-          html2canvas(prevWrap,{scale:1.5,backgroundColor:'#fff',logging:false}),
-          html2canvas(currWrap,{scale:1.5,backgroundColor:'#fff',logging:false}),
-          html2canvas(deltaWrap,{scale:1.5,backgroundColor:'#fff',logging:false})
+          html2canvas(prevWrap, {scale:2,backgroundColor:'#fff',logging:false}),
+          html2canvas(currWrap, {scale:2,backgroundColor:'#fff',logging:false}),
+          html2canvas(deltaWrap,{scale:2,backgroundColor:'#fff',logging:false})
         ]);
         const cw2 = (pw-margin*2-16)/3;
-        doc.addImage(pc.toDataURL(),'PNG',margin,y,cw2,cw2*1.05);
-        doc.addImage(cc.toDataURL(),'PNG',margin+cw2+8,y,cw2,cw2*1.05);
-        doc.addImage(dbc.toDataURL(),'PNG',margin+cw2*2+16,y,cw2,cw2*1.05);
-        y += cw2*1.05+20;
+        const ch2 = cw2 * 1.1;
+        doc.addImage(pc.toDataURL(), 'PNG', margin,          y, cw2, ch2);
+        doc.addImage(cc.toDataURL(), 'PNG', margin+cw2+8,    y, cw2, ch2);
+        doc.addImage(dbc.toDataURL(),'PNG', margin+cw2*2+16, y, cw2, ch2);
+        y += ch2 + 20;
       } catch(e) { y += 10; }
 
       // Per-category comparison table
@@ -4610,7 +4624,7 @@ async function exportPDF() {
         const cAvg = cVals.length ? (cVals.reduce((a,b)=>a+b,0)/cVals.length) : 0;
         const d = cAvg > 0 ? (cAvg - pAvg) : null;
         const dC = d===null?[148,163,184]:d>0.1?[5,150,105]:d<-0.1?[220,53,69]:[99,102,241];
-        const verdict = d===null?'—':d>0.1?'Improved':d<-0.1?'Declined':'No Change';
+        const verdict = d===null?'—':d>0.1?'Improved (+)':d<-0.1?'Declined (-)':'No Change (=)';
         const rowBg = i%2===0?[255,255,255]:[248,250,252];
         doc.setFillColor(...rowBg); doc.rect(margin, y, pw-margin*2, 18, 'F');
         doc.setTextColor(26,39,68); doc.setFontSize(8); doc.setFont('helvetica','bold');
@@ -4620,7 +4634,7 @@ async function exportPDF() {
         doc.setTextColor(5,150,105);
         doc.text(cAvg>0?cAvg.toFixed(2):'—', colX[2]+4, y+13);
         doc.setTextColor(...dC); doc.setFont('helvetica','bold');
-        doc.text(d===null?'—':(d>=0?'+':'')+d.toFixed(2), colX[3]+4, y+13);
+        doc.text(d===null?'—':(d>0?'+':d<0?'':'')+d.toFixed(2), colX[3]+4, y+13);
         doc.text(verdict, colX[4]+4, y+13);
         y += 18;
       });
@@ -4647,39 +4661,56 @@ async function exportPDF() {
           const cVal = state.responses[q.id]||0;
           const d2 = (cVal>0 && pVal>0) ? cVal-pVal : null;
           const d2C = d2===null?[148,163,184]:d2>0?[5,150,105]:d2<0?[220,53,69]:[99,102,241];
+          // Question label — up to 2 lines
           const qLines = doc.splitTextToSize(`${qIdx+1}. ${q.label}`, pw-margin*2-8);
+          if (y > ph-55) { doc.addPage(); y = margin; }
           doc.setTextColor(30,40,60); doc.setFontSize(7.5); doc.setFont('helvetica','bold');
-          doc.text(qLines[0], margin+6, y);
-          y += 12;
-          // Score bars row: PREV  CURR  DELTA
-          const bw = 16;
-          // Prev circles
+          const labelLines = qLines.slice(0,2);
+          labelLines.forEach(l => { doc.text(l, margin+6, y); y += 11; });
+          y += 2;
+
+          // Score bars row: PREV circles | score | NOW circles | score | DELTA
+          const bw = 15;
+          const rowY = y;
+          // PREV label + circles
           doc.setTextColor(100,116,139); doc.setFontSize(6.5); doc.setFont('helvetica','normal');
-          doc.text('PREV:', margin+6, y+7);
+          doc.text('PREV:', margin+6, rowY+7);
           for(let n=1;n<=5;n++){
-            if(pVal>0&&n<=pVal){doc.setFillColor(37,99,235);}else{doc.setFillColor(226,232,240);}
-            doc.circle(margin+42+(n-1)*bw, y+5, 6, 'F');
-            if(pVal>0&&n<=pVal){doc.setTextColor(255,255,255);}else{doc.setTextColor(180,185,195);}
-            doc.setFontSize(6); doc.text(String(n), margin+39+(n-1)*bw, y+8);
+            if(pVal>0&&n<=pVal){doc.setFillColor(37,99,235);}else{doc.setFillColor(220,225,235);}
+            doc.circle(margin+40+(n-1)*bw, rowY+5, 5.5, 'F');
+            if(pVal>0&&n<=pVal){doc.setTextColor(255,255,255);}else{doc.setTextColor(160,170,180);}
+            doc.setFontSize(6); doc.text(String(n), margin+37+(n-1)*bw, rowY+8);
           }
-          doc.setTextColor(37,99,235); doc.setFontSize(7); doc.setFont('helvetica','bold');
-          doc.text(pVal>0?pVal+'/5':'—', margin+130, y+7);
-          // Curr circles
+          doc.setTextColor(37,99,235); doc.setFontSize(7.5); doc.setFont('helvetica','bold');
+          doc.text(pVal>0?pVal+'/5':'---', margin+124, rowY+7);
+
+          // Separator
+          doc.setDrawColor(210,215,225); doc.setLineWidth(0.5);
+          doc.line(margin+148, rowY+1, margin+148, rowY+11);
+
+          // NOW label + circles
           doc.setTextColor(100,116,139); doc.setFontSize(6.5); doc.setFont('helvetica','normal');
-          doc.text('NOW:', margin+155, y+7);
+          doc.text('NOW:', margin+154, rowY+7);
           for(let n=1;n<=5;n++){
-            if(cVal>0&&n<=cVal){doc.setFillColor(5,150,105);}else{doc.setFillColor(226,232,240);}
-            doc.circle(margin+191+(n-1)*bw, y+5, 6, 'F');
-            if(cVal>0&&n<=cVal){doc.setTextColor(255,255,255);}else{doc.setTextColor(180,185,195);}
-            doc.setFontSize(6); doc.text(String(n), margin+188+(n-1)*bw, y+8);
+            if(cVal>0&&n<=cVal){doc.setFillColor(5,150,105);}else{doc.setFillColor(220,225,235);}
+            doc.circle(margin+190+(n-1)*bw, rowY+5, 5.5, 'F');
+            if(cVal>0&&n<=cVal){doc.setTextColor(255,255,255);}else{doc.setTextColor(160,170,180);}
+            doc.setFontSize(6); doc.text(String(n), margin+187+(n-1)*bw, rowY+8);
           }
-          doc.setTextColor(5,150,105); doc.setFontSize(7); doc.setFont('helvetica','bold');
-          doc.text(cVal>0?cVal+'/5':'—', margin+280, y+7);
-          // Delta badge
+          doc.setTextColor(5,150,105); doc.setFontSize(7.5); doc.setFont('helvetica','bold');
+          doc.text(cVal>0?cVal+'/5':'---', margin+274, rowY+7);
+
+          // Delta — plain ASCII, color coded
+          const deltaNum = d2===null ? '' : (d2>0?'+':'')+String(d2);
+          const deltaLbl = d2===null ? '---' : d2>0 ? deltaNum+' BETTER' : d2<0 ? deltaNum+' LOWER' : '= SAME';
           doc.setTextColor(...d2C); doc.setFontSize(8); doc.setFont('helvetica','bold');
-          const d2Str = d2===null?'—':d2>0?'▲ +'+d2:d2<0?'▼ '+d2:'= 0';
-          doc.text(d2Str, margin+305, y+7);
-          y += 18;
+          doc.text(deltaLbl, margin+300, rowY+7);
+
+          y = rowY + 17;
+          // thin divider between questions
+          doc.setDrawColor(235,238,245); doc.setLineWidth(0.3);
+          doc.line(margin, y, pw-margin, y);
+          y += 5;
         });
       });
     }
@@ -4697,6 +4728,7 @@ async function exportPDF() {
       y += 36;
     }
 
+    if (!isProbationComparison) { // skip standard Q loop for probation — comparison block already rendered all questions
     template.forEach((section,sIdx) => {
       addSectionHeader(section.title, sIdx+1);
       section.questions.forEach((q,qIdx) => {
@@ -4783,6 +4815,8 @@ async function exportPDF() {
       doc.setTextColor(30,60,180); doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
       doc.text(recEl.value, margin+10, y+15); y+=32;
     }
+
+    } // end !isProbationComparison
 
     // Signatures — 3 boxes: Employee | Manager | HR Manager
     if(y>ph-220){doc.addPage();y=margin;}
@@ -6628,6 +6662,209 @@ async function buildHistoryPDFDoc(r) {
   state.employee = _savedEmployee;
   const rBands   = ['Poor','Below Expectations','Meets Expectations','Exceeds Expectations','Outstanding'];
   const rClrs    = [RED, AMB, BLU, GRN, [4,130,90]];
+
+  // ══════════════════════════════════════════════════════════════════════
+  // PROBATION COMPARISON SECTION (only for progress reviews with a compared_review_id)
+  // ══════════════════════════════════════════════════════════════════════
+  let prevReviewRecord = null;
+  const isProbComparison = r.review_type === 'progress' && r.compared_review_id;
+  console.log('📋 buildHistoryPDFDoc | review_type:', r.review_type, '| compared_review_id:', r.compared_review_id, '| isProbComparison:', isProbComparison);
+
+  if (isProbComparison) {
+    console.log('🔍 Fetching previous review:', r.compared_review_id);
+    try {
+      const { data: prevRec, error: prevErr } = await sb.from('performance_reviews')
+        .select('id, review_type, review_date, responses, overall_score, employee_name')
+        .eq('id', r.compared_review_id)
+        .single();
+      if (prevErr) {
+        console.error('❌ Failed to fetch previous review:', prevErr.message);
+      } else {
+        prevReviewRecord = prevRec;
+        if (typeof prevReviewRecord.responses === 'string') {
+          try { prevReviewRecord.responses = JSON.parse(prevReviewRecord.responses); } catch(e) { prevReviewRecord.responses = {}; }
+        }
+        console.log('✅ Previous review loaded:', prevReviewRecord.review_type, prevReviewRecord.review_date, '| responses keys:', Object.keys(prevReviewRecord.responses||{}).length);
+      }
+    } catch(ex) {
+      console.error('❌ Exception fetching previous review:', ex.message);
+    }
+  }
+
+  if (isProbComparison && prevReviewRecord) {
+    const prevResponses = prevReviewRecord.responses || {};
+
+    // ── Score headline boxes ─────────────────────────────────────────
+    doc.addPage(); y = ML;
+
+    // Header bar
+    setF(NAVY); doc.roundedRect(ML, y, CW, 28, 4,4,'F');
+    setC(WHITE); doc.setFont('helvetica','bold'); doc.setFontSize(10);
+    doc.text('PROGRESS / PROBATION COMPARISON  —  PREVIOUS vs. CURRENT', ML+12, y+19);
+    y += 38;
+
+    // Compute averages
+    const prevVals = Object.values(prevResponses).map(v=>parseInt(v)).filter(v=>v>=1&&v<=5);
+    const currVals = Object.entries(responses).filter(([k,v])=>typeof v==='number'&&v>=1&&v<=5).map(([,v])=>v);
+    const prevAvg  = prevVals.length ? prevVals.reduce((a,b)=>a+b,0)/prevVals.length : 0;
+    const currAvg  = currVals.length ? currVals.reduce((a,b)=>a+b,0)/currVals.length : 0;
+    const diff     = currAvg - prevAvg;
+    const prevTypeLabel = {annual:'Annual Review',coaching:'Coaching Plan',progress:'Probation Review'}[prevReviewRecord.review_type]||'Previous';
+    const prevDateStr = fmtD(prevReviewRecord.review_date);
+
+    console.log('📊 prevAvg:', prevAvg.toFixed(2), '| currAvg:', currAvg.toFixed(2), '| diff:', diff.toFixed(2));
+
+    const boxW3 = (CW - 20) / 3;
+    const boxH3 = 70;
+
+    // Prev box
+    setF([239,246,255]); doc.roundedRect(ML, y, boxW3, boxH3, 4,4,'F');
+    setD([191,219,254],0.8); doc.roundedRect(ML, y, boxW3, boxH3, 4,4,'S');
+    setC([30,64,175]); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+    doc.text('PREVIOUS SCORE', ML+8, y+13);
+    doc.setFontSize(26); doc.text(prevAvg>0?prevAvg.toFixed(2):'---', ML+8, y+43);
+    doc.setFontSize(7); doc.setFont('helvetica','normal'); setC([96,165,250]);
+    doc.text(prevTypeLabel, ML+8, y+55);
+    doc.text(prevDateStr, ML+8, y+63);
+
+    // Delta box
+    const dClr = diff>0.05?GRN:diff<-0.05?RED:[99,102,241];
+    const dBg  = diff>0.05?[236,253,245]:diff<-0.05?[254,242,242]:[238,242,255];
+    const dTxt = diff>0.05?'IMPROVED':diff<-0.05?'DECLINED':'NO CHANGE';
+    const dSign= diff>=0?'+':'';
+    setF(dBg); doc.roundedRect(ML+boxW3+10, y, boxW3, boxH3, 4,4,'F');
+    setD([...dClr.map(c=>Math.min(255,c+60))],0.8); doc.roundedRect(ML+boxW3+10, y, boxW3, boxH3, 4,4,'S');
+    setC(dClr); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+    doc.text('PERFORMANCE CHANGE', ML+boxW3+18, y+13);
+    doc.setFontSize(22); doc.text(dSign+diff.toFixed(2), ML+boxW3+18, y+40);
+    doc.setFontSize(9); doc.text(dTxt, ML+boxW3+18, y+54);
+
+    // Current box
+    setF([236,253,245]); doc.roundedRect(ML+boxW3*2+20, y, boxW3, boxH3, 4,4,'F');
+    setD([134,239,172],0.8); doc.roundedRect(ML+boxW3*2+20, y, boxW3, boxH3, 4,4,'S');
+    setC([6,95,70]); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+    doc.text('CURRENT SCORE', ML+boxW3*2+28, y+13);
+    doc.setFontSize(26); doc.text(currAvg>0?currAvg.toFixed(2):'---', ML+boxW3*2+28, y+43);
+    doc.setFontSize(7); doc.setFont('helvetica','normal'); setC([16,185,129]);
+    doc.text('Progress / Probation Review', ML+boxW3*2+28, y+55);
+    doc.text(cstDateStr, ML+boxW3*2+28, y+63);
+    y += boxH3 + 16;
+
+    // ── Category comparison table ────────────────────────────────────
+    checkPage(50);
+    setF(NAVY); doc.roundedRect(ML, y, CW, 22, 3,3,'F');
+    setC(WHITE); doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+    doc.text('CATEGORY-BY-CATEGORY COMPARISON', ML+10, y+15);
+    y += 28;
+
+    // Table header
+    const cX = [ML, ML+200, ML+275, ML+345, ML+420];
+    setF([248,250,252]); doc.rect(ML, y, CW, 18, 'F');
+    setD(BORD,0.5); doc.rect(ML, y, CW, 18, 'S');
+    setC(SLATE); doc.setFont('helvetica','bold'); doc.setFontSize(7);
+    ['CATEGORY','PREVIOUS','CURRENT','DELTA','VERDICT'].forEach((h,i)=>doc.text(h, cX[i]+4, y+12));
+    y += 18;
+
+    template.forEach((section, si) => {
+      checkPage(22);
+      const prevRqs = section.questions.filter(q=>!q.type||q.type==='rating');
+      const pVals = prevRqs.map(q=>parseInt(prevResponses[q.id])||0).filter(v=>v>0);
+      const cVals2 = prevRqs.map(q=>responses[q.id]).filter(v=>v>0);
+      const pAvg2  = pVals.length ? (pVals.reduce((a,b)=>a+b,0)/pVals.length) : 0;
+      const cAvg2  = cVals2.length ? (cVals2.reduce((a,b)=>a+b,0)/cVals2.length) : 0;
+      const d2     = cAvg2>0 ? (cAvg2-pAvg2) : null;
+      const d2Clr  = d2===null?SLATE:d2>0.1?GRN:d2<-0.1?RED:[99,102,241];
+      const verdict= d2===null?'---':d2>0.1?'Improved':d2<-0.1?'Declined':'No Change';
+      const rowBg  = si%2===0?WHITE:[248,250,252];
+      setF(rowBg); doc.rect(ML, y, CW, 18, 'F');
+      setD(BORD,0.3); doc.rect(ML, y, CW, 18, 'S');
+      setC(NAVY); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+      doc.text(section.title.substring(0,26), cX[0]+4, y+12);
+      setC(BLU); doc.setFont('helvetica','normal');
+      doc.text(pAvg2>0?pAvg2.toFixed(2):'---', cX[1]+4, y+12);
+      setC(GRN);
+      doc.text(cAvg2>0?cAvg2.toFixed(2):'---', cX[2]+4, y+12);
+      setC(d2Clr); doc.setFont('helvetica','bold');
+      doc.text(d2===null?'---':(d2>=0?'+':'')+d2.toFixed(2), cX[3]+4, y+12);
+      doc.text(verdict, cX[4]+4, y+12);
+      y += 18;
+    });
+    y += 14;
+
+    // ── Question-by-question: PREV + NOW side by side ────────────────
+    checkPage(50);
+    setF(NAVY); doc.roundedRect(ML, y, CW, 22, 3,3,'F');
+    setC(WHITE); doc.setFont('helvetica','bold'); doc.setFontSize(8.5);
+    doc.text('QUESTION-BY-QUESTION COMPARISON  |  PREV (blue)  vs.  CURRENT (green)', ML+10, y+15);
+    y += 28;
+
+    template.forEach((section, sIdx) => {
+      checkPage(50);
+      // Section sub-header
+      setF([234,238,248]); doc.roundedRect(ML, y, CW, 20, 3,3,'F');
+      setF(GOLD); doc.circle(ML+14, y+10, 10,'F');
+      setC(NAVY); doc.setFont('helvetica','bold'); doc.setFontSize(8);
+      doc.text(String(sIdx+1), ML+14-doc.getTextWidth(String(sIdx+1))/2, y+14);
+      doc.setFontSize(9);
+      doc.text(section.title, ML+30, y+14);
+      y += 26;
+
+      section.questions.filter(q=>!q.type||q.type==='rating').forEach((q, qIdx) => {
+        checkPage(38);
+        const pVal3 = parseInt(prevResponses[q.id])||0;
+        const cVal3 = typeof responses[q.id]==='number'?responses[q.id]:0;
+        const d3    = (pVal3>0&&cVal3>0) ? cVal3-pVal3 : null;
+        const d3Clr = d3===null?SLATE:d3>0?GRN:d3<0?RED:[99,102,241];
+
+        // Question text (1 line, truncated)
+        const qTxt3 = (qIdx+1)+'. '+q.label;
+        const qL3   = doc.splitTextToSize(qTxt3, CW-8);
+        setC([30,42,68]); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+        doc.text(qL3[0], ML+4, y);
+        if(qL3[1]) { doc.text(qL3[1], ML+4, y+9); y+=9; }
+        y += 12;
+
+        // PREV row
+        const bw3 = 13;
+        doc.setFont('helvetica','bold'); doc.setFontSize(6.5); setC(SLATE);
+        doc.text('PREV:', ML+4, y+6);
+        for(let n=1;n<=5;n++){
+          setF(pVal3>0&&n<=pVal3?BLU:[220,225,235]);
+          doc.circle(ML+38+(n-1)*bw3, y+4, 5, 'F');
+          setC(pVal3>0&&n<=pVal3?WHITE:[160,168,180]);
+          doc.setFontSize(5.5); doc.text(String(n), ML+35+(n-1)*bw3, y+7);
+        }
+        setC(BLU); doc.setFont('helvetica','bold'); doc.setFontSize(7);
+        doc.text(pVal3>0?pVal3+'/5':'---', ML+118, y+6);
+
+        // separator
+        setD([210,215,225],0.4); doc.line(ML+140, y+1, ML+140, y+9);
+
+        // NOW row
+        setC(SLATE); doc.setFont('helvetica','bold'); doc.setFontSize(6.5);
+        doc.text('NOW:', ML+146, y+6);
+        for(let n=1;n<=5;n++){
+          setF(cVal3>0&&n<=cVal3?[4,130,90]:[220,225,235]);
+          doc.circle(ML+178+(n-1)*bw3, y+4, 5, 'F');
+          setC(cVal3>0&&n<=cVal3?WHITE:[160,168,180]);
+          doc.setFontSize(5.5); doc.text(String(n), ML+175+(n-1)*bw3, y+7);
+        }
+        setC(GRN); doc.setFont('helvetica','bold'); doc.setFontSize(7);
+        doc.text(cVal3>0?cVal3+'/5':'---', ML+256, y+6);
+
+        // Delta
+        const d3Str = d3===null?'---':d3>0?'+'+d3+' BETTER':d3<0?d3+' LOWER':'= SAME';
+        setC(d3Clr); doc.setFont('helvetica','bold'); doc.setFontSize(7.5);
+        doc.text(d3Str, ML+282, y+6);
+
+        y += 16;
+        // thin divider
+        setD([235,238,245],0.3); doc.line(ML, y, ML+CW, y);
+        y += 4;
+      });
+      y += 6;
+    });
+  }
 
   // Section title
   checkPage(40);
