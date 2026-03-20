@@ -1373,6 +1373,8 @@ function matchesHistoryTab(r, tab) {
 function reviewAllowedForUser(r) {
   if (_allowedJobTitles === 'all') return true;
   const pos = (r.employee_position || '').toLowerCase().trim();
+  // If position is blank, show to all users (don't hide records with missing position data)
+  if (!pos) return true;
   return _allowedJobTitles.some(t => pos === t.toLowerCase().trim());
 }
 
@@ -3329,6 +3331,28 @@ function selectEmployee(emp) {
   const initials = emp.name.split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase();
   document.getElementById('empAvatar').textContent = initials;
   document.getElementById('empName').textContent = emp.name;
+
+  // ── Pre-populate signature fields ──────────────────────────────
+  const empSigNameEl = document.getElementById('empSigName');
+  if (empSigNameEl && !empSigNameEl.value) empSigNameEl.value = emp.name;
+  const empSigDateEl = document.getElementById('empSigDate');
+  if (empSigDateEl && !empSigDateEl.value) {
+    const nowCST = new Date(new Date().toLocaleString('en-US',{timeZone:'America/Chicago'}));
+    empSigDateEl.value = nowCST.toISOString().split('T')[0];
+  }
+  // Pre-fill reviewer name/title from the logged-in user (if not already set)
+  if (_loggedInUser) {
+    const mgrNameEl  = document.getElementById('mgrSigName');
+    const mgrTitleEl = document.getElementById('mgrSigTitle');
+    const mgrDateEl  = document.getElementById('mgrSigDate');
+    const fullName   = ((_loggedInUser.first_name||'') + ' ' + (_loggedInUser.last_name||'')).trim();
+    if (mgrNameEl  && !mgrNameEl.value)  mgrNameEl.value  = fullName;
+    if (mgrTitleEl && !mgrTitleEl.value) mgrTitleEl.value = _loggedInUser.job_title || '';
+    if (mgrDateEl  && !mgrDateEl.value) {
+      const nowCST2 = new Date(new Date().toLocaleString('en-US',{timeZone:'America/Chicago'}));
+      mgrDateEl.value = nowCST2.toISOString().split('T')[0];
+    }
+  }
   // Show actual position + actual department from DB, not derived dept
   const dbDept = emp.department || dept;
   const reportsTo = emp.report_to || emp.reports_to || emp.supervisor || '';
@@ -3820,20 +3844,27 @@ function updateCharts() {
   const template = getTemplate(dept, state.reviewType);
   if (!state.charts.radar) return;
 
+  // Build set of valid template rating question IDs (excludes 'overall' and non-rating types)
+  const ratingQIds = new Set();
+  template.forEach(s => s.questions.filter(q => !q.type || q.type==='rating').forEach(q => ratingQIds.add(q.id)));
+  const totalRating = ratingQIds.size;
+
   const sectionAvgs = template.map(section => {
     const rqs = section.questions.filter(q => !q.type || q.type==='rating');
     const vals = rqs.map(q => state.responses[q.id]).filter(v => v>0);
     return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : 0;
   });
 
-  const allVals = Object.values(state.responses).filter(v=>typeof v==='number'&&v>0);
+  // Only count responses for template rating questions (not 'overall' or other keys)
+  const allVals = Object.entries(state.responses)
+    .filter(([k,v]) => ratingQIds.has(k) && typeof v==='number' && v>0)
+    .map(([,v]) => v);
   const globalAvg = allVals.length ? allVals.reduce((a,b)=>a+b,0)/allVals.length : 0;
 
   state.charts.radar.data.datasets[0].data = sectionAvgs; state.charts.radar.update('none');
   state.charts.bar.data.datasets[0].data = sectionAvgs; state.charts.bar.update('none');
 
   const dist = [5,4,3,2,1].map(v=>allVals.filter(x=>x===v).length);
-  const totalRating = template.reduce((acc,s)=>acc+s.questions.filter(q=>!q.type||q.type==='rating').length,0);
   state.charts.doughnut.data.datasets[0].data = [...dist, Math.max(0, totalRating-allVals.length)];
   state.charts.doughnut.update('none');
 
@@ -3843,7 +3874,7 @@ function updateCharts() {
   });
 
   const band = getBand(globalAvg);
-  const pct = Math.round((allVals.length/Math.max(1,totalRating))*100);
+  const pct = Math.min(100, Math.round((allVals.length/Math.max(1,totalRating))*100));
   document.getElementById('scoreSummaryGrid').innerHTML = `
     <div class="score-card blue"><div class="score-card-val">${globalAvg>0?globalAvg.toFixed(2):'—'}</div><div class="score-card-label">Overall Score</div><div class="score-card-sub">Out of 5.00</div></div>
     <div class="score-card gold"><div class="score-card-val">${allVals.length}</div><div class="score-card-label">Rated Questions</div><div class="score-card-sub">of ${totalRating} total</div></div>
@@ -3893,10 +3924,13 @@ function updateProgress() {
   if (!state.employee||!state.reviewType) return;
   const dept = detectDepartment(state.employee);
   const template = getTemplate(dept,state.reviewType);
-  const total = template.reduce((acc,s)=>acc+s.questions.filter(q=>!q.type||q.type==='rating').length,0);
-  const done = Object.values(state.responses).filter(v=>typeof v==='number'&&v>0).length;
+  // Count only template rating questions (exclude 'overall' which is tracked separately)
+  const ratingQIds = new Set();
+  template.forEach(s => s.questions.filter(q => !q.type || q.type==='rating').forEach(q => ratingQIds.add(q.id)));
+  const total = ratingQIds.size;
+  const done = Object.entries(state.responses).filter(([k,v]) => ratingQIds.has(k) && typeof v==='number' && v>0).length;
   const el = document.getElementById('formProgress');
-  if (el) el.textContent = Math.round((done/Math.max(1,total))*100)+'% Complete';
+  if (el) el.textContent = Math.min(100, Math.round((done/Math.max(1,total))*100))+'% Complete';
 }
 
 function updateWordCount(el, countId) {
@@ -3924,88 +3958,121 @@ function clearSig(who) {
 }
 
 let saveTimer;
-function autoSave() { clearTimeout(saveTimer); saveTimer = setTimeout(()=>doSave(false), 2500); }
+function autoSave() {
+  if (!sb || !state.employee) return; // don't attempt save without DB or employee
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    const ok = await doSave(false);
+    if (!ok) console.warn('⚠️ Auto-save failed — check console for details');
+  }, 2500);
+}
 
 async function doSave(isFinal=false) {
   if (!state.employee) return;
+  if (!sb) {
+    showToast('❌ Database not connected — cannot save', 'error');
+    return;
+  }
+
   const formData = collectFormData();
-  try {
-    // Collect summary fields
-    const gVal = id => document.getElementById(id)?.value || null;
-    const emp = state.employee;
-    const payload = {
-      // Employee identity
-      employee_id:       parseInt(emp.id || emp.employee_id) || null,  // employees2025.id is INTEGER
-      employee_name:     emp.name,
-      employee_position: emp.position || emp.job_title || null,
-      employee_dept_raw: emp.department || null,
-      department:        detectDepartment(emp),
-      hire_date:         emp.hire_date || null,
-      is_management:     !!(emp.is_management || emp.IsManagement),
+  const gVal = id => document.getElementById(id)?.value || null;
+  const emp = state.employee;
 
-      // Review metadata
-      review_type:    state.reviewType,
-      review_date:    gVal('reviewDate'),
-      period_start:   gVal('reviewStart'),
-      period_end:     gVal('reviewEnd'),
+  // Core columns — guaranteed to exist in every version of the table
+  const corePayload = {
+    employee_name:     emp.name,
+    employee_id:       parseInt(emp.id || emp.employee_id) || null,
+    employee_position: emp.position || emp.job_title || null,
+    department:        detectDepartment(emp),
+    is_management:     !!(emp.is_management || emp.IsManagement),
+    review_type:       state.reviewType,
+    review_date:       gVal('reviewDate'),
+    period_start:      gVal('reviewStart'),
+    period_end:        gVal('reviewEnd'),
+    responses:         formData.responses,
+    overall_score:     formData.overallScore,
+    strengths:         gVal('overallStrengths'),
+    development:       gVal('overallDevelopment'),
+    goals:             gVal('overallGoals'),
+    status:            isFinal ? 'submitted' : 'draft',
+    updated_at:        new Date().toISOString()
+  };
 
-      // Scores & responses (full JSON)
-      responses:         formData.responses,
-      category_scores:   formData.categoryScores || null,
-      category_comments: formData.categoryComments,
-      overall_score:     formData.overallScore,
-      performance_band:  formData.band,
+  // Extended columns — include if they exist in the table; auto-dropped on schema error
+  const extendedPayload = {
+    ...corePayload,
+    employee_dept_raw:  emp.department || null,
+    hire_date:          emp.hire_date || null,
+    category_scores:    formData.categoryScores || null,
+    category_comments:  formData.categoryComments,
+    performance_band:   formData.band,
+    recommendation:     gVal('overallRecommendation') || gVal('q-recommendation'),
+    compared_review_id: gVal('probationPrevReviewId') || null,
+    employee_sig_name:  gVal('empSigName'),
+    employee_sig_date:  gVal('empSigDate'),
+    manager_sig_name:   gVal('mgrSigName'),
+    manager_sig_title:  gVal('mgrSigTitle'),
+    manager_sig_date:   gVal('mgrSigDate'),
+    reviewer_name:      gVal('mgrSigName'),
+    reviewer_title:     gVal('mgrSigTitle'),
+    hr_ack_name:        gVal('hrAckName'),
+    hr_ack_title:       gVal('hrAckTitle'),
+    hr_ack_date:        gVal('hrAckDate'),
+    hr_ack_notes:       gVal('hrAckNotes'),
+    hr_ack_username:    _hrManagerUsername || null,
+  };
 
-      // Summary narrative fields
-      strengths:       gVal('overallStrengths'),
-      development:     gVal('overallDevelopment'),
-      goals:           gVal('overallGoals'),
-      recommendation:  gVal('overallRecommendation'),
-
-      // Probation comparison
-      compared_review_id: gVal('probationPrevReviewId') || null,
-
-      // Signatures (names, dates, and pad images)
-      employee_sig_name:  gVal('empSigName'),
-      employee_sig_date:  gVal('empSigDate'),
-      manager_sig_name:   gVal('mgrSigName'),
-      manager_sig_title:  gVal('mgrSigTitle'),
-      manager_sig_date:   gVal('mgrSigDate'),
-      reviewer_name:      gVal('mgrSigName'),
-      reviewer_title:     gVal('mgrSigTitle'),
-      employee_sig_image: (state.empSigPad && !state.empSigPad.isEmpty()) ? state.empSigPad.toDataURL() : null,
-      manager_sig_image:  (state.mgrSigPad && !state.mgrSigPad.isEmpty()) ? state.mgrSigPad.toDataURL() : null,
-      hr_sig_image:       (state.hrSigPad  && !state.hrSigPad.isEmpty())  ? state.hrSigPad.toDataURL()  : null,
-
-      // HR Director acknowledgment
-      hr_ack_name:     gVal('hrAckName'),
-      hr_ack_title:    gVal('hrAckTitle'),
-      hr_ack_date:     gVal('hrAckDate'),
-      hr_ack_notes:    gVal('hrAckNotes'),
-      hr_ack_username: _hrManagerUsername || null,
-      hr_ack_at:       _hrManagerUsername ? new Date().toISOString() : null,
-
-      // Status & timestamps
-      status:     isFinal ? 'submitted' : 'draft',
-      updated_at: new Date().toISOString()
-    };
+  const tryWrite = async (payload) => {
     if (state.reviewId) {
-      await sb.from('performance_reviews').update(payload).eq('id',state.reviewId);
+      const { error } = await sb.from('performance_reviews').update(payload).eq('id', state.reviewId);
+      if (error) throw error;
+      return null;
     } else {
-      const {data,error} = await sb.from('performance_reviews').insert([payload]).select('id').single();
-      if (!error && data) {
-        state.reviewId = data.id;
-        // Show the Update PDF button now that a record exists
-        const regenBtn = document.getElementById('regenPdfBtn');
-        if (regenBtn) regenBtn.style.display = 'inline-flex';
+      const { data, error } = await sb.from('performance_reviews').insert([payload]).select('id').single();
+      if (error) throw error;
+      return data;
+    }
+  };
+
+  try {
+    let data = null;
+    try {
+      data = await tryWrite(extendedPayload);
+    } catch(schemaErr) {
+      // Column doesn't exist — retry with safe core columns only
+      if (schemaErr.code === 'PGRST204' || (schemaErr.message||'').includes('column')) {
+        console.warn('⚠️ Schema fallback — missing column:', schemaErr.message, '— retrying with core payload');
+        data = await tryWrite(corePayload);
+      } else {
+        throw schemaErr;
       }
     }
-    if (isFinal) {
-      showToast('Review submitted successfully! ✅','success');
-      const el = document.getElementById('submitStatus');
-      if (el) { el.textContent='✅ Submitted'; el.className='status-badge status-submitted'; }
+
+    if (!state.reviewId && data) {
+      if (!data.id) throw new Error('Insert returned no ID');
+      state.reviewId = data.id;
+      const regenBtn = document.getElementById('regenPdfBtn');
+      if (regenBtn) regenBtn.style.display = 'inline-flex';
     }
-  } catch(e) { console.log('Save note:',e.message); }
+
+    if (isFinal) {
+      showToast('✅ Review submitted & saved to database!', 'success');
+      const el = document.getElementById('submitStatus');
+      if (el) { el.textContent = '✅ Submitted'; el.className = 'status-badge status-submitted'; }
+    }
+
+    return true;
+
+  } catch(err) {
+    const msg = err.message || JSON.stringify(err);
+    console.error('❌ doSave error:', msg, err);
+    if (isFinal) {
+      showToast('❌ SAVE FAILED: ' + msg, 'error');
+      const el = document.getElementById('submitStatus');
+      if (el) { el.textContent = '❌ Save Failed'; el.className = 'status-badge'; el.style.background='#fef2f2'; el.style.color='#dc2626'; }
+    }
+    return false;
+  }
 }
 
 function collectFormData() {
@@ -4041,11 +4108,63 @@ function collectFormData() {
 }
 
 async function submitReview() {
-  if (!state.employee) { showToast('No employee selected','error'); return; }
-  await doSave(true);
-  // Auto-regenerate PDF after submit and save URL back to same record
-  if (state.reviewId) {
-    await autoSavePDFToRecord(state.reviewId);
+  if (!state.employee) { showToast('❌ No employee selected', 'error'); return; }
+  if (!state.reviewType) { showToast('❌ No review type selected', 'error'); return; }
+  if (!sb) { showToast('❌ Database not connected — check your internet connection and reload', 'error'); return; }
+
+  // Update submit button to show progress
+  const submitBtn = document.querySelector('[onclick="submitReview()"]');
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '⏳ Saving to database…'; }
+
+  const statusEl = document.getElementById('submitStatus');
+  if (statusEl) { statusEl.textContent = '⏳ Saving…'; statusEl.className = 'status-badge'; }
+
+  try {
+    const saved = await doSave(true);
+
+    if (!saved) {
+      // doSave already showed the error toast — just re-enable button
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '✅ Submit Final Review'; }
+      return;
+    }
+
+    // Confirm the record is actually in the DB by reading it back
+    if (state.reviewId) {
+      const { data: verify, error: vErr } = await sb.from('performance_reviews')
+        .select('id, employee_name, status')
+        .eq('id', state.reviewId)
+        .single();
+
+      if (vErr || !verify) {
+        showToast('⚠️ Save may have failed — record not found after insert. Check Supabase console.', 'error');
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '✅ Submit Final Review'; }
+        return;
+      }
+
+      // Confirmed in DB ✅
+      showToast('✅ ' + verify.employee_name + '\'s review saved to database! ID: ' + verify.id, 'success');
+      if (statusEl) { statusEl.textContent = '✅ Submitted'; statusEl.className = 'status-badge status-submitted'; }
+      if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '✅ Submitted'; submitBtn.style.background = '#059669'; }
+
+      // Immediately update history list
+      try {
+        const { data: newRec } = await sb.from('performance_reviews').select('*').eq('id', state.reviewId).single();
+        if (newRec) {
+          _historyData = _historyData.filter(r => r.id !== newRec.id);
+          _historyData.unshift(newRec);
+          buildHistoryTabs(_historyData);
+          filterHistory();
+        }
+      } catch(e) { /* non-critical */ }
+
+      // Generate and save PDF in background
+      try { await autoSavePDFToRecord(state.reviewId); } catch(e) { console.warn('PDF gen:', e.message); }
+    }
+
+  } catch(outerErr) {
+    showToast('❌ Unexpected error: ' + (outerErr.message || outerErr), 'error');
+    console.error('submitReview error:', outerErr);
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '✅ Submit Final Review'; }
   }
 }
 
@@ -4119,16 +4238,37 @@ async function exportPDF() {
     doc.setDrawColor(201,168,76); doc.setLineWidth(3); doc.line(0,92,pw,92);
     doc.setDrawColor(26,39,68);   doc.setLineWidth(0.5); doc.line(0,3,pw,3);
 
+    // Logo image in header
+    try {
+      const logoUrl = 'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg';
+      const logoImg = await new Promise((resolve, reject) => {
+        const img = new Image(); img.crossOrigin = 'anonymous';
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('logo load failed'));
+        img.src = logoUrl;
+      });
+      const logoCanvas = document.createElement('canvas');
+      logoCanvas.width = logoImg.naturalWidth; logoCanvas.height = logoImg.naturalHeight;
+      logoCanvas.getContext('2d').drawImage(logoImg, 0, 0);
+      const logoData = logoCanvas.toDataURL('image/jpeg');
+      const logoH = 56; const logoW = logoH * (logoImg.naturalWidth / logoImg.naturalHeight);
+      doc.addImage(logoData, 'JPEG', margin, 18, logoW, logoH);
+      // shift text to the right of logo
+      var textX = margin + logoW + 10;
+    } catch(logoErr) {
+      var textX = margin;
+    }
+
     doc.setTextColor(26,39,68);
     doc.setFontSize(20); doc.setFont('helvetica','bold');
-    doc.text('JENG CHI RESTAURANT', margin, 34);
+    doc.text('JENG CHI RESTAURANT', textX, 34);
     doc.setFontSize(8); doc.setFont('helvetica','normal');
     doc.setTextColor(120,130,150);
-    doc.text('HUMAN RESOURCES MANAGEMENT SYSTEM', margin, 48);
+    doc.text('HUMAN RESOURCES MANAGEMENT SYSTEM', textX, 48);
     const rtMap = {annual:'ANNUAL PERFORMANCE REVIEW',coaching:'IMPROVEMENT & COACHING PLAN',progress:'PROGRESS / PROBATION REVIEW'};
     doc.setFontSize(8); doc.setFont('helvetica','bold');
     doc.setTextColor(201,168,76);
-    doc.text(rtMap[state.reviewType]||'PERFORMANCE REVIEW', margin, 62);
+    doc.text(rtMap[state.reviewType]||'PERFORMANCE REVIEW', textX, 62);
     doc.setTextColor(26,39,68); doc.setFont('helvetica','normal'); doc.setFontSize(7.5);
     doc.text('CONFIDENTIAL — INTERNAL USE ONLY', pw-margin-120, 34);
     doc.setTextColor(120,130,150);
@@ -4279,8 +4419,8 @@ async function exportPDF() {
       doc.text(recEl.value, margin+10, y+15); y+=32;
     }
 
-    // Signatures
-    if(y>ph-180){doc.addPage();y=margin;}
+    // Signatures — 3 boxes: Employee | Manager | HR Manager
+    if(y>ph-220){doc.addPage();y=margin;}
     y+=8;
     doc.setFillColor(248,249,252); doc.roundedRect(margin,y,pw-margin*2,14,3,3,'F');
     doc.setTextColor(26,39,68); doc.setFontSize(9); doc.setFont('helvetica','bold');
@@ -4289,28 +4429,57 @@ async function exportPDF() {
     const ackTxt = 'By signing, the employee acknowledges receipt and discussion of this review. The manager certifies this is an accurate assessment. The employee has 7 calendar days to submit written comments.';
     doc.text(doc.splitTextToSize(ackTxt, pw-margin*2), margin, y); y+=28;
 
-    const sw = (pw-margin*2-20)/2;
+    // Three equal-width signature boxes
+    const sw3 = (pw - margin*2 - 28) / 3;
+    const hrName  = document.getElementById('hrAckName')?.value  || '';
+    const hrTitle = document.getElementById('hrAckTitle')?.value || '';
+    const hrDate  = document.getElementById('hrAckDate')?.value  || '';
+    const sigBoxH = 108;
+
+    // Draw three boxes
     doc.setDrawColor(200,210,225);
-    doc.roundedRect(margin,y,sw,108,4,4,'S');
-    doc.roundedRect(margin+sw+20,y,sw,108,4,4,'S');
-    doc.setTextColor(26,39,68); doc.setFontSize(9); doc.setFont('helvetica','bold');
-    doc.text('Employee Signature', margin+8, y+16);
-    doc.text('Manager / Reviewer Signature', margin+sw+28, y+16);
-    if (state.empSigPad&&!state.empSigPad.isEmpty()) {
-      try { doc.addImage(state.empSigPad.toDataURL(),'PNG',margin+8,y+20,sw-16,54); } catch(e){}
+    doc.roundedRect(margin,           y, sw3, sigBoxH, 4,4,'S');
+    doc.roundedRect(margin+sw3+14,    y, sw3, sigBoxH, 4,4,'S');
+    doc.roundedRect(margin+sw3*2+28,  y, sw3, sigBoxH, 4,4,'S');
+
+    // Labels
+    doc.setTextColor(26,39,68); doc.setFontSize(8.5); doc.setFont('helvetica','bold');
+    doc.text('Employee Signature',          margin+6,          y+15);
+    doc.text('Manager / Reviewer Signature', margin+sw3+20,    y+15);
+    doc.text('HR Director / Owner',          margin+sw3*2+34,  y+15);
+
+    // Signature images
+    if (state.empSigPad && !state.empSigPad.isEmpty()) {
+      try { doc.addImage(state.empSigPad.toDataURL(),'PNG', margin+4,       y+20, sw3-8, 52); } catch(e){}
     }
-    if (state.mgrSigPad&&!state.mgrSigPad.isEmpty()) {
-      try { doc.addImage(state.mgrSigPad.toDataURL(),'PNG',margin+sw+28,y+20,sw-16,54); } catch(e){}
+    if (state.mgrSigPad && !state.mgrSigPad.isEmpty()) {
+      try { doc.addImage(state.mgrSigPad.toDataURL(),'PNG', margin+sw3+18,  y+20, sw3-8, 52); } catch(e){}
     }
-    doc.setDrawColor(180,190,210);
-    doc.line(margin+8,y+80,margin+sw-8,y+80);
-    doc.line(margin+sw+28,y+80,margin+sw*2+12,y+80);
-    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(80,90,110);
-    doc.text((document.getElementById('empSigName')?.value||state.employee.name)+'  |  Date: '+(document.getElementById('empSigDate')?.value||''), margin+8, y+94);
-    const mn = document.getElementById('mgrSigName')?.value||'Manager';
-    const mt = document.getElementById('mgrSigTitle')?.value||'';
-    doc.text(mn+(mt?' — '+mt:'')+'  |  Date: '+(document.getElementById('mgrSigDate')?.value||''), margin+sw+28, y+94);
-    y+=120;
+    if (state.hrSigPad && !state.hrSigPad.isEmpty()) {
+      try { doc.addImage(state.hrSigPad.toDataURL(),'PNG',  margin+sw3*2+32,y+20, sw3-8, 52); } catch(e){}
+    }
+
+    // Signature lines
+    doc.setDrawColor(180,190,210); doc.setLineWidth(0.5);
+    doc.line(margin+6,        y+79, margin+sw3-6,         y+79);
+    doc.line(margin+sw3+20,   y+79, margin+sw3*2+8,       y+79);
+    doc.line(margin+sw3*2+34, y+79, margin+sw3*3+22,      y+79);
+
+    // Names / dates under lines
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(80,90,110);
+    const empSigN = document.getElementById('empSigName')?.value || state.employee.name;
+    const empSigD = document.getElementById('empSigDate')?.value || '';
+    const mgrN    = document.getElementById('mgrSigName')?.value  || 'Manager';
+    const mgrT    = document.getElementById('mgrSigTitle')?.value || '';
+    const mgrD    = document.getElementById('mgrSigDate')?.value  || '';
+
+    doc.text(empSigN + (empSigD ? '  |  ' + empSigD : ''),
+             margin+6, y+90, {maxWidth: sw3-10});
+    doc.text(mgrN + (mgrT ? ' — ' + mgrT : '') + (mgrD ? '  |  ' + mgrD : ''),
+             margin+sw3+20, y+90, {maxWidth: sw3-10});
+    doc.text((hrName || '—') + (hrTitle ? ' — ' + hrTitle : '') + (hrDate ? '  |  ' + hrDate : ''),
+             margin+sw3*2+34, y+90, {maxWidth: sw3-10});
+    y += sigBoxH + 14;
 
     // Footer
     const totalPages = doc.internal.getNumberOfPages();
@@ -4457,7 +4626,7 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
   if (tab === 'history') {
-    if (!_historyData.length) refreshHistory();
+    refreshHistory(); // always reload so new submissions appear immediately
   }
   document.getElementById('panel-'+tab).classList.add('active');
   document.getElementById('tab-'+tab).classList.add('active');
