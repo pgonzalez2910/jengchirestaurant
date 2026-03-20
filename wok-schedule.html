@@ -335,8 +335,9 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 /* === Drag & Drop === */
 .schip[draggable]{cursor:grab}
 .schip[draggable]:active{cursor:grabbing;opacity:.6}
+.schip[draggable] *{pointer-events:none}
 .shift-td.drag-over{background:#EFF6FF!important;outline:2px dashed #1A56DB;outline-offset:-2px}
-.drag-ghost{opacity:.4}
+.drag-ghost{opacity:.35!important;filter:grayscale(.4)}
 /* === Copy-Week button on hover bar === */
 .hcbtn.copy-wk{background:#ECFDF5;color:#047857;border-color:#6EE7B7}
 .hcbtn.copy-wk:hover{background:#047857;color:#fff;border-color:#047857}
@@ -476,13 +477,13 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 <div style="font-size:12px;font-weight:700;color:#0C1A2E;margin-bottom:4px">Smart Auto-Assign Rules</div>
 <div class="rb-chips">
 <span class="rchip">☀️ AM only → No roles</span>
-<span class="rchip">🌙 PM / DBL → Noodle eligible</span>
-<span class="rchip">🍱 PM shift / Day-Off → Lunch eligible (max 2/wk)</span>
-<span class="rchip">🍱 Lunch: never 2 days in a row per chef</span>
+<span class="rchip">⚡ DBL shift only → Lunch eligible</span>
+<span class="rchip">🌙 PM or DBL → Noodle eligible</span>
+<span class="rchip warn">🚫 Lunch + Noodle cannot go to the same person on the same day</span>
+<span class="rchip warn">🍱 No 2 Lunches in a row per chef</span>
+<span class="rchip warn">🔁 Sat ↔ Sun Lunch: no back-to-back across week boundary</span>
+<span class="rchip warn">🍜 No 2 Noodles in a row per chef</span>
 <span class="rchip warn">🍜 Max 3 Noodles per chef per week</span>
-<span class="rchip warn">🍱 Max 2 Lunches per chef per week</span>
-<span class="rchip">🏖️ Vacation days → auto-skipped</span>
-<span class="rchip">1 Lunch + 1 Noodle every day</span>
 </div>
 </div>
 </div>
@@ -704,7 +705,7 @@ var SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
 var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
 var AM_S = '10:00', AM_E = '15:00', PM_S = '16:00', PM_E = '21:00';
 var MAX_NOODLES = 3;
-var MAX_LUNCH = 2;
+var MAX_LUNCH = 99;
 var overriddenDayOff = {};
 var autoSaveTimer = null;
 var supabase = null, dbConnected = false;
@@ -827,8 +828,8 @@ if (s.start && s.end && s.start !== 'vacation' && s.start !== 'disabled') v.push
 var am = false, pm = false;
 for (var j = 0; j < v.length; j++) {
 var h = parseInt(v[j].start.split(':')[0]);
-if (h >= 10 && h < 14) am = true;
-if (h >= 14) pm = true;
+if (h < 14) am = true;   // any morning shift: 6AM, 7AM, 8AM, 9AM, 10AM, etc.
+if (h >= 14) pm = true;  // any evening shift: 2PM, 3PM, 4PM, 5PM, etc.
 }
 var isVac = false, isDisabled = false;
 for (var k = 0; k < dayShifts.length; k++) {
@@ -1091,10 +1092,31 @@ var role = slot.roles ? (slot.roles[day] || {}) : {};
 var hasLunch = !!role.lunch;
 var hasNoodle = !!role.noodle;
 var t = getWeeklyTallies(sk);
-var canLunch = a.isDbl || a.isPMonly || !a.hasAny;
-var canNoodle = a.isDbl || a.isPMonly;
-var lunchMaxed = t.lunch >= MAX_LUNCH && !hasLunch;
+var canLunch = a.isDbl && !hasNoodle;
+var canNoodle = (a.isDbl || a.isPMonly) && !hasLunch;
+var lunchMaxed = false; // no weekly cap for lunch
 var noodleMaxed = t.noodle >= MAX_NOODLES && !hasNoodle;
+// Consecutive-day lunch check (2-in-a-row block)
+var lunch1Back = day >= 1 && slot.roles && slot.roles[day-1] && slot.roles[day-1].lunch === slot.employee;
+var lunch1Fwd  = day <= 5 && slot.roles && slot.roles[day+1] && slot.roles[day+1] && slot.roles[day+1].lunch === slot.employee;
+var lunchConsecBlocked = lunch1Back || lunch1Fwd;
+// Sat↔Sun two-way wrap block
+if (day === 0 || day === 6) {
+var _wrapDay2 = (day === 0) ? 6 : 0;
+var _allKeys = Object.keys(currentSchedule);
+for (var _ki = 0; _ki < _allKeys.length; _ki++) {
+if (currentSchedule[_allKeys[_ki]].employee === slot.employee) {
+if (currentSchedule[_allKeys[_ki]].roles && currentSchedule[_allKeys[_ki]].roles[_wrapDay2] && currentSchedule[_allKeys[_ki]].roles[_wrapDay2].lunch === slot.employee) {
+lunchConsecBlocked = true;
+}
+break;
+}
+}
+}
+// Consecutive noodle check
+var prevNoodle = day >= 1 && slot.roles && slot.roles[day-1] && slot.roles[day-1].noodle === slot.employee;
+var nextNoodle = day <= 5 && slot.roles && slot.roles[day+1] && slot.roles[day+1].noodle === slot.employee;
+var noodleConsecBlocked = prevNoodle || nextNoodle;
 var isDisabled = a.isDisabled;
 var html = '';
 // Raw day-off detection
@@ -1154,9 +1176,9 @@ var sh2 = parseInt(sv.s.split(':')[0]);
 var ctype = sh2 < 14 ? 'am' : 'pm';
 var ico2 = sh2 < 14 ? '☀️' : '🌙';
 var hv = calcH(sv.s, sv.e);
-html += '<span class="schip ' + ctype + '" draggable="true" data-sk="' + sk + '" data-day="' + day + '" data-idx="' + sv.idx + '" data-start="' + sv.s + '" data-end="' + sv.e + '" ondragstart="ScheduleApp.onShiftDragStart(event)" onclick="ScheduleApp.openChipEdit(\'' + sk + '\',' + day + ',' + sv.idx + ')">';
+html += '<span class="schip ' + ctype + '" draggable="true" data-sk="' + sk + '" data-day="' + day + '" data-idx="' + sv.idx + '" data-start="' + sv.s + '" data-end="' + sv.e + '" ondragstart="ScheduleApp.onShiftDragStart(event)" ondragend="this.classList.remove(\'drag-ghost\')" onclick="ScheduleApp.openChipEdit(\'' + sk + '\',' + day + ',' + sv.idx + ')">';
 html += ico2 + ' ' + to12(sv.s) + '→' + to12(sv.e);
-html += '<span class="schip-h">' + hv + 'h</span></span>';
+html += '<span class="schip-h" style="pointer-events:none">' + hv + 'h</span></span>';
 }
 html += '</div>';
 }
@@ -1164,21 +1186,27 @@ html += '</div>';
 html += '<div class="role-row2">';
 if (hasLunch) {
 html += '<span class="rb2 lunch" onclick="ScheduleApp.toggleRole(\'' + sk + '\',' + day + ',\'lunch\')">🍱 Lunch ×</span>';
-} else if (canLunch && !lunchMaxed) {
-html += '<span class="rb2 add2" onclick="ScheduleApp.toggleRole(\'' + sk + '\',' + day + ',\'lunch\')">+🍱</span>';
-} else if (canLunch && lunchMaxed) {
-html += '<span class="rb2 maxed2" title="Max ' + MAX_LUNCH + '/wk">🍱 MAX</span>';
+} else if (hasNoodle) {
+html += '<span class="rb2 locked2" title="Already has Noodles today">🍱 —</span>';
+} else if (!canLunch) {
+html += '<span class="rb2 locked2" title="Needs Double shift (AM + PM)">🍱</span>';
+} else if (lunchConsecBlocked) {
+html += '<span class="rb2 locked2" title="2 days in a row — cannot assign Lunch">🍱 2×</span>';
 } else {
-html += '<span class="rb2 locked2" title="Needs PM or DBL">🍱</span>';
+html += '<span class="rb2 add2" onclick="ScheduleApp.toggleRole(\'' + sk + '\',' + day + ',\'lunch\')">+🍱</span>';
 }
 if (hasNoodle) {
 html += '<span class="rb2 noodle" onclick="ScheduleApp.toggleRole(\'' + sk + '\',' + day + ',\'noodle\')">🍜 Noodle ×</span>';
-} else if (canNoodle && !noodleMaxed) {
-html += '<span class="rb2 add2" onclick="ScheduleApp.toggleRole(\'' + sk + '\',' + day + ',\'noodle\')">+🍜</span>';
-} else if (canNoodle && noodleMaxed) {
+} else if (hasLunch) {
+html += '<span class="rb2 locked2" title="Already has Lunch today">🍜 —</span>';
+} else if (!canNoodle) {
+html += '<span class="rb2 locked2" title="Needs PM or Double shift">🍜</span>';
+} else if (noodleConsecBlocked) {
+html += '<span class="rb2 locked2" title="2 days in a row — cannot assign Noodles">🍜 2×</span>';
+} else if (noodleMaxed) {
 html += '<span class="rb2 maxed2" title="Max ' + MAX_NOODLES + '/wk">🍜 MAX</span>';
 } else {
-html += '<span class="rb2 locked2" title="Needs PM or DBL">🍜</span>';
+html += '<span class="rb2 add2" onclick="ScheduleApp.toggleRole(\'' + sk + '\',' + day + ',\'noodle\')">+🍜</span>';
 }
 html += '</div>';
 // Hover controls
@@ -1342,40 +1370,66 @@ if (!slot.roles) slot.roles = {};
 if (!slot.roles[day]) slot.roles[day] = {};
 var shifts = slot.shifts[day] || [];
 var a = analyze(shifts);
-if (roleType === 'lunch' && a.isAMonly) { toast('Lunch not available for morning-only shifts', 'error'); return; }
-if (roleType === 'lunch') {
-var tl = getWeeklyTallies(sk);
-var alreadyHasLunch = slot.roles[day] && slot.roles[day].lunch === slot.employee;
-if (!alreadyHasLunch && tl.lunch >= MAX_LUNCH) {
-toast(slot.employee + ' already has ' + MAX_LUNCH + ' lunch shifts this week (max)', 'error'); return;
-}
-if (!alreadyHasLunch) {
-var prevDayL = day - 1, nextDayL = day + 1;
-if (prevDayL >= 0 && slot.roles[prevDayL] && slot.roles[prevDayL].lunch === slot.employee) {
-toast('Cannot assign Lunch 2 days in a row for ' + slot.employee, 'error'); return;
-}
-if (nextDayL <= 6 && slot.roles[nextDayL] && slot.roles[nextDayL].lunch === slot.employee) {
-toast('Cannot assign Lunch 2 days in a row for ' + slot.employee, 'error'); return;
-}
-}
-}
-if (roleType === 'noodle' && a.isAMonly) { toast('Noodles not available for morning-only shift', 'error'); return; }
-if (roleType === 'noodle') {
-var t = getWeeklyTallies(sk);
-var alreadyHas = slot.roles[day].noodle === slot.employee;
-if (!alreadyHas && t.noodle >= MAX_NOODLES) {
-toast(slot.employee + ' already has ' + MAX_NOODLES + ' noodle shifts this week (max)', 'error');
-return;
-}
-}
 var emp = slot.employee;
 var r = slot.roles[day];
-if (r[roleType] === emp) {
-r[roleType] = null;
-toast('Removed ' + roleType + ' from ' + emp, 'info');
-} else {
-r[roleType] = emp;
-toast('Assigned ' + roleType + ' to ' + emp, 'success');
+// === REMOVING an existing role — always allowed ===
+if (roleType === 'lunch' && r.lunch === emp) {
+r.lunch = null;
+toast('Removed Lunch from ' + emp, 'info');
+refreshCell(sk, day); refreshEmpCol(sk); calcStats(); scheduleAutoSave(); return;
+}
+if (roleType === 'noodle' && r.noodle === emp) {
+r.noodle = null;
+toast('Removed Noodle from ' + emp, 'info');
+refreshCell(sk, day); refreshEmpCol(sk); calcStats(); scheduleAutoSave(); return;
+}
+// === LUNCH rules ===
+if (roleType === 'lunch') {
+// Must have DBL shift (both AM + PM) — PM-only night shift does NOT qualify
+if (!a.isDbl) { toast('Lunch requires a Double shift (AM + PM) — night-only shifts do not qualify', 'error'); return; }
+// Cannot have Lunch if already assigned Noodle on same day
+if (r.noodle === emp) { toast(emp + ' already has Noodles today — cannot assign both Lunch and Noodles to the same person', 'error'); return; }
+// No 2 days in a row lunch
+var lunch1Back = day >= 1 && slot.roles[day-1] && slot.roles[day-1].lunch === emp;
+var lunch1Fwd = day <= 5 && slot.roles[day+1] && slot.roles[day+1].lunch === emp;
+if (lunch1Back) { toast('Cannot assign Lunch 2 days in a row — ' + emp + ' already has Lunch yesterday', 'error'); return; }
+if (lunch1Fwd) { toast('Cannot assign Lunch 2 days in a row — ' + emp + ' already has Lunch tomorrow', 'error'); return; }
+// Saturday (day 6) ↔ Sunday (day 0) two-way wrap
+if (day === 0 || day === 6) {
+var _wrapDay = (day === 0) ? 6 : 0; // check the other boundary day
+var _allKeys2 = Object.keys(currentSchedule);
+for (var _ki2 = 0; _ki2 < _allKeys2.length; _ki2++) {
+if (currentSchedule[_allKeys2[_ki2]].employee === emp) {
+var _wrapRoles = currentSchedule[_allKeys2[_ki2]].roles;
+if (_wrapRoles && _wrapRoles[_wrapDay] && _wrapRoles[_wrapDay].lunch === emp) {
+var _dayName = (day === 0) ? 'Saturday' : 'Sunday';
+toast('Cannot assign Lunch — already has Lunch on ' + _dayName + ' (no back-to-back across week boundary)', 'error'); return;
+}
+break;
+}
+}
+}
+// Assign
+r.lunch = emp;
+toast('Lunch assigned to ' + emp, 'success');
+}
+// === NOODLE rules ===
+if (roleType === 'noodle') {
+// Must have a PM/night shift only (not AM-only; DBL is ok since it has a night portion)
+if (a.isAMonly || !a.hasAny) { toast('Noodles require a PM or Double shift', 'error'); return; }
+// Cannot have Noodle if already assigned Lunch on same day
+if (r.lunch === emp) { toast(emp + ' already has Lunch today — cannot assign both Lunch and Noodles to the same person', 'error'); return; }
+// No 2 days in a row noodles
+var prevNoodle = day >= 1 && slot.roles[day-1] && slot.roles[day-1].noodle === emp;
+var nextNoodle = day <= 5 && slot.roles[day+1] && slot.roles[day+1] && slot.roles[day+1].noodle === emp;
+if (prevNoodle) { toast('Cannot assign Noodles 2 days in a row — ' + emp + ' already has Noodles yesterday', 'error'); return; }
+if (nextNoodle) { toast('Cannot assign Noodles 2 days in a row — ' + emp + ' already has Noodles tomorrow', 'error'); return; }
+// Weekly max
+var t = getWeeklyTallies(sk);
+if (t.noodle >= MAX_NOODLES) { toast(emp + ' already has max ' + MAX_NOODLES + ' noodle shifts this week', 'error'); return; }
+// Assign
+r.noodle = emp;
+toast('Noodles assigned to ' + emp, 'success');
 }
 refreshCell(sk, day);
 refreshEmpCol(sk);
@@ -1386,13 +1440,11 @@ function autoAssignWeek() {
 var v = document.getElementById('weekStart').value;
 if (!v) { toast('Select a week first', 'error'); return; }
 var keys = Object.keys(currentSchedule);
-for (var ki = 0; ki < keys.length; ki++) {
-currentSchedule[keys[ki]].roles = {};
-}
+for (var ki = 0; ki < keys.length; ki++) { currentSchedule[keys[ki]].roles = {}; }
 var weeklyNoodles = {};
-var weeklyLunches = {};
-var lastLunchSlot = {};
-for (var ki2 = 0; ki2 < keys.length; ki2++) { weeklyNoodles[keys[ki2]] = 0; weeklyLunches[keys[ki2]] = 0; }
+var lunchHistory = {}; // sk → array of days they got lunch this week
+for (var ki2 = 0; ki2 < keys.length; ki2++) { weeklyNoodles[keys[ki2]] = 0; lunchHistory[keys[ki2]] = []; }
+var lastLunchSk = {}; // day → which sk got lunch that day
 var lunchOk = 0, noodleOk = 0, lunchFail = [], noodleFail = [];
 for (var day = 0; day < 7; day++) {
 var lunchCands = [], noodleCands = [];
@@ -1402,55 +1454,63 @@ var slot = currentSchedule[sk];
 var ds = slot.shifts[day] || [];
 var a = analyze(ds);
 if (a.isVac || a.isDisabled || !a.hasAny) continue;
-if (a.isDbl || a.isPMonly || !a.hasAny) lunchCands.push(sk);
+// LUNCH: ONLY for DBL shift (has both AM morning + PM night portions)
+if (a.isDbl) lunchCands.push(sk);
+// NOODLE: DBL or PM-only (any shift with night/PM portion)
 if (a.isDbl || a.isPMonly) noodleCands.push(sk);
 }
-var prevLunchSk = day > 0 ? lastLunchSlot[day - 1] : null;
+// --- Pick LUNCH: no 2 days in a row for same person (including Sat↔Sun wrap) ---
 var lunchPick = null;
+var prevDayLunchSk = lastLunchSk[day - 1] || null;
+// For Sunday (day=0): also treat Saturday's lunch holder as "yesterday"
+// We do this at end of loop after day 6 fills lastLunchSk[6]
+// Sort candidates: prefer those with fewer lunch days this week
+lunchCands.sort(function(aa2, bb2) { return lunchHistory[aa2].length - lunchHistory[bb2].length; });
 for (var lc = 0; lc < lunchCands.length; lc++) {
 var lc_sk = lunchCands[lc];
-if (lc_sk !== prevLunchSk && weeklyLunches[lc_sk] < MAX_LUNCH) { lunchPick = lc_sk; break; }
+// Block: had lunch yesterday
+if (lc_sk === prevDayLunchSk) continue;
+lunchPick = lc_sk;
+break;
 }
-if (!lunchPick) { for (var lc2 = 0; lc2 < lunchCands.length; lc2++) { if (weeklyLunches[lunchCands[lc2]] < MAX_LUNCH) { lunchPick = lunchCands[lc2]; break; } } }
+// Fallback: if everyone eligible had lunch yesterday (rare), just pick anyone
+if (!lunchPick && lunchCands.length > 0) lunchPick = lunchCands[0];
 if (lunchPick) {
 if (!currentSchedule[lunchPick].roles[day]) currentSchedule[lunchPick].roles[day] = {};
 currentSchedule[lunchPick].roles[day].lunch = currentSchedule[lunchPick].employee;
-lastLunchSlot[day] = lunchPick;
-weeklyLunches[lunchPick]++;
+lastLunchSk[day] = lunchPick;
+lunchHistory[lunchPick].push(day);
 lunchOk++;
-} else { lunchFail.push(DAYS[day].en); }
+} else {
+lunchFail.push(DAYS[day].en);
+lastLunchSk[day] = null;
+}
+// --- Pick NOODLE: different person from lunch, no 2-in-a-row, under weekly max ---
 var noodleSorted = [];
 for (var nc = 0; nc < noodleCands.length; nc++) {
-if (weeklyNoodles[noodleCands[nc]] < MAX_NOODLES) noodleSorted.push(noodleCands[nc]);
+var nc_sk = noodleCands[nc];
+if (nc_sk === lunchPick) continue; // can't have lunch AND noodle same person same day
+if (weeklyNoodles[nc_sk] >= MAX_NOODLES) continue; // weekly max
+// No 2-in-a-row noodle
+var hadNoodleYesterday = day > 0 && currentSchedule[nc_sk].roles[day-1] && currentSchedule[nc_sk].roles[day-1].noodle === currentSchedule[nc_sk].employee;
+if (hadNoodleYesterday) continue;
+noodleSorted.push(nc_sk);
 }
-noodleSorted.sort(function(a, b) { return weeklyNoodles[a] - weeklyNoodles[b]; });
-var noodlePick = null;
-for (var ns = 0; ns < noodleSorted.length; ns++) {
-if (noodleSorted[ns] !== lunchPick) { noodlePick = noodleSorted[ns]; break; }
-}
-if (!noodlePick && noodleSorted.length > 0) noodlePick = noodleSorted[0];
+// Prefer person with fewest noodles this week
+noodleSorted.sort(function(nn1, nn2) { return weeklyNoodles[nn1] - weeklyNoodles[nn2]; });
+var noodlePick = noodleSorted.length > 0 ? noodleSorted[0] : null;
 if (noodlePick) {
 if (!currentSchedule[noodlePick].roles[day]) currentSchedule[noodlePick].roles[day] = {};
 currentSchedule[noodlePick].roles[day].noodle = currentSchedule[noodlePick].employee;
 weeklyNoodles[noodlePick]++;
 noodleOk++;
-} else {
-var fallback = null;
-var sortedAll = noodleCands.slice().sort(function(a, b) { return weeklyNoodles[a] - weeklyNoodles[b]; });
-if (sortedAll.length > 0) fallback = sortedAll[0];
-if (fallback) {
-if (!currentSchedule[fallback].roles[day]) currentSchedule[fallback].roles[day] = {};
-currentSchedule[fallback].roles[day].noodle = currentSchedule[fallback].employee;
-weeklyNoodles[fallback]++;
-noodleOk++;
 } else { noodleFail.push(DAYS[day].en); }
-}
 }
 generateSchedule(true);
 var msg = 'Auto-assigned: ' + lunchOk + ' lunches · ' + noodleOk + ' noodles';
 var type = 'success';
 if (lunchFail.length || noodleFail.length) {
-msg += ' — Missing lunch: ' + (lunchFail.join(',') || 'none') + ' · Missing noodle: ' + (noodleFail.join(',') || 'none');
+msg += ' — Missing: lunch (' + (lunchFail.join(',') || 'none') + ') · noodle (' + (noodleFail.join(',') || 'none') + ')';
 type = 'info';
 }
 toast(msg, type);
@@ -1507,8 +1567,12 @@ toast('Copied ' + empName + '\'s schedule to ' + applied + ' day' + (applied !==
 }
 // === Drag & Drop Shifts ===
 var _dragData = null;
+var _dragOverTd = null;
 function onShiftDragStart(e) {
-var el = e.currentTarget || e.target;
+// Walk up from e.target to find the element with data-sk (the .schip span)
+var el = e.target;
+while (el && !el.getAttribute('data-sk')) { el = el.parentElement; }
+if (!el) return;
 _dragData = {
 sk: el.getAttribute('data-sk'),
 day: parseInt(el.getAttribute('data-day')),
@@ -1516,39 +1580,60 @@ idx: parseInt(el.getAttribute('data-idx')),
 start: el.getAttribute('data-start'),
 end: el.getAttribute('data-end')
 };
-el.classList.add('drag-ghost');
+// Mark the chip itself as ghost after a tick (so drag image renders correctly first)
+setTimeout(function() { if (el) el.classList.add('drag-ghost'); }, 0);
 e.dataTransfer.effectAllowed = 'move';
 e.dataTransfer.setData('text/plain', JSON.stringify(_dragData));
+}
+function _getTd(e) {
+var el = e.target;
+while (el && !el.classList.contains('shift-td')) { el = el.parentElement; }
+return el || null;
 }
 function onShiftDragOver(e) {
 e.preventDefault();
 e.dataTransfer.dropEffect = 'move';
-var td = e.currentTarget || e.target.closest('.shift-td');
-if (td) td.classList.add('drag-over');
+var td = _getTd(e);
+if (td && td !== _dragOverTd) {
+if (_dragOverTd) _dragOverTd.classList.remove('drag-over');
+td.classList.add('drag-over');
+_dragOverTd = td;
+}
 }
 function onShiftDragLeave(e) {
-var td = e.currentTarget || e.target.closest('.shift-td');
-if (td) td.classList.remove('drag-over');
+// Only remove highlight when truly leaving the TD — not when entering a child
+var td = _getTd(e);
+if (!td) return;
+var related = e.relatedTarget;
+// If relatedTarget is still inside this TD, ignore the leave
+if (related && td.contains(related)) return;
+td.classList.remove('drag-over');
+if (_dragOverTd === td) _dragOverTd = null;
 }
 function onShiftDrop(e) {
 e.preventDefault();
-var td = e.currentTarget || e.target.closest('.shift-td');
-if (td) td.classList.remove('drag-over');
+e.stopPropagation();
+// Clean up visual state
+document.querySelectorAll('.drag-ghost').forEach(function(el){ el.classList.remove('drag-ghost'); });
+document.querySelectorAll('.drag-over').forEach(function(el){ el.classList.remove('drag-over'); });
+_dragOverTd = null;
+var td = _getTd(e);
 var data = _dragData;
+_dragData = null;
 if (!data) {
 try { data = JSON.parse(e.dataTransfer.getData('text/plain')); } catch(err) { return; }
 }
-_dragData = null;
-// Remove ghost class from all chips
-document.querySelectorAll('.drag-ghost').forEach(function(el){ el.classList.remove('drag-ghost'); });
-var destSk = td ? td.getAttribute('data-sk') : null;
-var destDay = td ? parseInt(td.getAttribute('data-day')) : null;
-if (!destSk || destDay === null || !data) return;
-if (destSk === data.sk && destDay === data.day) return; // same cell, no-op
+if (!td || !data) return;
+// Walk up to find the actual shift-td with data-sk
+var destSk = td.getAttribute('data-sk');
+var destDay = parseInt(td.getAttribute('data-day'));
+if (!destSk || isNaN(destDay)) return;
+// Same cell — no-op
+if (destSk === data.sk && destDay === data.day) return;
 if (!currentSchedule[destSk] || !currentSchedule[data.sk]) return;
 var destAnalysis = analyze(currentSchedule[destSk].shifts[destDay] || []);
-if (destAnalysis.isVac || destAnalysis.isDisabled) { toast('Cannot drop on vacation/disabled day', 'error'); return; }
-if (isRequestedDayOff(destSk, destDay)) { toast('Day-off request — cannot drop here', 'error'); return; }
+if (destAnalysis.isVac || destAnalysis.isDisabled) { toast('Cannot drop on a vacation or disabled day', 'error'); return; }
+if (isRequestedDayOff(destSk, destDay)) { toast('Day-off requested — cannot drop here', 'error'); return; }
 // Add shift to destination
 var newShift = {start: data.start, end: data.end};
 var destShifts = currentSchedule[destSk].shifts[destDay] || [];
@@ -1558,17 +1643,19 @@ currentSchedule[destSk].shifts[destDay] = [newShift];
 } else if (destShifts.length < 3) {
 currentSchedule[destSk].shifts[destDay].push(newShift);
 } else {
-toast('Max 3 shifts per day', 'error'); return;
+toast('Max 3 shifts per day reached', 'error'); return;
 }
 // Remove shift from source
 var srcShifts = currentSchedule[data.sk].shifts[data.day];
 srcShifts.splice(data.idx, 1);
-if (srcShifts.length === 0) srcShifts.push({start:'',end:''});
-// Refresh both cells
+if (srcShifts.length === 0) srcShifts.push({start:'', end:''});
+// Refresh
 refreshCell(data.sk, data.day);
 refreshEmpCol(data.sk);
+if (!(destSk === data.sk && destDay === data.day)) {
 refreshCell(destSk, destDay);
 refreshEmpCol(destSk);
+}
 calcStats();
 scheduleAutoSave();
 var srcEmp = currentSchedule[data.sk].employee;
@@ -1576,7 +1663,7 @@ var dstEmp = currentSchedule[destSk].employee;
 if (srcEmp !== dstEmp) {
 toast('Moved shift from ' + srcEmp + ' → ' + dstEmp, 'success');
 } else {
-toast('Moved shift to ' + DAYS[destDay].en, 'success');
+toast('Moved ' + srcEmp + '\'s shift to ' + DAYS[destDay].en, 'success');
 }
 }
 function showRepeatDialog() {
@@ -2783,6 +2870,8 @@ ScheduleApp.init();
 document.addEventListener('dragend', function() {
 document.querySelectorAll('.drag-ghost').forEach(function(el){ el.classList.remove('drag-ghost'); });
 document.querySelectorAll('.drag-over').forEach(function(el){ el.classList.remove('drag-over'); });
+_dragOverTd = null;
+_dragData = null;
 });
 var modal = document.getElementById('duplicateModal');
 if (modal) {
