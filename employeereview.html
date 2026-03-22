@@ -5162,36 +5162,90 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // Signature Pad instances
 const _sigPads = {};
+const _sigImages = { mgr: null, hr: null, emp: null }; // persisted DB images
 
 function initDiscSignaturePads() {
   ['mgr','hr','emp'].forEach(key => {
-    const canvas = document.getElementById('sig-' + key);
-    if (!canvas || _sigPads[key]) return;
-    try {
-      _sigPads[key] = new SignaturePad(canvas, {
-        backgroundColor: 'rgb(255,255,255)',
-        penColor: key === 'hr' ? '#1a2744' : '#1a2744',
-        minWidth: 1, maxWidth: 3
-      });
-      // Resize canvas to actual pixel size
-      const ratio = Math.max(window.devicePixelRatio || 1, 1);
-      canvas.width = canvas.offsetWidth * ratio;
-      canvas.height = canvas.offsetHeight * ratio;
-      canvas.getContext('2d').scale(ratio, ratio);
-      _sigPads[key].clear();
-    } catch(e) { console.warn('SignaturePad init:', e); }
+    _initOnePad(key);
   });
 }
 
+function _initOnePad(key, attempt) {
+  attempt = attempt || 0;
+  const canvas = document.getElementById('sig-' + key);
+  if (!canvas) return;
+
+  // Destroy existing pad
+  try { if (_sigPads[key]) { _sigPads[key].off(); } } catch(e) {}
+  _sigPads[key] = null;
+
+  // If canvas has no visible size yet, retry up to 8 times (400ms total)
+  const w = canvas.getBoundingClientRect().width || canvas.offsetWidth;
+  if (w < 10 && attempt < 8) {
+    setTimeout(() => _initOnePad(key, attempt + 1), 50);
+    return;
+  }
+
+  try {
+    const ratio = Math.max(window.devicePixelRatio || 1, 1);
+    const displayW = w  || 300;
+    const displayH = canvas.getBoundingClientRect().height || canvas.offsetHeight || 90;
+    canvas.width  = displayW  * ratio;
+    canvas.height = displayH * ratio;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(ratio, ratio);
+
+    _sigPads[key] = new SignaturePad(canvas, {
+      backgroundColor: 'rgb(255,255,255)',
+      penColor: '#1a2744',
+      minWidth: 1, maxWidth: 3
+    });
+    _sigPads[key].clear();
+
+    // Immediately restore stored image if we have one
+    if (_sigImages[key]) {
+      restoreSigImage(key, _sigImages[key]);
+    }
+  } catch(e) { console.warn('SignaturePad init [' + key + ']:', e); }
+}
+
+// Draw a base64 image onto the canvas — keeps _sigImages as authoritative fallback
+function restoreSigImage(key, dataUrl) {
+  if (!dataUrl || !dataUrl.startsWith('data:')) return;
+  _sigImages[key] = dataUrl; // always persist
+
+  const canvas = document.getElementById('sig-' + key);
+  if (!canvas) return;
+
+  const img = new Image();
+  img.onload = () => {
+    try {
+      const ctx = canvas.getContext('2d');
+      // Draw at CSS pixel size (canvas is already DPR-scaled)
+      const dpr = Math.max(window.devicePixelRatio || 1, 1);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width / dpr, canvas.height / dpr);
+    } catch(e) { console.warn('restoreSigImage draw:', e); }
+  };
+  img.onerror = () => console.warn('restoreSigImage: failed to load image for', key);
+  img.src = dataUrl;
+}
+
 function clearSig(key) {
+  _sigImages[key] = null; // clear stored fallback too
   if (_sigPads[key]) _sigPads[key].clear();
 }
 
 function getSigDataURL(key) {
+  // Try to get fresh drawing from pad first
   try {
-    if (_sigPads[key] && !_sigPads[key].isEmpty()) return _sigPads[key].toDataURL('image/png');
+    if (_sigPads[key] && !_sigPads[key].isEmpty()) {
+      const url = _sigPads[key].toDataURL('image/png');
+      if (url) { _sigImages[key] = url; return url; }
+    }
   } catch(e) {}
-  return null;
+  // Fall back to the stored DB image (drawn programmatically — pad.isEmpty() still returns true)
+  return _sigImages[key] || null;
 }
 
 // Generate Incident ID: JC-YYYY-XXXXXX
@@ -5482,22 +5536,16 @@ async function editDiscAction(id) {
     document.getElementById('disc-emp-declined').checked = !!a.employee_declined;
     document.getElementById('disc-form-title').textContent = 'Edit Corrective Action';
     document.getElementById('disc-submit-btn').textContent = '💾 Update HR Record & Generate PDF';
-    // Restore signature images into pads
-    setTimeout(() => {
-      initDiscSignaturePads();
-      ['mgr','hr','emp'].forEach(key => {
-        const imgKey = key === 'mgr' ? 'manager_sig_img' : key === 'hr' ? 'hr_sig_img' : 'emp_sig_img';
-        if (a[imgKey] && _sigPads[key]) {
-          const img = new Image();
-          img.onload = () => {
-            const ctx = _sigPads[key]._ctx;
-            if (ctx) ctx.drawImage(img, 0, 0);
-          };
-          img.src = a[imgKey];
-        }
-      });
-    }, 200);
-    document.querySelector('#panel-disciplinary .card').scrollIntoView({behavior:'smooth'});
+    // Store DB sig images immediately so getSigDataURL can fall back to them
+    const sigKeyMap = { mgr: 'manager_sig_img', hr: 'hr_sig_img', emp: 'emp_sig_img' };
+    ['mgr','hr','emp'].forEach(key => {
+      _sigImages[key] = a[sigKeyMap[key]] || null;
+    });
+    // Scroll the form into view FIRST so canvases have layout dimensions, then init
+    const formCard = document.getElementById('disc-form-wrapper');
+    if (formCard) formCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Init after scroll settles — _initOnePad retries automatically if canvas not sized
+    setTimeout(() => { initDiscSignaturePads(); }, 400);
     showToast('✅ Record loaded for editing', 'success');
   } catch(e) {
     showToast('Error loading record: ' + (e.message||''), 'error');
@@ -5675,11 +5723,13 @@ async function saveDiscActionFull() {
       if (fval && fval.trim()) await writeFieldEntry(savedId, fname, fval);
     }
     showToast('✅ Saved to HR file. Generating PDF...', 'success');
-    // Generate PDF
+    // Generate PDF — getSigDataURL already falls back to _sigImages
+    const savedRecord = await sb.from('disciplinary_actions').select('manager_sig_img,hr_sig_img,emp_sig_img').eq('id',savedId).single();
+    const dbSigs = savedRecord?.data || {};
     const sigData = {
-      mgr: getSigDataURL('mgr'),
-      hr: getSigDataURL('hr'),
-      emp: getSigDataURL('emp')
+      mgr: getSigDataURL('mgr') || dbSigs.manager_sig_img || null,
+      hr:  getSigDataURL('hr')  || dbSigs.hr_sig_img      || null,
+      emp: getSigDataURL('emp') || dbSigs.emp_sig_img     || null
     };
     const fullRecord = { ...payload, id: savedId };
     const emp = state.discEmployee || {};
@@ -5756,40 +5806,52 @@ async function generateAndUploadDiscPDF(record, sigData, recordId) {
   doc.setFillColor(...GOLD); doc.rect(0, 0, W, 1.2, 'F');
 
   // Logo — left, full size, no shrink
-  const LOGO_W = 46, LOGO_H = 46;
+  // ── Header layout ──────────────────────────────────────────────────────
+  // Logo + company text sit together as one left-aligned group.
+  // CONFIDENTIAL badge + Incident ID stack on the right.
+  // Vertical center: logo is 42mm tall, text block ~36mm — both start at y=4.
+
+  const BADGE_W = 40, BADGE_X = W - M - BADGE_W;
+  const LOGO_SIZE = 42; // square logo
+
+  // Left group: logo
   if (logoData) {
-    try { doc.addImage(logoData, 'JPEG', M, 3, LOGO_W, LOGO_H); } catch(e) {}
+    try { doc.addImage(logoData, 'JPEG', M, 4, LOGO_SIZE, LOGO_SIZE); } catch(e) {}
   }
 
-  // Company info — centered between logo and CONFIDENTIAL badge
-  const CI_X = M + LOGO_W + 5;  // start of center block
-  const BADGE_W = 38, BADGE_X = W - M - BADGE_W;
-  const CI_W = BADGE_X - CI_X - 4;
-  const ci_cx = CI_X + CI_W / 2;
+  // Company text immediately right of logo
+  const TX = M + LOGO_SIZE + 6;
+  const textBlock_vcenter = 4 + LOGO_SIZE / 2; // vertical midpoint of logo
 
-  doc.setFont('helvetica','bold'); doc.setFontSize(17); doc.setTextColor(...NAVY);
-  doc.text('JENG CHI RESTAURANT', ci_cx, 16, { align:'center' });
+  doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(...NAVY);
+  doc.text('JENG CHI RESTAURANT', TX, textBlock_vcenter - 10);
+
   doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(...SLATE);
-  doc.text('Human Resources Management System', ci_cx, 23, { align:'center' });
-  doc.text('400 N. Greenville Ave. Ste 11, Richardson, TX 75081', ci_cx, 29, { align:'center' });
-  doc.text('(972) 669-9094  ·  admin@jengchirestaurant.com', ci_cx, 35, { align:'center' });
+  doc.text('Human Resources Management System', TX, textBlock_vcenter - 3);
 
-  // CONFIDENTIAL badge — right, stacked, with Incident ID below
+  doc.setFillColor(...GOLD);
+  doc.rect(TX, textBlock_vcenter - 0.5, 70, 0.5, 'F'); // thin gold rule under name
+
+  doc.setFontSize(8); doc.setTextColor(...SLATE);
+  doc.text('400 N. Greenville Ave. Ste 11, Richardson, TX 75081', TX, textBlock_vcenter + 5);
+  doc.text('(972) 669-9094  ·  admin@jengchirestaurant.com', TX, textBlock_vcenter + 11);
+
+  // Right group: CONFIDENTIAL badge
   doc.setDrawColor(...GOLD); doc.setLineWidth(0.7); doc.setFillColor(...WHITE);
-  doc.roundedRect(BADGE_X, 5, BADGE_W, 11, 2, 2, 'FD');
+  doc.roundedRect(BADGE_X, 5, BADGE_W, 12, 2, 2, 'FD');
   doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(...GOLD);
-  doc.text('CONFIDENTIAL', BADGE_X + BADGE_W/2, 11.5, { align:'center' });
+  doc.text('CONFIDENTIAL', BADGE_X + BADGE_W/2, 12, { align:'center' });
   doc.setFont('helvetica','normal'); doc.setFontSize(6.5); doc.setTextColor(...SLATE);
-  doc.text('HR RECORD', BADGE_X + BADGE_W/2, 15, { align:'center' });
+  doc.text('HR RECORD', BADGE_X + BADGE_W/2, 16, { align:'center' });
 
-  // Incident ID under badge
-  doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(...NAVY);
-  doc.text(record.reference || '—', BADGE_X + BADGE_W/2, 26, { align:'center' });
+  // Incident ID below badge
+  doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(...NAVY);
+  doc.text(record.reference || '—', BADGE_X + BADGE_W/2, 27, { align:'center' });
   doc.setFont('helvetica','normal'); doc.setFontSize(6.5); doc.setTextColor(...SLATE);
-  doc.text('INCIDENT ID', BADGE_X + BADGE_W/2, 31, { align:'center' });
+  doc.text('INCIDENT ID', BADGE_X + BADGE_W/2, 32, { align:'center' });
 
-  // Gold divider
-  y = 54;
+  // Gold divider — after logo bottom
+  y = 52;
   doc.setDrawColor(...GOLDL); doc.setLineWidth(0.6);
   doc.line(M, y, W - M, y);
   y += 7;
@@ -6109,7 +6171,10 @@ function discNewAction() {
   if (sub) { sub.innerHTML = '<option value="">Select main category first...</option>'; sub.disabled = true; }
   const declined = document.getElementById('disc-emp-declined');
   if (declined) declined.checked = false;
-  ['mgr','hr','emp'].forEach(k => { try { if (_sigPads[k]) _sigPads[k].clear(); } catch(e){} });
+  ['mgr','hr','emp'].forEach(k => {
+    _sigImages[k] = null; // clear stored fallback for fresh form
+    try { if (_sigPads[k]) _sigPads[k].clear(); } catch(e) {}
+  });
   const badge = document.getElementById('disc-autosave-badge');
   if (badge) badge.style.display = 'none';
   document.getElementById('disc-form-title').textContent = 'New Corrective Action';
@@ -6237,18 +6302,37 @@ async function regenerateDiscPDF(id) {
   try {
     const { data, error } = await sb.from('disciplinary_actions').select('*').eq('id', id).single();
     if (error) throw error;
+
+    // Immediately load stored sig images into _sigImages — no canvas needed yet
+    _sigImages.mgr = data.manager_sig_img || _sigImages.mgr || null;
+    _sigImages.hr  = data.hr_sig_img      || _sigImages.hr  || null;
+    _sigImages.emp = data.emp_sig_img     || _sigImages.emp || null;
+
+    // Load form fields (also triggers pad re-init + image restore)
     await editDiscAction(id);
-    const sigData = { mgr: getSigDataURL('mgr'), hr: getSigDataURL('hr'), emp: getSigDataURL('emp') };
+
+    // Wait for canvas images to fully load before capturing
+    await new Promise(resolve => setTimeout(resolve, 600));
+
+    // getSigDataURL will return _sigImages fallback if pads report empty
+    const sigData = {
+      mgr: getSigDataURL('mgr') || data.manager_sig_img || null,
+      hr:  getSigDataURL('hr')  || data.hr_sig_img      || null,
+      emp: getSigDataURL('emp') || data.emp_sig_img     || null
+    };
+
     const emp = state.discEmployee || {};
     data.employee_position = data.employee_position || emp.position || emp.job_title || '';
-    data.employee_dept = data.employee_dept || detectDepartment(emp) || '';
-    data.hire_date = data.hire_date || emp.hire_date || null;
-    data.reports_to = data.reports_to || emp.report_to || emp.reports_to || emp.supervisor || null;
+    data.employee_dept     = data.employee_dept     || detectDepartment(emp) || '';
+    data.hire_date         = data.hire_date         || emp.hire_date || null;
+    data.reports_to        = data.reports_to        || emp.report_to || emp.reports_to || emp.supervisor || null;
+
     await generateAndUploadDiscPDF(data, sigData, id);
     if (state.discEmployee) {
       const name = state.discEmployee.name || ((state.discEmployee.first_name||'') + ' ' + (state.discEmployee.last_name||'')).trim();
       loadEmpDiscHistory(name);
     }
+    showToast('✅ PDF regenerated with signatures!', 'success');
   } catch(e) { showToast('Error: ' + (e.message||''), 'error'); }
 }
 
