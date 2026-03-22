@@ -5564,6 +5564,59 @@ async function writeDiscLog(actionId, changeType, details) {
   } catch(e) { console.warn('Log write skipped:', e.message); }
 }
 
+// Write a per-field attributed entry to disc_field_entries
+async function writeFieldEntry(actionId, fieldName, content) {
+  if (!sb || !actionId || !content || !content.trim()) return;
+  const user = _loggedInUser || {};
+  const authorName = (((user.first_name||'') + ' ' + (user.last_name||'')).trim()) || user.username || 'Unknown';
+  try {
+    // Check if this author already has an entry for this field on this record
+    const { data: existing } = await sb.from('disc_field_entries')
+      .select('id')
+      .eq('action_id', actionId)
+      .eq('field_name', fieldName)
+      .eq('author_name', authorName)
+      .single();
+    const payload = {
+      action_id:      actionId,
+      field_name:     fieldName,
+      author_name:    authorName,
+      author_id:      user.employee_id || user.username || null,
+      content:        content.trim(),
+      logged_at_cst:  getCSTTimestamp(),
+      logged_at:      new Date().toISOString()
+    };
+    if (existing?.id) {
+      await sb.from('disc_field_entries').update(payload).eq('id', existing.id);
+    } else {
+      await sb.from('disc_field_entries').insert([payload]);
+    }
+  } catch(e) { console.warn('Field entry write skipped:', e.message); }
+}
+
+// Write a per-field attributed entry to disc_field_entries
+async function writeFieldEntry(actionId, fieldName, content) {
+  if (!sb || !actionId || !content || !content.trim()) return;
+  const user = _loggedInUser || {};
+  const authorName = (((user.first_name||'') + ' ' + (user.last_name||'')).trim()) || user.username || 'Unknown';
+  try {
+    const { data: existing } = await sb.from('disc_field_entries')
+      .select('id').eq('action_id', actionId).eq('field_name', fieldName)
+      .eq('author_name', authorName).maybeSingle();
+    const payload = {
+      action_id: actionId, field_name: fieldName, author_name: authorName,
+      author_id: user.employee_id || user.username || null,
+      content: content.trim(),
+      logged_at_cst: getCSTTimestamp(), logged_at: new Date().toISOString()
+    };
+    if (existing?.id) {
+      await sb.from('disc_field_entries').update(payload).eq('id', existing.id);
+    } else {
+      await sb.from('disc_field_entries').insert([payload]);
+    }
+  } catch(e) { console.warn('Field entry write skipped:', e.message); }
+}
+
 async function getDiscLogs(actionId) {
   if (!sb || !actionId) return [];
   try {
@@ -5611,6 +5664,16 @@ async function saveDiscActionFull() {
       ' | Severity: ' + (payload.severity||'—') +
       ' | Incident date: ' + (payload.incident_date||'—');
     await writeDiscLog(savedId, isEdit ? 'EDITED' : 'CREATED', logDetails);
+    // Write per-field attributed entries
+    const fieldMap = {
+      description:     document.getElementById('disc-reason')?.value,
+      corrective_plan: document.getElementById('disc-plan')?.value,
+      prior_history:   document.getElementById('disc-history')?.value,
+      consequences:    document.getElementById('disc-consequences')?.value
+    };
+    for (const [fname, fval] of Object.entries(fieldMap)) {
+      if (fval && fval.trim()) await writeFieldEntry(savedId, fname, fval);
+    }
     showToast('✅ Saved to HR file. Generating PDF...', 'success');
     // Generate PDF
     const sigData = {
@@ -5799,25 +5862,8 @@ async function generateAndUploadDiscPDF(record, sigData, recordId) {
   y += 4;
 
   // ─────────────────────────────────────────────────────────────────────
-  //  CONTENT SECTIONS — compact
+  //  CONTENT SECTIONS — with per-author attribution
   // ─────────────────────────────────────────────────────────────────────
-  function addSection(title, text) {
-    if (!text || !text.trim()) return;
-    if (y > H - 36) { doc.addPage(); addRunningHeader(); }
-    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...GOLD);
-    doc.text(title.toUpperCase(), M, y);
-    doc.setDrawColor(...GOLDL); doc.setLineWidth(0.4);
-    doc.line(M, y+1.8, W-M, y+1.8);
-    y += 6;
-    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...SLATE);
-    const wrapped = doc.splitTextToSize(text, CW);
-    wrapped.forEach(line => {
-      if (y > H - 28) { doc.addPage(); addRunningHeader(); }
-      doc.text(line, M, y); y += 5;
-    });
-    y += 4;
-  }
-
   function addRunningHeader() {
     doc.setFillColor(...GOLD); doc.rect(0,0,W,1.2,'F');
     doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...NAVY);
@@ -5829,10 +5875,83 @@ async function generateAndUploadDiscPDF(record, sigData, recordId) {
     y = 14;
   }
 
-  addSection('Incident Description & Policy Violation(s)', record.description);
-  addSection('Corrective Action Plan & Expected Behavior', record.corrective_plan);
-  addSection('Prior Disciplinary History', record.prior_history);
-  addSection('Consequences if Behavior Continues', record.consequences);
+  // addAttributedSection: renders section title + attributed entries
+  // entries = [{author_name, content, logged_at_cst}] from disc_field_entries
+  // fallbackText = plain text if no entries found
+  function addAttributedSection(title, entries, fallbackText) {
+    const hasEntries = entries && entries.length > 0;
+    const hasContent = hasEntries || (fallbackText && fallbackText.trim());
+    if (!hasContent) return;
+    if (y > H - 36) { doc.addPage(); addRunningHeader(); }
+
+    // Section title
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...GOLD);
+    doc.text(title.toUpperCase(), M, y);
+    doc.setDrawColor(...GOLDL); doc.setLineWidth(0.4);
+    doc.line(M, y+1.8, W-M, y+1.8);
+    y += 6;
+
+    if (hasEntries) {
+      // Render each attributed contribution
+      entries.forEach((entry, idx) => {
+        if (y > H - 28) { doc.addPage(); addRunningHeader(); }
+        // Author byline
+        const byline = (entry.author_name || 'Unknown') +
+          (entry.logged_at_cst ? '  ·  ' + entry.logged_at_cst : '');
+        doc.setFillColor(248, 249, 253);
+        doc.setDrawColor(...BORDER); doc.setLineWidth(0.2);
+        // Measure content height first
+        doc.setFontSize(9.5);
+        const textLines = doc.splitTextToSize(entry.content || '', CW - 8);
+        const blockH = 5 + 4.5 + textLines.length * 5 + 3;
+        if (y + blockH > H - 16) { doc.addPage(); addRunningHeader(); }
+        doc.roundedRect(M, y, CW, blockH, 1.5, 1.5, 'FD');
+        // Author strip
+        doc.setFillColor(...ACCENT); doc.roundedRect(M, y, 2.5, blockH, 1, 1, 'F');
+        // Author name + timestamp
+        doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...NAVY);
+        doc.text(entry.author_name || 'Unknown', M+5, y+5);
+        doc.setFont('helvetica','normal'); doc.setFontSize(6.5); doc.setTextColor(...SLATE);
+        if (entry.logged_at_cst) doc.text(entry.logged_at_cst, M+5 + doc.getTextWidth((entry.author_name||'Unknown')) + 3, y+5);
+        // Content text
+        doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(40,50,70);
+        textLines.forEach((line, li) => {
+          doc.text(line, M+5, y + 10 + li * 5);
+        });
+        y += blockH + 4;
+      });
+    } else {
+      // Fallback: plain text, no attribution
+      doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...SLATE);
+      const wrapped = doc.splitTextToSize(fallbackText, CW);
+      wrapped.forEach(line => {
+        if (y > H - 28) { doc.addPage(); addRunningHeader(); }
+        doc.text(line, M, y); y += 5;
+      });
+    }
+    y += 5;
+  }
+
+  // Fetch per-field attributed entries from DB
+  let fieldEntries = { description: [], corrective_plan: [], prior_history: [], consequences: [] };
+  if (recordId) {
+    try {
+      const { data: fe } = await sb.from('disc_field_entries')
+        .select('*').eq('action_id', recordId).order('logged_at', {ascending: true});
+      (fe || []).forEach(e => {
+        if (fieldEntries[e.field_name]) fieldEntries[e.field_name].push(e);
+      });
+    } catch(e) { /* table may not exist yet, fall back to plain text */ }
+  }
+
+  addAttributedSection('Incident Description & Policy Violation(s)',
+    fieldEntries.description, record.description);
+  addAttributedSection('Corrective Action Plan & Expected Behavior',
+    fieldEntries.corrective_plan, record.corrective_plan);
+  addAttributedSection('Prior Disciplinary History',
+    fieldEntries.prior_history, record.prior_history);
+  addAttributedSection('Consequences if Behavior Continues',
+    fieldEntries.consequences, record.consequences);
 
   // ─────────────────────────────────────────────────────────────────────
   //  SIGNATURES — same page if room, otherwise new page
@@ -5949,46 +6068,6 @@ async function generateAndUploadDiscPDF(record, sigData, recordId) {
     doc.text('Jeng Chi Restaurant  ·  400 N. Greenville Ave. Ste 11, Richardson, TX 75081  ·  CONFIDENTIAL', M, H-5);
     doc.setTextColor(...GOLD);
     doc.text('Page ' + pg + ' of ' + totalPages, W-M, H-5, {align:'right'});
-  }
-
-  // ─────────────────────────────────────────────────────────────────────
-  //  AUDIT LOG IN PDF
-  // ─────────────────────────────────────────────────────────────────────
-  if (recordId) {
-    const logs = await getDiscLogs(recordId);
-    if (logs.length) {
-      if (y > H - 40) { doc.addPage(); addRunningHeader(); }
-      y += 3;
-      doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...GOLD);
-      doc.text('ACTIVITY LOG', M, y);
-      doc.setDrawColor(...GOLDL); doc.setLineWidth(0.4);
-      doc.line(M, y+1.8, W-M, y+1.8);
-      y += 6;
-      const logBg = [248, 247, 255];
-      const logBorder = [199, 210, 254];
-      logs.forEach(l => {
-        if (y > H - 22) { doc.addPage(); addRunningHeader(); }
-        const typeIcon = l.change_type === 'CREATED' ? '●' : l.change_type === 'EDITED' ? '✎' : '✕';
-        const typeColor = l.change_type === 'CREATED' ? [16,142,96] : l.change_type === 'EDITED' ? [37,99,210] : [190,30,30];
-        const entryText = (l.user_name||'Unknown') + '  ·  ' + (l.logged_at_cst || '—');
-        const detailText = l.details || '';
-        const detailLines = detailText ? doc.splitTextToSize(detailText, CW - 14) : [];
-        const rowH = 6 + (detailLines.length ? detailLines.length * 4 + 2 : 0) + 2;
-        doc.setFillColor(...logBg); doc.setDrawColor(...logBorder); doc.setLineWidth(0.2);
-        doc.roundedRect(M, y, CW, rowH, 1, 1, 'FD');
-        doc.setFillColor(...typeColor); doc.rect(M, y, 2, rowH, 'F');
-        doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...typeColor);
-        doc.text(typeIcon + ' ' + (l.change_type||''), M+4, y+5);
-        doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(30,30,70);
-        doc.text(entryText, M+24, y+5);
-        if (detailLines.length) {
-          doc.setFontSize(7); doc.setTextColor(80,80,100);
-          detailLines.forEach((dl, di) => doc.text(dl, M+4, y+10+di*4));
-        }
-        y += rowH + 2;
-      });
-      y += 4;
-    }
   }
 
   // ─────────────────────────────────────────────────────────────────────
