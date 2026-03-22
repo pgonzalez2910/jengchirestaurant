@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Jeng Chi Restaurant — HR Management System</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -5004,17 +5005,7 @@ function resetDiscForm() {
   });
 }
 
-async function loadRecentDiscActions() {
-  try {
-    const {data} = await sb.from('disciplinary_actions').select('*').order('created_at',{ascending:false}).limit(5);
-    const c = document.getElementById('recentDiscActions');
-    if (!data||!data.length) { c.innerHTML='<p style="color:var(--gray-400);font-size:12px;text-align:center;padding:20px 0">No recent actions</p>'; return; }
-    c.innerHTML = data.map(a=>`<div style="padding:10px 0;border-bottom:1px solid var(--gray-100)">
-      <div style="font-weight:700;font-size:12px;color:var(--navy)">${a.employee_name}</div>
-      <div style="font-size:11px;color:var(--gray-400)">${a.action_type} — ${a.incident_date||'—'}</div>
-    </div>`).join('');
-  } catch(e){}
-}
+
 
 function resetForm() {
   state = {...state, employee:null, reviewType:null, reviewId:null, responses:{}, charts:{}};
@@ -5050,7 +5041,20 @@ function switchTab(tab) {
   }
   document.getElementById('panel-'+tab).classList.add('active');
   document.getElementById('tab-'+tab).classList.add('active');
-  if (tab==='disciplinary') { loadDiscStats(); loadRecentDiscActions(); setTimeout(initDiscSignaturePads, 300); }
+  if (tab==='disciplinary') {
+    loadDiscStats();
+    // Recent actions only shown per-employee search — clear the list on tab open
+    const container = document.getElementById('disc-history-list');
+    if (container && !state.discEmployee) {
+      container.innerHTML = '<div style="padding:32px;text-align:center;color:var(--gray-400)"><i class="fa-regular fa-folder-open" style="font-size:28px;display:block;margin-bottom:10px"></i><p style="font-size:13px;font-weight:600">Search an employee to view their disciplinary actions</p></div>';
+    }
+    setTimeout(initDiscSignaturePads, 300);
+    // If an employee was already selected, refresh their history panel
+    if (state.discEmployee) {
+      const empName = state.discEmployee.name || ((state.discEmployee.first_name||'') + ' ' + (state.discEmployee.last_name||'')).trim();
+      if (empName) loadEmpDiscHistory(empName);
+    }
+  }
 }
 
 let toastTimer;
@@ -5189,6 +5193,8 @@ function buildDiscPayload() {
     manager_sig_img:   getSigDataURL('mgr'),
     hr_sig_img:        getSigDataURL('hr'),
     emp_sig_img:       getSigDataURL('emp'),
+    hire_date:         emp.hire_date || null,
+    reports_to:        emp.report_to || emp.reports_to || emp.supervisor || null,
     created_at:        new Date().toISOString()
   };
 }
@@ -5340,7 +5346,8 @@ async function loadEmpDiscHistory(empName) {
   const body = document.getElementById('disc-emp-hist-body');
   const titleEl = document.getElementById('disc-emp-hist-title');
   card.style.display = 'block';
-  body.innerHTML = '<div style="padding:18px;text-align:center;color:var(--gray-400);font-size:12px">⏳ Loading...</div>';
+  body.innerHTML = '<div style="padding:18px;text-align:center;color:var(--gray-400);font-size:12px"><i class="fa-solid fa-spinner fa-spin" style="margin-right:6px"></i>Loading...</div>';
+  const recentContainer = document.getElementById('disc-history-list');
   try {
     const {data, error} = await sb.from('disciplinary_actions')
       .select('*')
@@ -5348,50 +5355,31 @@ async function loadEmpDiscHistory(empName) {
       .order('created_at', {ascending: false});
     if (error) throw error;
     const records = data || [];
-    // Update warning badges on employee card
-    const typeLabels = {VERBAL_WARNING:'Verbal',WRITTEN_WARNING:'Written',FINAL_WARNING:'Final',SUSPENSION_PAID:'Suspension',PIP:'PIP',TERMINATION:'Termination'};
-    const typeColors = {VERBAL_WARNING:'#059669',WRITTEN_WARNING:'#c9a84c',FINAL_WARNING:'#d97706',SUSPENSION_PAID:'#7c3aed',PIP:'#2563eb',TERMINATION:'#dc2626'};
+    const typeLabels = {VERBAL_WARNING:'Verbal',WRITTEN_WARNING:'Written',FINAL_WARNING:'Final Written',SUSPENSION_PAID:'Suspension',PIP:'PIP',TERMINATION:'Termination'};
+    const typeColors = {VERBAL_WARNING:'#059669',WRITTEN_WARNING:'#b49032',FINAL_WARNING:'#d97706',SUSPENSION_PAID:'#7c3aed',PIP:'#2563eb',TERMINATION:'#dc2626'};
+    const active = records.filter(r => r.status !== 'draft');
     const counts = {};
-    records.filter(r=>r.status!=='draft').forEach(r => { counts[r.action_type] = (counts[r.action_type]||0)+1; });
+    active.forEach(r => { counts[r.action_type] = (counts[r.action_type]||0)+1; });
     const total = Object.values(counts).reduce((a,b)=>a+b,0);
     const badgesEl = document.getElementById('disc-emp-warn-badges');
     if (badgesEl) {
       if (total === 0) {
-        badgesEl.innerHTML = '<span style="font-size:10px;color:var(--green);font-weight:600">✓ No active disciplinary records</span>';
+        badgesEl.innerHTML = '<span style="font-size:10px;color:var(--green);font-weight:600"><i class="fa-solid fa-circle-check" style="margin-right:4px"></i>No active disciplinary records</span>';
       } else {
         badgesEl.innerHTML = Object.entries(counts).map(([type,cnt]) =>
-          `<span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:12px;background:${typeColors[type]||'#999'};color:#fff">${typeLabels[type]||type}: ${cnt}</span>`
-        ).join('') + `<span style="font-size:10px;font-weight:700;padding:2px 10px;border-radius:12px;background:var(--navy);color:#fff">Total: ${total}</span>`;
+          `<span style="font-size:10px;font-weight:700;padding:2px 9px;border-radius:12px;background:${typeColors[type]||'#999'};color:#fff">${typeLabels[type]||type}: ${cnt}</span>`
+        ).join('') + `<span style="font-size:10px;font-weight:700;padding:2px 10px;border-radius:12px;background:var(--navy);color:#fff"><i class="fa-solid fa-triangle-exclamation" style="margin-right:3px"></i>Total: ${total}</span>`;
       }
     }
-    titleEl.textContent = empName.split(' ')[0] + "'s Disciplinary History (" + records.filter(r=>r.status!=='draft').length + ")";
-    const active = records.filter(r=>r.status!=='draft');
+    titleEl.textContent = empName.split(' ')[0] + "'s Disciplinary History (" + active.length + ")";
     if (!active.length) {
-      body.innerHTML = '<div style="padding:24px;text-align:center;color:var(--gray-400);font-size:12px"><div style="font-size:24px;margin-bottom:8px">✅</div>No disciplinary records on file.</div>';
+      const empty = '<div style="padding:24px;text-align:center;color:var(--gray-400);font-size:12px"><i class="fa-solid fa-circle-check" style="font-size:22px;color:var(--green);display:block;margin-bottom:8px"></i>No disciplinary records on file.</div>';
+      body.innerHTML = empty;
+      if (recentContainer) recentContainer.innerHTML = empty;
       return;
     }
-    body.innerHTML = active.map(a => {
-      const color = typeColors[a.action_type]||'#999';
-      const label = typeLabels[a.action_type]||a.action_type;
-      const date = a.incident_date || a.created_at?.split('T')[0] || '—';
-      const hasPdf = !!a.pdf_url;
-      return `<div style="padding:13px 16px;border-bottom:1px solid var(--gray-100);display:flex;align-items:flex-start;gap:10px">
-        <div style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0;margin-top:5px"></div>
-        <div style="flex:1;min-width:0">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap">
-            <span style="font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px;background:${color};color:#fff">${label}</span>
-            <span style="font-size:10px;color:var(--gray-400)">${date}</span>
-          </div>
-          <div style="font-size:11px;color:var(--gray-600);margin-top:4px;line-height:1.4">${(a.description||'').substring(0,100)}${(a.description||'').length>100?'…':''}</div>
-          <div style="font-size:10px;color:var(--gray-400);margin-top:3px">${a.reference||''}${a.severity?' · '+a.severity:''}</div>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button onclick="editDiscAction(${a.id})" style="font-size:10px;padding:3px 10px;border-radius:4px;border:1px solid var(--navy);color:var(--navy);background:#fff;cursor:pointer;font-weight:600">✏️ Edit</button>
-            ${hasPdf?`<a href="${a.pdf_url}" target="_blank" style="font-size:10px;padding:3px 10px;border-radius:4px;border:1px solid var(--green);color:var(--green);background:#fff;cursor:pointer;font-weight:600;text-decoration:none">📄 View PDF</a>`:''}
-            <button onclick="printDiscActionById(${a.id})" style="font-size:10px;padding:3px 10px;border-radius:4px;border:1px solid var(--gold);color:var(--navy);background:#fff;cursor:pointer;font-weight:600">🖨️ Print</button>
-          </div>
-        </div>
-      </div>`;
-    }).join('');
+    renderDiscActionsList(body, active);
+    if (recentContainer) renderDiscActionsList(recentContainer, active);
   } catch(e) {
     body.innerHTML = '<div style="padding:18px;font-size:11px;color:var(--gray-400);text-align:center">Unable to load history: ' + (e.message||'') + '</div>';
   }
@@ -5515,6 +5503,8 @@ async function saveDiscActionFull() {
     const emp = state.discEmployee || {};
     fullRecord.employee_position = emp.position || emp.job_title || payload.employee_position || '';
     fullRecord.employee_dept = detectDepartment(emp) || payload.employee_dept || '';
+    fullRecord.hire_date = emp.hire_date || payload.hire_date || null;
+    fullRecord.reports_to = emp.report_to || emp.reports_to || emp.supervisor || payload.reports_to || null;
     await generateAndUploadDiscPDF(fullRecord, sigData, savedId);
     refreshDiscActions();
     if (state.discEmployee) loadEmpDiscHistory(empName);
@@ -5531,297 +5521,319 @@ async function generateAndUploadDiscPDF(record, sigData, recordId) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
   const W = 215.9, H = 279.4;
-  const margin = 18, contentW = W - margin * 2;
+  const M = 14, CW = W - M * 2;
   let y = 0;
 
-  // Colors (RGB)
-  const navy = [26, 39, 68];
-  const gold = [201, 168, 76];
-  const white = [255, 255, 255];
-  const gray = [74, 85, 104];
-  const lightGray = [241, 243, 248];
-  const red = [220, 38, 38];
+  // Palette
+  const NAVY  = [26,39,68],  GOLD  = [180,144,58], GOLDL = [210,185,110];
+  const SLATE = [74,85,104], WHITE = [255,255,255], BORDER= [215,220,232];
+  const SILVER= [246,247,249];
+  const accentMap = {
+    VERBAL_WARNING:[16,142,96], WRITTEN_WARNING:[180,144,58],
+    FINAL_WARNING:[195,100,20], SUSPENSION_PAID:[100,60,200],
+    PIP:[37,99,210],            TERMINATION:[190,30,30]
+  };
+  const typeLabel = {
+    VERBAL_WARNING:'Verbal Warning', WRITTEN_WARNING:'Written Warning',
+    FINAL_WARNING:'Final Written Warning', SUSPENSION_PAID:'Suspension (Paid)',
+    PIP:'Performance Improvement Plan', TERMINATION:'Termination'
+  };
+  const ACCENT = accentMap[record.action_type] || NAVY;
+  const ALAB   = typeLabel[record.action_type] || record.action_type || '—';
 
-  const typeLabels = {VERBAL_WARNING:'Verbal Warning',WRITTEN_WARNING:'Written Warning',FINAL_WARNING:'Final Written Warning',SUSPENSION_PAID:'Suspension (Paid)',PIP:'Performance Improvement Plan',TERMINATION:'Termination'};
-  const typeSeverityColors = {VERBAL_WARNING:[5,150,105],WRITTEN_WARNING:[201,168,76],FINAL_WARNING:[217,119,6],SUSPENSION_PAID:[124,58,237],PIP:[37,99,235],TERMINATION:[220,38,38]};
-  const actionLabel = typeLabels[record.action_type] || record.action_type || '—';
-  const actionColor = typeSeverityColors[record.action_type] || navy;
+  // ── count how many of this action type this employee has ──────────
+  let warnCount = 1;
+  try {
+    const { data: wdata } = await sb.from('disciplinary_actions')
+      .select('id', {count:'exact'})
+      .ilike('employee_name', '%' + (record.employee_name||'') + '%')
+      .eq('action_type', record.action_type)
+      .neq('status','draft');
+    warnCount = (wdata && wdata.length) ? wdata.length : 1;
+  } catch(e) {}
 
-  // ── HEADER BAND ────────────────────────────────
-  doc.setFillColor(...navy);
-  doc.rect(0, 0, W, 36, 'F');
-  // Gold accent line
-  doc.setFillColor(...gold);
-  doc.rect(0, 36, W, 2, 'F');
-
-  // Restaurant name
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(18);
-  doc.setTextColor(...white);
-  doc.text('JENG CHI RESTAURANT', margin, 16);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(...gold);
-  doc.text('HUMAN RESOURCES MANAGEMENT SYSTEM  ·  1 W. SPRING VALLEY RD, RICHARDSON, TX 75080', margin, 23);
-
-  // CONFIDENTIAL badge on right
-  doc.setFillColor(...gold);
-  doc.roundedRect(W - margin - 38, 8, 38, 10, 2, 2, 'F');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7);
-  doc.setTextColor(...navy);
-  doc.text('CONFIDENTIAL', W - margin - 19, 14.5, {align:'center'});
-  doc.setTextColor(...white);
-  doc.setFontSize(7);
-  doc.setFont('helvetica', 'normal');
-  doc.text('HR RECORD', W - margin - 19, 20, {align:'center'});
-
-  y = 46;
-
-  // ── DOCUMENT TITLE ─────────────────────────────
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(20);
-  doc.setTextColor(...navy);
-  doc.text('CORRECTIVE ACTION NOTICE', W/2, y+10, {align:'center'});
-  y += 18;
-
-  // Action type banner
-  doc.setFillColor(...actionColor);
-  doc.roundedRect(margin, y, contentW, 12, 3, 3, 'F');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
-  doc.setTextColor(...white);
-  doc.text(actionLabel.toUpperCase(), W/2, y+8, {align:'center'});
-  y += 18;
-
-  // ── INCIDENT META ROW ──────────────────────────
-  const metaFields = [
-    ['Incident ID', record.reference || '—'],
-    ['Incident Date', record.incident_date || '—'],
-    ['Severity', record.severity || '—'],
-    ['Follow-up Date', record.followup_date || '—'],
-  ];
-  doc.setFillColor(...lightGray);
-  doc.rect(margin, y, contentW, 18, 'F');
-  const mw = contentW / metaFields.length;
-  metaFields.forEach(([lbl, val], i) => {
-    const x = margin + i * mw;
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7);
-    doc.setTextColor(...gold);
-    doc.text(lbl.toUpperCase(), x + 4, y + 6);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9);
-    doc.setTextColor(...navy);
-    doc.text(String(val), x + 4, y + 13);
-    if (i < metaFields.length - 1) {
-      doc.setDrawColor(200, 200, 210);
-      doc.line(x + mw, y + 2, x + mw, y + 16);
+  // ── logo ────────────────────────────────────────────────────────────
+  let logoData = null;
+  try {
+    const res = await fetch('https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg');
+    if (res.ok) {
+      const blob = await res.blob();
+      logoData = await new Promise(r => {
+        const rd = new FileReader();
+        rd.onload = () => r(rd.result);
+        rd.onerror = () => r(null);
+        rd.readAsDataURL(blob);
+      });
     }
-  });
-  y += 24;
+  } catch(e) {}
 
-  // ── EMPLOYEE INFORMATION ───────────────────────
-  const empBoxY = y;
-  doc.setFillColor(...navy);
-  doc.rect(margin, y, contentW, 7, 'F');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
-  doc.setTextColor(...white);
-  doc.text('EMPLOYEE INFORMATION', margin + 4, y + 5);
-  y += 9;
-  doc.setDrawColor(220, 225, 240);
-  doc.setLineWidth(0.5);
-  doc.rect(margin, y, contentW, 22);
-  const empCols = [
-    ['Full Name', record.employee_name || '—'],
-    ['Employee ID', record.employee_id || '—'],
-    ['Position', record.employee_position || '—'],
-    ['Department', record.employee_dept || '—'],
+  // ─────────────────────────────────────────────────────────────────────
+  //  HEADER
+  // ─────────────────────────────────────────────────────────────────────
+  // Gold top stripe
+  doc.setFillColor(...GOLD); doc.rect(0, 0, W, 1.2, 'F');
+
+  // Logo — left, full size, no shrink
+  const LOGO_W = 32, LOGO_H = 32;
+  if (logoData) {
+    try { doc.addImage(logoData, 'JPEG', M, 4, LOGO_W, LOGO_H); } catch(e) {}
+  }
+
+  // Company info — centered between logo and CONFIDENTIAL badge
+  const CI_X = M + LOGO_W + 4;  // start of center block
+  const BADGE_W = 38, BADGE_X = W - M - BADGE_W;
+  const CI_W = BADGE_X - CI_X - 4;
+  const ci_cx = CI_X + CI_W / 2;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(17); doc.setTextColor(...NAVY);
+  doc.text('JENG CHI RESTAURANT', ci_cx, 13, { align:'center' });
+  doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(...SLATE);
+  doc.text('Human Resources Management System', ci_cx, 19, { align:'center' });
+  doc.text('400 N. Greenville Ave. Ste 11, Richardson, TX 75081', ci_cx, 24, { align:'center' });
+  doc.text('(972) 669-9094  ·  admin@jengchirestaurant.com', ci_cx, 29, { align:'center' });
+
+  // CONFIDENTIAL badge — right, stacked, with Incident ID below
+  doc.setDrawColor(...GOLD); doc.setLineWidth(0.7); doc.setFillColor(...WHITE);
+  doc.roundedRect(BADGE_X, 4, BADGE_W, 11, 2, 2, 'FD');
+  doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(...GOLD);
+  doc.text('CONFIDENTIAL', BADGE_X + BADGE_W/2, 10.5, { align:'center' });
+  doc.setFont('helvetica','normal'); doc.setFontSize(6.5); doc.setTextColor(...SLATE);
+  doc.text('HR RECORD', BADGE_X + BADGE_W/2, 14, { align:'center' });
+
+  // Incident ID under badge
+  doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(...NAVY);
+  doc.text(record.reference || '—', BADGE_X + BADGE_W/2, 22, { align:'center' });
+  doc.setFont('helvetica','normal'); doc.setFontSize(6.5); doc.setTextColor(...SLATE);
+  doc.text('INCIDENT ID', BADGE_X + BADGE_W/2, 27, { align:'center' });
+
+  // Gold divider
+  y = 40;
+  doc.setDrawColor(...GOLDL); doc.setLineWidth(0.6);
+  doc.line(M, y, W - M, y);
+  y += 7;
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  DOCUMENT TITLE
+  // ─────────────────────────────────────────────────────────────────────
+  doc.setFont('helvetica','bold'); doc.setFontSize(18); doc.setTextColor(...NAVY);
+  doc.text('CORRECTIVE ACTION NOTICE', W/2, y, { align:'center' });
+  y += 6;
+
+  // VERBAL WARNING - X  |  Incident Date on right
+  doc.setFillColor(...ACCENT);
+  const pillW = 90, pillH = 8;
+  const pillX = M;
+  doc.roundedRect(pillX, y, pillW, pillH, 3, 3, 'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(...WHITE);
+  const warnLabel = ALAB.toUpperCase() + '  —  ' + ['ONE','TWO','THREE','FOUR','FIVE','SIX','SEVEN','EIGHT','NINE','TEN'][warnCount-1] || ('# ' + warnCount);
+  doc.text(warnLabel, pillX + pillW/2, y + 5.5, { align:'center' });
+
+  // Incident date — right of same line
+  const fmtDate = (d) => { try { return d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'}) : '—'; } catch(e){ return d||'—'; }};
+  doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(...SLATE);
+  doc.text('INCIDENT DATE', W - M, y + 3, { align:'right' });
+  doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(...NAVY);
+  doc.text(fmtDate(record.incident_date), W - M, y + 8, { align:'right' });
+  y += pillH + 7;
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  EMPLOYEE INFORMATION — compact single block
+  // ─────────────────────────────────────────────────────────────────────
+  doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...GOLD);
+  doc.text('EMPLOYEE INFORMATION', M, y);
+  doc.setDrawColor(...GOLDL); doc.setLineWidth(0.5);
+  doc.line(M, y+2, W-M, y+2);
+  y += 5;
+
+  // Build rows of fields — compact, labels bold black, values below
+  const empFields = [
+    ['Full Name',     record.employee_name     || '—'],
+    ['Position',      record.employee_position || '—'],
+    ['Department',    record.employee_dept     || '—'],
+    ['Hire Date',     fmtDate(record.hire_date)],
+    ['Reports To',    record.reports_to        || '—'],
+    ['Main Category', record.main_category     || '—'],
+    ['Sub-Category',  record.sub_category      || '—'],
+    ['Severity',      record.severity          || '—'],
   ];
-  const ecw = contentW / empCols.length;
-  empCols.forEach(([lbl, val], i) => {
-    const x = margin + i * ecw;
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7);
-    doc.setTextColor(...gray);
-    doc.text(lbl, x + 4, y + 7);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
-    doc.setTextColor(...navy);
-    doc.text(String(val).substring(0,22), x + 4, y + 16);
-    if (i < empCols.length - 1) {
-      doc.setDrawColor(220,225,240);
-      doc.line(x + ecw, y + 2, x + ecw, y + 20);
-    }
-  });
-  y += 28;
+  // Split into 2 rows of 4 each
+  const ROWS = [empFields.slice(0,4), empFields.slice(4)];
+  const COL_W = CW / 4;
+  const ROW_H = 14;
 
-  // ── SECTION HELPER ─────────────────────────────
-  function addSection(title, content, color) {
-    if (!content) return;
-    if (y > H - 60) { doc.addPage(); y = 20; }
-    doc.setFillColor(...(color || navy));
-    doc.rect(margin, y, 3, 0, 'F'); // left accent
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8);
-    doc.setTextColor(...navy);
-    doc.text(title.toUpperCase(), margin, y + 4);
-    doc.setDrawColor(220, 225, 240);
-    doc.setLineWidth(0.3);
-    doc.line(margin, y + 6, margin + contentW, y + 6);
-    y += 10;
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(9);
-    doc.setTextColor(50, 60, 80);
-    const lines = doc.splitTextToSize(content, contentW);
-    lines.forEach(line => {
-      if (y > H - 30) { doc.addPage(); y = 20; }
-      doc.text(line, margin, y);
-      y += 5.2;
+  ROWS.forEach((row, ri) => {
+    // subtle row bg
+    doc.setFillColor(...SILVER); doc.setDrawColor(...BORDER); doc.setLineWidth(0.25);
+    doc.roundedRect(M, y, CW, ROW_H, 1.5, 1.5, 'FD');
+    // accent strip on left of first row only
+    if (ri === 0) { doc.setFillColor(...ACCENT); doc.roundedRect(M, y, 2.5, ROW_H, 1, 1, 'F'); }
+    row.forEach(([lbl, val], ci) => {
+      const cx = M + (ri===0 && ci===0 ? 2.5 : 0) + ci * COL_W + 3;
+      doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(30,30,30);
+      doc.text(lbl, cx, y + 5.5);
+      doc.setFont('helvetica','bold'); doc.setFontSize(9.5); doc.setTextColor(...NAVY);
+      doc.text(String(val).substring(0,22), cx, y + 11.5);
+      if (ci < row.length-1) { doc.setDrawColor(...BORDER); doc.line(M + (ci+1)*COL_W, y+2, M + (ci+1)*COL_W, y+ROW_H-2); }
     });
+    y += ROW_H + 2;
+  });
+  y += 4;
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  CONTENT SECTIONS — compact
+  // ─────────────────────────────────────────────────────────────────────
+  function addSection(title, text) {
+    if (!text || !text.trim()) return;
+    if (y > H - 36) { doc.addPage(); addRunningHeader(); }
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...GOLD);
+    doc.text(title.toUpperCase(), M, y);
+    doc.setDrawColor(...GOLDL); doc.setLineWidth(0.4);
+    doc.line(M, y+1.8, W-M, y+1.8);
     y += 6;
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...SLATE);
+    const wrapped = doc.splitTextToSize(text, CW);
+    wrapped.forEach(line => {
+      if (y > H - 28) { doc.addPage(); addRunningHeader(); }
+      doc.text(line, M, y); y += 5;
+    });
+    y += 4;
   }
 
-  // Category
-  if (record.main_category || record.sub_category) {
-    addSection('Category', [record.main_category, record.sub_category].filter(Boolean).join(' › '));
+  function addRunningHeader() {
+    doc.setFillColor(...GOLD); doc.rect(0,0,W,1.2,'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...NAVY);
+    doc.text('JENG CHI RESTAURANT — CORRECTIVE ACTION NOTICE', M, 7);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(...GOLD);
+    doc.text(record.reference||'', W-M, 7, {align:'right'});
+    doc.setDrawColor(...GOLDL); doc.setLineWidth(0.4);
+    doc.line(M, 9, W-M, 9);
+    y = 14;
   }
+
   addSection('Incident Description & Policy Violation(s)', record.description);
   addSection('Corrective Action Plan & Expected Behavior', record.corrective_plan);
   addSection('Prior Disciplinary History', record.prior_history);
   addSection('Consequences if Behavior Continues', record.consequences);
 
-  // ── SIGNATURES PAGE ────────────────────────────
-  doc.addPage();
-  y = 20;
+  // ─────────────────────────────────────────────────────────────────────
+  //  SIGNATURES — same page if room, otherwise new page
+  // ─────────────────────────────────────────────────────────────────────
+  const SIG_BLOCK_H = 42; // approx height per sig block
+  const declinedH = record.employee_declined ? 18 : 0;
+  const ackH = 28;
+  const sigTotalH = ackH + declinedH + SIG_BLOCK_H * 3 + 40; // title + disclaimer ~40
+  if (y + sigTotalH > H) { doc.addPage(); addRunningHeader(); }
 
-  // Mini header on signature page
-  doc.setFillColor(...navy);
-  doc.rect(0, 0, W, 14, 'F');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9);
-  doc.setTextColor(...white);
-  doc.text('JENG CHI RESTAURANT — CORRECTIVE ACTION NOTICE', margin, 9);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(...gold);
-  doc.text(record.reference || '', W - margin, 9, {align:'right'});
-  y = 24;
+  // Thin gold rule before sigs
+  doc.setDrawColor(...GOLDL); doc.setLineWidth(0.5);
+  doc.line(M, y, W-M, y); y += 6;
 
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(14);
-  doc.setTextColor(...navy);
+  doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(...NAVY);
   doc.text('ACKNOWLEDGMENT & SIGNATURES', W/2, y, {align:'center'});
+  y += 2;
+  doc.setFillColor(...GOLDL); doc.rect(M+30, y, CW-60, 0.7, 'F');
   y += 6;
-  doc.setFillColor(...gold);
-  doc.rect(margin + 20, y, contentW - 40, 1.5, 'F');
-  y += 10;
 
-  // Employee acknowledgment box
-  doc.setFillColor(239, 246, 255);
-  doc.setDrawColor(191, 219, 254);
-  doc.roundedRect(margin, y, contentW, 32, 3, 3, 'FD');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
-  doc.setTextColor(30, 64, 175);
-  doc.text('EMPLOYEE ACKNOWLEDGMENT', margin + 4, y + 7);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(50, 60, 80);
-  const ackText = 'I acknowledge receipt of this Corrective Action Notice. My signature below indicates that I have received and reviewed ' +
-    'this document. It does not necessarily indicate my agreement with the content. I understand that a copy of this ' +
-    'document will be placed in my permanent personnel file and that I have the right to respond in writing within 5 business days.';
-  const ackLines = doc.splitTextToSize(ackText, contentW - 8);
-  ackLines.forEach((line, i) => { doc.text(line, margin + 4, y + 14 + i * 4.8); });
-  y += 38;
+  // Acknowledgment box — compact
+  const ackText = 'I acknowledge receipt of this Corrective Action Notice. My signature below confirms receipt and review. It does not indicate agreement with the content. A copy will be retained in my permanent personnel file.';
+  const ackLines = doc.splitTextToSize(ackText, CW - 8);
+  const ackBoxH = 6 + ackLines.length * 4.4 + 3;
+  doc.setFillColor(248,251,255); doc.setDrawColor(180,200,230); doc.setLineWidth(0.35);
+  doc.roundedRect(M, y, CW, ackBoxH, 2, 2, 'FD');
+  doc.setFillColor(...ACCENT); doc.roundedRect(M, y, 2.5, ackBoxH, 1,1,'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...NAVY);
+  doc.text('EMPLOYEE ACKNOWLEDGMENT', M+5, y+5.5);
+  doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(...SLATE);
+  ackLines.forEach((l,i) => doc.text(l, M+5, y+10+i*4.4));
+  y += ackBoxH + 4;
 
-  // Signature blocks
-  async function addSignatureBlock(label, name, sigImgData) {
-    if (y > H - 60) { doc.addPage(); y = 20; }
-    const bh = sigImgData ? 46 : 36;
-    doc.setDrawColor(200, 210, 230);
-    doc.setFillColor(250, 251, 253);
-    doc.roundedRect(margin, y, contentW, bh, 2, 2, 'FD');
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8);
-    doc.setTextColor(...navy);
-    doc.text(label.toUpperCase(), margin + 4, y + 7);
-    if (name) {
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(9);
-      doc.setTextColor(50, 60, 80);
-      doc.text(name, margin + 4, y + 15);
-    }
-    if (sigImgData) {
-      try {
-        doc.addImage(sigImgData, 'PNG', margin + 4, y + 17, 90, 22);
-      } catch(e) { /* skip */ }
-    }
-    // Signature line
-    const lineY = y + bh - 8;
-    doc.setDrawColor(...navy);
-    doc.setLineWidth(0.5);
-    doc.line(margin + 4, lineY, margin + 4 + (contentW/2 - 8), lineY);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    doc.setTextColor(...gray);
-    doc.text('Signature', margin + 4, lineY + 4);
-    // Date line
-    doc.line(margin + contentW/2 + 4, lineY, margin + contentW - 4, lineY);
-    doc.text('Date', margin + contentW/2 + 4, lineY + 4);
-    y += bh + 8;
+  // Employee declined notice
+  if (record.employee_declined) {
+    const decText = 'Employee declined to sign. Action is acknowledged only, and a signed copy will be provided per Jeng Chi Restaurant HR policy.';
+    const decLines = doc.splitTextToSize(decText, CW - 8);
+    const decH2 = 6 + decLines.length * 4.8 + 3;
+    doc.setFillColor(255,250,235); doc.setDrawColor(210,160,50); doc.setLineWidth(0.5);
+    doc.roundedRect(M, y, CW, decH2, 2, 2, 'FD');
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(140,90,0);
+    doc.text('⚠  EMPLOYEE DECLINED TO SIGN', M+5, y+6);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(100,60,0);
+    decLines.forEach((l,i) => doc.text(l, M+5, y+11+i*4.8));
+    y += decH2 + 4;
   }
 
-  await addSignatureBlock('Manager / Supervisor', record.manager_signature, sigData.mgr);
-  await addSignatureBlock('HR Manager', record.hr_signature, sigData.hr);
-  const empSigLabel = record.employee_declined ? 'Employee (Declined to Sign)' : 'Employee';
-  await addSignatureBlock(empSigLabel, record.employee_name, sigData.emp);
+  // Signature blocks — compact, 3 columns side by side if all fit
+  async function addSigBlock(label, name, imgData, fallback) {
+    if (y > H - 50) { doc.addPage(); addRunningHeader(); }
+    const img = (imgData && imgData.startsWith('data:')) ? imgData
+               : (fallback && fallback.startsWith('data:')) ? fallback : null;
+    const BH = img ? 44 : 32;
+    doc.setFillColor(...WHITE); doc.setDrawColor(...BORDER); doc.setLineWidth(0.3);
+    doc.roundedRect(M, y, CW, BH, 2, 2, 'FD');
+    doc.setFillColor(...ACCENT); doc.roundedRect(M, y, 2.5, BH, 1,1,'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...SLATE);
+    doc.text(label.toUpperCase(), M+5, y+6.5);
+    if (name) {
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(...NAVY);
+      doc.text(name, M+5, y+14);
+    }
+    if (img) { try { doc.addImage(img,'PNG',M+5,y+16,90,22); } catch(e){} }
+    // Signature / Date lines
+    const halfW = (CW-6)/2 - 10;
+    const lineY = y + BH - 7;
+    doc.setDrawColor(...NAVY); doc.setLineWidth(0.4);
+    doc.line(M+5, lineY, M+5+halfW, lineY);
+    doc.line(M+5+halfW+20, lineY, W-M-3, lineY);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(...SLATE);
+    doc.text('Signature', M+5, lineY+3.5);
+    doc.text('Date', M+5+halfW+20, lineY+3.5);
+    y += BH + 3;
+  }
 
-  // ── DISCLAIMER ─────────────────────────────────
-  if (y > H - 50) { doc.addPage(); y = 20; }
-  doc.setFillColor(248, 249, 252);
-  doc.setDrawColor(200, 210, 230);
-  doc.roundedRect(margin, y, contentW, 52, 3, 3, 'FD');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
-  doc.setTextColor(...navy);
-  doc.text('DISCLAIMER & LEGAL NOTICE', margin + 4, y + 7);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.5);
-  doc.setTextColor(80, 90, 110);
-  const disclaimerText = 'This Corrective Action Notice is an official employment document issued by Jeng Chi Restaurant in accordance with its progressive discipline policy. This action is issued in good faith based on documented facts and is consistent, non-retaliatory, and non-discriminatory in nature. This document does not constitute a guarantee of continued employment. Jeng Chi Restaurant remains an at-will employer. Nothing in this document limits management\'s right to take immediate disciplinary action, including termination, in response to serious misconduct. This record is strictly confidential and protected under applicable state and federal employment law. Unauthorized disclosure or reproduction is prohibited. Employee retains the right to submit a written rebuttal within 5 business days of receipt.';
-  const dlines = doc.splitTextToSize(disclaimerText, contentW - 8);
-  dlines.forEach((line, i) => { doc.text(line, margin + 4, y + 14 + i * 4.2); });
-  y += 58;
+  await addSigBlock('Manager / Supervisor',
+    record.manager_signature ? record.manager_signature.toUpperCase() : '',
+    sigData.mgr, record.manager_sig_img);
+  await addSigBlock('HR Manager',
+    record.hr_signature ? record.hr_signature.toUpperCase() : '',
+    sigData.hr, record.hr_sig_img);
+  await addSigBlock(record.employee_declined ? 'Employee — Declined to Sign' : 'Employee',
+    record.employee_name || '', sigData.emp, record.emp_sig_img);
 
-  // ── FOOTER ─────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────
+  //  DISCLAIMER — compact, fits on same page
+  // ─────────────────────────────────────────────────────────────────────
+  y += 3;
+  if (y > H - 30) { doc.addPage(); addRunningHeader(); }
+  const dText = 'DISCLAIMER & LEGAL NOTICE — This Corrective Action Notice is an official employment document issued by Jeng Chi Restaurant under its progressive discipline policy. Issued in good faith based on documented facts; consistent, non-retaliatory, and non-discriminatory. Does not guarantee continued employment. Jeng Chi Restaurant is an at-will employer. Management retains the right to take immediate disciplinary action including termination. This record is confidential and protected under applicable state and federal employment law. Unauthorized disclosure is prohibited.';
+  const dLines = doc.splitTextToSize(dText, CW-6);
+  const dH = 5 + dLines.length * 3.9 + 3;
+  doc.setFillColor(248,248,250); doc.setDrawColor(...BORDER); doc.setLineWidth(0.25);
+  doc.roundedRect(M, y, CW, dH, 1.5, 1.5, 'FD');
+  doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(100,110,130);
+  dLines.forEach((l,i) => doc.text(l, M+3, y+5+i*3.9));
+  y += dH;
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  FOOTER on every page
+  // ─────────────────────────────────────────────────────────────────────
   const totalPages = doc.internal.getNumberOfPages();
   for (let pg = 1; pg <= totalPages; pg++) {
     doc.setPage(pg);
-    doc.setFillColor(...navy);
-    doc.rect(0, H - 12, W, 12, 'F');
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    doc.setTextColor(200, 210, 230);
-    doc.text('Jeng Chi Restaurant · 1 W. Spring Valley Rd, Richardson, TX 75080 · CONFIDENTIAL HR RECORD', margin, H - 5);
-    doc.setTextColor(...gold);
-    doc.text('Page ' + pg + ' of ' + totalPages, W - margin, H - 5, {align:'right'});
+    doc.setDrawColor(...GOLDL); doc.setLineWidth(0.4);
+    doc.line(M, H-10, W-M, H-10);
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(...SLATE);
+    doc.text('Jeng Chi Restaurant  ·  400 N. Greenville Ave. Ste 11, Richardson, TX 75081  ·  CONFIDENTIAL', M, H-5);
+    doc.setTextColor(...GOLD);
+    doc.text('Page ' + pg + ' of ' + totalPages, W-M, H-5, {align:'right'});
   }
 
-  // Generate blob & upload
-  const pdfBlob = doc.output('blob');
-  const incId = record.reference || 'JC-UNKNOWN';
-  const pdfUrl = await uploadDiscPDF(pdfBlob, incId);
-
-  if (pdfUrl && recordId) {
-    await sb.from('disciplinary_actions').update({pdf_url: pdfUrl}).eq('id', recordId);
-  }
-
-  // Open PDF
-  const pdfObjectUrl = URL.createObjectURL(pdfBlob);
-  window.open(pdfObjectUrl, '_blank');
-  showToast('✅ PDF generated and saved!', 'success');
+  // ─────────────────────────────────────────────────────────────────────
+  //  UPLOAD & OPEN
+  // ─────────────────────────────────────────────────────────────────────
+  const blob = doc.output('blob');
+  const pdfUrl = await uploadDiscPDF(blob, record.reference || 'JC-UNKNOWN');
+  if (pdfUrl && recordId) await sb.from('disciplinary_actions').update({pdf_url:pdfUrl}).eq('id',recordId);
+  window.open(URL.createObjectURL(blob), '_blank');
+  showToast('PDF generated and saved!', 'success');
   return pdfUrl;
 }
 
@@ -5867,9 +5879,77 @@ function showDiscForm() { resetDiscFormFull(); }
 function saveDiscAction() { saveDiscActionFull(); }
 function resetDiscForm() { resetDiscFormFull(); }
 
+// ── HR delete permission — checked against Supabase hr_permissions table ──
+// To grant access: INSERT INTO hr_permissions (username, can_delete_disciplinary) VALUES ('username', true);
+let _discDeleteAllowed = null;
+
+async function canDeleteDisciplinary() {
+  if (_discDeleteAllowed !== null) return _discDeleteAllowed;
+  if (!_loggedInUser || !sb) return false;
+  try {
+    const uname = (_loggedInUser.username || '').toLowerCase().trim();
+    // First try the hr_permissions table
+    const { data, error } = await sb.from('hr_permissions')
+      .select('can_delete_disciplinary')
+      .ilike('username', uname)
+      .single();
+    if (!error && data) {
+      _discDeleteAllowed = !!(data.can_delete_disciplinary);
+      return _discDeleteAllowed;
+    }
+    // Fallback: check HR_MANAGERS object (table may not exist yet)
+    _discDeleteAllowed = uname in HR_MANAGERS;
+  } catch(e) {
+    // Table doesn't exist yet — fall back to HR_MANAGERS
+    const uname = (_loggedInUser.username || '').toLowerCase().trim();
+    _discDeleteAllowed = uname in HR_MANAGERS;
+  }
+  return _discDeleteAllowed;
+}
+
+async function deleteDiscAction(id, empName) {
+  const allowed = await canDeleteDisciplinary();
+  if (!allowed) { showToast('Only authorized HR Managers may delete disciplinary records.', 'error'); return; }
+  if (!confirm('Permanently delete this disciplinary record for ' + empName + '?\n\nThis cannot be undone.')) return;
+  try {
+    const { error } = await sb.from('disciplinary_actions').delete().eq('id', id);
+    if (error) throw error;
+    showToast('Record deleted.', 'success');
+    loadDiscStats();
+    if (state.discEmployee) {
+      const name = state.discEmployee.name || ((state.discEmployee.first_name||'') + ' ' + (state.discEmployee.last_name||'')).trim();
+      loadEmpDiscHistory(name);
+    }
+  } catch(e) { showToast('Delete failed: ' + (e.message||''), 'error'); }
+}
+
+async function regenerateDiscPDF(id) {
+  if (!id || !sb) return;
+  showToast('Regenerating PDF...', 'info');
+  try {
+    const { data, error } = await sb.from('disciplinary_actions').select('*').eq('id', id).single();
+    if (error) throw error;
+    await editDiscAction(id);
+    const sigData = { mgr: getSigDataURL('mgr'), hr: getSigDataURL('hr'), emp: getSigDataURL('emp') };
+    const emp = state.discEmployee || {};
+    data.employee_position = data.employee_position || emp.position || emp.job_title || '';
+    data.employee_dept = data.employee_dept || detectDepartment(emp) || '';
+    data.hire_date = data.hire_date || emp.hire_date || null;
+    data.reports_to = data.reports_to || emp.report_to || emp.reports_to || emp.supervisor || null;
+    await generateAndUploadDiscPDF(data, sigData, id);
+    if (state.discEmployee) {
+      const name = state.discEmployee.name || ((state.discEmployee.first_name||'') + ' ' + (state.discEmployee.last_name||'')).trim();
+      loadEmpDiscHistory(name);
+    }
+  } catch(e) { showToast('Error: ' + (e.message||''), 'error'); }
+}
+
 async function refreshDiscActions() {
   await loadDiscStats();
-  await loadRecentDiscActions();
+  if (state.discEmployee) {
+    const name = state.discEmployee.name || ((state.discEmployee.first_name||'') + ' ' + (state.discEmployee.last_name||'')).trim();
+    if (name) await loadEmpDiscHistory(name);
+  }
 }
 
 async function loadDiscStats() {
@@ -5880,11 +5960,8 @@ async function loadDiscStats() {
     const active = data.filter(d => d.status !== 'draft');
     const count = (type) => active.filter(d => d.action_type === type).length;
     const statMap = {
-      'stat-verbal': 'VERBAL_WARNING',
-      'stat-written': 'WRITTEN_WARNING',
-      'stat-final': 'FINAL_WARNING',
-      'stat-pip': 'PIP',
-      'stat-terminations': 'TERMINATION'
+      'stat-verbal': 'VERBAL_WARNING', 'stat-written': 'WRITTEN_WARNING',
+      'stat-final': 'FINAL_WARNING', 'stat-pip': 'PIP', 'stat-terminations': 'TERMINATION'
     };
     Object.entries(statMap).forEach(([elId, type]) => {
       const el = document.getElementById(elId);
@@ -5894,39 +5971,55 @@ async function loadDiscStats() {
 }
 
 async function loadRecentDiscActions() {
+  // Called explicitly only — not on tab open
   const container = document.getElementById('disc-history-list');
   if (!container || !sb) return;
   try {
     const {data} = await sb.from('disciplinary_actions').select('*')
-      .neq('status','draft').order('created_at',{ascending:false}).limit(15);
-    if (!data || !data.length) {
-      container.innerHTML = '<div style="padding:32px;text-align:center;color:var(--gray-400)"><div style="font-size:32px;margin-bottom:8px">📂</div><p style="font-size:13px">No disciplinary actions on record.</p></div>';
-      return;
-    }
-    const typeLabels = {VERBAL_WARNING:'Verbal Warning',WRITTEN_WARNING:'Written Warning',FINAL_WARNING:'Final Written Warning',SUSPENSION_PAID:'Suspension (Paid)',PIP:'PIP',TERMINATION:'Termination'};
-    const typeColors = {VERBAL_WARNING:'var(--green)',WRITTEN_WARNING:'var(--gold)',FINAL_WARNING:'var(--orange)',SUSPENSION_PAID:'#7c3aed',PIP:'var(--blue)',TERMINATION:'var(--red)'};
-    container.innerHTML = data.map(a => `
-      <div style="padding:14px 20px;border-bottom:1px solid var(--gray-100);display:flex;align-items:flex-start;gap:14px">
-        <div style="width:10px;height:10px;border-radius:50%;background:${typeColors[a.action_type]||'var(--gray-400)'};flex-shrink:0;margin-top:5px"></div>
-        <div style="flex:1">
-          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">
-            <span style="font-weight:700;font-size:13px;color:var(--gray-800)">${a.employee_name}</span>
-            <span style="font-size:10px;color:var(--gray-400)">${a.incident_date||a.created_at?.split('T')[0]||'—'}</span>
-          </div>
-          <div style="font-size:12px;color:var(--navy);font-weight:600;margin-top:2px">${typeLabels[a.action_type]||a.action_type}${a.severity?' <span style="color:var(--gray-400);font-weight:400;font-size:10px">· '+a.severity+'</span>':''}</div>
-          ${a.reference?`<div style="font-size:10px;color:var(--gray-400);font-family:monospace;margin-top:2px">${a.reference}</div>`:''}
-          ${a.description?`<div style="font-size:11px;color:var(--gray-400);margin-top:4px;line-height:1.4">${a.description.substring(0,120)}${a.description.length>120?'…':''}</div>`:''}
-          <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-            <button onclick="editDiscAction(${a.id})" style="font-size:10px;padding:3px 10px;border-radius:4px;border:1px solid var(--navy);color:var(--navy);background:#fff;cursor:pointer;font-weight:600">✏️ Edit</button>
-            ${a.pdf_url?`<a href="${a.pdf_url}" target="_blank" style="font-size:10px;padding:3px 10px;border-radius:4px;border:1px solid var(--green);color:var(--green);background:#fff;cursor:pointer;font-weight:600;text-decoration:none">📄 PDF</a>`:''}
-            <button onclick="printDiscActionById(${a.id})" style="font-size:10px;padding:3px 10px;border-radius:4px;border:1px solid var(--gold);color:var(--navy);background:#fff;cursor:pointer;font-weight:600">🖨️ Print</button>
-          </div>
-        </div>
-      </div>`).join('');
+      .neq('status','draft').order('created_at',{ascending:false}).limit(20);
+    renderDiscActionsList(container, data || []);
   } catch(e) {
-    container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--gray-400);font-size:12px">Unable to load recent actions. Make sure the table exists.</div>';
+    container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--gray-400);font-size:12px">Unable to load actions.</div>';
   }
 }
+
+function renderDiscActionsList(container, data) {
+  if (!data || !data.length) {
+    container.innerHTML = '<div style="padding:32px;text-align:center;color:var(--gray-400)"><i class="fa-regular fa-folder-open" style="font-size:26px;margin-bottom:8px;display:block"></i><p style="font-size:13px">No records found.</p></div>';
+    return;
+  }
+  const typeLabels = {VERBAL_WARNING:'Verbal Warning',WRITTEN_WARNING:'Written Warning',FINAL_WARNING:'Final Written Warning',SUSPENSION_PAID:'Suspension (Paid)',PIP:'PIP',TERMINATION:'Termination'};
+  const typeColors = {VERBAL_WARNING:'#059669',WRITTEN_WARNING:'#b49032',FINAL_WARNING:'#d97706',SUSPENSION_PAID:'#7c3aed',PIP:'#2563eb',TERMINATION:'#dc2626'};
+  container.innerHTML = data.map(a => `
+    <div style="padding:14px 20px;border-bottom:1px solid var(--gray-100);display:flex;align-items:flex-start;gap:14px">
+      <div style="width:10px;height:10px;border-radius:50%;background:${typeColors[a.action_type]||'#aaa'};flex-shrink:0;margin-top:5px"></div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px">
+          <span style="font-weight:700;font-size:13px;color:var(--gray-800)">${a.employee_name||'—'}</span>
+          <span style="font-size:10px;color:var(--gray-400)">${a.incident_date||a.created_at?.split('T')[0]||'—'}</span>
+        </div>
+        <div style="font-size:12px;color:var(--navy);font-weight:600;margin-top:2px">
+          ${typeLabels[a.action_type]||a.action_type}
+          ${a.severity?'<span style="color:var(--gray-400);font-weight:400;font-size:10px"> · '+a.severity+'</span>':''}
+        </div>
+        ${a.reference?`<div style="font-size:10px;color:var(--gray-400);font-family:monospace;margin-top:2px">${a.reference}</div>`:''}
+        ${a.description?`<div style="font-size:11px;color:var(--gray-400);margin-top:4px;line-height:1.4">${a.description.substring(0,120)}${a.description.length>120?'…':''}</div>`:''}
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">
+          <button onclick="editDiscAction(${a.id})" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid var(--navy);color:var(--navy);background:#fff;cursor:pointer;font-weight:600"><i class="fa-solid fa-pen-to-square" style="margin-right:4px"></i>Edit</button>
+          <button onclick="regenerateDiscPDF(${a.id})" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid #b49032;color:#7a5800;background:#fff;cursor:pointer;font-weight:600"><i class="fa-solid fa-rotate" style="margin-right:4px"></i>Regen PDF</button>
+          ${a.pdf_url?`<a href="${a.pdf_url}" target="_blank" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid #059669;color:#059669;background:#fff;font-weight:600;text-decoration:none"><i class="fa-regular fa-file-pdf" style="margin-right:4px"></i>View PDF</a>`:''}
+          <button id="del-disc-${a.id}" onclick="deleteDiscAction(${a.id},'${(a.employee_name||'').replace(/'/g,"\'")}')" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid #dc2626;color:#dc2626;background:#fff;cursor:pointer;font-weight:600;display:none"><i class="fa-solid fa-trash" style="margin-right:4px"></i>Delete</button>
+        </div>
+      </div>
+    </div>`).join('');
+  canDeleteDisciplinary().then(allowed => {
+    if (allowed) data.forEach(a => {
+      const b = document.getElementById('del-disc-' + a.id);
+      if (b) b.style.display = 'inline-flex';
+    });
+  });
+}
+
 
 </script>
 
@@ -8237,6 +8330,7 @@ function appSignOut() {
 
   // Clear logged-in state
   _loggedInUser        = null;
+  _discDeleteAllowed   = null;
   _activeReviewerCode  = null;
   _allowedJobTitles    = 'all';
   _historyData         = [];
