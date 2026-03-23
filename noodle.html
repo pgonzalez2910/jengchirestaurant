@@ -881,18 +881,18 @@ function getPrev() {
 }
 function calcSold(sess) {
   if (sess._calcCache) return sess._calcCache;
-  // Sort by session_date (YYYY-MM-DD) — more reliable than created_at timestamp
-  const sortedBefore = S.sessions
-    .filter(s => s.date < sess.date || (s.date === sess.date && s.id !== sess.id && s.timestamp < sess.timestamp))
-    .sort((a, b) => b.date > a.date ? 1 : b.date < a.date ? -1 : b.timestamp - a.timestamp);
-  const prev = sortedBefore[0] || null;
-
+  const sortedAfter = S.sessions
+    .filter(s => s.date > sess.date || (s.date === sess.date && s.id !== sess.id && s.timestamp > sess.timestamp))
+    .sort((a, b) => a.date > b.date ? 1 : a.date < b.date ? -1 : a.timestamp - b.timestamp);
+  const next = sortedAfter[0] || null;
   const res = {};
   NOODLES.forEach(n => {
-    const prevQty = prev ? stTotal(prev.inventory, n.id) : 0;
-    const prodQty = Number(sess.production[n.id]) || 0;
-    const currQty = stTotal(sess.inventory, n.id);
-    res[n.id] = { prev: prevQty, produced: prodQty, current: currQty, sold: Math.max(0, (prevQty + prodQty) - currQty) };
+    const openingQty = stTotal(sess.inventory, n.id);
+    const prodQty    = Number(sess.production[n.id]) || 0;
+    const newStock   = openingQty + prodQty;
+    const nextQty    = next ? stTotal(next.inventory, n.id) : null;
+    const sold       = nextQty !== null ? Math.max(0, newStock - nextQty) : 0;
+    res[n.id] = { prev: openingQty, produced: prodQty, current: newStock, sold, pending: nextQty === null };
   });
   sess._calcCache = res;
   return res;
@@ -957,9 +957,9 @@ function renderDash() {
   const hasDraft = !!S.draft;
 
   const cards = NOODLES.map(n => {
-    const current  = latest ? stTotal(latest.inventory, n.id) : 0;
     const calc     = latest ? calcSold(latest) : null;
     const produced = calc ? (calc[n.id]?.produced || 0) : 0;
+    const current  = calc ? (calc[n.id]?.current  || 0) : 0;
     const sold     = calc ? (calc[n.id]?.sold     || 0) : 0;
     const pct      = Math.min(100, (current / Math.max(1, current + sold)) * 100).toFixed(0);
     return `
@@ -968,7 +968,7 @@ function renderDash() {
         <div class="nc-val">${current}</div>
         <div class="nc-meta">
           <span class="nc-pill made">↑ ${produced} made</span>
-          <span class="nc-pill sold">↓ ${sold} sold</span>
+          <span class="nc-pill sold">${calc && calc[n.id]?.pending ? '⏳ pending' : '↓ ' + sold + ' sold'}</span>
         </div>
         <div class="nc-bar-wrap"><div class="nc-bar" style="width:${pct}%"></div></div>
       </div>`;
