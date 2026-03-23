@@ -27655,10 +27655,21 @@ function renderEnhancedCard(row, userType) {
 
     return `
 <div class="enhanced-order-card" data-product="${escapedProductName}" data-user="${userType}" data-id="${escapedItemId}"
-     draggable="true"
-     ondragstart="poDragStart(event,this)"
      ondragend="poDragEnd(event,this)"
-     style="background:white;border:1px solid var(--neutral-300);border-radius:10px;overflow:hidden;box-shadow:var(--shadow-sm);display:flex;flex-direction:column;min-width:0;cursor:grab;">
+     ondragover="event.preventDefault();event.stopPropagation();this.style.outline='3px dashed var(--accent-400)';this.style.borderRadius='10px';"
+     ondragleave="this.style.outline='';"
+     ondrop="poDropOntoCard(event,this);"
+     style="background:white;border:1px solid var(--neutral-300);border-radius:10px;overflow:hidden;box-shadow:var(--shadow-sm);display:flex;flex-direction:column;min-width:0;">
+
+  <!-- DRAG HANDLE — draggable="true" lives HERE, not on the card -->
+  <div class="po-drag-handle"
+       draggable="true"
+       ondragstart="poDragStart(event,this)"
+       ondragend="poDragEnd(event,this)"
+       style="background:linear-gradient(90deg,var(--primary-700),var(--primary-600));color:rgba(255,255,255,0.85);font-size:0.65rem;font-weight:700;padding:4px 10px;display:flex;align-items:center;gap:6px;cursor:grab;user-select:none;letter-spacing:.05em;text-transform:uppercase;">
+    <i class="fas fa-grip-lines" style="font-size:0.8rem;"></i>
+    <span>⠿ drag to move section</span>
+  </div>
 
   <!-- TOP BAR: Assign buttons + delete -->
   <div style="background:linear-gradient(135deg,var(--neutral-100),var(--neutral-50));padding:0.4rem 0.6rem;border-bottom:2px solid var(--neutral-200);display:flex;justify-content:space-between;align-items:center;gap:0.3rem;flex-wrap:wrap;">
@@ -38305,48 +38316,104 @@ document.addEventListener('click', () => {
 
 // ========== PLACE ORDER: DRAG & DROP BETWEEN SECTIONS ==========
 
+// ── Debug panel ──────────────────────────────────────────────────────────────
+function _poDbg(msg, color) {
+    color = color || '#94a3b8';
+    console.log('[PO-DRAG] ' + msg);
+    let panel = document.getElementById('_poDragDebug');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = '_poDragDebug';
+        panel.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:99999;background:#0f172a;color:#e2e8f0;font-family:monospace;font-size:11px;padding:10px 14px;border-radius:10px;max-width:400px;max-height:300px;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,0.5);border:1.5px solid #334155;';
+        panel.appendChild(Object.assign(document.createElement('div'),{style:'font-weight:700;color:#94a3b8;margin-bottom:6px;',innerHTML:'&#128027; DRAG DEBUG <button id="_poDragDebugClose" style="background:#dc2626;color:white;border:none;border-radius:4px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:6px;">&#x2715; close</button>'})); panel.querySelector('#_poDragDebugClose').onclick=()=>panel.remove();
+        document.body.appendChild(panel);
+    }
+    const line = document.createElement('div');
+    line.style.cssText = 'padding:2px 0;border-bottom:1px solid #1e293b;color:' + color + ';';
+    line.textContent = new Date().toLocaleTimeString('en',{hour12:false}) + '  ' + msg;
+    panel.appendChild(line);
+    panel.scrollTop = panel.scrollHeight;
+}
+
 let _poDragId = null;
 
 function poDragStart(event, el) {
-
-    _poDragId = el.dataset.id;
-
+    _poDbg('dragstart on: ' + el.tagName + '.'+el.className.split(' ')[0], '#60a5fa');
+    const card = el.closest('.enhanced-order-card');
+    _poDbg('card found: ' + (card ? 'YES id='+card.dataset.id : 'NO — check HTML'), card ? '#4ade80' : '#f87171');
+    _poDragId = card ? card.dataset.id : el.dataset.id;
+    _poDbg('_poDragId = "' + _poDragId + '"', _poDragId ? '#4ade80' : '#f87171');
     event.dataTransfer.effectAllowed = 'move';
-
-    event.dataTransfer.setData('text/plain', _poDragId);
-
-    setTimeout(() => { el.style.opacity = '0.45'; el.style.transform = 'scale(0.97)'; }, 0);
-
+    event.dataTransfer.setData('text/plain', String(_poDragId || ''));
+    if (card) setTimeout(() => { card.style.opacity='0.45'; card.style.transform='scale(0.97)'; card.style.boxShadow='0 8px 24px rgba(0,0,0,0.25)'; }, 0);
 }
 
 function poDragEnd(event, el) {
-
-    el.style.opacity = '';
-
-    el.style.transform = '';
-
+    _poDbg('dragend', '#94a3b8');
+    const card = el.closest('.enhanced-order-card') || el;
+    card.style.opacity = '';
+    card.style.transform = '';
+    card.style.boxShadow = '';
     _poDragId = null;
+}
 
+// Drop onto a CARD — handles reorder within same section OR cross-section move
+async function poDropOntoCard(event, targetCard) {
+    event.preventDefault();
+    event.stopPropagation(); // don't bubble up to section wrapper
+    targetCard.style.outline = '';
+
+    const rowId = event.dataTransfer.getData('text/plain') || _poDragId;
+    if (!rowId) { _poDbg('❌ poDropOntoCard: no rowId', '#f87171'); return; }
+
+    const targetId      = targetCard.dataset.id;
+    const targetSection = (targetCard.dataset.user || '').toLowerCase();
+
+    if (rowId === targetId) { _poDbg('❌ dropped on self', '#f87171'); return; }
+
+    _poDbg('DROP on card id='+targetId+' section='+targetSection, '#fb923c');
+
+    // Find which section the dragged card is currently in
+    let sourceSection = null;
+    const cache = window._placeOrderCache || {};
+    ['rony','julio','office'].forEach(s => {
+        if ((cache[s]||[]).some(r => String(r.id) === String(rowId))) sourceSection = s;
+    });
+
+    _poDbg('sourceSection='+sourceSection+' targetSection='+targetSection, '#a78bfa');
+
+    if (!sourceSection) { _poDbg('❌ source card not found in cache', '#f87171'); return; }
+
+    if (sourceSection === targetSection) {
+        // ── Same section: reorder in cache array then re-render ──
+        const arr   = cache[sourceSection];
+        const fromI = arr.findIndex(r => String(r.id) === String(rowId));
+        const toI   = arr.findIndex(r => String(r.id) === String(targetId));
+        if (fromI === -1 || toI === -1) { _poDbg('❌ index not found', '#f87171'); return; }
+        const [moved] = arr.splice(fromI, 1);
+        arr.splice(toI, 0, moved);
+        _poDbg('✅ reordered: pos '+fromI+' → '+toI, '#4ade80');
+        await _rerenderPlaceOrderSections();
+    } else {
+        // ── Different section: reassign via toggleAssignment ──
+        const targetUser = targetSection.charAt(0).toUpperCase() + targetSection.slice(1);
+        _poDbg('✅ cross-section move → '+targetUser, '#4ade80');
+        await toggleAssignment(rowId, targetUser);
+    }
 }
 
 async function poDropIntoSection(event, targetUser) {
-
     event.preventDefault();
-
+    // Cards stopPropagation — this only fires when dropping in EMPTY section space
     const rowId = event.dataTransfer.getData('text/plain') || _poDragId;
-
+    _poDbg('section DROP → "'+targetUser+'" rowId="'+rowId+'"', '#fb923c');
     if (!rowId) return;
-
-    // Check if it's already in that section
-
-    const targetSection = targetUser.toLowerCase();
-
-    const alreadyThere = (window._placeOrderCache[targetSection] || []).some(r => String(r.id) === String(rowId));
-
-    if (alreadyThere) return;
-
+    const sect  = targetUser.toLowerCase();
+    const cache = window._placeOrderCache || {};
+    const already = (cache[sect]||[]).some(r => String(r.id) === String(rowId));
+    if (already) { _poDbg('same section — no-op (drop in empty space)', '#94a3b8'); return; }
+    _poDbg('✅ cross-section → '+targetUser, '#4ade80');
     await toggleAssignment(rowId, targetUser);
-
 }
 
 // ========== ADD THIS NEW FUNCTION (place it before initializeEnhancedPlaceOrder) ==========
@@ -43229,34 +43296,94 @@ const RD = {
 let _rdDragName  = null; // product name being dragged
 let _rdDragGroup = null; // original group name
 
+function _rdDbg(msg, color) {
+    color = color || '#1e293b';
+    console.log('[RD-DRAG] ' + msg);
+    let panel = document.getElementById('_poDragDebug');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = '_poDragDebug';
+        panel.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:99999;background:#0f172a;color:#e2e8f0;font-family:monospace;font-size:11px;padding:10px 14px;border-radius:10px;max-width:380px;max-height:280px;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,0.5);border:1.5px solid #334155;';
+        panel.appendChild(Object.assign(document.createElement('div'),{style:'font-weight:700;color:#94a3b8;margin-bottom:6px;',innerHTML:'&#128027; DRAG DEBUG <button id="_poDragDebugClose" style="background:#dc2626;color:white;border:none;border-radius:4px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:6px;">&#x2715; close</button>'})); panel.querySelector('#_poDragDebugClose').onclick=()=>panel.remove();
+        document.body.appendChild(panel);
+    }
+    const line = document.createElement('div');
+    line.style.cssText = 'padding:2px 0;border-bottom:1px solid #1e293b;color:' + color + ';';
+    line.textContent = new Date().toLocaleTimeString('en',{hour12:false}) + '  [RD] ' + msg;
+    panel.appendChild(line);
+    panel.scrollTop = panel.scrollHeight;
+}
+
 function rdCardDragStart(event, el) {
-    _rdDragName  = el.dataset.rdname;
-    _rdDragGroup = el.dataset.rdgroup;
+    _rdDbg('dragstart on: ' + el.tagName + ' class="' + el.className + '"', '#60a5fa');
+    const card = el.closest('.rd-card');
+    _rdDbg('closest .rd-card: ' + (card ? 'FOUND id=' + card.id : 'NOT FOUND'), card ? '#4ade80' : '#f87171');
+    _rdDragName  = card ? card.dataset.rdname  : el.dataset.rdname;
+    _rdDragGroup = card ? card.dataset.rdgroup : el.dataset.rdgroup;
+    _rdDbg('product="' + _rdDragName + '" group="' + _rdDragGroup + '"', _rdDragName ? '#4ade80' : '#f87171');
     event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', _rdDragName);
-    setTimeout(() => { el.style.opacity = '0.4'; el.style.transform = 'scale(0.96)'; }, 0);
+    event.dataTransfer.setData('text/plain', String(_rdDragName || ''));
+    if (card) setTimeout(() => { card.style.opacity = '0.4'; card.style.transform = 'scale(0.96)'; card.style.boxShadow = '0 8px 24px rgba(0,0,0,0.3)'; }, 0);
 }
 
 function rdCardDragEnd(event, el) {
-    el.style.opacity = '';
-    el.style.transform = '';
+    _rdDbg('dragend', '#94a3b8');
+    const card = el.closest('.rd-card') || el;
+    card.style.opacity = '';
+    card.style.transform = '';
+    card.style.boxShadow = '';
     _rdDragName  = null;
     _rdDragGroup = null;
 }
 
+// Drop onto a CARD — reorder within same group, or move to card's group
+async function rdDropOntoCard(event, targetCard) {
+    event.preventDefault();
+    event.stopPropagation(); // don't bubble to group header
+    targetCard.style.outline = '';
+
+    const productName = event.dataTransfer.getData('text/plain') || _rdDragName;
+    const targetName  = targetCard.dataset.rdname;
+    if (!productName || productName === targetName) return;
+
+    const srcGroup = RD.groupMap[productName] || null;
+    const tgtGroup = RD.groupMap[targetName]  || null;
+
+    _rdDbg('card-drop: "'+productName+'" onto "'+targetName+'" | srcGrp='+srcGroup+' tgtGrp='+tgtGroup, '#fb923c');
+
+    if (srcGroup === tgtGroup) {
+        // Same group — reorder RD.products array then re-render
+        const fromI = RD.products.findIndex(r => r.product_name === productName);
+        const toI   = RD.products.findIndex(r => r.product_name === targetName);
+        if (fromI === -1 || toI === -1) return;
+        const [moved] = RD.products.splice(fromI, 1);
+        RD.products.splice(toI, 0, moved);
+        _rdDbg('✅ reordered within group', '#4ade80');
+        rdRender();
+    } else {
+        // Different group — assign dragged card to the target card's group
+        const newGroup = tgtGroup || null;
+        _rdDbg('✅ moving to group: "'+newGroup+'"', '#4ade80');
+        await rdDropIntoGroup(event, newGroup || '');
+    }
+}
+
 async function rdDropIntoGroup(event, targetGroup) {
     event.preventDefault();
-    const productName = event.dataTransfer.getData('text/plain') || _rdDragName;
-    if (!productName || !targetGroup) return;
+    _rdDbg('DROP on group: "' + targetGroup + '"', '#fb923c');
 
-    // Strip the emoji prefix if this is a named group label from rdRender
-    // (group labels are stored as plain text in RD.groupMap, not with emoji)
-    // The label in rdRender is the raw group name, but _groupByCustomGroup adds '📂 '
-    // We receive the raw grp.label here — strip '📂 ' prefix if present
+    const productName = event.dataTransfer.getData('text/plain') || _rdDragName;
+    _rdDbg('productName: "' + productName + '"', productName ? '#4ade80' : '#f87171');
+
+    if (!productName) { _rdDbg('❌ ABORT: missing productName', '#f87171'); return; }
+    if (!targetGroup) { targetGroup = ''; } // allow dropping into "no group" 
+
     const cleanGroup = targetGroup.replace(/^📂\s*/, '').trim();
+    _rdDbg('cleanGroup after strip: "' + cleanGroup + '"', '#a78bfa');
 
     const currentGroup = RD.groupMap[productName] || null;
-    if (cleanGroup === currentGroup) return; // already in this group, no-op
+    _rdDbg('currentGroup: "' + currentGroup + '" | same? ' + (cleanGroup === currentGroup), '#94a3b8');
+    if (cleanGroup === currentGroup) { _rdDbg('❌ ABORT: already in this group', '#f87171'); return; }
 
     // Optimistic update
     RD.groupMap[productName] = cleanGroup;
@@ -43520,12 +43647,23 @@ function rdRender(){
             const parId = 'rd-par-'+name.replace(/[^a-zA-Z0-9]/g,'_');
             const saveBtnId = 'rd-save-btn-'+name.replace(/[^a-zA-Z0-9]/g,'_');
             cardsHTML += `<div class="rd-card" id="rdc-${name.replace(/[^a-zA-Z0-9]/g,'_')}"
-                draggable="true"
                 data-rdname="${invEsc(name)}"
                 data-rdgroup="${invEsc(grpName)}"
-                ondragstart="rdCardDragStart(event,this)"
                 ondragend="rdCardDragEnd(event,this)"
-                style="background:white;border-radius:12px;box-shadow:0 2px 8px rgba(90,20,20,0.08);border:2px solid var(--neutral-200);display:flex;flex-direction:column;position:relative;cursor:grab;">
+                ondragover="event.preventDefault();event.stopPropagation();this.style.outline='3px dashed var(--accent-400)';"
+                ondragleave="this.style.outline='';"
+                ondrop="rdDropOntoCard(event,this);"
+                style="background:white;border-radius:12px;box-shadow:0 2px 8px rgba(90,20,20,0.08);border:2px solid var(--neutral-200);display:flex;flex-direction:column;position:relative;">
+
+                <!-- DRAG HANDLE — draggable="true" on this element, not the card -->
+                <div class="rd-drag-handle"
+                     draggable="true"
+                     ondragstart="rdCardDragStart(event,this)"
+                     ondragend="rdCardDragEnd(event,this)"
+                     style="background:linear-gradient(90deg,var(--primary-800),var(--primary-700));color:rgba(255,255,255,0.75);font-size:9px;font-weight:700;padding:4px 10px;display:flex;align-items:center;gap:5px;cursor:grab;user-select:none;letter-spacing:.05em;text-transform:uppercase;border-radius:12px 12px 0 0;">
+                    <i class="fas fa-grip-lines" style="font-size:0.75rem;"></i>
+                    <span>⠿ drag to group</span>
+                </div>
 
                 <!-- TOP BAR: Group label (clickable) + Chart icon -->
                 <div style="display:flex;align-items:stretch;position:relative;">
