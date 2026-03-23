@@ -584,7 +584,9 @@ canvas.sig-canvas {
     <div class="login-field">
       <label>Username</label>
       <input type="text" id="loginUsername" placeholder="Enter your username"
-             autocomplete="username" autocapitalize="none" spellcheck="false"
+             autocomplete="username" autocapitalize="characters" spellcheck="false"
+             style="text-transform:uppercase"
+             oninput="this.value=this.value.toUpperCase()"
              onkeydown="if(event.key==='Enter')document.getElementById('loginPinInput').focus()">
     </div>
 
@@ -5656,16 +5658,13 @@ async function writeFieldEntry(actionId, fieldName, content) {
   const authorName = (((user.first_name||'') + ' ' + (user.last_name||'')).trim()) || user.username || 'Unknown';
   try {
     const { data: existing } = await sb.from('disc_field_entries')
-      .select('id,content,logged_at_cst').eq('action_id', actionId).eq('field_name', fieldName)
+      .select('id').eq('action_id', actionId).eq('field_name', fieldName)
       .eq('author_name', authorName).maybeSingle();
-    const contentChanged = !existing || (existing.content || '').trim() !== content.trim();
     const payload = {
       action_id: actionId, field_name: fieldName, author_name: authorName,
       author_id: user.employee_id || user.username || null,
       content: content.trim(),
-      // Only refresh the timestamp when the content actually changed
-      logged_at_cst: contentChanged ? getCSTTimestamp() : (existing.logged_at_cst || getCSTTimestamp()),
-      logged_at: contentChanged ? new Date().toISOString() : (existing.logged_at || new Date().toISOString())
+      logged_at_cst: getCSTTimestamp(), logged_at: new Date().toISOString()
     };
     if (existing?.id) {
       await sb.from('disc_field_entries').update(payload).eq('id', existing.id);
@@ -5982,8 +5981,7 @@ async function generateAndUploadDiscPDF(record, sigData, recordId) {
   // addAttributedSection: renders section title + attributed entries
   // entries = [{author_name, content, logged_at_cst}] from disc_field_entries
   // fallbackText = plain text if no entries found
-  // fallbackAuthor / fallbackTimestamp = used when disc_field_entries has no rows yet
-  function addAttributedSection(title, entries, fallbackText, fallbackAuthor, fallbackTimestamp) {
+  function addAttributedSection(title, entries, fallbackText) {
     const hasEntries = entries && entries.length > 0;
     const hasContent = hasEntries || (fallbackText && fallbackText.trim());
     if (!hasContent) return;
@@ -6026,28 +6024,13 @@ async function generateAndUploadDiscPDF(record, sigData, recordId) {
         y += blockH + 4;
       });
     } else {
-      // Fallback: show attribution block with manager name + timestamp from record
-      const author = fallbackAuthor || 'Unknown';
-      const timestamp = fallbackTimestamp || '';
-      doc.setFontSize(9.5);
-      const textLines = doc.splitTextToSize(fallbackText, CW - 8);
-      const blockH = 5 + 4.5 + textLines.length * 5 + 3;
-      if (y + blockH > H - 16) { doc.addPage(); addRunningHeader(); }
-      doc.setFillColor(248, 249, 253);
-      doc.setDrawColor(...BORDER); doc.setLineWidth(0.2);
-      doc.roundedRect(M, y, CW, blockH, 1.5, 1.5, 'FD');
-      doc.setFillColor(...ACCENT); doc.roundedRect(M, y, 2.5, blockH, 1, 1, 'F');
-      // Author name + timestamp
-      doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...NAVY);
-      doc.text(author, M+5, y+5);
-      doc.setFont('helvetica','normal'); doc.setFontSize(6.5); doc.setTextColor(...SLATE);
-      if (timestamp) doc.text(timestamp, M+5 + doc.getTextWidth(author) + 3, y+5);
-      // Content
-      doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(40,50,70);
-      textLines.forEach((line, li) => {
-        doc.text(line, M+5, y + 10 + li * 5);
+      // Fallback: plain text, no attribution
+      doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...SLATE);
+      const wrapped = doc.splitTextToSize(fallbackText, CW);
+      wrapped.forEach(line => {
+        if (y > H - 28) { doc.addPage(); addRunningHeader(); }
+        doc.text(line, M, y); y += 5;
       });
-      y += blockH + 4;
     }
     y += 5;
   }
@@ -6064,24 +6047,14 @@ async function generateAndUploadDiscPDF(record, sigData, recordId) {
     } catch(e) { /* table may not exist yet, fall back to plain text */ }
   }
 
-  // Build fallback author + timestamp from the record's manager signature + incident date/time
-  const fallbackAuthor = record.manager_signature || 'Unknown';
-  const fallbackTimestamp = record.created_at
-    ? new Date(record.created_at).toLocaleString('en-US', {
-        timeZone: 'America/Chicago',
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', hour12: true
-      }) + ' CST'
-    : '';
-
   addAttributedSection('Incident Description & Policy Violation(s)',
-    fieldEntries.description, record.description, fallbackAuthor, fallbackTimestamp);
+    fieldEntries.description, record.description);
   addAttributedSection('Corrective Action Plan & Expected Behavior',
-    fieldEntries.corrective_plan, record.corrective_plan, fallbackAuthor, fallbackTimestamp);
+    fieldEntries.corrective_plan, record.corrective_plan);
   addAttributedSection('Prior Disciplinary History',
-    fieldEntries.prior_history, record.prior_history, fallbackAuthor, fallbackTimestamp);
+    fieldEntries.prior_history, record.prior_history);
   addAttributedSection('Consequences if Behavior Continues',
-    fieldEntries.consequences, record.consequences, fallbackAuthor, fallbackTimestamp);
+    fieldEntries.consequences, record.consequences);
 
   // ─────────────────────────────────────────────────────────────────────
   //  SIGNATURES — same page if room, otherwise new page
