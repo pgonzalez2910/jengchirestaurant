@@ -194,13 +194,19 @@
     </button>
   </div>
 
-  <!-- Already signed -->
+  <!-- Already signed — now shows their signature + option to re-sign -->
   <div id="state-already" class="state">
-    <div style="text-align:center;padding:20px 0">
-      <div class="done-icon">✅</div>
+    <div style="text-align:center;padding:16px 0 10px">
+      <div class="done-icon" style="font-size:48px;margin:0 0 8px">✅</div>
       <div class="signed-badge">✓ Already Signed</div>
-      <div class="done-sub">This document has already been signed.<br>You may close this page.</div>
+      <div class="done-sub" style="margin-bottom:14px">You already signed this document.<br>Your signature is on file.</div>
     </div>
+    <div id="prev-sig-wrap" style="border:2px solid #a7f3d0;border-radius:8px;background:#fff;margin-bottom:10px;overflow:hidden">
+      <img id="prev-sig-img" style="display:block;width:100%;height:120px;object-fit:contain" src="" alt="Your previous signature">
+    </div>
+    <div id="prev-sig-date" style="font-size:11px;color:#059669;text-align:center;margin-bottom:16px;font-weight:600"></div>
+    <button class="btn btn-primary" onclick="enableResign()">✍️ Update / Re-sign</button>
+    <p style="font-size:10px;color:#9ca3af;text-align:center;margin-top:8px">Re-signing will replace your previous signature on record.</p>
   </div>
 
   <!-- Done -->
@@ -232,6 +238,7 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let pad = null;
 let record = null;
+let isResigning = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────
 function showState(id) {
@@ -268,20 +275,28 @@ async function init() {
 
     if (error || !data) { showError('Document not found. This link may be invalid or expired.'); return; }
 
-    // Already signed?
-    if (data.emp_sig_img) {
-      showState('already');
-      return;
-    }
-
     record = data;
 
-    // Fill document info
+    // Fill document info (shown in both sign and already-signed states)
     document.getElementById('si-employee').textContent = data.employee_name || '—';
     document.getElementById('si-action').textContent =
       (typeLabels[data.action_type] || data.action_type || '—') +
       (data.incident_date ? ' · ' + new Date(data.incident_date + 'T12:00:00').toLocaleDateString('en-US', {month:'long',day:'numeric',year:'numeric'}) : '');
     document.getElementById('si-ref').textContent = data.reference ? 'Ref: ' + data.reference : '';
+
+    // Already signed?
+    if (data.emp_sig_img) {
+      const imgEl = document.getElementById('prev-sig-img');
+      if (imgEl) imgEl.src = data.emp_sig_img;
+      const dateEl = document.getElementById('prev-sig-date');
+      if (dateEl && data.emp_signed_at) {
+        dateEl.textContent = 'Signed on ' + new Date(data.emp_signed_at).toLocaleString('en-US', {
+          month: 'long', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'
+        });
+      }
+      showState('already');
+      return;
+    }
 
     showState('sign');
     initPad();
@@ -289,6 +304,13 @@ async function init() {
   } catch (e) {
     showError('Connection error: ' + e.message);
   }
+}
+
+// ── Re-sign: switch from Already Signed state to the sign pad ─────────
+function enableResign() {
+  isResigning = true;
+  showState('sign');
+  setTimeout(initPad, 100);
 }
 
 // ── Signature pad ─────────────────────────────────────────────────────
@@ -303,12 +325,17 @@ function initPad() {
   canvas.height = 160 * ratio;
   canvas.getContext('2d').scale(ratio, ratio);
 
+  if (pad) { try { pad.off(); } catch(e) {} }
   pad = new SignaturePad(canvas, {
     backgroundColor: 'rgb(255,255,255)',
     penColor: '#1a2744',
     minWidth: 1.5,
     maxWidth: 4
   });
+
+  // Update button label if re-signing
+  const btn = document.getElementById('submit-btn');
+  if (btn && isResigning) btn.textContent = 'Update My Signature';
 }
 
 function clearPad() {
@@ -327,13 +354,13 @@ async function submitSig() {
   btn.textContent = 'Saving...';
 
   try {
-    const sigImg    = pad.toDataURL('image/png');
-    const signedAt  = new Date().toISOString();
+    const sigImg   = pad.toDataURL('image/png');
+    const signedAt = new Date().toISOString();
 
     const { error } = await sb.from('disciplinary_actions').update({
-      emp_sig_img:  sigImg,
+      emp_sig_img:   sigImg,
       emp_signed_at: signedAt,
-      status: 'acknowledged'
+      status:        'acknowledged'
     }).eq('id', record.id);
 
     if (error) throw error;
@@ -342,7 +369,7 @@ async function submitSig() {
 
   } catch (e) {
     btn.disabled = false;
-    btn.textContent = 'Submit My Signature';
+    btn.textContent = isResigning ? 'Update My Signature' : 'Submit My Signature';
     alert('Error saving signature: ' + e.message + '\nPlease try again.');
   }
 }
