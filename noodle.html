@@ -647,19 +647,9 @@
     .autosave-bar.saving .autosave-dot { animation: pulse .8s infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
-    /* saved row flash — first save = green, re-save = blue */
-    .n-row.just-saved         { animation: rowSavedFirst  2s ease forwards; }
-    .n-row.just-updated       { animation: rowSavedUpdate 2s ease forwards; }
-    @keyframes rowSavedFirst  {
-      0%   { background: rgba(0,122,64,.22); border-left-color: #00b359; }
-      70%  { background: rgba(0,122,64,.10); }
-      100% { background: rgba(0,0,0,.02);   border-left-color: var(--row-accent); }
-    }
-    @keyframes rowSavedUpdate {
-      0%   { background: rgba(0,112,200,.18); border-left-color: #0070c8; }
-      70%  { background: rgba(0,112,200,.08); }
-      100% { background: rgba(0,0,0,.02);    border-left-color: var(--row-accent); }
-    }
+    /* saved row — first save = stays light green, re-save = stays light blue */
+    .n-row.just-saved   { background: rgba(0,122,64,.10); border-left-color: #00b359; }
+    .n-row.just-updated { background: rgba(0,112,200,.10); border-left-color: #0070c8; }
     .tag {
       display: inline-block; border-radius: 20px; padding: 2px 8px;
       font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
@@ -1048,13 +1038,11 @@ function calcSold(sess) {
 }
 
 function initDraft() {
-  const prev = getPrev();
-  // Pre-populate inventory from last session so staff see previous counts
-  const inv = prev ? JSON.parse(JSON.stringify(prev.inventory)) : blankInventory();
+  // Always start blank for a new session — staff enter fresh counts
   return {
     id: null, date: todayStr(), timestamp: Date.now(),
-    inventory: inv, production: blankProduction(),
-    previousInventory: prev ? prev.inventory : null,
+    inventory: blankInventory(), production: blankProduction(),
+    previousInventory: null,
     notes: '', step: 1,
   };
 }
@@ -1396,11 +1384,23 @@ function renderCount() {
   const targetDate = (S.draft && S.draft.date) ? S.draft.date : todayStr();
   loadDraftForDate(targetDate);
 
-  const stBlocks = STATIONS.map(st => `
+  const stBlocks = STATIONS.map(st => {
+    // Wok Chef station: only yellow noodles are used here
+    const stationNoodles = st.id === 'wokChef'
+      ? NOODLES.filter(n => n.id === 'yellow')
+      : NOODLES;
+
+    return `
     <div class="station-block">
-      <div class="station-lbl">${st.icon} ${st.label}</div>
+      <div class="station-lbl">${st.icon} ${st.label}
+        <span style="font-size:.65rem;font-weight:400;color:var(--text-3);margin-left:8px;text-transform:none;letter-spacing:0">
+          ${st.id === 'lineCook' ? '— portions at the line cook station' :
+            st.id === 'cooler'   ? '— portions stored in the cooler/fridge' :
+                                   '— yellow noodles only'}
+        </span>
+      </div>
       <div class="n-inputs">
-        ${NOODLES.map(n => `
+        ${stationNoodles.map(n => `
           <div class="n-row" id="row-${n.id}-${st.id}" style="--row-accent:${n.hex}">
             <label class="n-lbl">${n.short}</label>
             <div class="qty-ctl">
@@ -1413,7 +1413,8 @@ function renderCount() {
             </div>
           </div>`).join('')}
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   const statusBadge = S.draft.id
     ? `<span style="color:var(--green-n);font-weight:600;font-size:.82rem">● Loaded from database (${S.draft.date})</span>`
@@ -1424,8 +1425,35 @@ function renderCount() {
       <div class="step-hd">
         <div class="step-badge">Step 1 of 2</div>
         <h2 class="step-title">Count Inventory</h2>
-        <p class="step-desc">Select a date to load existing data, or enter a new count. Changes auto-save.</p>
+        <p class="step-desc">Count how many noodle portions are physically at each station right now.</p>
       </div>
+
+      <!-- ⚠️ PROMINENT WARNING ──────────────────── -->
+      <div style="
+        background: #fff8e1;
+        border: 2px solid #F9A825;
+        border-left: 5px solid #F9A825;
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 20px;
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+      ">
+        <span style="font-size:1.4rem;flex-shrink:0;line-height:1">⚠️</span>
+        <div>
+          <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:.95rem;color:#5D4037;margin-bottom:5px">
+            COUNT ONLY — Do NOT enter production here
+          </div>
+          <div style="font-size:.82rem;color:#795548;line-height:1.6">
+            <strong>This screen is ONLY for counting portions you can physically see at each station.</strong><br>
+            👉 Enter how many bags/portions are at <u>Line Cook</u>, <u>Cooler</u>, and <u>Wok Chef</u>.<br>
+            👉 Production numbers (how many were <em>made today</em>) go on the <strong>NEXT screen → Step 2</strong>.<br>
+            <span style="color:#c62828;font-weight:700">❌ Do NOT put production numbers in the Cooler or any other station field.</span>
+          </div>
+        </div>
+      </div>
+
       <div class="date-row" style="flex-wrap:wrap;gap:10px">
         <label>Session Date:</label>
         <input type="date" id="sess-date" value="${S.draft.date}"
@@ -1436,15 +1464,37 @@ function renderCount() {
         <span class="autosave-dot"></span>— changes will auto-save
       </div>
       <div style="display:flex;gap:16px;font-size:.72rem;color:var(--text-3);margin-bottom:14px;flex-wrap:wrap">
-        <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(0,122,64,.22);margin-right:4px"></span>🟢 Green = Saved (new entry)</span>
-        <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(0,112,200,.18);margin-right:4px"></span>🔵 Blue = Updated (existing entry)</span>
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(0,122,64,.18);border:1px solid #00b359;margin-right:4px"></span>🟢 Light green = Saved successfully</span>
+        <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(0,112,200,.14);border:1px solid #0070c8;margin-right:4px"></span>🔵 Light blue = Updated existing</span>
       </div>
       ${stBlocks}
       <div class="totals-bar" id="tot-bar">${buildTotBar()}</div>
+
+      <!-- Reminder before Next button -->
+      <div style="
+        background: #E8F5E9;
+        border: 1px solid #A5D6A7;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin-bottom: 14px;
+        font-size:.82rem;
+        color: #2E7D32;
+      ">
+        ✅ <strong>Finished counting?</strong> Click <em>"Next: Production →"</em> to enter how many noodles were <strong>made today</strong>.
+      </div>
+
       <div class="step-actions">
         <button class="cta secondary" onclick="nav('dashboard')">← Back</button>
-        <button class="cta primary" id="count-save-btn" onclick="saveCountNow()">💾 Save Count</button>
-        <button class="cta primary" style="background:#1a3a6e" onclick="nav('production')">Next: Production →</button>
+        <button onclick="saveCountNow()" id="count-save-btn" style="
+          padding:12px 22px;border-radius:10px;font-family:'Syne',sans-serif;font-weight:700;
+          font-size:.88rem;cursor:pointer;border:2px solid #007A40;
+          background:rgba(0,122,64,0.08);color:#007A40;transition:all .2s;
+        ">💾 Save Count</button>
+        <button onclick="nav('production')" style="
+          padding:12px 22px;border-radius:10px;font-family:'Syne',sans-serif;font-weight:700;
+          font-size:.88rem;cursor:pointer;border:2px solid #C8962A;
+          background:rgba(200,150,42,0.10);color:#B07800;transition:all .2s;
+        ">Next: Production →</button>
       </div>
     </div>`;
 }
@@ -1469,16 +1519,14 @@ function loadDraftForDate(date) {
       _savedRowKeys[n.id + '-' + st.id] = true;
     }));
   } else {
-    // No session for this date — create a new draft
-    // Pre-populate inventory from the most recent session so staff see last known state
-    const prev = getPrev();
+    // No session for this date — start completely blank (do NOT preload previous counts)
     S.draft = {
       id:                null,
       date:              date,
       timestamp:         Date.now(),
-      inventory:         prev ? JSON.parse(JSON.stringify(prev.inventory)) : blankInventory(),
+      inventory:         blankInventory(),
       production:        blankProduction(),
-      previousInventory: prev ? prev.inventory : null,
+      previousInventory: null,
       notes:             '',
       step:              1,
     };
@@ -1621,7 +1669,32 @@ function renderProd() {
       <div class="step-hd">
         <div class="step-badge">Step 2 of 2</div>
         <h2 class="step-title">Production Numbers</h2>
-        <p class="step-desc">How many portions were made? Select a date to view or edit production for any session.</p>
+        <p class="step-desc">Enter how many portions were <strong>made/produced</strong> today — not what's in stock.</p>
+      </div>
+
+      <!-- ✅ PRODUCTION CLARIFICATION ──────────────── -->
+      <div style="
+        background: #E8F5E9;
+        border: 2px solid #66BB6A;
+        border-left: 5px solid #2E7D32;
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 20px;
+        display: flex;
+        gap: 12px;
+        align-items: flex-start;
+      ">
+        <span style="font-size:1.4rem;flex-shrink:0;line-height:1">🍜</span>
+        <div>
+          <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:.95rem;color:#1B5E20;margin-bottom:5px">
+            PRODUCTION — How many were made today?
+          </div>
+          <div style="font-size:.82rem;color:#2E7D32;line-height:1.6">
+            Enter the number of <strong>fresh portions produced/made</strong> today for each noodle type.<br>
+            👉 If nothing was made today, leave it as <strong>0</strong>.<br>
+            👉 This is <u>separate</u> from the station counts you entered on Step 1.
+          </div>
+        </div>
       </div>
 
       <!-- Date picker -->
@@ -2534,8 +2607,19 @@ function populateCDDash() {
   NOODLES.forEach(n => { totSold[n.id] = 0; totMade[n.id] = 0; });
   periods.forEach(p => NOODLES.forEach(n => {
     totSold[n.id] += Math.max(0, p.nData[n.id].sold);
-    totMade[n.id] += p.nData[n.id].produced;
   }));
+
+  // Made = production logged ON sessions that fall within the filter range
+  // (not production from period opening sessions — that would misattribute dates)
+  const { from: fFrom, to: fTo } = getCDFilterDates();
+  allSess.forEach(sess => {
+    const sd = new Date(sess.date + 'T12:00:00');
+    if (fFrom && sd < fFrom) return;
+    if (fTo   && sd > fTo)   return;
+    NOODLES.forEach(n => {
+      totMade[n.id] += Number(sess.production[n.id]) || 0;
+    });
+  });
 
   // ── Per-noodle KPIs ───────────────────────
   NOODLES.forEach(n => {
@@ -2544,14 +2628,14 @@ function populateCDDash() {
     const eK = document.getElementById(`cdkpi-stock-${n.id}`);
     if (eS) eS.textContent = periods.length ? totSold[n.id] : '—';
     if (eM) eM.textContent = periods.length ? totMade[n.id] : '—';
-    if (eK && latest) eK.textContent = stTotal(latest.inventory, n.id);
+    if (eK && latest) eK.textContent = stTotal(latest.inventory, n.id) + (Number(latest.production[n.id]) || 0);
     else if (eK) eK.textContent = '—';
   });
 
   // ── Aggregate KPIs ────────────────────────
   const aggMade  = NOODLES.reduce((s,n) => s + totMade[n.id], 0);
   const aggSold  = NOODLES.reduce((s,n) => s + totSold[n.id], 0);
-  const aggStock = latest ? NOODLES.reduce((s,n) => s + stTotal(latest.inventory, n.id), 0) : null;
+  const aggStock = latest ? NOODLES.reduce((s,n) => s + stTotal(latest.inventory, n.id) + (Number(latest.production[n.id]) || 0), 0) : null;
   const elAM = document.getElementById('cd-agg-made');
   const elAS = document.getElementById('cd-agg-sold');
   const elAK = document.getElementById('cd-agg-stock');
@@ -2920,7 +3004,7 @@ function buildCDRawTable() {
   wrap.innerHTML = `
     <!-- SECTION 1 -->
     <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text-3);font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:8px">
-      <i class="fa-solid fa-1" style="background:#1a1a2e;color:#fff;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:.6rem;flex-shrink:0"></i>
+      <i class="fa-solid fa-1" style="background:#E6A800;color:#1a1a2e;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:.6rem;flex-shrink:0;font-weight:800"></i>
       Raw Session Counts — exactly as recorded in the database
     </div>
     <div style="overflow-x:auto;border-radius:8px;border:1px solid var(--border);margin-bottom:20px">
@@ -2935,7 +3019,7 @@ function buildCDRawTable() {
 
     <!-- SECTION 2 -->
     <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text-3);font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:8px">
-      <i class="fa-solid fa-2" style="background:#1a1a2e;color:#fff;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:.6rem;flex-shrink:0"></i>
+      <i class="fa-solid fa-2" style="background:#E6A800;color:#1a1a2e;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:.6rem;flex-shrink:0;font-weight:800"></i>
       Period Transitions — step-by-step sold calculation
     </div>
     <div style="font-size:.72rem;color:var(--text-3);margin-bottom:10px;padding:8px 12px;background:rgba(200,150,42,0.06);border-radius:6px;border-left:3px solid #C8962A">
@@ -2953,7 +3037,7 @@ function buildCDRawTable() {
 
     <!-- SECTION 3 -->
     <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.1em;color:var(--text-3);font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:8px">
-      <i class="fa-solid fa-3" style="background:#1a1a2e;color:#fff;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:.6rem;flex-shrink:0"></i>
+      <i class="fa-solid fa-3" style="background:#E6A800;color:#1a1a2e;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:.6rem;flex-shrink:0;font-weight:800"></i>
       Grand Totals — sum of all confirmed periods
     </div>
     <div style="overflow-x:auto;border-radius:8px;border:1px solid var(--border)">
@@ -3323,8 +3407,16 @@ function renderAnalytics() {
   NOODLES.forEach(n => { totSold[n.id]=0; totMade[n.id]=0; });
   periods.forEach(p => NOODLES.forEach(n => {
     totSold[n.id] += Math.max(0, p.nData[n.id].sold);
-    totMade[n.id] += p.nData[n.id].produced;
   }));
+
+  // Made = production logged ON sessions within the filter range
+  const { from: rFrom, to: rTo } = getFilterDates();
+  getAllSortedSessions().forEach(sess => {
+    const sd = new Date(sess.date + 'T12:00:00');
+    if (rFrom && sd < rFrom) return;
+    if (rTo   && sd > rTo)   return;
+    NOODLES.forEach(n => { totMade[n.id] += Number(sess.production[n.id]) || 0; });
+  });
 
   // Get latest stock from the last period's end session
   const latestSession = periods[periods.length - 1]?.to;
@@ -3334,7 +3426,7 @@ function renderAnalytics() {
     const elStock = document.getElementById(`kpi-stock-${n.id}`);
     if (elSold)  elSold.textContent  = totSold[n.id];
     if (elMade)  elMade.textContent  = totMade[n.id];
-    if (elStock && latestSession) elStock.textContent = stTotal(latestSession.inventory, n.id);
+    if (elStock && latestSession) elStock.textContent = stTotal(latestSession.inventory, n.id) + (Number(latestSession.production[n.id]) || 0);
   });
 
   // ── Show chart grid ──────────────────────────
