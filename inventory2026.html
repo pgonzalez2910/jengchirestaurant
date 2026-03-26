@@ -38425,16 +38425,72 @@ async function poDropOntoCard(event, targetCard) {
     }
 }
 
+// Helper — find the card in a grid closest to the drop Y position
+function _poNearestCard(container, clientY) {
+    const cards = [...container.querySelectorAll('.enhanced-order-card')];
+    let closest = null, closestDist = Infinity;
+    let insertBefore = true;
+    cards.forEach(card => {
+        const rect = card.getBoundingClientRect();
+        const midY = rect.top + rect.height / 2;
+        const dist = Math.abs(clientY - midY);
+        if (dist < closestDist) {
+            closestDist = dist;
+            closest = card;
+            insertBefore = clientY < midY;
+        }
+    });
+    return { card: closest, insertBefore };
+}
+
 async function poDropIntoSection(event, targetUser) {
     event.preventDefault();
-    // Cards stopPropagation — this only fires when dropping in EMPTY section space
     const rowId = event.dataTransfer.getData('text/plain') || _poDragId;
     _poDbg('section DROP → "'+targetUser+'" rowId="'+rowId+'"', '#fb923c');
     if (!rowId) return;
+
     const sect  = targetUser.toLowerCase();
     const cache = window._placeOrderCache || {};
     const already = (cache[sect]||[]).some(r => String(r.id) === String(rowId));
-    if (already) { _poDbg('same section — no-op (drop in empty space)', '#94a3b8'); return; }
+
+    if (already) {
+        // Same section — find nearest card and insert beside it
+        const dragCard  = document.querySelector('.enhanced-order-card[data-id="'+rowId+'"]');
+        if (!dragCard) { _poDbg('❌ dragCard not found in DOM', '#f87171'); return; }
+
+        // Find the card grid container (immediate parent of the cards)
+        const sectionEl = event.currentTarget;
+        const { card: nearCard, insertBefore } = _poNearestCard(sectionEl, event.clientY);
+
+        if (!nearCard || nearCard === dragCard) {
+            _poDbg('no nearby card or same card — appending to end', '#94a3b8');
+            dragCard.parentNode?.appendChild(dragCard);
+        } else {
+            if (insertBefore) {
+                nearCard.parentNode.insertBefore(dragCard, nearCard);
+            } else {
+                nearCard.after(dragCard);
+            }
+            _poDbg('✅ inserted '+(insertBefore?'before':'after')+' nearest card', '#4ade80');
+        }
+
+        // Update cache order
+        const arr    = cache[sect];
+        const fromI  = arr.findIndex(r => String(r.id) === String(rowId));
+        const nearId = nearCard?.dataset?.id;
+        const toI    = nearId ? arr.findIndex(r => String(r.id) === String(nearId)) : arr.length - 1;
+        if (fromI !== -1 && toI !== -1 && fromI !== toI) {
+            const [moved] = arr.splice(fromI, 1);
+            arr.splice(toI, 0, moved);
+        }
+
+        dragCard.style.transition = 'box-shadow .3s';
+        dragCard.style.boxShadow  = '0 0 0 3px var(--accent-400)';
+        setTimeout(() => { dragCard.style.boxShadow = ''; dragCard.style.transition = ''; }, 800);
+        return;
+    }
+
+    // Different section — move via toggleAssignment
     _poDbg('✅ cross-section → '+targetUser, '#4ade80');
     await toggleAssignment(rowId, targetUser);
 }
