@@ -26747,11 +26747,8 @@ async function loadEnhancedCreateOrder() {
 
             .filter(row => {
 
-                const isOffice = (row.user || '').toLowerCase().trim() === 'office';
-
-                const hasSubmitted = parseFloat(row.tentative || 0) > 0;
-
-                return isOffice && hasSubmitted;
+                // Show ALL office items (same as Rony — no tentative>0 gate)
+                return (row.user || '').toLowerCase().trim() === 'office';
 
             })
 
@@ -26817,9 +26814,11 @@ async function loadEnhancedCreateOrder() {
 
         
 
-        // ✅ STEP 9: Render cards
+        // ✅ STEP 9: Load group map THEN render (groups must be ready before card HTML is built)
 
-        renderEnhancedOrderCards(ronyData, julioData, officeData);
+        await _poLoadGroupMap();
+
+        await renderEnhancedOrderCards(ronyData, julioData, officeData);
 
         
 
@@ -26865,11 +26864,14 @@ async function loadEnhancedCreateOrder() {
 
 window._placeOrderFilters = window._placeOrderFilters || {
 
-    rony:  { vendor: '', category: '' },
+    rony:  { vendor: '', category: '', group: '' },
 
-    julio: { vendor: '', category: '' },
+    julio: { vendor: '', category: '', group: '' },
 
 };
+
+// Holds custom_group mappings loaded from inventory_management
+window._placeOrderGroupMap = window._placeOrderGroupMap || {};
 
 
 
@@ -26933,13 +26935,15 @@ function _buildSectionFilters(section, allRows, accentColor) {
 
 function _filterRows(rows, section) {
 
-    const f = window._placeOrderFilters[section];
+    const f = window._placeOrderFilters[section] || { vendor:'', category:'', group:'' };
 
     return rows.filter(r => {
 
         if (f.vendor   && r.vendor   !== f.vendor)   return false;
 
         if (f.category && (r.category||'Other') !== f.category) return false;
+
+        if (f.group && (window._placeOrderGroupMap[r.product_name]||'') !== f.group) return false;
 
         return true;
 
@@ -27125,6 +27129,76 @@ function _groupByCategory(rows) {
 
 }
 
+// ── Group by custom_group from inventory_management (used for Rony in PlaceOrder)
+// Products with a group assigned are clustered by that group name (alphabetical order).
+// Products with no group fall back to SMART_GROUPS, then category.
+function _groupByCustomGroup(rows) {
+
+    rows = _mergeColorVariants(rows);
+    const alpha = (a, b) => (a.product_name || '').localeCompare(b.product_name || '');
+    const grpMap = window._placeOrderGroupMap || {};
+
+    // Separate rows that have a custom_group vs those that don't
+    const customBuckets = {};   // key = custom_group name
+    const ungrouped     = [];
+
+    rows.forEach(r => {
+        const g = grpMap[r.product_name];
+        if (g) {
+            if (!customBuckets[g]) customBuckets[g] = [];
+            customBuckets[g].push(r);
+        } else {
+            ungrouped.push(r);
+        }
+    });
+
+    const result = [];
+
+    // 1. Named custom groups sorted alphabetically
+    Object.keys(customBuckets).sort().forEach(gName => {
+        const arr = customBuckets[gName].sort(alpha);
+        result.push({ cat: '📂 ' + gName, rows: arr, _groupColor: '#b45309', _isCustom: true });
+    });
+
+    // 2. Ungrouped items → fall through SMART_GROUPS then category
+    if (ungrouped.length > 0) {
+        const smartBuckets = {};
+        const fallback     = {};
+
+        ungrouped.forEach(r => {
+            const group = _smartGroup(r.product_name, r.vendor, r.category);
+            if (group) {
+                if (!smartBuckets[group.key]) smartBuckets[group.key] = [];
+                smartBuckets[group.key].push(r);
+            } else {
+                const cat = r.category || 'Other';
+                if (!fallback[cat]) fallback[cat] = [];
+                fallback[cat].push(r);
+            }
+        });
+
+        Object.values(smartBuckets).forEach(arr => arr.sort(alpha));
+        Object.values(fallback).forEach(arr => arr.sort(alpha));
+
+        SMART_GROUPS.forEach(g => {
+            const arr = smartBuckets[g.key];
+            if (arr && arr.length > 0) {
+                result.push({ cat: g.icon + ' ' + g.label, rows: arr, pinned: !!g.pinned, _groupColor: g.color });
+            }
+        });
+
+        const sortedFallback = Object.keys(fallback).sort((a, b) => {
+            if (a === 'Other') return 1;
+            if (b === 'Other') return -1;
+            return a.localeCompare(b);
+        });
+        sortedFallback.forEach(cat => result.push({ cat, rows: fallback[cat] }));
+    }
+
+    return result;
+
+}
+
 
 
 function _renderCategoryGroups(groups, userType, accentColor) {
@@ -27227,13 +27301,44 @@ function _renderCategoryGroups(groups, userType, accentColor) {
 
 window._placeOrderCache = window._placeOrderCache || { rony: [], julio: [], office: [] };
 
+// Load custom_group mapping from inventory_management for PlaceOrder group filter + sort
+
+async function _poLoadGroupMap() {
+
+    try {
+
+        const { data, error } = await supabaseClient
+
+            .from('inventory_management')
+
+            .select('product_name,custom_group')
+
+            .not('custom_group', 'is', null);
+
+        if (!error && data) {
+
+            window._placeOrderGroupMap = {};
+
+            data.forEach(r => { if (r.custom_group) window._placeOrderGroupMap[r.product_name] = r.custom_group; });
+
+            console.log('[PO] Group map loaded:', Object.keys(window._placeOrderGroupMap).length, 'entries');
+
+        }
+
+    } catch(e) { console.warn('[PO] _poLoadGroupMap error:', e); }
+
+}
 
 
-function _rerenderPlaceOrderSections() {
+
+async function _rerenderPlaceOrderSections() {
 
     const container = document.getElementById('enhancedOrderContainer');
 
     if (!container) return;
+
+    // Refresh group map so newly assigned groups appear immediately
+    await _poLoadGroupMap();
 
     const userFilter = document.getElementById('createUserFilter')?.value || 'all';
 
@@ -27265,13 +27370,19 @@ function _buildPlaceOrderHTML(ronyData, julioData, officeData, userFilter) {
 
         const filtered = _filterRows(ronyData, 'rony');
 
-        const groups   = _groupByCategory(filtered);
+        // Use custom groups from RonyDashboard (inventory_management.custom_group),
+        // falling back to SMART_GROUPS only for products with no group assigned.
+        const groups   = _groupByCustomGroup(filtered);
 
         const accent   = '#6B4444';
 
         html += `
 
-        <div style="margin-bottom:3rem;padding:2rem;background:linear-gradient(135deg,rgba(44,86,136,0.08),rgba(44,86,136,0.03));border-radius:20px;border:3px solid var(--primary-400);box-shadow:0 8px 16px rgba(44,86,136,0.15);">
+        <div data-po-section="rony"
+          ondragover="event.preventDefault();this.style.outline='3px dashed #6B4444';"
+          ondragleave="this.style.outline=''"
+          ondrop="poDropIntoSection(event,'Rony');this.style.outline=''"
+          style="margin-bottom:3rem;padding:2rem;background:linear-gradient(135deg,rgba(44,86,136,0.08),rgba(44,86,136,0.03));border-radius:20px;border:3px solid var(--primary-400);box-shadow:0 8px 16px rgba(44,86,136,0.15);">
 
           <div style="background:linear-gradient(135deg,var(--primary-700),var(--primary-600));padding:1.5rem 2rem;border-radius:15px;margin-bottom:1.5rem;box-shadow:var(--shadow-lg);">
 
@@ -27325,7 +27436,11 @@ function _buildPlaceOrderHTML(ronyData, julioData, officeData, userFilter) {
 
         html += `
 
-        <div style="margin-bottom:3rem;padding:2rem;background:linear-gradient(135deg,rgba(217,119,6,0.08),rgba(217,119,6,0.03));border-radius:20px;border:3px solid var(--accent-400);box-shadow:0 8px 16px rgba(217,119,6,0.15);">
+        <div data-po-section="julio"
+          ondragover="event.preventDefault();this.style.outline='3px dashed #d97706';"
+          ondragleave="this.style.outline=''"
+          ondrop="poDropIntoSection(event,'Julio');this.style.outline=''"
+          style="margin-bottom:3rem;padding:2rem;background:linear-gradient(135deg,rgba(217,119,6,0.08),rgba(217,119,6,0.03));border-radius:20px;border:3px solid var(--accent-400);box-shadow:0 8px 16px rgba(217,119,6,0.15);">
 
           <div style="background:linear-gradient(135deg,var(--accent-600),var(--accent-500));padding:1.5rem 2rem;border-radius:15px;margin-bottom:1.5rem;box-shadow:var(--shadow-lg);">
 
@@ -27373,7 +27488,11 @@ function _buildPlaceOrderHTML(ronyData, julioData, officeData, userFilter) {
 
         html += `
 
-        <div style="margin-bottom:3rem;padding:2rem;background:linear-gradient(135deg,rgba(5,150,105,0.08),rgba(5,150,105,0.03));border-radius:20px;border:3px solid var(--success-400);box-shadow:0 8px 16px rgba(5,150,105,0.15);">
+        <div data-po-section="office"
+          ondragover="event.preventDefault();this.style.outline='3px dashed #059669';"
+          ondragleave="this.style.outline=''"
+          ondrop="poDropIntoSection(event,'Office');this.style.outline=''"
+          style="margin-bottom:3rem;padding:2rem;background:linear-gradient(135deg,rgba(5,150,105,0.08),rgba(5,150,105,0.03));border-radius:20px;border:3px solid var(--success-400);box-shadow:0 8px 16px rgba(5,150,105,0.15);">
 
           <div style="background:linear-gradient(135deg,var(--success-600),var(--success-500));padding:1.5rem 2rem;border-radius:15px;margin-bottom:1.5rem;box-shadow:var(--shadow-lg);">
 
@@ -27413,7 +27532,34 @@ function _buildPlaceOrderHTML(ronyData, julioData, officeData, userFilter) {
 
 
 
-function renderEnhancedOrderCards(ronyData, julioData, officeData = []) {
+// Sort Rony products by custom_group from inventory_management
+function _poSortedByGroup(rows) {
+
+    // Separate rows with and without a group
+    const withGroup    = rows.filter(r => window._placeOrderGroupMap[r.product_name]);
+
+    const withoutGroup = rows.filter(r => !window._placeOrderGroupMap[r.product_name]);
+
+    // Sort each bucket alphabetically by group then by product_name
+    withGroup.sort((a, b) => {
+
+        const ga = window._placeOrderGroupMap[a.product_name] || '';
+
+        const gb = window._placeOrderGroupMap[b.product_name] || '';
+
+        if (ga !== gb) return ga.localeCompare(gb);
+
+        return (a.product_name || '').localeCompare(b.product_name || '');
+
+    });
+
+    withoutGroup.sort((a, b) => (a.product_name || '').localeCompare(b.product_name || ''));
+
+    return [...withGroup, ...withoutGroup];
+
+}
+
+async function renderEnhancedOrderCards(ronyData, julioData, officeData = []) {
 
     const userFilter = document.getElementById('createUserFilter')?.value || 'all';
 
@@ -27427,9 +27573,7 @@ function renderEnhancedOrderCards(ronyData, julioData, officeData = []) {
 
     // ✅ Reset per-section filters when new data loads
 
-    window._placeOrderFilters = { rony: { vendor:'', category:'' }, julio: { vendor:'', category:'' } };
-
-
+    window._placeOrderFilters = { rony: { vendor:'', category:'', group:'' }, julio: { vendor:'', category:'', group:'' } };
 
     const container = document.getElementById('enhancedOrderContainer');
 
@@ -27511,7 +27655,21 @@ function renderEnhancedCard(row, userType) {
 
     return `
 <div class="enhanced-order-card" data-product="${escapedProductName}" data-user="${userType}" data-id="${escapedItemId}"
+     ondragend="poDragEnd(event,this)"
+     ondragover="event.preventDefault();event.stopPropagation();this.style.outline='3px dashed var(--accent-400)';this.style.borderRadius='10px';"
+     ondragleave="this.style.outline='';"
+     ondrop="poDropOntoCard(event,this);"
      style="background:white;border:1px solid var(--neutral-300);border-radius:10px;overflow:hidden;box-shadow:var(--shadow-sm);display:flex;flex-direction:column;min-width:0;">
+
+  <!-- DRAG HANDLE — draggable="true" lives HERE, not on the card -->
+  <div class="po-drag-handle"
+       draggable="true"
+       ondragstart="poDragStart(event,this)"
+       ondragend="poDragEnd(event,this)"
+       style="background:linear-gradient(90deg,var(--primary-700),var(--primary-600));color:rgba(255,255,255,0.85);font-size:0.65rem;font-weight:700;padding:4px 10px;display:flex;align-items:center;gap:6px;cursor:grab;user-select:none;letter-spacing:.05em;text-transform:uppercase;">
+    <i class="fas fa-grip-lines" style="font-size:0.8rem;"></i>
+    <span>⠿ drag to move section</span>
+  </div>
 
   <!-- TOP BAR: Assign buttons + delete -->
   <div style="background:linear-gradient(135deg,var(--neutral-100),var(--neutral-50));padding:0.4rem 0.6rem;border-bottom:2px solid var(--neutral-200);display:flex;justify-content:space-between;align-items:center;gap:0.3rem;flex-wrap:wrap;">
@@ -27522,6 +27680,39 @@ function renderEnhancedCard(row, userType) {
       <button onclick="toggleAssignment('${escapedItemId}','Office')" class="btn ${isAssignedToOffice?'btn-primary':'btn-secondary'}" style="padding:0.2rem 0.5rem;font-size:0.7rem;min-width:44px;height:24px;line-height:1;${isAssignedToOffice?'background:var(--success-600);':''}">Office</button>
     </div>
     <button onclick="deleteProductFromPlaceOrder('${escapedItemId}')" class="btn btn-danger btn-icon" style="width:24px;height:24px;padding:0;font-size:0.7rem;flex-shrink:0;"><i class="fas fa-trash"></i></button>
+  </div>
+
+  <!-- GROUP BAR: Assign group (like RonyDashboard) -->
+  <div style="position:relative;">
+    <div onclick="poToggleGroupPicker(this,${JSON.stringify(productName)})"
+         style="background:${window._placeOrderGroupMap?.[productName]?'var(--accent-500)':'var(--neutral-500)'};color:white;font-size:9.5px;font-weight:700;padding:4px 10px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:5px;min-height:22px;"
+         title="Click to assign or change group">
+      <i class="fas fa-layer-group" style="opacity:.8;font-size:9px;flex-shrink:0;"></i>
+      <span id="po-grplabel-${productId}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">
+        ${ (window._placeOrderGroupMap && window._placeOrderGroupMap[productName]) ? window._placeOrderGroupMap[productName] : '<span style="opacity:.6;">Assign Group…</span>' }
+      </span>
+      <i class="fas fa-chevron-down" style="font-size:7px;opacity:.6;flex-shrink:0;"></i>
+    </div>
+    <!-- Group picker dropdown -->
+    <div class="po-grp-panel" style="display:none;position:absolute;top:100%;left:0;width:240px;background:white;border:2px solid var(--accent-400);border-radius:0 8px 8px 8px;z-index:300;box-shadow:0 10px 24px rgba(0,0,0,0.22);">
+      <div style="padding:6px 8px;background:var(--accent-50);border-bottom:1px solid var(--accent-200);">
+        <div style="font-size:9px;font-weight:700;color:var(--accent-700);text-transform:uppercase;margin-bottom:4px;letter-spacing:.05em;"><i class="fas fa-layer-group" style="margin-right:4px;"></i>Assign to Group</div>
+        <input type="text" placeholder="Search or type new group name…"
+               class="po-grp-search"
+               style="width:100%;font-size:11px;border:1.5px solid var(--accent-300);border-radius:5px;padding:4px 7px;box-sizing:border-box;outline:none;"
+               oninput="poGroupPickerFilter(this)" onclick="event.stopPropagation()">
+      </div>
+      <div class="po-grp-list" style="max-height:160px;overflow-y:auto;">
+        <!-- Populated by poToggleGroupPicker -->
+      </div>
+      <div style="padding:5px 8px;border-top:1px solid var(--neutral-100);background:var(--neutral-50);">
+        <button onclick="poCreateAndAssignGroup(this,event)"
+                style="width:100%;background:var(--primary-700);color:white;border:none;border-radius:6px;padding:6px 8px;font-size:10px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px;">
+          <i class="fas fa-plus"></i> Create & Assign New Group
+        </button>
+        <div style="font-size:9px;color:var(--neutral-500);text-align:center;margin-top:3px;">Type name above, then click</div>
+      </div>
+    </div>
   </div>
 
   <!-- PRODUCT ROW: image + name + meta -->
@@ -28751,29 +28942,40 @@ async function toggleAssignment(rowId, newUser) {
 
             .eq('id', rowId);
 
-        
-
         if (error) throw error;
 
-        
+        // MOVE the row from its current section to the new section in cache
+        const targetSection = newUser.toLowerCase();
 
-        // Update cache row and re-render in-place
+        let movedRow = null;
 
         ['rony','julio','office'].forEach(section => {
 
-            window._placeOrderCache[section] = window._placeOrderCache[section].map(r =>
+            const idx = window._placeOrderCache[section].findIndex(r => String(r.id) === String(rowId));
 
-                String(r.id) === String(rowId) ? { ...r, user: newUser.toLowerCase() } : r
+            if (idx !== -1) {
 
-            );
+                [movedRow] = window._placeOrderCache[section].splice(idx, 1);
+
+            }
 
         });
+
+        if (movedRow) {
+
+            movedRow = { ...movedRow, user: targetSection };
+
+            if (!window._placeOrderCache[targetSection]) window._placeOrderCache[targetSection] = [];
+
+            window._placeOrderCache[targetSection].push(movedRow);
+
+        }
 
         _rerenderPlaceOrderSections();
 
         requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' }));
 
-        showAlert(`✅ Assigned to ${newUser}`, 'success');
+        showAlert(`✅ Moved to ${newUser}`, 'success');
 
     } catch (error) {
 
@@ -28787,11 +28989,25 @@ async function toggleAssignment(rowId, newUser) {
 
 
 
-// Delete product — stays in place
+// Delete product from PlaceOrder AND inventory_management (permanently removes from system)
 
 async function deleteProductFromPlaceOrder(rowId) {
 
-    if (!confirm('⚠️ Delete this product from inventory_check?')) return;
+    // Find the product name from cache before deleting
+
+    let productName = null;
+
+    ['rony','julio','office'].forEach(section => {
+
+        const found = window._placeOrderCache[section].find(r => String(r.id) === String(rowId));
+
+        if (found) productName = found.product_name;
+
+    });
+
+    const nameMsg = productName ? `\n\nProduct: "${productName}"` : '';
+
+    if (!confirm(`⚠️ PERMANENT DELETE${nameMsg}\n\nThis will remove the product from:\n• Place Order (inventory_check)\n• Inventory Management\n• Current Stock\n• Purchase History\n• Invoice Items\n• Vendor Prices\n\nThis CANNOT be undone. Continue?`)) return;
 
     const scrollY = window.scrollY;
 
@@ -28799,19 +29015,31 @@ async function deleteProductFromPlaceOrder(rowId) {
 
     try {
 
-        const { error } = await supabaseClient
+        // Step 1: Delete from inventory_check
+        const { error: e1 } = await supabaseClient.from('inventory_check').delete().eq('id', rowId);
 
-            .from('inventory_check')
+        if (e1) throw e1;
 
-            .delete()
+        // Step 2: Delete from all other tables by product_name (if we have it)
+        if (productName) {
 
-            .eq('id', rowId);
+            await Promise.allSettled([
 
-        
+                supabaseClient.from('inventory_management').delete().eq('product_name', productName),
 
-        if (error) throw error;
+                supabaseClient.from('current_stock').delete().eq('product_name', productName),
 
+                supabaseClient.from('purchase_history').delete().eq('product_name', productName),
 
+                supabaseClient.from('invoice_items').delete().eq('product_name', productName),
+
+                supabaseClient.from('vendor_prices').delete().eq('product_name', productName),
+
+                supabaseClient.from('target_inventory').delete().eq('product_name', productName),
+
+            ]);
+
+        }
 
         // Remove from cache and re-render in-place
 
@@ -28829,13 +29057,20 @@ async function deleteProductFromPlaceOrder(rowId) {
 
         requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' }));
 
-        showAlert('✅ Product deleted', 'success');
+        // If RonyDashboard is active, reload it too
+        if (typeof rdInit === 'function' && document.getElementById('ronyDashboard')?.style.display !== 'none') {
+
+            rdInit(true);
+
+        }
+
+        showAlert(`✅ "${productName || 'Product'}" permanently deleted from all tables`, 'success');
 
     } catch (error) {
 
         console.error('Delete error:', error);
 
-        showAlert('❌ Error deleting product', 'error');
+        showAlert('❌ Error deleting product: ' + (error.message || error), 'error');
 
     } finally {
 
@@ -28909,9 +29144,25 @@ async function autoSaveProductName(input) {
 
             input.style.background  = "rgba(16,185,129,0.08)";
 
+            // Update _placeOrderGroupMap key rename
+            if (window._placeOrderGroupMap && window._placeOrderGroupMap[oldName] !== undefined) {
+
+                window._placeOrderGroupMap[newName] = window._placeOrderGroupMap[oldName];
+
+                delete window._placeOrderGroupMap[oldName];
+
+            }
+
             showAlert(`Renamed "${oldName}" to "${newName}"`, "success");
 
             requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: "instant" }));
+
+            // Refresh RonyDashboard if it's currently visible
+            if (typeof rdLoadProducts === 'function' && document.getElementById('ronyDashboard')?.style.display !== 'none') {
+
+                rdLoadProducts().then(() => rdRender()).catch(()=>{});
+
+            }
 
             setTimeout(() => { input.style.borderColor="transparent"; input.style.background="transparent"; }, 2000);
 
@@ -37937,6 +38188,257 @@ function escAttr(str) {
 
 
 
+
+
+// ========== PLACE ORDER: GROUP PICKER FUNCTIONS ==========
+
+window._poPickerProduct = null;
+
+function _poGroupPickerHTML(productName) {
+    window._poPickerProduct = productName;
+    const current = (window._placeOrderGroupMap || {})[productName] || '';
+    const allGroups = [...new Set(Object.values(window._placeOrderGroupMap || {}))].filter(Boolean).sort();
+    let html = '';
+    if (current) {
+        html += `<div onclick="poAssignGroup(window._poPickerProduct,null,event)" style="padding:5px 10px;font-size:10px;cursor:pointer;color:#dc2626;font-weight:600;" onmouseover="this.style.background='#fef2f2'" onmouseout="this.style.background=''">
+            <i class="fas fa-times" style="margin-right:4px;"></i>Remove from group
+        </div>`;
+    }
+    if (!allGroups.length) return html + '<div style="padding:6px 10px;font-size:10px;color:var(--neutral-400);font-style:italic;">No groups yet — create one below</div>';
+    allGroups.forEach(g => {
+        const isActive = g === current;
+        html += `<div onclick="poAssignGroup(window._poPickerProduct,${JSON.stringify(g)},event)"
+            style="padding:5px 10px;font-size:10px;cursor:pointer;background:${isActive?'var(--accent-50)':''};font-weight:${isActive?'700':'400'};color:${isActive?'var(--accent-700)':'var(--neutral-800)'};"
+            onmouseover="this.style.background='var(--accent-50)'" onmouseout="this.style.background='${isActive?'var(--accent-50)':''}'">${isActive?'<i class="fas fa-check" style="margin-right:4px;color:var(--accent-500);"></i>':'<i class="fas fa-tag" style="margin-right:4px;opacity:.4;"></i>'}${invEsc(g)}
+        </div>`;
+    });
+    return html;
+}
+
+function poToggleGroupPicker(bar, productName) {
+    event.stopPropagation();
+    window._poPickerProduct = productName;
+    const card = bar.closest('.enhanced-order-card');
+    const panel = card?.querySelector('.po-grp-panel');
+    if (!panel) return;
+    // Close all other open panels
+    document.querySelectorAll('.po-grp-panel').forEach(p => { if (p !== panel) p.style.display = 'none'; });
+    const isOpen = panel.style.display === 'block';
+    panel.style.display = isOpen ? 'none' : 'block';
+    if (!isOpen) {
+        const listEl = panel.querySelector('.po-grp-list');
+        if (listEl) listEl.innerHTML = _poGroupPickerHTML(productName);
+        setTimeout(() => panel.querySelector('.po-grp-search')?.focus(), 50);
+    }
+}
+
+function poGroupPickerFilter(inp) {
+    event.stopPropagation();
+    const panel = inp.closest('.po-grp-panel');
+    const listEl = panel?.querySelector('.po-grp-list');
+    if (!listEl) return;
+    const srch = (inp.value || '').toLowerCase();
+    const productName = window._poPickerProduct || '';
+    const current = (window._placeOrderGroupMap || {})[productName] || '';
+    const allGroups = [...new Set(Object.values(window._placeOrderGroupMap || {}))].filter(Boolean).sort().filter(g => !srch || g.toLowerCase().includes(srch));
+    let html = '';
+    if (!allGroups.length) html = '<div style="padding:6px 10px;font-size:10px;color:var(--neutral-400);">No match — press Create below</div>';
+    allGroups.forEach(g => {
+        const isActive = g === current;
+        html += `<div onclick="poAssignGroup(window._poPickerProduct,${JSON.stringify(g)},event)" style="padding:5px 10px;font-size:10px;cursor:pointer;font-weight:${isActive?'700':'400'};color:${isActive?'var(--accent-700)':''};" onmouseover="this.style.background='var(--accent-50)'" onmouseout="this.style.background=''">${isActive?'✓ ':''}${invEsc(g)}</div>`;
+    });
+    listEl.innerHTML = html;
+}
+
+function poCreateAndAssignGroup(btn, evt) {
+    if (evt) evt.stopPropagation();
+    const panel = btn.closest('.po-grp-panel');
+    const inp = panel?.querySelector('.po-grp-search');
+    const newGroup = (inp?.value || '').trim();
+    if (!newGroup) {
+        if (inp) { inp.style.border = '2px solid #dc2626'; inp.focus(); setTimeout(() => { if (inp) inp.style.border = ''; }, 1000); }
+        return;
+    }
+    poAssignGroup(window._poPickerProduct, newGroup, null);
+}
+
+async function poAssignGroup(productName, groupName, evt) {
+    if (evt) evt.stopPropagation();
+    if (!productName) return;
+
+    // Close all pickers
+    document.querySelectorAll('.po-grp-panel').forEach(p => p.style.display = 'none');
+
+    const prev = (window._placeOrderGroupMap || {})[productName] || null;
+
+    // Optimistic update
+    if (!window._placeOrderGroupMap) window._placeOrderGroupMap = {};
+    if (groupName) window._placeOrderGroupMap[productName] = groupName;
+    else delete window._placeOrderGroupMap[productName];
+
+    // Update the group bar label on the card
+    const productId = productName.replace(/[^a-zA-Z0-9]/g, '_');
+    const labelEl = document.getElementById('po-grplabel-' + productId);
+    if (labelEl) labelEl.innerHTML = groupName ? invEsc(groupName) : '<span style="opacity:.6;">Assign Group…</span>';
+
+    // Update group bar background color
+    if (labelEl) {
+        const bar = labelEl.closest('div[onclick]');
+        if (bar) bar.style.background = groupName ? 'var(--accent-500)' : 'var(--neutral-500)';
+    }
+
+    // Save to Supabase (same column as RonyDashboard — custom_group in inventory_management)
+    const { error } = await supabaseClient
+        .from('inventory_management')
+        .update({ custom_group: groupName || null })
+        .eq('product_name', productName);
+
+    if (error) {
+        console.error('[PO] group assign error:', error);
+        // Revert
+        if (prev) window._placeOrderGroupMap[productName] = prev;
+        else delete window._placeOrderGroupMap[productName];
+        showAlert('Error saving group: ' + error.message, 'error');
+    } else {
+        // Also sync to RD.groupMap if it exists
+        if (typeof RD !== 'undefined' && RD.groupMap) {
+            if (groupName) RD.groupMap[productName] = groupName;
+            else delete RD.groupMap[productName];
+        }
+        showAlert('✅ Group assigned: ' + (groupName || 'removed'), 'success');
+    }
+}
+
+// Close PO group pickers when clicking outside
+document.addEventListener('click', () => {
+    document.querySelectorAll('.po-grp-panel').forEach(p => p.style.display = 'none');
+});
+
+// ========== PLACE ORDER: DRAG & DROP BETWEEN SECTIONS ==========
+
+// ── Debug panel ──────────────────────────────────────────────────────────────
+function _poDbg(msg, color) {
+    color = color || '#94a3b8';
+    console.log('[PO-DRAG] ' + msg);
+    let panel = document.getElementById('_poDragDebug');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = '_poDragDebug';
+        panel.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:99999;background:#0f172a;color:#e2e8f0;font-family:monospace;font-size:11px;padding:10px 14px;border-radius:10px;max-width:400px;max-height:300px;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,0.5);border:1.5px solid #334155;';
+        panel.appendChild(Object.assign(document.createElement('div'),{style:'font-weight:700;color:#94a3b8;margin-bottom:6px;',innerHTML:'&#128027; DRAG DEBUG <button id="_poDragDebugClose" style="background:#dc2626;color:white;border:none;border-radius:4px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:6px;">&#x2715; close</button>'})); panel.querySelector('#_poDragDebugClose').onclick=()=>panel.remove();
+        document.body.appendChild(panel);
+    }
+    const line = document.createElement('div');
+    line.style.cssText = 'padding:2px 0;border-bottom:1px solid #1e293b;color:' + color + ';';
+    line.textContent = new Date().toLocaleTimeString('en',{hour12:false}) + '  ' + msg;
+    panel.appendChild(line);
+    panel.scrollTop = panel.scrollHeight;
+}
+
+let _poDragId = null;
+
+function poDragStart(event, el) {
+    _poDbg('dragstart on: ' + el.tagName + '.'+el.className.split(' ')[0], '#60a5fa');
+    const card = el.closest('.enhanced-order-card');
+    _poDbg('card found: ' + (card ? 'YES id='+card.dataset.id : 'NO — check HTML'), card ? '#4ade80' : '#f87171');
+    _poDragId = card ? card.dataset.id : el.dataset.id;
+    _poDbg('_poDragId = "' + _poDragId + '"', _poDragId ? '#4ade80' : '#f87171');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(_poDragId || ''));
+    if (card) setTimeout(() => { card.style.opacity='0.45'; card.style.transform='scale(0.97)'; card.style.boxShadow='0 8px 24px rgba(0,0,0,0.25)'; }, 0);
+}
+
+function poDragEnd(event, el) {
+    _poDbg('dragend', '#94a3b8');
+    const card = el.closest('.enhanced-order-card') || el;
+    card.style.opacity = '';
+    card.style.transform = '';
+    card.style.boxShadow = '';
+    _poDragId = null;
+}
+
+// Drop onto a CARD — handles reorder within same section OR cross-section move
+async function poDropOntoCard(event, targetCard) {
+    event.preventDefault();
+    event.stopPropagation(); // don't bubble up to section wrapper
+    targetCard.style.outline = '';
+
+    const rowId = event.dataTransfer.getData('text/plain') || _poDragId;
+    if (!rowId) { _poDbg('❌ poDropOntoCard: no rowId', '#f87171'); return; }
+
+    const targetId      = targetCard.dataset.id;
+    const targetSection = (targetCard.dataset.user || '').toLowerCase();
+
+    if (rowId === targetId) { _poDbg('❌ dropped on self', '#f87171'); return; }
+
+    _poDbg('DROP on card id='+targetId+' section='+targetSection, '#fb923c');
+
+    // Find which section the dragged card is currently in
+    let sourceSection = null;
+    const cache = window._placeOrderCache || {};
+    ['rony','julio','office'].forEach(s => {
+        if ((cache[s]||[]).some(r => String(r.id) === String(rowId))) sourceSection = s;
+    });
+
+    _poDbg('sourceSection='+sourceSection+' targetSection='+targetSection, '#a78bfa');
+
+    if (!sourceSection) { _poDbg('❌ source card not found in cache', '#f87171'); return; }
+
+    if (sourceSection === targetSection) {
+        // ── Same section: move DOM node directly (re-render would re-sort alphabetically) ──
+        const dragCard   = document.querySelector('.enhanced-order-card[data-id="'+rowId+'"]');
+        const dropCard   = targetCard;
+        const container  = dropCard.parentNode;
+        if (!dragCard || !container) { _poDbg('❌ DOM nodes not found', '#f87171'); return; }
+
+        // Determine insert position: before or after based on vertical midpoint
+        const dropRect = dropCard.getBoundingClientRect();
+        const dragRect = dragCard.getBoundingClientRect();
+        const insertBefore = dragRect.top > dropRect.top;
+
+        if (insertBefore) {
+            container.insertBefore(dragCard, dropCard);
+        } else {
+            dropCard.after(dragCard);
+        }
+
+        // Also update cache array order so filter re-renders stay consistent
+        const arr   = cache[sourceSection];
+        const fromI = arr.findIndex(r => String(r.id) === String(rowId));
+        const toI   = arr.findIndex(r => String(r.id) === String(targetId));
+        if (fromI !== -1 && toI !== -1) {
+            const [moved] = arr.splice(fromI, 1);
+            arr.splice(toI, 0, moved);
+        }
+
+        // Flash confirmation on both cards
+        dragCard.style.transition = 'box-shadow .3s';
+        dragCard.style.boxShadow  = '0 0 0 3px var(--accent-400)';
+        setTimeout(() => { dragCard.style.boxShadow = ''; dragCard.style.transition = ''; }, 800);
+
+        _poDbg('✅ moved in DOM: '+(insertBefore?'before':'after')+' target', '#4ade80');
+    } else {
+        // ── Different section: reassign via toggleAssignment ──
+        const targetUser = targetSection.charAt(0).toUpperCase() + targetSection.slice(1);
+        _poDbg('✅ cross-section move → '+targetUser, '#4ade80');
+        await toggleAssignment(rowId, targetUser);
+    }
+}
+
+async function poDropIntoSection(event, targetUser) {
+    event.preventDefault();
+    // Cards stopPropagation — this only fires when dropping in EMPTY section space
+    const rowId = event.dataTransfer.getData('text/plain') || _poDragId;
+    _poDbg('section DROP → "'+targetUser+'" rowId="'+rowId+'"', '#fb923c');
+    if (!rowId) return;
+    const sect  = targetUser.toLowerCase();
+    const cache = window._placeOrderCache || {};
+    const already = (cache[sect]||[]).some(r => String(r.id) === String(rowId));
+    if (already) { _poDbg('same section — no-op (drop in empty space)', '#94a3b8'); return; }
+    _poDbg('✅ cross-section → '+targetUser, '#4ade80');
+    await toggleAssignment(rowId, targetUser);
+}
+
 // ========== ADD THIS NEW FUNCTION (place it before initializeEnhancedPlaceOrder) ==========
 
 async function syncInventoryCheck(dateISO) {
@@ -42811,6 +43313,148 @@ const RD = {
     MONTHS:['','January','February','March','April','May','June','July','August','September','October','November','December']
 };
 
+
+// ========== RONY DASHBOARD: DRAG & DROP BETWEEN GROUPS ==========
+
+let _rdDragName  = null; // product name being dragged
+let _rdDragGroup = null; // original group name
+
+function _rdDbg(msg, color) {
+    color = color || '#1e293b';
+    console.log('[RD-DRAG] ' + msg);
+    let panel = document.getElementById('_poDragDebug');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = '_poDragDebug';
+        panel.style.cssText = 'position:fixed;bottom:12px;left:12px;z-index:99999;background:#0f172a;color:#e2e8f0;font-family:monospace;font-size:11px;padding:10px 14px;border-radius:10px;max-width:380px;max-height:280px;overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,0.5);border:1.5px solid #334155;';
+        panel.appendChild(Object.assign(document.createElement('div'),{style:'font-weight:700;color:#94a3b8;margin-bottom:6px;',innerHTML:'&#128027; DRAG DEBUG <button id="_poDragDebugClose" style="background:#dc2626;color:white;border:none;border-radius:4px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:6px;">&#x2715; close</button>'})); panel.querySelector('#_poDragDebugClose').onclick=()=>panel.remove();
+        document.body.appendChild(panel);
+    }
+    const line = document.createElement('div');
+    line.style.cssText = 'padding:2px 0;border-bottom:1px solid #1e293b;color:' + color + ';';
+    line.textContent = new Date().toLocaleTimeString('en',{hour12:false}) + '  [RD] ' + msg;
+    panel.appendChild(line);
+    panel.scrollTop = panel.scrollHeight;
+}
+
+function rdCardDragStart(event, el) {
+    _rdDbg('dragstart on: ' + el.tagName + ' class="' + el.className + '"', '#60a5fa');
+    const card = el.closest('.rd-card');
+    _rdDbg('closest .rd-card: ' + (card ? 'FOUND id=' + card.id : 'NOT FOUND'), card ? '#4ade80' : '#f87171');
+    _rdDragName  = card ? card.dataset.rdname  : el.dataset.rdname;
+    _rdDragGroup = card ? card.dataset.rdgroup : el.dataset.rdgroup;
+    _rdDbg('product="' + _rdDragName + '" group="' + _rdDragGroup + '"', _rdDragName ? '#4ade80' : '#f87171');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(_rdDragName || ''));
+    if (card) setTimeout(() => { card.style.opacity = '0.4'; card.style.transform = 'scale(0.96)'; card.style.boxShadow = '0 8px 24px rgba(0,0,0,0.3)'; }, 0);
+}
+
+function rdCardDragEnd(event, el) {
+    _rdDbg('dragend', '#94a3b8');
+    const card = el.closest('.rd-card') || el;
+    card.style.opacity = '';
+    card.style.transform = '';
+    card.style.boxShadow = '';
+    _rdDragName  = null;
+    _rdDragGroup = null;
+}
+
+// Drop onto a CARD — reorder within same group, or move to card's group
+async function rdDropOntoCard(event, targetCard) {
+    event.preventDefault();
+    event.stopPropagation(); // don't bubble to group header
+    targetCard.style.outline = '';
+
+    const productName = event.dataTransfer.getData('text/plain') || _rdDragName;
+    const targetName  = targetCard.dataset.rdname;
+    if (!productName || productName === targetName) return;
+
+    const srcGroup = RD.groupMap[productName] || null;
+    const tgtGroup = RD.groupMap[targetName]  || null;
+
+    _rdDbg('card-drop: "'+productName+'" onto "'+targetName+'" | srcGrp='+srcGroup+' tgtGrp='+tgtGroup, '#fb923c');
+
+    if (srcGroup === tgtGroup) {
+        // Same group — move DOM node directly (rdRender re-sorts alphabetically)
+        const dragCard  = document.getElementById('rdc-'+productName.replace(/[^a-zA-Z0-9]/g,'_'));
+        const dropCard  = targetCard;
+        const container = dropCard.parentNode;
+        if (!dragCard || !container) { _rdDbg('❌ DOM nodes not found', '#f87171'); return; }
+
+        const dropRect    = dropCard.getBoundingClientRect();
+        const dragRect    = dragCard.getBoundingClientRect();
+        const insertBefore = dragRect.top > dropRect.top;
+
+        if (insertBefore) {
+            container.insertBefore(dragCard, dropCard);
+        } else {
+            dropCard.after(dragCard);
+        }
+
+        // Also update RD.products order for consistency
+        const fromI = RD.products.findIndex(r => r.product_name === productName);
+        const toI   = RD.products.findIndex(r => r.product_name === targetName);
+        if (fromI !== -1 && toI !== -1) {
+            const [moved] = RD.products.splice(fromI, 1);
+            RD.products.splice(toI, 0, moved);
+        }
+
+        dragCard.style.transition = 'box-shadow .3s';
+        dragCard.style.boxShadow  = '0 0 0 3px var(--accent-400)';
+        setTimeout(() => { dragCard.style.boxShadow = ''; dragCard.style.transition = ''; }, 800);
+
+        _rdDbg('✅ moved in DOM', '#4ade80');
+    } else {
+        // Different group — assign dragged card to the target card's group
+        const newGroup = tgtGroup || null;
+        _rdDbg('✅ moving to group: "'+newGroup+'"', '#4ade80');
+        await rdDropIntoGroup(event, newGroup || '');
+    }
+}
+
+async function rdDropIntoGroup(event, targetGroup) {
+    event.preventDefault();
+    _rdDbg('DROP on group: "' + targetGroup + '"', '#fb923c');
+
+    const productName = event.dataTransfer.getData('text/plain') || _rdDragName;
+    _rdDbg('productName: "' + productName + '"', productName ? '#4ade80' : '#f87171');
+
+    if (!productName) { _rdDbg('❌ ABORT: missing productName', '#f87171'); return; }
+    if (!targetGroup) { targetGroup = ''; } // allow dropping into "no group" 
+
+    const cleanGroup = targetGroup.replace(/^📂\s*/, '').trim();
+    _rdDbg('cleanGroup after strip: "' + cleanGroup + '"', '#a78bfa');
+
+    const currentGroup = RD.groupMap[productName] || null;
+    _rdDbg('currentGroup: "' + currentGroup + '" | same? ' + (cleanGroup === currentGroup), '#94a3b8');
+    if (cleanGroup === currentGroup) { _rdDbg('❌ ABORT: already in this group', '#f87171'); return; }
+
+    // Optimistic update
+    RD.groupMap[productName] = cleanGroup;
+
+    // Visual feedback — re-render stays in place
+    rdRender();
+
+    // Save to Supabase
+    const { error } = await invSB()
+        .from('inventory_management')
+        .update({ custom_group: cleanGroup })
+        .eq('product_name', productName);
+
+    if (error) {
+        console.error('[RD] drag group assign error:', error);
+        // Revert
+        if (currentGroup) RD.groupMap[productName] = currentGroup;
+        else delete RD.groupMap[productName];
+        rdRender();
+        invToast('Error saving group: ' + error.message, 'err');
+    } else {
+        // Sync to PlaceOrder group map
+        if (window._placeOrderGroupMap) window._placeOrderGroupMap[productName] = cleanGroup;
+        invToast('✅ Moved to "' + cleanGroup + '"', 'ok');
+    }
+}
+
 function rdSetDefaults(){
     const m=document.getElementById('rd-month');
     const y=document.getElementById('rd-year');
@@ -42998,11 +43642,16 @@ function rdRender(){
             return s+(st!==null&&st!==undefined ? st.qty+inv : inv);
         },0);
 
-        cardsHTML += `<div style="grid-column:1/-1;background:linear-gradient(135deg,var(--primary-800),var(--primary-700));border-radius:12px;padding:12px 18px;display:flex;align-items:center;gap:14px;margin-top:8px;">
+        const _grpKey = grp.label; // used by drop handler
+        cardsHTML += `<div style="grid-column:1/-1;background:linear-gradient(135deg,var(--primary-800),var(--primary-700));border-radius:12px;padding:12px 18px;display:flex;align-items:center;gap:14px;margin-top:8px;transition:outline .15s;"
+            data-rd-grphdr="${invEsc(grp.label)}"
+            ondragover="event.preventDefault();this.style.outline='3px dashed var(--accent-400)';this.style.borderRadius='12px';"
+            ondragleave="this.style.outline='';"
+            ondrop="rdDropIntoGroup(event,${JSON.stringify(grp.label)});this.style.outline='';">
             <i class="fas fa-layer-group" style="color:var(--accent-300);font-size:1rem;flex-shrink:0;"></i>
             <div style="flex:1;min-width:0;">
                 <div style="font-size:12px;font-weight:800;color:white;text-transform:uppercase;letter-spacing:.06em;">${invEsc(grp.label)}</div>
-                <div style="font-size:10px;color:var(--primary-200);margin-top:2px;">${grp.items.length} product${grp.items.length!==1?'s':''}</div>
+                <div style="font-size:10px;color:var(--primary-200);margin-top:2px;">${grp.items.length} product${grp.items.length!==1?'s':''} · <span style="opacity:.7;font-style:italic;">drag cards here to reassign</span></div>
             </div>
             <div style="display:flex;gap:20px;text-align:center;">
                 <div><div style="font-size:8px;font-weight:700;text-transform:uppercase;color:var(--primary-300);">PREV STOCK</div><div style="font-size:1.1rem;font-weight:700;font-family:var(--font-mono);color:white;">${grpTotalPrev.toFixed(1)}</div></div>
@@ -43041,7 +43690,24 @@ function rdRender(){
 
             const parId = 'rd-par-'+name.replace(/[^a-zA-Z0-9]/g,'_');
             const saveBtnId = 'rd-save-btn-'+name.replace(/[^a-zA-Z0-9]/g,'_');
-            cardsHTML += `<div class="rd-card" id="rdc-${name.replace(/[^a-zA-Z0-9]/g,'_')}" style="background:white;border-radius:12px;box-shadow:0 2px 8px rgba(90,20,20,0.08);border:2px solid var(--neutral-200);display:flex;flex-direction:column;position:relative;">
+            cardsHTML += `<div class="rd-card" id="rdc-${name.replace(/[^a-zA-Z0-9]/g,'_')}"
+                data-rdname="${invEsc(name)}"
+                data-rdgroup="${invEsc(grpName)}"
+                ondragend="rdCardDragEnd(event,this)"
+                ondragover="event.preventDefault();event.stopPropagation();this.style.outline='3px dashed var(--accent-400)';"
+                ondragleave="this.style.outline='';"
+                ondrop="rdDropOntoCard(event,this);"
+                style="background:white;border-radius:12px;box-shadow:0 2px 8px rgba(90,20,20,0.08);border:2px solid var(--neutral-200);display:flex;flex-direction:column;position:relative;">
+
+                <!-- DRAG HANDLE — draggable="true" on this element, not the card -->
+                <div class="rd-drag-handle"
+                     draggable="true"
+                     ondragstart="rdCardDragStart(event,this)"
+                     ondragend="rdCardDragEnd(event,this)"
+                     style="background:linear-gradient(90deg,var(--primary-800),var(--primary-700));color:rgba(255,255,255,0.75);font-size:9px;font-weight:700;padding:4px 10px;display:flex;align-items:center;gap:5px;cursor:grab;user-select:none;letter-spacing:.05em;text-transform:uppercase;border-radius:12px 12px 0 0;">
+                    <i class="fas fa-grip-lines" style="font-size:0.75rem;"></i>
+                    <span>⠿ drag to group</span>
+                </div>
 
                 <!-- TOP BAR: Group label (clickable) + Chart icon -->
                 <div style="display:flex;align-items:stretch;position:relative;">
@@ -43709,20 +44375,23 @@ console.log('[inventory2026] Script loaded OK. rdInit defined:', typeof rdInit, 
 
 // Expose rdGroupPickerOptions for template literal use
 function rdGroupPickerOptions(productName){
+    // ✅ Store product name globally — avoids embedding special chars (", ') in onclick strings
+    window._rdPickerProduct = productName;
     const current = RD.groupMap[productName]||'';
     const allGroups=[...new Set(Object.values(RD.groupMap))].filter(Boolean).sort();
     let html='';
     if(current){
-        html+=`<div onclick="rdAssignGroup('${invEsc(productName).replace(/'/g,'&#39;')}',null,event)" style="padding:5px 10px;font-size:10px;cursor:pointer;color:#dc2626;font-weight:600;" onmouseover="this.style.background='#fef2f2'" onmouseout="this.style.background=''">
+        html+=`<div onclick="rdAssignGroup(window._rdPickerProduct,null,event)" style="padding:5px 10px;font-size:10px;cursor:pointer;color:#dc2626;font-weight:600;" onmouseover="this.style.background='#fef2f2'" onmouseout="this.style.background=''">
             <i class="fas fa-times" style="margin-right:4px;"></i>Remove from group
         </div>`;
     }
     if(!allGroups.length) return html+'<div style="padding:6px 10px;font-size:10px;color:var(--neutral-400);font-style:italic;">No groups yet — create one below</div>';
     allGroups.forEach(g=>{
         const isActive=g===current;
-        html+=`<div onclick="rdAssignGroup('${invEsc(productName).replace(/'/g,'&#39;')}','${invEsc(g).replace(/'/g,'&#39;')}',event)"
+        const safeG = invEsc(g);
+        html+=`<div onclick="rdAssignGroup(window._rdPickerProduct,${JSON.stringify(g)},event)"
             style="padding:5px 10px;font-size:10px;cursor:pointer;background:${isActive?'var(--accent-50)':''};font-weight:${isActive?'700':'400'};color:${isActive?'var(--accent-700)':'var(--neutral-800)'};"
-            onmouseover="this.style.background='var(--accent-50)'" onmouseout="this.style.background='${isActive?'var(--accent-50)':''}'">${isActive?'<i class="fas fa-check" style="margin-right:4px;color:var(--accent-500);"></i>':'<i class="fas fa-tag" style="margin-right:4px;opacity:.4;"></i>'}${invEsc(g)}
+            onmouseover="this.style.background='var(--accent-50)'" onmouseout="this.style.background='${isActive?'var(--accent-50)':''}'">` + (isActive?'<i class="fas fa-check" style="margin-right:4px;color:var(--accent-500);"></i>':'<i class="fas fa-tag" style="margin-right:4px;opacity:.4;"></i>') + `${safeG}
         </div>`;
     });
     return html;
@@ -43746,6 +44415,7 @@ function rdToggleGroupPicker(cardIdx, evt){
 
 function rdGroupPickerFilter(cardIdx){
     const productName = RD.cardNames[cardIdx];
+    window._rdPickerProduct = productName; // keep global in sync
     const panel = document.querySelector('[data-rdcard="'+cardIdx+'"]');
     const srch = (panel?.querySelector('.rdgp-search-inp')?.value||'').toLowerCase();
     const listEl = panel?.querySelector('.rdgp-list');
@@ -43756,7 +44426,7 @@ function rdGroupPickerFilter(cardIdx){
     if(!allGroups.length) html='<div style="padding:6px 10px;font-size:10px;color:var(--neutral-400);">No match — press Create below</div>';
     allGroups.forEach(g=>{
         const isActive=g===current;
-        html+=`<div onclick="rdAssignGroup('${invEsc(productName).replace(/'/g,'&#39;')}','${invEsc(g).replace(/'/g,'&#39;')}',event)" style="padding:5px 10px;font-size:10px;cursor:pointer;font-weight:${isActive?'700':'400'};color:${isActive?'var(--accent-700)':''};" onmouseover="this.style.background='var(--accent-50)'" onmouseout="this.style.background=''">${isActive?'✓ ':''}${invEsc(g)}</div>`;
+        html+=`<div onclick="rdAssignGroup(window._rdPickerProduct,${JSON.stringify(g)},event)" style="padding:5px 10px;font-size:10px;cursor:pointer;font-weight:${isActive?'700':'400'};color:${isActive?'var(--accent-700)':''};" onmouseover="this.style.background='var(--accent-50)'" onmouseout="this.style.background=''">${isActive?'✓ ':''}${invEsc(g)}</div>`;
     });
     listEl.innerHTML=html;
 }
