@@ -1419,10 +1419,40 @@ async function savePayroll() {
 
   if (!rows.length) { toast('⚠️ Enter hours for at least one employee.','error'); return; }
   toast('⏳ Saving…','info');
-  const { error } = await db.from('cash_payroll').insert(rows);
-  if (error) toast('❌ '+error.message,'error');
+
+  let saved = 0, updated = 0, errMsg = null;
+  for (const row of rows) {
+    // Check if a record already exists for this employee + pay period
+    const { data: existing, error: fetchErr } = await db.from('cash_payroll')
+      .select('id')
+      .eq('pay_period_start', row.pay_period_start)
+      .eq('pay_period_end',   row.pay_period_end)
+      .eq('employee_name',    row.employee_name)
+      .limit(1);
+
+    if (fetchErr) { errMsg = fetchErr.message; break; }
+
+    if (existing && existing.length > 0) {
+      // UPDATE existing record
+      const { error: upErr } = await db.from('cash_payroll')
+        .update(row)
+        .eq('id', existing[0].id);
+      if (upErr) { errMsg = upErr.message; break; }
+      updated++;
+    } else {
+      // INSERT new record
+      const { error: insErr } = await db.from('cash_payroll').insert(row);
+      if (insErr) { errMsg = insErr.message; break; }
+      saved++;
+    }
+  }
+
+  if (errMsg) toast('❌ '+errMsg,'error');
   else {
-    toast(`✅ ${rows.length} record(s) saved successfully!`,'success');
+    const parts = [];
+    if (saved)   parts.push(`${saved} new record(s) added`);
+    if (updated) parts.push(`${updated} record(s) updated`);
+    toast('✅ ' + parts.join(' · '), 'success');
     loadLogBadge();
   }
 }
