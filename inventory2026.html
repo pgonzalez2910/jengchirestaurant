@@ -26863,19 +26863,11 @@ async function loadEnhancedCreateOrder() {
 
         
 
-        // ✅ STEP 10: Load vendor prices
-
+        // ✅ STEP 10: Batch-load ALL vendor prices in 2 queries instead of N*2 queries
         setTimeout(() => {
-
-            [...ronyData, ...julioData, ...officeData].forEach(row => {
-
-                const productId = (row.product_name || '').replace(/[^a-zA-Z0-9]/g, '_');
-
-                loadVendorPricesForProduct(row.product_name, productId);
-
-            });
-
-        }, 500);
+            const allRows = [...ronyData, ...julioData, ...officeData];
+            _batchLoadAllVendorPrices(allRows);
+        }, 300);
 
         
 
@@ -28254,6 +28246,112 @@ async function selectVendorAndUpdateItemCode(rowId, productName, vendor) {
 // ========== ENHANCED: LOAD ALL VENDOR PRICES WITH ALL ITEM CODES ==========
 
 // ========== FIXED: Load prices from BOTH invoice_items AND purchase_history ==========
+
+// ════════════════════════════════════════════════════════
+// BATCH VENDOR PRICE LOADER — replaces N*2 queries with 2 queries total
+// ════════════════════════════════════════════════════════
+async function _batchLoadAllVendorPrices(rows) {
+    if (!rows || rows.length === 0) return;
+
+    const productNames = [...new Set(rows.map(r => r.product_name).filter(Boolean))];
+
+    // Show "Loading…" on all cards immediately
+    productNames.forEach(name => {
+        const productId = name.replace(/[^a-zA-Z0-9]/g, '_');
+        const el = document.getElementById(`vendor-prices-${productId}`);
+        if (el) el.innerHTML = `<div style="color:var(--neutral-400);font-size:0.78rem;padding:4px 0;">Loading vendor prices…</div>`;
+    });
+
+    try {
+        // ── QUERY 1: invoice_items for all products at once ──
+        const { data: invoiceItems, error: itemsErr } = await supabaseClient
+            .from('invoice_items')
+            .select('product_name, item_code, unit_price, price_per_unit, has_weight, invoice_id')
+            .in('product_name', productNames);
+
+        if (itemsErr) throw itemsErr;
+
+        // ── QUERY 2: fetch all needed invoices ──
+        const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id).filter(Boolean))];
+        const invoiceDatesMap = new Map();
+
+        if (invoiceIds.length > 0) {
+            const { data: invoices } = await supabaseClient
+                .from('invoices')
+                .select('id, invoice_date, vendor')
+                .in('id', invoiceIds);
+            (invoices || []).forEach(inv => invoiceDatesMap.set(inv.id, { date: inv.invoice_date, vendor: inv.vendor }));
+        }
+
+        // ── Build per-product vendor maps ──
+        const byProduct = {}; // productName → Map<vendor, {item_code, price, date}>
+        (invoiceItems || []).forEach(item => {
+            const invInfo = invoiceDatesMap.get(item.invoice_id);
+            if (!invInfo || !invInfo.date) return;
+            const year = new Date(invInfo.date).getFullYear();
+            if (year !== 2026) return;
+            const price = item.has_weight
+                ? parseFloat(item.price_per_unit || 0)
+                : parseFloat(item.unit_price || 0);
+            const name = item.product_name;
+            if (!byProduct[name]) byProduct[name] = new Map();
+            const existing = byProduct[name].get(invInfo.vendor);
+            if (!existing || new Date(invInfo.date) > new Date(existing.date)) {
+                byProduct[name].set(invInfo.vendor, { item_code: item.item_code || 'N/A', price, date: invInfo.date });
+            }
+        });
+
+        // ── For products with no 2026 invoice data, try price_history ──
+        const needFallback = productNames.filter(n => !byProduct[n] || byProduct[n].size === 0);
+        if (needFallback.length > 0) {
+            const { data: hist } = await supabaseClient
+                .from('price_history')
+                .select('product_name, vendor, item_code, unit_price, purchase_date')
+                .in('product_name', needFallback)
+                .order('purchase_date', { ascending: false });
+            (hist || []).forEach(entry => {
+                const name = entry.product_name;
+                if (!byProduct[name]) byProduct[name] = new Map();
+                const existing = byProduct[name].get(entry.vendor);
+                if (!existing || new Date(entry.purchase_date) > new Date(existing.date)) {
+                    byProduct[name].set(entry.vendor, {
+                        item_code: entry.item_code || 'N/A',
+                        price: parseFloat(entry.unit_price || 0),
+                        date: entry.purchase_date,
+                        source: 'price_history'
+                    });
+                }
+            });
+        }
+
+        // ── Render each card ──
+        productNames.forEach(name => {
+            const productId = name.replace(/[^a-zA-Z0-9]/g, '_');
+            const container = document.getElementById(`vendor-prices-${productId}`);
+            if (!container) return;
+            const vendorMap = byProduct[name];
+            if (!vendorMap || vendorMap.size === 0) {
+                container.innerHTML = `<div style="color:var(--neutral-400);font-size:0.78rem;font-style:italic;padding:4px 0;">No price history found</div>`;
+                return;
+            }
+            const rows = Array.from(vendorMap.entries()).map(([vendor, info]) => `
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid var(--neutral-100);gap:8px;font-size:0.78rem;">
+                    <span style="font-weight:600;color:var(--primary-700);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${vendor}</span>
+                    <span style="font-family:var(--font-mono);color:var(--success-600);font-weight:700;white-space:nowrap;">$${info.price.toFixed(2)}</span>
+                    <span style="color:var(--neutral-400);font-size:0.7rem;white-space:nowrap;">${info.item_code}</span>
+                </div>`).join('');
+            container.innerHTML = rows;
+        });
+
+    } catch(e) {
+        console.error('[BatchVendorPrices] error:', e);
+        productNames.forEach(name => {
+            const productId = name.replace(/[^a-zA-Z0-9]/g, '_');
+            const el = document.getElementById(`vendor-prices-${productId}`);
+            if (el) el.innerHTML = `<div style="color:#dc2626;font-size:0.75rem;">Error loading prices</div>`;
+        });
+    }
+}
 
 async function loadVendorPricesForProduct(productName, productId) {
 
@@ -39070,7 +39168,8 @@ async function initializeEnhancedPlaceOrder() {
 
     await buildVendorCodeMap();
 
-
+    // ✅ FIX: Always reload hidden products before rendering so hidden items stay hidden on refresh/tab-switch
+    if(typeof _loadHiddenProducts === 'function') await _loadHiddenProducts();
 
     // ✅ SYNC FIRST, then load
 
@@ -45549,7 +45648,7 @@ document.addEventListener('click',()=>{ document.querySelectorAll('[data-rdcard]
 <!-- ═══════════════════════════════════════════════════════
      GROUP MANAGEMENT MODAL
 ════════════════════════════════════════════════════════ -->
-<div id="grp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99998;align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this)closeGroupMgmt()">
+<div id="grp-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:99998;align-items:center;justify-content:center;padding:16px;" onmousedown="_grpBackdropDown(event)" onmouseup="_grpBackdropUp(event)">
   <div style="background:#fff;border-radius:18px;width:min(96vw,700px);max-height:88vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,0.4);display:flex;flex-direction:column;">
     <div style="display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:2px solid var(--neutral-200);background:linear-gradient(135deg,var(--accent-600),var(--accent-400));border-radius:18px 18px 0 0;position:sticky;top:0;z-index:10;">
       <i class="fas fa-tags" style="color:white;font-size:1.2rem;"></i>
@@ -45909,6 +46008,18 @@ function closeGroupMgmt(){
     _grp.active=null;grpCloseAssign();
     rdLoadGroups().then(()=>rdRender()).catch(e=>console.warn('[GRP] reload error:',e));
 }
+
+// ── Backdrop click helpers: only close if BOTH mousedown AND mouseup landed on backdrop ──
+// This prevents accidental close when user clicks inside then moves mouse to backdrop before releasing
+let _grpBackdropDownOnBackdrop = false;
+function _grpBackdropDown(event){
+    _grpBackdropDownOnBackdrop = (event.target === document.getElementById('grp-modal'));
+}
+function _grpBackdropUp(event){
+    const onBackdrop = (event.target === document.getElementById('grp-modal'));
+    if(_grpBackdropDownOnBackdrop && onBackdrop) closeGroupMgmt();
+    _grpBackdropDownOnBackdrop = false;
+}
 async function grpLoad(){
     const list=document.getElementById('grp-list');
     if(list) list.innerHTML='<div style="text-align:center;padding:24px;color:var(--neutral-400);"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
@@ -46033,6 +46144,11 @@ async function grpToggle(productName, el){
             else         delete RD.groupMap[productName];
             if(typeof rdRender === 'function') rdRender();
         }
+        // FIX 3: Sync _placeOrderGroupMap so PlaceOrder tab re-sorts instantly
+        if(!window._placeOrderGroupMap) window._placeOrderGroupMap = {};
+        if(newGroup) window._placeOrderGroupMap[productName] = newGroup;
+        else         delete window._placeOrderGroupMap[productName];
+        if(typeof _rerenderPlaceOrderSections === 'function') _rerenderPlaceOrderSections();
         grpRenderList();
     }
 }
