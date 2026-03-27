@@ -322,11 +322,13 @@
     }
     @keyframes ringRot { 0%{transform:rotate(0deg);opacity:1} 100%{transform:rotate(360deg);opacity:0} }
 
-    /* logo — no box, transparent */
+    /* logo — no box, no border, transparent */
     .success-logo {
-      width:56px; height:56px; object-fit:contain;
+      width:84px; height:84px; object-fit:contain;
       margin:0 auto 18px; display:block;
-      filter:drop-shadow(0 2px 6px rgba(184,148,60,.18));
+      border:none !important; border-radius:0 !important;
+      box-shadow:none !important; background:transparent;
+      filter:drop-shadow(0 2px 8px rgba(184,148,60,.14));
     }
 
     .success-title { font-family:'Playfair Display',serif; font-size:21px; color:var(--navy); line-height:1.35; margin-bottom:7px; }
@@ -785,13 +787,17 @@ async function finalizeMeeting() {
   const set = (t) => { btn.innerHTML = '<span class="spinner"></span> ' + t; };
 
   try {
-    // Always stamp end time
+    // Always stamp end time at the exact moment Save is clicked
     const nowT = new Date();
-    document.getElementById('f-end').value =
+    const endTimeStamp =
       String(nowT.getHours()).padStart(2,'0') + ':' + String(nowT.getMinutes()).padStart(2,'0');
+    document.getElementById('f-end').value = endTimeStamp;
+    console.log('[Meeting] End time stamped:', endTimeStamp);
 
     const data = getFormData();
+    data.end_time = endTimeStamp;   // force — guarantees DB & PDF both receive it
     if (!currentRef) currentRef = generateRefId(data.meeting_date);
+    console.log('[Meeting] Form data collected:', {title: data.title, meeting_date: data.meeting_date, start_time: data.start_time, end_time: data.end_time});
 
     // 1. SAVE RECORD
     set('Saving meeting record…');
@@ -923,29 +929,49 @@ async function uploadFile(meetingId, blob, type, override) {
 // ── EMAIL via Supabase Edge Function ─────────────────────
 // Pass PDF as base64 attachment. Meeting attachment goes to DB only.
 async function sendEmails(meeting, pdfBlob) {
+  console.group('[Email] sendEmails() called');
+  console.log('[Email] Recipients:', MANAGERS);
+  console.log('[Email] Meeting ref:', meeting.reference_id);
+  console.log('[Email] PDF blob size:', pdfBlob ? (pdfBlob.size/1024).toFixed(1)+'KB' : 'none');
   try {
     let pdfBase64 = null;
     if (pdfBlob) {
       pdfBase64 = await new Promise((res, rej) => {
         const reader = new FileReader();
-        reader.onloadend = () => res(reader.result.split(',')[1]);
-        reader.onerror   = rej;
+        reader.onloadend = () => {
+          const b64 = reader.result.split(',')[1];
+          console.log('[Email] PDF base64 length:', b64.length, 'chars ≈', (b64.length*0.75/1024).toFixed(1)+'KB');
+          res(b64);
+        };
+        reader.onerror = rej;
         reader.readAsDataURL(pdfBlob);
       });
     }
-    const {error} = await sb.functions.invoke('send-meeting-email', {
-      body: {
-        meeting,
-        recipients: MANAGERS,
-        pdfBase64,              // PDF attached to email
-        // attachment NOT passed — stored in DB/storage only
-      }
+
+    console.log('[Email] Calling Supabase Edge Function: send-meeting-email …');
+    const payload = { meeting, recipients: MANAGERS, pdfBase64 };
+    console.log('[Email] Payload keys:', Object.keys(payload));
+
+    const {data: fnData, error: fnError} = await sb.functions.invoke('send-meeting-email', {
+      body: payload
     });
-    if (error) throw error;
+
+    if (fnError) {
+      console.error('[Email] ❌ Edge function returned error:', fnError);
+      throw fnError;
+    }
+    console.log('[Email] ✅ Edge function response:', fnData);
+    toast('✅ Emails sent to all managers!', 'success');
   } catch(e) {
-    console.warn('Email edge function:', e.message);
-    // Silently continue — meeting is saved, PDF is stored
-    // Show success dialog regardless (email is best-effort)
+    console.error('[Email] ❌ sendEmails failed:', e);
+    console.error('[Email] Error name:', e.name);
+    console.error('[Email] Error message:', e.message);
+    console.error('[Email] Full error:', JSON.stringify(e, null, 2));
+    // Show toast so boss sees the email status
+    toast('⚠️ Meeting saved & PDF ready. Email: ' + (e.message || 'Edge Function not deployed'), 'warning');
+    // DO NOT throw — let success dialog still show
+  } finally {
+    console.groupEnd();
   }
 }
 
@@ -980,29 +1006,27 @@ async function buildPDF(meeting) {
   doc.setDrawColor(...GOLD2); doc.setLineWidth(0.3);
   doc.line(ML, 14, W-MR, 14);
 
-  // ── LOGO ──
+  // ── LOGO (left) + COMPANY BLOCK (right) compact ──
   if (logoB64) {
-    try { doc.addImage(logoB64,'JPEG', ML, 18, 32, 32); } catch(e){}
+    try { doc.addImage(logoB64,'JPEG', ML, 16, 26, 26); } catch(e){}
   }
-
-  // ── COMPANY BLOCK ──
+  const txtX = logoB64 ? ML + 32 : ML;
   doc.setFont('helvetica','bold');
-  doc.setFontSize(18); doc.setTextColor(...NAVY);
-  doc.text('JENG CHI RESTAURANT', ML+40, 28);
-
+  doc.setFontSize(17); doc.setTextColor(...NAVY);
+  doc.text('JENG CHI RESTAURANT', txtX, 24);
   doc.setFont('helvetica','normal');
-  doc.setFontSize(8.5); doc.setTextColor(...GREY);
-  doc.text('Management Meeting Notes  ·  Confidential Internal Document', ML+40, 36);
-  doc.text('Richardson, Texas  ·  Internal Use Only', ML+40, 43);
+  doc.setFontSize(8); doc.setTextColor(...GREY);
+  doc.text('Management Meeting Notes  ·  Confidential Internal Document  ·  Richardson, Texas', txtX, 31);
+  doc.text('Internal Use Only', txtX, 37);
 
   // ── BOTTOM HEADER RULE ──
   doc.setDrawColor(...GOLD2); doc.setLineWidth(0.3);
-  doc.line(ML, 55, W-MR, 55);
+  doc.line(ML, 47, W-MR, 47);
   doc.setDrawColor(...GOLD); doc.setLineWidth(0.8);
-  doc.line(ML, 57, W-MR, 57);
+  doc.line(ML, 49, W-MR, 49);
 
   // ── TITLE ──
-  let y = 68;
+  let y = 58;
   doc.setFont('helvetica','bold');
   doc.setFontSize(14); doc.setTextColor(...NAVY);
   const titleLines = doc.splitTextToSize(meeting.title || 'Untitled Meeting', TW);
