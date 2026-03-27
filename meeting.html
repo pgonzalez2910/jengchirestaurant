@@ -324,7 +324,7 @@
 
     /* logo — no box, no border, transparent */
     .success-logo {
-      width:84px; height:84px; object-fit:contain;
+      width:134px; height:134px; object-fit:contain;
       margin:0 auto 18px; display:block;
       border:none !important; border-radius:0 !important;
       box-shadow:none !important; background:transparent;
@@ -659,6 +659,7 @@ const SUPABASE_URL      = "https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
 const LOGO_URL          = "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg";
 const BUCKET            = "manager-meeting";
+const RESEND_API_KEY    = "re_PASTE_YOUR_RESEND_KEY_HERE"; // ← paste your key from resend.com
 const MANAGERS          = [
   "francisco@jengchirestaurant.com",
   "shoko@jengchirestaurant.com",
@@ -926,21 +927,21 @@ async function uploadFile(meetingId, blob, type, override) {
   return {url: publicUrl};
 }
 
-// ── EMAIL via Supabase Edge Function ─────────────────────
-// Pass PDF as base64 attachment. Meeting attachment goes to DB only.
+// ── EMAIL via Supabase Edge Function (CORS-fixed) ──────────
 async function sendEmails(meeting, pdfBlob) {
-  console.group('[Email] sendEmails() called');
+  console.group('[Email] sendEmails()');
   console.log('[Email] Recipients:', MANAGERS);
-  console.log('[Email] Meeting ref:', meeting.reference_id);
-  console.log('[Email] PDF blob size:', pdfBlob ? (pdfBlob.size/1024).toFixed(1)+'KB' : 'none');
+  console.log('[Email] Ref:', meeting.reference_id);
+  console.log('[Email] End time going to email:', meeting.end_time);
   try {
+    // Convert PDF to base64
     let pdfBase64 = null;
     if (pdfBlob) {
       pdfBase64 = await new Promise((res, rej) => {
         const reader = new FileReader();
         reader.onloadend = () => {
           const b64 = reader.result.split(',')[1];
-          console.log('[Email] PDF base64 length:', b64.length, 'chars ≈', (b64.length*0.75/1024).toFixed(1)+'KB');
+          console.log('[Email] PDF size:', (b64.length*0.75/1024).toFixed(1)+'KB');
           res(b64);
         };
         reader.onerror = rej;
@@ -948,28 +949,26 @@ async function sendEmails(meeting, pdfBlob) {
       });
     }
 
-    console.log('[Email] Calling Supabase Edge Function: send-meeting-email …');
     const payload = { meeting, recipients: MANAGERS, pdfBase64 };
-    console.log('[Email] Payload keys:', Object.keys(payload));
+    console.log('[Email] Invoking Edge Function…');
 
-    const {data: fnData, error: fnError} = await sb.functions.invoke('send-meeting-email', {
+    const { data: fnData, error: fnError } = await sb.functions.invoke('send-meeting-email', {
       body: payload
     });
 
     if (fnError) {
-      console.error('[Email] ❌ Edge function returned error:', fnError);
-      throw fnError;
+      console.error('[Email] Edge Function error:', fnError);
+      throw new Error(fnError.message || JSON.stringify(fnError));
     }
-    console.log('[Email] ✅ Edge function response:', fnData);
-    toast('✅ Emails sent to all managers!', 'success');
+
+    console.log('[Email] ✅ Edge Function response:', fnData);
+    toast('✅ Emails sent to all ' + MANAGERS.length + ' managers!', 'success');
+
   } catch(e) {
-    console.error('[Email] ❌ sendEmails failed:', e);
-    console.error('[Email] Error name:', e.name);
-    console.error('[Email] Error message:', e.message);
-    console.error('[Email] Full error:', JSON.stringify(e, null, 2));
-    // Show toast so boss sees the email status
-    toast('⚠️ Meeting saved & PDF ready. Email: ' + (e.message || 'Edge Function not deployed'), 'warning');
-    // DO NOT throw — let success dialog still show
+    console.error('[Email] ❌ Failed:', e.message);
+    console.error('[Email] Full:', e);
+    toast('⚠️ Meeting saved. Email error: ' + e.message, 'warning');
+    // DO NOT throw — success dialog still shows
   } finally {
     console.groupEnd();
   }
@@ -1000,49 +999,45 @@ async function buildPDF(meeting) {
   const LGREY = [200,196,190];
   const BLACK = [30,26,20];
 
-  // ── TOP RULE ──
-  doc.setDrawColor(...GOLD); doc.setLineWidth(1.2);
-  doc.line(ML, 12, W-MR, 12);
-  doc.setDrawColor(...GOLD2); doc.setLineWidth(0.3);
-  doc.line(ML, 14, W-MR, 14);
-
-  // ── LOGO (left) + COMPANY BLOCK (right) compact ──
+  // ── LOGO centered, above the rules ──
+  const logoW = 18, logoH = 18;
+  const logoX = (W - logoW) / 2;
   if (logoB64) {
-    try { doc.addImage(logoB64,'JPEG', ML, 16, 26, 26); } catch(e){}
+    try { doc.addImage(logoB64, 'JPEG', logoX, 7, logoW, logoH); } catch(e){}
   }
-  const txtX = logoB64 ? ML + 32 : ML;
-  doc.setFont('helvetica','bold');
-  doc.setFontSize(17); doc.setTextColor(...NAVY);
-  doc.text('JENG CHI RESTAURANT', txtX, 24);
-  doc.setFont('helvetica','normal');
-  doc.setFontSize(8); doc.setTextColor(...GREY);
-  doc.text('Management Meeting Notes  ·  Confidential Internal Document  ·  Richardson, Texas', txtX, 31);
-  doc.text('Internal Use Only', txtX, 37);
 
-  // ── BOTTOM HEADER RULE ──
+  // ── COMPANY NAME + SUBTITLE centered under logo ──
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.8); doc.setTextColor(...NAVY);
+  doc.text('JENG CHI RESTAURANT', W / 2, 29, { align: 'center' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6); doc.setTextColor(...GREY);
+  doc.text('Management Meeting Notes  ·  Confidential Internal Document  ·  Internal Use Only', W / 2, 34, { align: 'center' });
+
+  // ── DOUBLE GOLD RULE below header ──
+  doc.setDrawColor(...GOLD); doc.setLineWidth(1.0);
+  doc.line(ML, 38, W-MR, 38);
   doc.setDrawColor(...GOLD2); doc.setLineWidth(0.3);
-  doc.line(ML, 47, W-MR, 47);
-  doc.setDrawColor(...GOLD); doc.setLineWidth(0.8);
-  doc.line(ML, 49, W-MR, 49);
+  doc.line(ML, 40, W-MR, 40);
 
   // ── TITLE ──
-  let y = 58;
+  let y = 48;
   doc.setFont('helvetica','bold');
-  doc.setFontSize(14); doc.setTextColor(...NAVY);
+  doc.setFontSize(9.8); doc.setTextColor(...NAVY);
   const titleLines = doc.splitTextToSize(meeting.title || 'Untitled Meeting', TW);
   doc.text(titleLines, ML, y);
-  y += titleLines.length * 7 + 4;
+  y += titleLines.length * 6 + 2;
 
   // thin rule under title
   doc.setDrawColor(...LGREY); doc.setLineWidth(0.25);
-  doc.line(ML, y, W-MR, y); y += 8;
+  doc.line(ML, y, W-MR, y); y += 5;
 
-  // ── META ROW ──
+  // ── META ROW — compact ──
   const metaCol = (label, value, x, ly) => {
-    doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(...GREY);
+    doc.setFont('helvetica','bold'); doc.setFontSize(4.9); doc.setTextColor(...GREY);
     doc.text(label, x, ly);
-    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...BLACK);
-    doc.text(value || '—', x, ly + 5.5);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(...BLACK);
+    doc.text(value || '—', x, ly + 4.5);
   };
 
   const dateFmt = meeting.meeting_date
@@ -1050,51 +1045,37 @@ async function buildPDF(meeting) {
         {weekday:'long', year:'numeric', month:'long', day:'numeric'})
     : '—';
 
-  metaCol('DATE',         dateFmt,               ML,     y);
+  metaCol('DATE',         dateFmt,                   ML,  y);
   metaCol('START',        fmt12(meeting.start_time), 130, y);
   metaCol('END',          fmt12(meeting.end_time),   165, y);
-  y += 16;
-  metaCol('LOCATION',     meeting.location || '—', ML,   y);
-  metaCol('STATUS',       'FINALIZED',           130,    y);
+  y += 13;
+  metaCol('LOCATION',     meeting.location || '—',   ML,  y);
+  metaCol('STATUS',       'FINALIZED',               130, y);
 
   // Reference ID
-  doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(...GREY);
+  doc.setFont('helvetica','bold'); doc.setFontSize(4.9); doc.setTextColor(...GREY);
   doc.text('REFERENCE ID', 165, y);
-  doc.setFont('courier','bold'); doc.setFontSize(8); doc.setTextColor(...GOLD);
-  doc.text(meeting.reference_id || '—', 165, y + 5.5);
-  y += 18;
+  doc.setFont('courier','bold'); doc.setFontSize(6.8); doc.setTextColor(...GOLD);
+  doc.text(meeting.reference_id || '—', 165, y + 4.5);
+  y += 13;
 
-  // rule
+  // rule → straight into notes (no Distributed To)
   doc.setDrawColor(...LGREY); doc.setLineWidth(0.25);
-  doc.line(ML, y, W-MR, y); y += 8;
-
-  // ── DISTRIBUTED TO ──
-  doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...GREY);
-  doc.text('DISTRIBUTED TO', ML, y);
-  y += 5;
-  doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(...BLACK);
-  const emailTxt = MANAGERS.join('   ·   ');
-  const emailLines = doc.splitTextToSize(emailTxt, TW);
-  doc.text(emailLines, ML, y);
-  y += emailLines.length * 4.8 + 10;
-
-  // rule
-  doc.setDrawColor(...LGREY); doc.setLineWidth(0.25);
-  doc.line(ML, y, W-MR, y); y += 8;
+  doc.line(ML, y, W-MR, y); y += 5;
 
   // ── MEETING NOTES ──
-  doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(...NAVY);
+  doc.setFont('helvetica','bold'); doc.setFontSize(6); doc.setTextColor(...NAVY);
   doc.text('MEETING NOTES & MINUTES', ML, y);
-  y += 7;
+  y += 5;
 
-  doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(...BLACK);
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(...BLACK);
   const noteLines = doc.splitTextToSize(
     meeting.content || '(No notes recorded for this meeting.)', TW);
 
   for (let i = 0; i < noteLines.length; i++) {
-    if (y > H - 46) {
+    if (y > H - 40) {
       addFooter(doc, W, H, GOLD, GREY, meeting.reference_id);
-      doc.addPage(); addContinuedHeader(doc, W, ML, MR, GOLD, GOLD2, GREY); y = 26;
+      doc.addPage(); addContinuedHeader(doc, W, ML, MR, GOLD, GOLD2, GREY); y = 22;
     }
     doc.text(noteLines[i], ML, y); y += 6;
   }
@@ -1108,28 +1089,28 @@ async function buildPDF(meeting) {
     }
     doc.setDrawColor(...LGREY); doc.setLineWidth(0.25);
     doc.line(ML, y, W-MR, y); y += 7;
-    doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...GREY);
+    doc.setFont('helvetica','bold'); doc.setFontSize(5.6); doc.setTextColor(...GREY);
     doc.text('ATTACHED DOCUMENT (stored in system · not attached to this email)', ML, y);
     y += 5;
-    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...BLACK);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(...BLACK);
     doc.text(meeting.attachment_original_name, ML, y);
     y += 12;
   }
 
   // ── SIGNATURE ──
-  y += 10;
+  y += 6;
   if (y > H - 55) {
     addFooter(doc,W,H,GOLD,GREY,meeting.reference_id);
     doc.addPage(); addContinuedHeader(doc,W,ML,MR,GOLD,GOLD2,GREY); y=26;
   }
   doc.setDrawColor(...LGREY); doc.setLineWidth(0.25);
-  doc.line(ML, y, W-MR, y); y += 8;
+  doc.line(ML, y, W-MR, y); y += 5;
 
-  doc.setFont('helvetica','bold'); doc.setFontSize(7.5); doc.setTextColor(...GREY);
+  doc.setFont('helvetica','bold'); doc.setFontSize(4.9); doc.setTextColor(...GREY);
   doc.text('PREPARED BY', ML, y);
   doc.text('DATE FINALIZED', W/2+10, y);
-  y += 6;
-  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...BLACK);
+  y += 5;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(...BLACK);
   doc.text('Management Team — Jeng Chi Restaurant', ML, y);
   doc.text(new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'}), W/2+10, y);
   y += 12;
@@ -1138,16 +1119,16 @@ async function buildPDF(meeting) {
   doc.line(W/2+10, y, W/2+82, y);
 
   // ── DISCLAIMER ──
-  y += 16;
+  y += 8;
   if (y > H-48) {
     addFooter(doc,W,H,GOLD,GREY,meeting.reference_id);
     doc.addPage(); addContinuedHeader(doc,W,ML,MR,GOLD,GOLD2,GREY); y=26;
   }
   doc.setDrawColor(...LGREY); doc.setLineWidth(0.25);
-  doc.line(ML, y, W-MR, y); y += 7;
+  doc.line(ML, y, W-MR, y); y += 4;
   const disc = 'DISCLAIMER: This document is intended solely for internal use by authorized personnel of Jeng Chi Restaurant. The information contained herein is confidential and proprietary. Any distribution, reproduction, or disclosure to unauthorized parties is strictly prohibited. Meeting records are retained in accordance with Jeng Chi Restaurant\'s internal document retention and confidentiality policy.';
   const discLines = doc.splitTextToSize(disc, TW);
-  doc.setFont('helvetica','bolditalic'); doc.setFontSize(7); doc.setTextColor(...GREY);
+  doc.setFont('helvetica','bolditalic'); doc.setFontSize(5.2); doc.setTextColor(...GREY);
   doc.text(discLines, ML, y, {lineHeightFactor:1.5});
 
   addFooter(doc, W, H, GOLD, GREY, meeting.reference_id);
@@ -1164,7 +1145,7 @@ function addFooter(doc,W,H,GOLD,GREY,refId) {
   doc.setDrawColor(...GOLD); doc.setLineWidth(0.4);
   doc.line(22, H-18, W-22, H-18);
   doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(...GREY);
-  doc.text('CONFIDENTIAL — INTERNAL USE ONLY  ·  Jeng Chi Restaurant, Richardson TX', 22, H-12);
+  doc.text('CONFIDENTIAL — INTERNAL USE ONLY  ·  Jeng Chi Restaurant', 22, H-12);
   doc.text('Unauthorized reproduction or distribution strictly prohibited.', 22, H-7.5);
   if (refId) {
     doc.setFont('courier','bold'); doc.setFontSize(7); doc.setTextColor(...GOLD);
