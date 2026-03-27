@@ -986,8 +986,11 @@ input.f-hours:disabled  { background: #f3f4f6; color: #c0c5ce; border-color: var
             <th>Regular Hours</th>
             <th style="width:88px">OT Enable</th>
             <th>OT Hours</th>
+            <th style="width:88px">PTO Enable</th>
+            <th>PTO Hours</th>
             <th>Regular Pay</th>
             <th>OT Pay</th>
+            <th>PTO Pay</th>
             <th>Total Due</th>
             <th></th>
           </tr>
@@ -1221,9 +1224,9 @@ function nextPeriod() { applyPeriod(currentPeriodOffset + 1); }
    DEFAULT EMPLOYEES
 ═══════════════════════════════════════════ */
 const DEFAULTS = [
-  { name:'YUXI YE',     firstName:'YUXI',     lastName:'YE',    wage:12.48 },
-  { name:'FEI ZHENG',   firstName:'FEI',      lastName:'ZHENG', wage:12.01 },
-  { name:'XING CHENG',  firstName:'XING',      lastName:'CHENG', wage:10.40 },
+  { name:'YUXI YE',     firstName:'YUXI',     lastName:'YE',    wage:12.48, reg:100, pto:100 },
+  { name:'FEI ZHENG',   firstName:'FEI',      lastName:'ZHENG', wage:12.01, reg:100, pto:100 },
+  { name:'XING CHENG',  firstName:'XING',      lastName:'CHENG', wage:10.40, reg:90, pto:90 },
 ];
 
 let roster = [];
@@ -1279,10 +1282,10 @@ async function loadDefaultEmployees() {
         name:(data.first_name+' '+data.last_name).toUpperCase(),
         dept:data.department||'', title:data.job_title||'',
         wage:parseFloat(data.hourly_rate)||def.wage,
-        regHours:0, otOn:false, otHours:0, fromDb:true,
+        regHours:def.reg||0, otOn:false, otHours:0, ptoOn:false, ptoHours:0, ptoDefault:def.pto||0, fromDb:true,
       });
     } else {
-      roster.push({ dbId:null, empId:null, name:def.name, dept:'', title:'', wage:def.wage, regHours:0, otOn:false, otHours:0, fromDb:false });
+      roster.push({ dbId:null, empId:null, name:def.name, dept:'', title:'', wage:def.wage, regHours:def.reg||0, otOn:false, otHours:0, ptoOn:false, ptoHours:0, ptoDefault:def.pto||0, fromDb:false });
     }
   }
   renderTable();
@@ -1300,7 +1303,8 @@ function renderTable() {
   tbody.innerHTML = roster.map((r, i) => {
     const rp  = (r.regHours * r.wage).toFixed(2);
     const op  = (r.otHours  * r.wage).toFixed(2);
-    const tot = (parseFloat(rp) + parseFloat(op)).toFixed(2);
+    const pp  = (r.ptoHours * r.wage).toFixed(2);
+    const tot = (parseFloat(rp) + parseFloat(op) + parseFloat(pp)).toFixed(2);
     return `
     <tr id="tr${i}">
       <td>
@@ -1326,8 +1330,18 @@ function renderTable() {
       <td><input class="f-hours" type="number" step="0.5" min="0" id="oh${i}"
         value="${r.otHours||''}" placeholder="0.00" oninput="calc(${i})"
         ${r.otOn?'':'disabled'}></td>
+      <td>
+        <div class="ot-toggle">
+          <input type="checkbox" id="ptoc${i}" ${r.ptoOn?'checked':''} onchange="togglePTO(${i},this.checked)">
+          <label class="ot-lbl" for="ptoc${i}">PTO</label>
+        </div>
+      </td>
+      <td><input class="f-hours" type="number" step="0.5" min="0" id="ph${i}"
+        value="${r.ptoHours||''}" placeholder="0.00" oninput="calc(${i})"
+        ${r.ptoOn?'':'disabled'}></td>
       <td><span class="pay-cell" id="rp${i}">$${rp}</span></td>
       <td><span class="pay-cell ot" id="op${i}">$${op}</span></td>
+      <td><span class="pay-cell" style="color:#16a34a" id="pp${i}">$${pp}</span></td>
       <td><span class="pay-cell total" id="tp${i}">$${tot}</span></td>
       <td><button class="remove-btn" onclick="removeRow(${i})" title="Remove">✕</button></td>
     </tr>`;
@@ -1342,27 +1356,32 @@ function calc(i) {
   const wage = roster[i].wage;
   const rh = parseFloat(document.getElementById(`rh${i}`)?.value)||0;
   const oh = parseFloat(document.getElementById(`oh${i}`)?.value)||0;
-  roster[i].regHours = rh; roster[i].otHours = oh;
+  const ph = parseFloat(document.getElementById(`ph${i}`)?.value)||0;
+  roster[i].regHours = rh; roster[i].otHours = oh; roster[i].ptoHours = ph;
   const rp  = (rh*wage).toFixed(2);
   const op  = (oh*wage).toFixed(2);
-  const tot = (parseFloat(rp)+parseFloat(op)).toFixed(2);
+  const pp  = (ph*wage).toFixed(2);
+  const tot = (parseFloat(rp)+parseFloat(op)+parseFloat(pp)).toFixed(2);
   document.getElementById(`rp${i}`).textContent = '$'+rp;
   document.getElementById(`op${i}`).textContent = '$'+op;
+  document.getElementById(`pp${i}`).textContent = '$'+pp;
   document.getElementById(`tp${i}`).textContent = '$'+tot;
   recalcSummary();
 }
 
 function recalcSummary() {
-  let totalRH=0, totalOH=0, totalPay=0;
+  let totalRH=0, totalOH=0, totalPH=0, totalPay=0;
   roster.forEach((r,i) => {
     const rh = parseFloat(document.getElementById(`rh${i}`)?.value)||0;
     const oh = parseFloat(document.getElementById(`oh${i}`)?.value)||0;
-    totalRH += rh; totalOH += oh;
-    totalPay += (rh+oh)*r.wage;
+    const ph = parseFloat(document.getElementById(`ph${i}`)?.value)||0;
+    totalRH += rh; totalOH += oh; totalPH += ph;
+    totalPay += (rh+oh+ph)*r.wage;
   });
   document.getElementById('sumCount').textContent = roster.length;
   document.getElementById('sumReg').textContent   = totalRH.toFixed(2);
   document.getElementById('sumOT').textContent    = totalOH.toFixed(2);
+  if (document.getElementById('sumPTO')) document.getElementById('sumPTO').textContent = totalPH.toFixed(2);
   document.getElementById('sumTotal').textContent = '$'+totalPay.toFixed(2);
 }
 
@@ -1371,6 +1390,13 @@ function toggleOT(i, on) {
   const el = document.getElementById(`oh${i}`);
   el.disabled = !on;
   if (!on) { el.value=''; roster[i].otHours=0; calc(i); }
+}
+
+function togglePTO(i, on) {
+  roster[i].ptoOn = on;
+  const el = document.getElementById(`ph${i}`);
+  el.disabled = !on;
+  if (!on) { el.value=''; roster[i].ptoHours=0; calc(i); }
 }
 
 function removeRow(i) { roster.splice(i,1); renderTable(); }
@@ -1472,10 +1498,12 @@ function printPayslips() {
   roster.forEach((r, i) => {
     const rh  = parseFloat(document.getElementById(`rh${i}`)?.value)||0;
     const oh  = parseFloat(document.getElementById(`oh${i}`)?.value)||0;
+    const ph  = parseFloat(document.getElementById(`ph${i}`)?.value)||0;
     const rp  = (rh*r.wage).toFixed(2);
     const op  = (oh*r.wage).toFixed(2);
-    const tot = (parseFloat(rp)+parseFloat(op)).toFixed(2);
-    const totH= rh+oh;
+    const pp  = (ph*r.wage).toFixed(2);
+    const tot = (parseFloat(rp)+parseFloat(op)+parseFloat(pp)).toFixed(2);
+    const totH= rh+oh+ph;
 
     if (i>0) {
       html += `
@@ -1550,10 +1578,14 @@ function printPayslips() {
               <div class="ps-field-lbl">Regular Hours</div>
               <div class="ps-field-val">${rh.toFixed(2)}</div>
             </div>
-            <div>
+            ${oh>0?`<div>
               <div class="ps-field-lbl">OT Hours</div>
               <div class="ps-field-val ot">${oh.toFixed(2)}</div>
-            </div>
+            </div>`:''}
+            ${ph>0?`<div>
+              <div class="ps-field-lbl">PTO Hours</div>
+              <div class="ps-field-val ot">${ph.toFixed(2)}</div>
+            </div>`:''}
             <div>
               <div class="ps-field-lbl">Total Hours</div>
               <div class="ps-field-val">${totH.toFixed(2)}</div>
@@ -1568,7 +1600,11 @@ function printPayslips() {
           <div class="ps-foot">
             <div>
               <div class="ps-total-lbl">Net Cash Payment</div>
-              ${oh>0?`<div class="ps-breakdown">Regular: $${rp} &nbsp;+&nbsp; Overtime: $${op}</div>`:'<div class="ps-breakdown">Regular hours only</div>'}
+              <div class="ps-breakdown">
+                Regular: $${rp}
+                ${oh>0?`&nbsp;+&nbsp; Overtime: $${op}`:''}
+                ${ph>0?`&nbsp;+&nbsp; PTO: $${pp}`:''}
+              </div>
               <div class="ps-sig">Employee Signature: ___________________________________ &nbsp;&nbsp; Date: ________________</div>
             </div>
             <div class="ps-foot-right">
