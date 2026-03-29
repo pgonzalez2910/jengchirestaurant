@@ -35998,23 +35998,26 @@ async function validateInvoiceNumber(invoiceNumber) {
 
 
 // ── Products where QTY = cases and must be multiplied by lbs/case for pricing ──
-// Format: { lbs_per_case: N } — total price = qty * lbs_per_case * unit_price
-// The PDF will show:  Qty (cases)  |  Pounds  |  Price/lb  |  Total
+// lbs: fixed pounds/case  |  lbs: 'last' = use actual lbs from last invoice
+// The PDF will show:  Cases  |  Pounds  |  Price/lb  |  Total
 const WEIGHT_PRODUCTS = {
-    'chicken leg meat fresh 40#':          { lbs: 40  },
-    'chicken breast bnls fresh':           { lbs: 40  },
-    'boneless lamb l-leg australia':       { lbs: null }, // lbs = qty itself (order in lbs)
-    'tiger shrimp 16/20':                  { lbs: 24  },
-    'beef flank steak':                    { lbs: 40  },
-    'beef shank meat':                     { lbs: 40  },
-    'pork skin smithfield':                { lbs: 60  },
-    'pork skin':                           { lbs: 60  },
+    'chicken leg meat fresh 40#': { lbs: 40  },
+    'chicken breast bnls fresh':  { lbs: 40  },
+    'tiger shrimp 16/20':         { lbs: 24  },
+    'pork skin smithfield':       { lbs: 60  },
+    'pork skin':                  { lbs: 60  },
+    // Variable-weight: lbs/case differs each delivery — use last invoice actual weight
+    'beef flank steak':           { lbs: 'last' },
+    'beef shank meat':            { lbs: 'last' },
+    'boneless lamb l-leg':        { lbs: 'last' },
+    'boneless lamb':              { lbs: 'last' },
 };
 
 function _poGetWeightRule(productName) {
-    const key = (productName || '').toLowerCase().trim();
-    for (const [pattern, rule] of Object.entries(WEIGHT_PRODUCTS)) {
-        if (key.includes(pattern)) return rule;
+    var key = (productName || '').toLowerCase().trim();
+    var entries = Object.keys(WEIGHT_PRODUCTS);
+    for (var i = 0; i < entries.length; i++) {
+        if (key.includes(entries[i])) return WEIGHT_PRODUCTS[entries[i]];
     }
     return null;
 }
@@ -36103,16 +36106,39 @@ async function generateOrderPDFs() {
 
         
 
+        // ── Load last invoice weight for variable-weight products ──
+        // invoice_items.weight = total lbs received, quantity = cases
+        // lbs/case = weight / quantity — varies each delivery for beef/lamb
+        const { data: weightData } = await supabaseClient
+            .from('invoice_items')
+            .select('product_name, weight, quantity, has_weight, invoice_id')
+            .eq('has_weight', true)
+            .order('invoice_id', { ascending: false });
+
+        const lastWeightMap = new Map();
+        (weightData || []).forEach(item => {
+            const key  = (item.product_name || '').toLowerCase().trim();
+            const rule = _poGetWeightRule(item.product_name);
+            if (!rule || rule.lbs !== 'last') return;
+            if (lastWeightMap.has(key)) return; // keep most recent only
+            const totalLbs = parseFloat(item.weight || 0);
+            const cases    = parseFloat(item.quantity || 1);
+            if (totalLbs > 0 && cases > 0) {
+                lastWeightMap.set(key, { lbs_per_case: totalLbs / cases, last_total_lbs: totalLbs, last_cases: cases });
+            }
+        });
+        console.log('[PDF-WEIGHT] variable products loaded:', lastWeightMap.size);
+
+        
+
         // Group by vendor
 
         const byVendor = {};
 
         rows.forEach(r => {
 
-            const qty = r.user.toLowerCase() === 'julio' 
-
-                ? Number(r.on_hand || 0) 
-
+            const qty = r.user.toLowerCase() === 'julio'
+                ? Number(r.on_hand || 0)
                 : Number(r.tentative || 0);
 
             
@@ -36134,9 +36160,28 @@ async function generateOrderPDFs() {
             
 
             const _wRule = _poGetWeightRule(r.product_name);
-            const _lbs   = _wRule
-                ? (_wRule.lbs === null ? qty : qty * _wRule.lbs)  // null = qty IS the lbs
-                : null;
+            let _lbs = null;
+            let _lbsNote = null;
+            if (_wRule) {
+                if (_wRule.lbs === 'last') {
+                    // Variable weight — use lbs/case from last invoice
+                    const key = r.product_name.toLowerCase().trim();
+                    const lastW = lastWeightMap.get(key)
+                        || (function(){ var e=[...lastWeightMap.entries()].find(function(p){ return key.includes(p[0]); }); return e ? e[1] : null; })();
+                    if (lastW) {
+                        _lbs = qty * lastW.lbs_per_case;
+                        _lbsNote = '(est. ' + lastW.lbs_per_case.toFixed(1) + ' lbs/case last order)';
+                        console.log('[PDF-WEIGHT]', r.product_name, '→', qty, 'cases ×', lastW.lbs_per_case.toFixed(1), 'lbs/case =', _lbs.toFixed(1), 'lbs');
+                    } else {
+                        // No invoice history — show cases only, no pounds
+                        _lbs = null;
+                        _lbsNote = '(no weight history)';
+                        console.warn('[PDF-WEIGHT] no last weight found for:', r.product_name);
+                    }
+                } else {
+                    _lbs = qty * _wRule.lbs; // fixed lbs/case
+                }
+            }
             const _lineTotal = _lbs !== null
                 ? _lbs * unitPrice          // weight products: lbs * price/lb
                 : qty * unitPrice;          // regular products: cases * price/case
@@ -36150,6 +36195,8 @@ async function generateOrderPDFs() {
                 qty: qty,
 
                 lbs: _lbs,
+
+                lbs_note: _lbsNote,
 
                 unit_price: unitPrice,
 
@@ -36461,11 +36508,13 @@ async function generateVendorPDF(vendor, items, dateISO) {
 
                 code: item.item_code,
 
-                product: item.product_name,
+                product: item.lbs_note
+                    ? item.product_name + '\n' + item.lbs_note
+                    : item.product_name,
 
                 qty: item.qty % 1 === 0 ? item.qty.toFixed(0) : item.qty.toFixed(2),
 
-                lbs: item.lbs != null ? item.lbs.toFixed(1) + ' lbs' : '—',
+                lbs: item.lbs != null ? item.lbs.toFixed(1) + ' lbs' : (item.lbs_note ? item.lbs_note : '—'),
 
                 price: '$' + item.unit_price.toFixed(2) + (item.lbs != null ? '/lb' : ''),
 
