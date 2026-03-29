@@ -27806,6 +27806,42 @@ function _initPoNameTextareas(container) {
     });
 }
 
+
+// ── Editable PAR in Place Order — saves to inventory_management immediately ──
+async function savePoParValue(input) {
+    const productName = input.dataset.pname;
+    const newPar = parseFloat(input.value);
+    if (!productName || isNaN(newPar) || newPar < 0) return;
+
+    // Visual feedback — yellow while saving
+    input.style.color = '#d97706';
+
+    const { error } = await supabaseClient
+        .from('inventory_management')
+        .update({ par: newPar })
+        .eq('product_name', productName);
+
+    if (error) {
+        console.error('[PAR] save error:', error.message);
+        input.style.color = '#dc2626';
+        if (typeof showAlert === 'function') showAlert('Error saving PAR: ' + error.message, 'error');
+        return;
+    }
+
+    // Update local cache so re-renders stay consistent
+    ['rony','julio','office'].forEach(s => {
+        (window._placeOrderCache?.[s] || []).forEach(r => {
+            if (r.product_name === productName) r.par = newPar;
+        });
+    });
+
+    // Green flash — saved
+    input.style.color = '#16a34a';
+    setTimeout(() => { input.style.color = 'var(--accent-700)'; }, 1200);
+    console.log('[PAR] ✅ saved', newPar, 'for', productName);
+    if (typeof showAlert === 'function') showAlert('✅ PAR updated: ' + productName + ' → ' + newPar, 'success');
+}
+
 function renderEnhancedCard(row, userType) {
 
     // ── Color variant (Fork / Spoon merged card) ──────────────────────
@@ -28006,9 +28042,17 @@ function renderEnhancedCard(row, userType) {
         <div style="font-size:1rem;font-weight:800;font-family:var(--font-mono);color:${_stockColor};">${displayStock.toFixed(1)}</div>
         <div style="font-size:0.48rem;color:${_stockColor};font-weight:700;">${_statusLbl}</div>
       </div>
-      <div style="background:#fffbeb;padding:0.3rem 0.2rem;border-radius:5px;border:2px solid var(--accent-400);text-align:center;">
+      <div style="background:#fffbeb;padding:0.3rem 0.2rem;border-radius:5px;border:2px solid var(--accent-400);text-align:center;" title="Click PAR to edit">
         <div style="font-size:0.5rem;font-weight:700;color:#6b7280;text-transform:uppercase;">PAR</div>
-        <div style="font-size:1rem;font-weight:800;font-family:var(--font-mono);color:var(--accent-700);">${displayPar.toFixed(1)}</div>
+        <input type="number" min="0" step="0.5"
+               id="par-po-${productId}"
+               value="${displayPar}"
+               data-pname="${escapedProductName}"
+               onchange="savePoParValue(this)"
+               onclick="event.stopPropagation()"
+               style="width:100%;font-size:1rem;font-weight:800;font-family:var(--font-mono);color:var(--accent-700);
+                      border:none;background:transparent;text-align:center;outline:none;cursor:pointer;
+                      padding:0;margin:0;-moz-appearance:textfield;">
         <div style="font-size:0.48rem;color:var(--accent-600);font-weight:700;">${Math.round(_stockPct)}%</div>
       </div>
       ${displayStock < displayPar
@@ -28029,9 +28073,17 @@ function renderEnhancedCard(row, userType) {
         <div style="font-size:0.5rem;font-weight:700;color:var(--neutral-600);text-transform:uppercase;">Stock</div>
         <div style="font-size:1rem;font-weight:700;font-family:var(--font-mono);color:var(--primary-700);">${displayStock.toFixed(1)}</div>
       </div>
-      <div style="background:white;padding:0.35rem;border-radius:5px;border:1px solid var(--accent-400);text-align:center;">
+      <div style="background:white;padding:0.35rem;border-radius:5px;border:1px solid var(--accent-400);text-align:center;" title="Click PAR to edit">
         <div style="font-size:0.5rem;font-weight:700;color:var(--neutral-600);text-transform:uppercase;">PAR</div>
-        <div style="font-size:1rem;font-weight:700;font-family:var(--font-mono);color:var(--accent-700);">${displayPar.toFixed(1)}</div>
+        <input type="number" min="0" step="0.5"
+               id="par-po-${productId}-2"
+               value="${displayPar}"
+               data-pname="${escapedProductName}"
+               onchange="savePoParValue(this)"
+               onclick="event.stopPropagation()"
+               style="width:100%;font-size:1rem;font-weight:700;font-family:var(--font-mono);color:var(--accent-700);
+                      border:none;background:transparent;text-align:center;outline:none;cursor:pointer;
+                      padding:0;margin:0;-moz-appearance:textfield;">
       </div>
     </div>
     `}
@@ -38636,11 +38688,33 @@ async function poAssignGroup(productName, groupName, evt) {
         if (bar) bar.style.background = groupName ? 'var(--accent-500)' : 'var(--neutral-500)';
     }
 
-    // Save to Supabase (same column as RonyDashboard — custom_group in inventory_management)
-    const { error } = await supabaseClient
-        .from('inventory_management')
-        .update({ custom_group: groupName || null })
-        .eq('product_name', productName);
+    // Save to Supabase — for merged color-variant cards (e.g. "Heavy Weight Fork")
+    // update ALL rows whose product_name starts with that base name
+    const isColorVariant = productName === 'Heavy Weight Fork' || productName === 'Heavy Weight Spoon';
+    let supaErr;
+    if (isColorVariant) {
+        // Update both White and Black variants
+        const { error } = await supabaseClient
+            .from('inventory_management')
+            .update({ custom_group: groupName || null })
+            .like('product_name', productName.replace('Heavy Weight ', 'Heavy Weight ') + '%');
+        supaErr = error;
+        // Also update groupMap for both variants so they render in the group
+        const variants = ['White','Black'];
+        variants.forEach(c => {
+            const vName = productName.replace('Heavy Weight Fork','Heavy Weight Fork ' + c)
+                                     .replace('Heavy Weight Spoon','Heavy Weight Spoon ' + c);
+            if (groupName) window._placeOrderGroupMap[vName] = groupName;
+            else delete window._placeOrderGroupMap[vName];
+        });
+    } else {
+        const { error } = await supabaseClient
+            .from('inventory_management')
+            .update({ custom_group: groupName || null })
+            .eq('product_name', productName);
+        supaErr = error;
+    }
+    const error = supaErr;
 
     if (error) {
         console.error('[PO] group assign error:', error);
