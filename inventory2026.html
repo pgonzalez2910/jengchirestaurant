@@ -38637,7 +38637,7 @@ document.addEventListener('click', () => {
 
 
 // ========== PLACE ORDER: CARD POSITION PERSISTENCE (localStorage) ==========
-// Key: poOrder_DATE_SECTION_GROUPNAME  (group name from data-po-group on grid div)
+// Key: poOrder_SECTION_GROUPNAME (permanent — no date, matched by product_name not row.id)
 
 function _poGroupKey(section, gridEl) {
     // Key is permanent — NOT date-based. Order persists across days.
@@ -38665,15 +38665,16 @@ function _poSaveOrder(section, startEl) {
         return;
     }
 
-    const cards = [...grid.querySelectorAll('.enhanced-order-card')];
-    const ids   = cards.map(c => c.dataset.id).filter(Boolean);
-    if (!ids.length) return;
+    // ✅ Save by product_name (stable) — NOT by row.id (changes daily with inventory_check date)
+    const cards  = [...grid.querySelectorAll('.enhanced-order-card')];
+    const names  = cards.map(c => c.dataset.product).filter(Boolean);
+    if (!names.length) return;
 
     const key = _poGroupKey(section, grid);
-    localStorage.setItem(key, JSON.stringify(ids));
-    console.log('[PO-SAVE] ✅ saved', ids.length, 'ids | section:', section,
+    localStorage.setItem(key, JSON.stringify(names));
+    console.log('[PO-SAVE] ✅ saved', names.length, 'names | section:', section,
                 '| group:', grid.dataset.poGroup, '| key:', key,
-                '| first id:', ids[0], '| last id:', ids[ids.length-1]);
+                '| first:', names[0], '| last:', names[names.length-1]);
 }
 
 // Re-apply saved per-group drag order after every re-render
@@ -38685,22 +38686,24 @@ function _poApplyDragOrder(section) {
     console.log('[PO-APPLY] section:', section, '| grids:', grids.length);
 
     grids.forEach(grid => {
-        const key   = _poGroupKey(section, grid);
-        const raw   = localStorage.getItem(key);
-        if (!raw) return;  // nothing saved for this group yet — keep alpha order
+        const key = _poGroupKey(section, grid);
+        const raw = localStorage.getItem(key);
+        if (!raw) return;  // nothing saved yet — keep alpha order
         try {
-            const ids     = JSON.parse(raw);
+            const names   = JSON.parse(raw);
             const cards   = [...grid.querySelectorAll('.enhanced-order-card')];
-            console.log('[PO-APPLY] group:"' + grid.dataset.poGroup + '" | saved:', ids.length,
-                        'ids | DOM cards:', cards.length,
-                        '| first saved id:', ids[0], '| first DOM id:', cards[0]?.dataset.id);
-            const cardMap = new Map(cards.map(c => [c.dataset.id, c]));
-            const matched = ids.filter(id => cardMap.has(id));
-            console.log('[PO-APPLY] matched:', matched.length, '/', ids.length, 'saved ids found in DOM');
+            // ✅ Match by product_name (stable across days) — NOT by row.id
+            const cardMap = new Map(cards.map(c => [c.dataset.product, c]));
+            const matched = names.filter(n => cardMap.has(n));
+            console.log('[PO-APPLY] group:"' + grid.dataset.poGroup + '"'
+                + ' | saved:', names.length, '| DOM:', cards.length
+                + ' | matched:', matched.length
+                + ' | first saved:', names[0]
+                + ' | first DOM:', cards[0]?.dataset.product);
             if (!matched.length) return;
-            const ordered = ids.map(id => cardMap.get(id)).filter(Boolean);
-            const seen    = new Set(ids);
-            cards.forEach(c => { if (!seen.has(c.dataset.id)) ordered.push(c); });
+            const ordered = names.map(n => cardMap.get(n)).filter(Boolean);
+            const seen    = new Set(names);
+            cards.forEach(c => { if (!seen.has(c.dataset.product)) ordered.push(c); });
             ordered.forEach(c => grid.appendChild(c));
             console.log('[PO-APPLY] ✅ restored order for group:', grid.dataset.poGroup);
         } catch(e) {
@@ -38728,23 +38731,18 @@ function poResetGroupOrder(btn) {
     localStorage.removeItem(key);
     console.log('[A→Z] Cleared saved order, key:', key);
 
-    // Re-sort cards alphabetically in the DOM
+    // Re-sort cards alphabetically in the DOM using product_name
     const cards = [...gridEl.querySelectorAll('.enhanced-order-card')];
-    cards.sort((a, b) => {
-        const na = (a.dataset.product || '').toLowerCase();
-        const nb = (b.dataset.product || '').toLowerCase();
-        return na.localeCompare(nb);
-    });
+    cards.sort((a, b) => (a.dataset.product || '').toLowerCase().localeCompare((b.dataset.product || '').toLowerCase()));
     cards.forEach(c => gridEl.appendChild(c));
 
-    // Save the new alphabetical order so it persists on refresh
+    // Save the sorted order (once only)
     _poSaveOrder(section, gridEl);
 
     // Flash feedback
     gridEl.style.outline = '2px solid var(--accent-400)';
     setTimeout(() => { gridEl.style.outline = ''; }, 700);
 
-    _poSaveOrder(section, gridEl);
     console.log('[A→Z] sorted and saved | section:', section, '| group:', gridEl.dataset.poGroup);
     if (typeof showAlert === 'function') showAlert('↕ Sorted A→Z', 'success');
 }
@@ -46569,14 +46567,5 @@ async function grpToggle(productName, el){
 </script>
 
 </body>
-
-
-
-
-
-
-
-
-
 
 </html>
