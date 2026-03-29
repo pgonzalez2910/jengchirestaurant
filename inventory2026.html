@@ -27521,7 +27521,7 @@ async function _rerenderPlaceOrderSections() {
     requestAnimationFrame(() => {
         _initPoNameTextareas(container);
         // Re-apply saved per-group drag order AFTER paint so DOM is fully settled
-        setTimeout(() => { ['rony','julio','office'].forEach(s => _poApplyDragOrder(s)); }, 50);
+        setTimeout(() => { ['rony','julio','office'].forEach(s => _poApplyDragOrder(s)); }, 200);
     });
 
 }
@@ -27737,10 +27737,9 @@ async function renderEnhancedOrderCards(ronyData, julioData, officeData = []) {
 
 
 
-    // Apply saved drag-order from localStorage before caching
-    ronyData  = _poLoadOrder('rony',   ronyData);
-    julioData = _poLoadOrder('julio',  julioData);
-    officeData= _poLoadOrder('office', officeData);
+    // NOTE: Per-group drag order is applied AFTER render via _poApplyDragOrder()
+    // _poLoadOrder (flat order) is intentionally NOT called here — it conflicts
+    // with _groupByCustomGroup which always starts from alphabetical order
 
     // ✅ Cache so filters can re-render without a DB round-trip
 
@@ -27756,7 +27755,7 @@ async function renderEnhancedOrderCards(ronyData, julioData, officeData = []) {
 
     requestAnimationFrame(() => {
         _initPoNameTextareas(container);
-        setTimeout(() => { ['rony','julio','office'].forEach(s => _poApplyDragOrder(s)); }, 50);
+        setTimeout(() => { ['rony','julio','office'].forEach(s => _poApplyDragOrder(s)); }, 200);
     });
 
 }
@@ -38640,11 +38639,12 @@ document.addEventListener('click', () => {
 // ========== PLACE ORDER: CARD POSITION PERSISTENCE (localStorage) ==========
 // Key: poOrder_DATE_SECTION_GROUPNAME  (group name from data-po-group on grid div)
 
-function _poGroupKey(dateISO, section, gridEl) {
+function _poGroupKey(section, gridEl) {
+    // Key is permanent — NOT date-based. Order persists across days.
     const g = (gridEl && gridEl.dataset && gridEl.dataset.poGroup != null)
         ? gridEl.dataset.poGroup
         : '__ungrouped__';
-    return 'poOrder_' + dateISO + '_' + section + '_' + encodeURIComponent(g);
+    return 'poOrder_' + section + '_' + encodeURIComponent(g);
 }
 
 // Find the nearest ancestor-or-self that has data-po-group
@@ -38659,9 +38659,6 @@ function _poFindGrid(el) {
 }
 
 function _poSaveOrder(section, startEl) {
-    const dateISO = document.getElementById('createOrderDate')?.value || '';
-    if (!dateISO) { console.warn('[PO-SAVE] no date set'); return; }
-
     const grid = _poFindGrid(startEl);
     if (!grid) {
         console.warn('[PO-SAVE] could not find grid from', startEl);
@@ -38672,33 +38669,35 @@ function _poSaveOrder(section, startEl) {
     const ids   = cards.map(c => c.dataset.id).filter(Boolean);
     if (!ids.length) return;
 
-    const key = _poGroupKey(dateISO, section, grid);
+    const key = _poGroupKey(section, grid);
     localStorage.setItem(key, JSON.stringify(ids));
     console.log('[PO-SAVE] ✅ saved', ids.length, 'ids | section:', section,
-                '| group:', grid.dataset.poGroup, '| key:', key);
+                '| group:', grid.dataset.poGroup, '| key:', key,
+                '| first id:', ids[0], '| last id:', ids[ids.length-1]);
 }
 
 // Re-apply saved per-group drag order after every re-render
 function _poApplyDragOrder(section) {
-    const dateISO = document.getElementById('createOrderDate')?.value || '';
-    if (!dateISO) { console.log('[PO-APPLY] skipped — no date'); return; }
-
     const sectionEl = document.querySelector('[data-po-section="' + section + '"]');
     if (!sectionEl) { console.log('[PO-APPLY] no section element for:', section); return; }
 
     const grids = [...sectionEl.querySelectorAll('[data-po-group]')];
-    console.log('[PO-APPLY] section:', section, '| grids:', grids.length, '| date:', dateISO);
+    console.log('[PO-APPLY] section:', section, '| grids:', grids.length);
 
     grids.forEach(grid => {
-        const key   = _poGroupKey(dateISO, section, grid);
+        const key   = _poGroupKey(section, grid);
         const raw   = localStorage.getItem(key);
-        console.log('[PO-APPLY] group:"' + grid.dataset.poGroup + '" | key:', key,
-                    '| stored:', raw ? JSON.parse(raw).length + ' ids' : 'none');
-        if (!raw) return;
+        if (!raw) return;  // nothing saved for this group yet — keep alpha order
         try {
             const ids     = JSON.parse(raw);
             const cards   = [...grid.querySelectorAll('.enhanced-order-card')];
+            console.log('[PO-APPLY] group:"' + grid.dataset.poGroup + '" | saved:', ids.length,
+                        'ids | DOM cards:', cards.length,
+                        '| first saved id:', ids[0], '| first DOM id:', cards[0]?.dataset.id);
             const cardMap = new Map(cards.map(c => [c.dataset.id, c]));
+            const matched = ids.filter(id => cardMap.has(id));
+            console.log('[PO-APPLY] matched:', matched.length, '/', ids.length, 'saved ids found in DOM');
+            if (!matched.length) return;
             const ordered = ids.map(id => cardMap.get(id)).filter(Boolean);
             const seen    = new Set(ids);
             cards.forEach(c => { if (!seen.has(c.dataset.id)) ordered.push(c); });
@@ -38712,7 +38711,6 @@ function _poApplyDragOrder(section) {
 
 // Reset a group back to alphabetical order and clear its saved drag order
 function poResetGroupOrder(btn) {
-    const dateISO = document.getElementById('createOrderDate')?.value || '';
     const section = btn.dataset.section || '';
 
     // Walk up to the outer group wrapper (div with margin-bottom:1.5rem),
@@ -38726,11 +38724,9 @@ function poResetGroupOrder(btn) {
     }
 
     // Clear saved drag order for this group
-    if (dateISO) {
-        const key = _poGroupKey(dateISO, section, gridEl);
-        localStorage.removeItem(key);
-        console.log('[A→Z] Cleared saved order, key:', key);
-    }
+    const key = _poGroupKey(section, gridEl);
+    localStorage.removeItem(key);
+    console.log('[A→Z] Cleared saved order, key:', key);
 
     // Re-sort cards alphabetically in the DOM
     const cards = [...gridEl.querySelectorAll('.enhanced-order-card')];
