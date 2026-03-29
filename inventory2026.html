@@ -27425,7 +27425,7 @@ function _renderCategoryGroups(groups, userType, accentColor) {
 
         return `
 
-      <div style="margin-bottom:1.5rem;">
+      <div style="margin-bottom:1.5rem;" data-po-group-wrapper>
 
         <div style="${headerStyle}">
 
@@ -27436,6 +27436,11 @@ function _renderCategoryGroups(groups, userType, accentColor) {
           ${pinnedBadge}
 
           <span style="${countStyle}">${rows.length} item${rows.length!==1?'s':''}</span>
+
+          <button onclick="poResetGroupOrder(this)" data-section="${userType}" title="Reset to A→Z"
+            style="margin-left:auto;background:rgba(255,255,255,0.18);border:1px solid rgba(255,255,255,0.35);color:${pinned?'white':'var(--neutral-600)'};border-radius:6px;padding:0.15rem 0.55rem;font-size:0.68rem;font-weight:700;cursor:pointer;white-space:nowrap;letter-spacing:.03em;">
+            ↕ A→Z
+          </button>
 
         </div>
 
@@ -27515,8 +27520,8 @@ async function _rerenderPlaceOrderSections() {
 
     requestAnimationFrame(() => {
         _initPoNameTextareas(container);
-        // Re-apply saved per-group drag order on top of the alpha-sorted render
-        ['rony','julio','office'].forEach(s => _poApplyDragOrder(s));
+        // Re-apply saved per-group drag order AFTER paint so DOM is fully settled
+        setTimeout(() => { ['rony','julio','office'].forEach(s => _poApplyDragOrder(s)); }, 50);
     });
 
 }
@@ -27751,7 +27756,7 @@ async function renderEnhancedOrderCards(ronyData, julioData, officeData = []) {
 
     requestAnimationFrame(() => {
         _initPoNameTextareas(container);
-        ['rony','julio','office'].forEach(s => _poApplyDragOrder(s));
+        setTimeout(() => { ['rony','julio','office'].forEach(s => _poApplyDragOrder(s)); }, 50);
     });
 
 }
@@ -38633,64 +38638,123 @@ document.addEventListener('click', () => {
 
 
 // ========== PLACE ORDER: CARD POSITION PERSISTENCE (localStorage) ==========
+// Key: poOrder_DATE_SECTION_GROUPNAME  (group name from data-po-group on grid div)
 
-function _poSaveOrder(section, groupEl) {
-    const dateISO = document.getElementById('createOrderDate')?.value || '';
-    if (!dateISO) return;
-
-    if (groupEl) {
-        // ── Save order for ONE group container only ──
-        // groupEl is the grid div that contains the dragged card
-        const cards = [...groupEl.querySelectorAll('.enhanced-order-card[data-user="'+section+'"]')];
-        const ids   = cards.map(c => c.dataset.id).filter(Boolean);
-        // Derive group name from the header preceding this grid
-        const groupHeader = groupEl.previousElementSibling?.querySelector('[data-group-name]');
-        const groupName   = groupHeader ? groupHeader.dataset.groupName : '__ungrouped__';
-        const key = 'poOrder_'+dateISO+'_'+section+'_'+encodeURIComponent(groupName);
-        if (ids.length > 0) {
-            localStorage.setItem(key, JSON.stringify(ids));
-            console.log('[PO-ORDER] Saved', ids.length, 'ids for', section, 'group:', groupName);
-        }
-    } else {
-        // ── Fallback: save ALL cards in section (cross-group moves) ──
-        const cards = [...document.querySelectorAll('.enhanced-order-card[data-user="'+section+'"]')];
-        const ids   = cards.map(c => c.dataset.id).filter(Boolean);
-        if (ids.length > 0) {
-            localStorage.setItem('poOrder_'+dateISO+'_'+section, JSON.stringify(ids));
-            console.log('[PO-ORDER] Saved', ids.length, 'ids for', section, 'on', dateISO);
-        }
-    }
+function _poGroupKey(dateISO, section, gridEl) {
+    const g = (gridEl && gridEl.dataset && gridEl.dataset.poGroup != null)
+        ? gridEl.dataset.poGroup
+        : '__ungrouped__';
+    return 'poOrder_' + dateISO + '_' + section + '_' + encodeURIComponent(g);
 }
 
-// Re-apply saved drag order within each group container after a fresh render
+// Find the nearest ancestor-or-self that has data-po-group
+function _poFindGrid(el) {
+    let cur = el;
+    while (cur && cur !== document.body) {
+        if (cur.dataset && cur.dataset.poGroup != null) return cur;
+        cur = cur.parentElement;
+    }
+    console.warn('[PO] _poFindGrid: no data-po-group found from', el);
+    return null;
+}
+
+function _poSaveOrder(section, startEl) {
+    const dateISO = document.getElementById('createOrderDate')?.value || '';
+    if (!dateISO) { console.warn('[PO-SAVE] no date set'); return; }
+
+    const grid = _poFindGrid(startEl);
+    if (!grid) {
+        console.warn('[PO-SAVE] could not find grid from', startEl);
+        return;
+    }
+
+    const cards = [...grid.querySelectorAll('.enhanced-order-card')];
+    const ids   = cards.map(c => c.dataset.id).filter(Boolean);
+    if (!ids.length) return;
+
+    const key = _poGroupKey(dateISO, section, grid);
+    localStorage.setItem(key, JSON.stringify(ids));
+    console.log('[PO-SAVE] ✅ saved', ids.length, 'ids | section:', section,
+                '| group:', grid.dataset.poGroup, '| key:', key);
+}
+
+// Re-apply saved per-group drag order after every re-render
 function _poApplyDragOrder(section) {
     const dateISO = document.getElementById('createOrderDate')?.value || '';
-    if (!dateISO) return;
+    if (!dateISO) { console.log('[PO-APPLY] skipped — no date'); return; }
 
-    // Find all group grid containers for this section
-    const sectionEl = document.querySelector('[data-po-section="'+section+'"]');
-    if (!sectionEl) return;
+    const sectionEl = document.querySelector('[data-po-section="' + section + '"]');
+    if (!sectionEl) { console.log('[PO-APPLY] no section element for:', section); return; }
 
-    // Each group grid has data-po-group attribute set during render
-    sectionEl.querySelectorAll('[data-po-group]').forEach(gridEl => {
-        const groupName = gridEl.dataset.poGroup;
-        const key = 'poOrder_'+dateISO+'_'+section+'_'+encodeURIComponent(groupName);
-        const saved = localStorage.getItem(key);
-        if (!saved) return;
+    const grids = [...sectionEl.querySelectorAll('[data-po-group]')];
+    console.log('[PO-APPLY] section:', section, '| grids:', grids.length, '| date:', dateISO);
+
+    grids.forEach(grid => {
+        const key   = _poGroupKey(dateISO, section, grid);
+        const raw   = localStorage.getItem(key);
+        console.log('[PO-APPLY] group:"' + grid.dataset.poGroup + '" | key:', key,
+                    '| stored:', raw ? JSON.parse(raw).length + ' ids' : 'none');
+        if (!raw) return;
         try {
-            const ids = JSON.parse(saved);
-            const cards = [...gridEl.querySelectorAll('.enhanced-order-card')];
+            const ids     = JSON.parse(raw);
+            const cards   = [...grid.querySelectorAll('.enhanced-order-card')];
             const cardMap = new Map(cards.map(c => [c.dataset.id, c]));
-            // Re-insert in saved order; unknown ids (new products) go at end
             const ordered = ids.map(id => cardMap.get(id)).filter(Boolean);
-            const seen = new Set(ids);
+            const seen    = new Set(ids);
             cards.forEach(c => { if (!seen.has(c.dataset.id)) ordered.push(c); });
-            ordered.forEach(c => gridEl.appendChild(c));
-        } catch(e) { /* ignore bad saved data */ }
+            ordered.forEach(c => grid.appendChild(c));
+            console.log('[PO-APPLY] ✅ restored order for group:', grid.dataset.poGroup);
+        } catch(e) {
+            console.warn('[PO-APPLY] error for group', grid.dataset.poGroup, e);
+        }
     });
 }
 
+// Reset a group back to alphabetical order and clear its saved drag order
+function poResetGroupOrder(btn) {
+    const dateISO = document.getElementById('createOrderDate')?.value || '';
+    const section = btn.dataset.section || '';
+
+    // Walk up to the outer group wrapper (div with margin-bottom:1.5rem),
+    // then find the grid inside it that has data-po-group
+    const wrapper = btn.closest('[data-po-group-wrapper]');
+    const gridEl  = wrapper ? wrapper.querySelector('[data-po-group]') : null;
+
+    if (!gridEl) {
+        console.warn('[A→Z] Could not find grid with data-po-group');
+        return;
+    }
+
+    // Clear saved drag order for this group
+    if (dateISO) {
+        const key = _poGroupKey(dateISO, section, gridEl);
+        localStorage.removeItem(key);
+        console.log('[A→Z] Cleared saved order, key:', key);
+    }
+
+    // Re-sort cards alphabetically in the DOM
+    const cards = [...gridEl.querySelectorAll('.enhanced-order-card')];
+    cards.sort((a, b) => {
+        const na = (a.dataset.product || '').toLowerCase();
+        const nb = (b.dataset.product || '').toLowerCase();
+        return na.localeCompare(nb);
+    });
+    cards.forEach(c => gridEl.appendChild(c));
+
+    // Save the new alphabetical order so it persists on refresh
+    _poSaveOrder(section, gridEl);
+
+    // Flash feedback
+    gridEl.style.outline = '2px solid var(--accent-400)';
+    setTimeout(() => { gridEl.style.outline = ''; }, 700);
+
+    _poSaveOrder(section, gridEl);
+    console.log('[A→Z] sorted and saved | section:', section, '| group:', gridEl.dataset.poGroup);
+    if (typeof showAlert === 'function') showAlert('↕ Sorted A→Z', 'success');
+}
+
 function _poLoadOrder(section, rows) {
+    // Legacy flat-order loader — kept for cross-section moves fallback
     const dateISO = document.getElementById('createOrderDate')?.value || '';
     if (!dateISO) return rows;
     try {
@@ -38699,7 +38763,6 @@ function _poLoadOrder(section, rows) {
         const ids = JSON.parse(saved);
         const map = new Map(rows.map(r => [String(r.id), r]));
         const ordered = ids.map(id => map.get(id)).filter(Boolean);
-        // Append any rows not in saved order (newly added products)
         const seen = new Set(ids);
         rows.forEach(r => { if (!seen.has(String(r.id))) ordered.push(r); });
         return ordered;
@@ -38810,8 +38873,8 @@ async function poDropOntoCard(event, targetCard) {
         dragCard.style.boxShadow  = '0 0 0 3px var(--accent-400)';
         setTimeout(() => { dragCard.style.boxShadow = ''; dragCard.style.transition = ''; }, 800);
 
-        _poSaveOrder(sourceSection, dragCard.parentNode);
-        // _poDbg('✅ moved in DOM + order saved', '#4ade80');
+        _poSaveOrder(sourceSection, dragCard);
+        console.log('[DROP] same-group drop done, saved order for section:', sourceSection);
     } else {
         // ── Different section: reassign via toggleAssignment ──
         const targetUser = targetSection.charAt(0).toUpperCase() + targetSection.slice(1);
@@ -38883,8 +38946,8 @@ async function poDropIntoSection(event, targetUser) {
         dragCard.style.boxShadow  = '0 0 0 3px var(--accent-400)';
         setTimeout(() => { dragCard.style.boxShadow = ''; dragCard.style.transition = ''; }, 800);
 
-        _poSaveOrder(sect, dragCard.parentNode);
-        // _poDbg('✅ order saved to localStorage', '#4ade80');
+        _poSaveOrder(sect, dragCard);
+        console.log('[DROP-SECTION] saved order for section:', sect);
         return;
     }
 
