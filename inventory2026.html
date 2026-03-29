@@ -28052,7 +28052,8 @@ function renderEnhancedCard(row, userType) {
         <div style="font-size:0.5rem;font-weight:700;color:#6b7280;text-transform:uppercase;">PAR</div>
         <input type="number" min="0" step="0.5"
                id="par-po-${productId}"
-               value="${displayPar}"
+               value="${displayPar > 0 ? displayPar : ''}"
+               placeholder="—"
                data-pname="${escapedProductName}"
                onchange="savePoParValue(this)"
                onclick="event.stopPropagation()"
@@ -28083,7 +28084,8 @@ function renderEnhancedCard(row, userType) {
         <div style="font-size:0.5rem;font-weight:700;color:var(--neutral-600);text-transform:uppercase;">PAR</div>
         <input type="number" min="0" step="0.5"
                id="par-po-${productId}-2"
-               value="${displayPar}"
+               value="${displayPar > 0 ? displayPar : ''}"
+               placeholder="—"
                data-pname="${escapedProductName}"
                onchange="savePoParValue(this)"
                onclick="event.stopPropagation()"
@@ -35994,6 +35996,29 @@ async function validateInvoiceNumber(invoiceNumber) {
 
 // ========== PDF INVOICE GENERATION (CORPORATE STYLE) ==========
 
+
+// ── Products where QTY = cases and must be multiplied by lbs/case for pricing ──
+// Format: { lbs_per_case: N } — total price = qty * lbs_per_case * unit_price
+// The PDF will show:  Qty (cases)  |  Pounds  |  Price/lb  |  Total
+const WEIGHT_PRODUCTS = {
+    'chicken leg meat fresh 40#':          { lbs: 40  },
+    'chicken breast bnls fresh':           { lbs: 40  },
+    'boneless lamb l-leg australia':       { lbs: null }, // lbs = qty itself (order in lbs)
+    'tiger shrimp 16/20':                  { lbs: 24  },
+    'beef flank steak':                    { lbs: 40  },
+    'beef shank meat':                     { lbs: 40  },
+    'pork skin smithfield':                { lbs: 60  },
+    'pork skin':                           { lbs: 60  },
+};
+
+function _poGetWeightRule(productName) {
+    const key = (productName || '').toLowerCase().trim();
+    for (const [pattern, rule] of Object.entries(WEIGHT_PRODUCTS)) {
+        if (key.includes(pattern)) return rule;
+    }
+    return null;
+}
+
 async function generateOrderPDFs() {
 
     const dateISO = document.getElementById('createOrderDate').value || todayYMD();
@@ -36108,6 +36133,14 @@ async function generateOrderPDFs() {
 
             
 
+            const _wRule = _poGetWeightRule(r.product_name);
+            const _lbs   = _wRule
+                ? (_wRule.lbs === null ? qty : qty * _wRule.lbs)  // null = qty IS the lbs
+                : null;
+            const _lineTotal = _lbs !== null
+                ? _lbs * unitPrice          // weight products: lbs * price/lb
+                : qty * unitPrice;          // regular products: cases * price/case
+
             byVendor[vendor].push({
 
                 product_name: r.product_name,
@@ -36116,9 +36149,11 @@ async function generateOrderPDFs() {
 
                 qty: qty,
 
+                lbs: _lbs,
+
                 unit_price: unitPrice,
 
-                line_total: qty * unitPrice,
+                line_total: _lineTotal,
 
                 image_url: imageMap.get(r.product_name) || null
 
@@ -36360,7 +36395,9 @@ async function generateVendorPDF(vendor, items, dateISO) {
 
         { header: 'Product', dataKey: 'product' },
 
-        { header: 'Qty', dataKey: 'qty' },
+        { header: 'Cases', dataKey: 'qty' },
+
+        { header: 'Pounds', dataKey: 'lbs' },
 
         { header: 'Unit Price', dataKey: 'price' },
 
@@ -36426,9 +36463,11 @@ async function generateVendorPDF(vendor, items, dateISO) {
 
                 product: item.product_name,
 
-                qty: item.qty.toFixed(2),
+                qty: item.qty % 1 === 0 ? item.qty.toFixed(0) : item.qty.toFixed(2),
 
-                price: '$' + item.unit_price.toFixed(2),
+                lbs: item.lbs != null ? item.lbs.toFixed(1) + ' lbs' : '—',
+
+                price: '$' + item.unit_price.toFixed(2) + (item.lbs != null ? '/lb' : ''),
 
                 total: '$' + lineTotal.toFixed(2),
 
