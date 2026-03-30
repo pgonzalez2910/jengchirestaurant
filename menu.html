@@ -1454,6 +1454,34 @@
         .sm-save-flash { animation: smFlash 0.7s ease; }
         @keyframes smFlash { 0%,100%{background:transparent} 30%{background:#ede9fe} }
 
+
+        /* ===== INLINE SUB-TABS (Dumplings, Appetizers) ===== */
+        .mm-subtab-bar {
+            display: flex; gap: 4px; padding: 0.6rem 1rem 0;
+            background: white; border-bottom: 2px solid #e0e0e0;
+            flex-shrink: 0; overflow-x: auto;
+        }
+        .mm-subtab-btn {
+            padding: 0.45rem 1.1rem; border-radius: 6px 6px 0 0;
+            border: 1.5px solid #ddd; border-bottom: none;
+            background: #f5f5f5; color: #666;
+            font-size: 0.82rem; font-weight: 600; cursor: pointer;
+            transition: all 0.15s; white-space: nowrap;
+        }
+        .mm-subtab-btn:hover { background: #ede7f6; color: #4c1d95; border-color: #c4b5fd; }
+        .mm-subtab-btn.active {
+            background: var(--mm-header, #1e5631);
+            color: white; border-color: var(--mm-header, #1e5631);
+        }
+        .mm-subtab-count {
+            display: inline-block; background: rgba(255,255,255,0.25);
+            border-radius: 50px; padding: 0 6px; font-size: 0.68rem;
+            margin-left: 4px;
+        }
+        .mm-subtab-btn:not(.active) .mm-subtab-count {
+            background: rgba(0,0,0,0.08); color: #888;
+        }
+
     </style>
 </head>
 <body>
@@ -4542,6 +4570,8 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
         // JENG CHI MAIN MENU — FEATURE (v2 — all fixes)
         // ===================================================
         const CATERING_CAT_KEYWORD = 'catering';
+        const DUMPLING_CAT_KEYWORD  = 'dumplings';
+        const APPETIZER_CAT_KEYWORD = 'appetizers';
 
         const MM_COLOR_PALETTE = [
             {bg:'#e8f5e9',border:'#4caf50',text:'#1b5e20',header:'#2e7d32'},
@@ -4671,6 +4701,30 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                 await smLoadView();
                 return;
             }
+            // Detect sub-tabbed categories (Dumplings, Appetizers)
+            if (catName.toLowerCase().includes(DUMPLING_CAT_KEYWORD)) {
+                mmSubtabGroups = {
+                    'Juicy':   {label:'🥟 Juicy',   key:'Juicy'},
+                    'Steamed': {label:'🫕 Steamed', key:'Steamed'},
+                    'Boiled':  {label:'🍲 Boiled',  key:'Boiled'}
+                };
+                mmCurrentSubtab = 'Juicy';
+                mmRenderSubtabBar();
+                return;
+            }
+            if (catName.toLowerCase().includes(APPETIZER_CAT_KEYWORD)) {
+                mmSubtabGroups = {
+                    'Cold': {label:'🧊 Cold', key:'Cold'},
+                    'Hot':  {label:'🔥 Hot',  key:'Hot'}
+                };
+                mmCurrentSubtab = 'Cold';
+                mmRenderSubtabBar();
+                return;
+            }
+            // Clear subtabs for regular categories
+            mmSubtabGroups = null; mmCurrentSubtab = null;
+            const stbar = document.getElementById('mmSubtabBar');
+            if (stbar) stbar.remove();
             // Detect catering category — show sub-group view instead
             if (catName.toLowerCase().includes(CATERING_CAT_KEYWORD)) {
                 mmCurrentGroup = null; // reset so first group auto-selects
@@ -4687,7 +4741,11 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                     .order('name');
                 if (error) throw error;
                 mmAllItems = data || [];
-                mmRenderItems();
+                if (mmSubtabGroups) {
+                    mmRenderSubtabBar();
+                } else {
+                    mmRenderItems();
+                }
             } catch(e) {
                 if (wrap) wrap.innerHTML = '<div class="mm-empty"><div>Error: ' + errMsg(e) + '</div></div>';
             }
@@ -4703,6 +4761,8 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                 if (mmFilter === 'food' && it.is_modifier) return false;
                 if (mmFilter === 'mod'  && !it.is_modifier) return false;
                 if (search && !it.name.toLowerCase().includes(search)) return false;
+                // Sub-tab filter (Dumplings: Juicy/Steamed/Boiled; Appetizers: Cold/Hot)
+                if (mmSubtabGroups && mmCurrentSubtab && it.notes !== mmCurrentSubtab) return false;
                 return true;
             });
 
@@ -5404,15 +5464,36 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                     if (r.subcategory_id) grpCounts[r.subcategory_id] = (grpCounts[r.subcategory_id]||0)+1;
                 });
 
+                // Count groups with NO subcategory (subcategory_id IS NULL) for this category
+                const { data: uncatData } = await db
+                    .from('modifier_groups')
+                    .select('id')
+                    .eq('category_id', mmCurrentCat.id)
+                    .is('subcategory_id', null)
+                    .eq('is_active', true);
+                const uncatCount = (uncatData || []).length;
+
                 const list = document.getElementById('smSubcatList');
                 if (!list) return;
 
-                if (!smAllSubcats.length) {
-                    list.innerHTML = '<div style="padding:.75rem;color:#7c3aed;font-size:.77rem;">No sub-categories yet</div>';
+                // Always show "General / No Sub-Category" button at top if any exist
+                const isUncatActive = smCurrentSubcat === 'uncategorized';
+                let html = '';
+                if (uncatCount > 0) {
+                    html += `<button class="sm-subcat-btn${isUncatActive ? ' active' : ''}"
+                                id="sm-sc-btn-uncat"
+                                onclick="smSelectUncategorized()">
+                        General Items
+                        <span class="sm-subcat-badge">${uncatCount}</span>
+                    </button>`;
+                }
+
+                if (!smAllSubcats.length && uncatCount === 0) {
+                    list.innerHTML = '<div style="padding:.75rem;color:#7c3aed;font-size:.77rem;">No groups yet — add one below</div>';
                     return;
                 }
 
-                list.innerHTML = smAllSubcats.map(sc => {
+                html += smAllSubcats.map(sc => {
                     const cnt = grpCounts[sc.id] || 0;
                     return `<button class="sm-subcat-btn${smCurrentSubcat?.id===sc.id?' active':''}"
                                 id="sm-sc-btn-${sc.id}"
@@ -5421,18 +5502,97 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                         <span class="sm-subcat-badge">${cnt}</span>
                     </button>`;
                 }).join('');
+                list.innerHTML = html;
 
-                // Restore or auto-select first
-                if (smCurrentSubcat) {
+                // Restore or auto-select
+                if (smCurrentSubcat === 'uncategorized') {
+                    await smSelectUncategorized();
+                } else if (smCurrentSubcat) {
                     const still = smAllSubcats.find(s=>s.id===smCurrentSubcat.id);
                     if (still) await smSelectSubcat(still.id, still.name);
+                    else if (uncatCount > 0) await smSelectUncategorized();
                     else if (smAllSubcats.length) await smSelectSubcat(smAllSubcats[0].id, smAllSubcats[0].name);
+                } else if (uncatCount > 0) {
+                    await smSelectUncategorized();
                 } else if (smAllSubcats.length) {
                     await smSelectSubcat(smAllSubcats[0].id, smAllSubcats[0].name);
                 }
             } catch(e) {
                 showToast('Error loading sub-categories: ' + errMsg(e), 'err');
             }
+        }
+
+        // Load modifier groups that have NO sub-category (subcategory_id IS NULL)
+        async function smSelectUncategorized() {
+            smCurrentSubcat = 'uncategorized';
+
+            // Sidebar highlight
+            document.querySelectorAll('.sm-subcat-btn').forEach(b=>b.classList.remove('active'));
+            const btn = document.getElementById('sm-sc-btn-uncat');
+            if (btn) btn.classList.add('active');
+
+            // Header
+            const hdr = document.getElementById('smMainHeader');
+            if (hdr) {
+                hdr.style.display = 'block';
+                hdr.className = 'sm-main-header';
+                hdr.innerHTML = `
+                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                        <div>
+                            <div class="sm-main-title">General Items</div>
+                            <div class="sm-main-sub">Modifier groups not assigned to a sub-category</div>
+                        </div>
+                        <div style="margin-left:auto;">
+                            <button onclick="smAddGroupUncategorized()"
+                                style="padding:4px 12px;border-radius:6px;border:none;background:rgba(255,255,255,0.2);color:white;font-size:.75rem;font-weight:600;cursor:pointer;">➕ Add Group Here</button>
+                        </div>
+                    </div>`;
+            }
+
+            const main = document.getElementById('smMain');
+            if (main) main.innerHTML = '<div style="padding:2rem;text-align:center;color:#7c3aed;">Loading…</div>';
+
+            try {
+                const { data, error } = await db
+                    .from('modifier_groups')
+                    .select('id, name, description, combo_price, min_select, max_select, is_required, display_order')
+                    .eq('category_id', mmCurrentCat.id)
+                    .is('subcategory_id', null)
+                    .eq('is_active', true)
+                    .order('display_order');
+                if (error) throw error;
+                smModGroups = data || [];
+                await smRenderGroups();
+            } catch(e) {
+                const main2 = document.getElementById('smMain');
+                if (main2) main2.innerHTML = '<div style="color:#f44336;padding:1rem;">Error: ' + errMsg(e) + '</div>';
+            }
+        }
+
+        // Add a modifier group directly under the category (no subcategory)
+        async function smAddGroupUncategorized() {
+            if (!mmCurrentCat) return;
+            const name = prompt('Modifier group name:');
+            if (!name?.trim()) return;
+            const priceStr = prompt('Combo price (e.g. 5.50):', '0.00');
+            const price = parseFloat(priceStr) || 0;
+            const minSel = parseInt(prompt('Min selections:', '1')) || 1;
+            const maxSel = parseInt(prompt('Max selections:', String(minSel))) || minSel;
+            const maxOrd = smModGroups.reduce((m,g)=>Math.max(m,g.display_order||0),0)+1;
+            try {
+                const { data, error } = await db.from('modifier_groups').insert({
+                    subcategory_id: null,           // <-- no subcategory
+                    category_id: mmCurrentCat.id,
+                    name: name.trim(), combo_price: price,
+                    min_select: minSel, max_select: maxSel,
+                    is_required: false, display_order: maxOrd
+                }).select().single();
+                if (error) throw error;
+                smModGroups.push(data);
+                showToast('"' + name + '" added ✓', 'ok');
+                await smRenderGroups();
+                await smLoadSubcats(); // refresh sidebar count
+            } catch(e) { showToast('Error: ' + errMsg(e), 'err'); }
         }
 
         async function smSelectSubcat(scId, scName) {
@@ -5639,6 +5799,7 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
         // ── ADD / DELETE operations ──────────────────────────────────────────
         async function smAddGroup() {
             if (!smCurrentSubcat) { showToast('Select a sub-category first.','err'); return; }
+            if (smCurrentSubcat === 'uncategorized') { await smAddGroupUncategorized(); return; }
             const name = prompt('Modifier group name (e.g. "Combo Appetizer"):');
             if (!name?.trim()) return;
             const priceStr = prompt('Combo price (e.g. 5.50):', '0.00');
@@ -5670,6 +5831,7 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                 smModGroups = smModGroups.filter(g=>g.id!==groupId);
                 showToast('"' + name + '" deleted.', 'ok');
                 await smRenderGroups();
+                await smLoadSubcats(); // refresh sidebar badge
             } catch(e) { showToast('Error: ' + errMsg(e), 'err'); }
         }
 
@@ -5756,6 +5918,65 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                 showToast('"' + name + '" deleted.', 'ok');
                 await smLoadSubcats();
             } catch(e) { showToast('Error: ' + errMsg(e), 'err'); }
+        }
+
+
+        // ===================================================
+        // INLINE SUB-TABS (Dumplings = Juicy/Steamed/Boiled, Appetizers = Cold/Hot)
+        // ===================================================
+        let mmSubtabGroups  = null; // {key: {label, key}} — null means no subtabs
+        let mmCurrentSubtab = null;
+
+        function mmRenderSubtabBar() {
+            if (!mmSubtabGroups || !mmCurrentCat) return;
+
+            // Build/update sub-tab bar between mmCatHeader and mmToolbar
+            let stbar = document.getElementById('mmSubtabBar');
+            if (!stbar) {
+                stbar = document.createElement('div');
+                stbar.id = 'mmSubtabBar';
+                stbar.className = 'mm-subtab-bar';
+                const toolbar = document.getElementById('mmToolbar');
+                if (toolbar) toolbar.parentNode.insertBefore(stbar, toolbar);
+            }
+
+            // Show toolbar for search/add
+            const tb = document.getElementById('mmToolbar');
+            if (tb) tb.style.display = 'flex';
+
+            // Count items per sub-tab from cached allItems (or load fresh)
+            const countByKey = {};
+            mmAllItems.forEach(it => {
+                const k = it.notes || '__none__';
+                countByKey[k] = (countByKey[k] || 0) + 1;
+            });
+
+            stbar.innerHTML = Object.values(mmSubtabGroups).map(g => {
+                const cnt = countByKey[g.key] || 0;
+                return `<button class="mm-subtab-btn${mmCurrentSubtab===g.key?' active':''}"
+                            onclick="mmSwitchSubtab('${g.key}')">
+                    ${g.label}
+                    <span class="mm-subtab-count">${cnt}</span>
+                </button>`;
+            }).join('');
+
+            mmRenderItems(); // re-render filtered by current subtab
+        }
+
+        async function mmSwitchSubtab(key) {
+            mmCurrentSubtab = key;
+            // If items not loaded yet, load them all first
+            if (!mmAllItems.length && mmCurrentCat) {
+                const { data } = await db
+                    .from('menu_items')
+                    .select('id,name,price,is_modifier,display_order,notes')
+                    .eq('category_id', mmCurrentCat.id)
+                    .eq('is_active', true)
+                    .order('display_order')
+                    .order('name');
+                mmAllItems = data || [];
+            }
+            mmRenderSubtabBar();
         }
 
     </script>
