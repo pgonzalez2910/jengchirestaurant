@@ -1374,8 +1374,17 @@
         .sm-subcat-btn:hover { background: rgba(124,58,237,0.15); color: #c4b5fd; }
         .sm-subcat-btn.active { background: #7c3aed; color: white;
             border-left-color: #4c1d95; font-weight: 700; }
-        .sm-subcat-badge { float: right; font-size: 0.63rem; background: rgba(124,58,237,0.3);
-            border-radius: 50px; padding: 1px 6px; margin-top: 1px; color: #c4b5fd; }
+        .sm-subcat-badge {
+            float: right; font-size: 0.62rem; font-weight: 700;
+            background: rgba(255,255,255,0.15);
+            border-radius: 50%; width: 20px; height: 20px;
+            display: inline-flex; align-items: center; justify-content: center;
+            margin-top: 0px; color: rgba(255,255,255,0.8);
+            flex-shrink: 0;
+        }
+        .sm-subcat-btn.active .sm-subcat-badge {
+            background: rgba(255,255,255,0.3); color: white;
+        }
         .sm-add-subcat { display: block; width: calc(100% - 1rem); margin: 0.5rem;
             padding: 0.4rem; background: rgba(124,58,237,0.12);
             border: 1.5px dashed rgba(124,58,237,0.4); border-radius: 6px;
@@ -4694,7 +4703,21 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
 
             // Load items
             const wrap = document.getElementById('mmItemsWrap');
-            if (wrap && !keepScroll) wrap.innerHTML = '<div class="mm-empty"><div class="mm-empty-icon">⏳</div><div>Loading…</div></div>';
+
+            // Always fully reset the wrap when switching categories
+            // This clears any leftover Secret Menu or Catering views
+            if (wrap && !keepScroll) {
+                wrap.innerHTML = '<div class="mm-empty"><div class="mm-empty-icon">⏳</div><div>Loading…</div></div>';
+            }
+
+            // Always restore toolbar visibility (Secret Menu hides it)
+            const tbReset = document.getElementById('mmToolbar');
+            if (tbReset) tbReset.style.display = 'flex';
+
+            // Remove leftover subtab bar from previous category
+            const oldStbar = document.getElementById('mmSubtabBar');
+            if (oldStbar) oldStbar.remove();
+
             // Detect secret menu category
             if (catName.toLowerCase().includes(SECRET_MENU_KEYWORD)) {
                 smCurrentSubcat = null;
@@ -4702,6 +4725,7 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                 return;
             }
             // Detect sub-tabbed categories (Dumplings, Appetizers)
+            // Set up sub-tab config — items load below, then bar renders
             if (catName.toLowerCase().includes(DUMPLING_CAT_KEYWORD)) {
                 mmSubtabGroups = {
                     'Juicy':   {label:'🥟 Juicy',   key:'Juicy'},
@@ -4709,22 +4733,18 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                     'Boiled':  {label:'🍲 Boiled',  key:'Boiled'}
                 };
                 mmCurrentSubtab = 'Juicy';
-                mmRenderSubtabBar();
-                return;
-            }
-            if (catName.toLowerCase().includes(APPETIZER_CAT_KEYWORD)) {
+            } else if (catName.toLowerCase().includes(APPETIZER_CAT_KEYWORD)) {
                 mmSubtabGroups = {
                     'Cold': {label:'🧊 Cold', key:'Cold'},
                     'Hot':  {label:'🔥 Hot',  key:'Hot'}
                 };
                 mmCurrentSubtab = 'Cold';
-                mmRenderSubtabBar();
-                return;
+            } else {
+                // Clear subtabs for regular categories
+                mmSubtabGroups = null; mmCurrentSubtab = null;
+                const stbar = document.getElementById('mmSubtabBar');
+                if (stbar) stbar.remove();
             }
-            // Clear subtabs for regular categories
-            mmSubtabGroups = null; mmCurrentSubtab = null;
-            const stbar = document.getElementById('mmSubtabBar');
-            if (stbar) stbar.remove();
             // Detect catering category — show sub-group view instead
             if (catName.toLowerCase().includes(CATERING_CAT_KEYWORD)) {
                 mmCurrentGroup = null; // reset so first group auto-selects
@@ -5149,6 +5169,9 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
             // Hide the regular toolbar (catering has its own)
             const tb = document.getElementById('mmToolbar');
             if (tb) tb.style.display = 'none';
+            // Remove any leftover subtab bar
+            const stbarCat = document.getElementById('mmSubtabBar');
+            if (stbarCat) stbarCat.remove();
 
             await mmLoadCateringGroups();
         }
@@ -5416,9 +5439,12 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
             if (!wrap) return;
             if (!mmCurrentCat?.id) { showToast('Category not loaded. Please try again.', 'err'); return; }
 
-            // Hide regular toolbar
+            // Hide regular toolbar (Secret Menu has its own UI)
             const tb = document.getElementById('mmToolbar');
             if (tb) tb.style.display = 'none';
+            // Also remove any leftover subtab bar
+            const stbarOld = document.getElementById('mmSubtabBar');
+            if (stbarOld) stbarOld.remove();
 
             wrap.innerHTML = `
               <div class="sm-wrap" id="smWrap">
@@ -5644,7 +5670,18 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
 
         async function smRenderGroups() {
             const main = document.getElementById('smMain');
-            if (!main) return;
+            if (!main || !smCurrentSubcat || smCurrentSubcat === 'uncategorized') {
+                // For uncategorized, smModGroups is already fresh — skip re-fetch
+            } else if (smCurrentSubcat?.id) {
+                // Always re-fetch fresh from DB to pick up any external changes
+                const { data: freshGroups } = await db
+                    .from('modifier_groups')
+                    .select('id, name, description, combo_price, min_select, max_select, is_required, display_order')
+                    .eq('subcategory_id', smCurrentSubcat.id)
+                    .eq('is_active', true)
+                    .order('display_order');
+                if (freshGroups) smModGroups = freshGroups;
+            }
 
             if (!smModGroups.length) {
                 main.innerHTML = `<div class="sm-empty">
@@ -5683,12 +5720,14 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                              onchange="smAutoSaveGroup(${grp.id},{name:this.value})"
                              title="Click to rename">
                     </div>
+                    ${grp.name === 'Combo Appetizer' ? `
                     <span class="mg-pill mg-pill-price">
                       $<input class="mg-inline-num" type="number" step="0.01" min="0"
                              value="${parseFloat(grp.combo_price||0).toFixed(2)}"
                              onchange="smAutoSaveGroup(${grp.id},{combo_price:parseFloat(this.value)||0})"
                              title="Combo price" style="width:56px;">
-                    </span>
+                    </span>` : ''}
+                    ${grp.name === 'Combo Appetizer' ? `
                     <span class="mg-pill mg-pill-rule" title="Min / Max selections">
                       Min <input class="mg-inline-num" type="number" min="0" value="${grp.min_select}"
                                  onchange="smAutoSaveGroup(${grp.id},{min_select:parseInt(this.value)||1})"
@@ -5696,13 +5735,14 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                       / Max <input class="mg-inline-num" type="number" min="1" value="${grp.max_select}"
                                   onchange="smAutoSaveGroup(${grp.id},{max_select:parseInt(this.value)||1})"
                                   style="width:38px;">
-                    </span>
+                    </span>` : ''}
+                    ${grp.name === 'Combo Appetizer' ? `
                     <label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#666;cursor:pointer;">
                       <input type="checkbox" ${grp.is_required?'checked':''}
                              onchange="smAutoSaveGroup(${grp.id},{is_required:this.checked})"
                              style="accent-color:#7c3aed;">
                       Required
-                    </label>
+                    </label>` : ''}
                     <div class="mg-card-actions" style="margin-left:auto;">
                       <button class="mg-action-btn del" onclick="smDeleteGroup(${grp.id},'${grp.name.replace(/'/g,"\\'")}')">🗑️ Delete group</button>
                     </div>
@@ -5768,11 +5808,14 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                 try {
                     const { error } = await db.from('modifier_groups').update(fields).eq('id', groupId);
                     if (error) throw error;
+                    // Update local cache immediately so UI stays in sync
                     const idx = smModGroups.findIndex(g=>g.id===groupId);
                     if (idx>=0) Object.assign(smModGroups[idx], fields);
                     smFlashCard('mg-card-' + groupId);
+                    // Re-render so checkbox/inputs reflect saved value
+                    await smRenderGroups();
                 } catch(e) { showToast('Save error: ' + errMsg(e), 'err'); }
-            }, 600);
+            }, 300);
         }
 
         function smAutoSaveOption(optId, fields) {
@@ -5938,6 +5981,7 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                 stbar.className = 'mm-subtab-bar';
                 const toolbar = document.getElementById('mmToolbar');
                 if (toolbar) toolbar.parentNode.insertBefore(stbar, toolbar);
+                else document.getElementById('mmMain')?.prepend(stbar);
             }
 
             // Show toolbar for search/add
@@ -5965,7 +6009,7 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
 
         async function mmSwitchSubtab(key) {
             mmCurrentSubtab = key;
-            // If items not loaded yet, load them all first
+            // If items somehow not loaded, fetch them
             if (!mmAllItems.length && mmCurrentCat) {
                 const { data } = await db
                     .from('menu_items')
@@ -5976,7 +6020,11 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                     .order('name');
                 mmAllItems = data || [];
             }
-            mmRenderSubtabBar();
+            // Update active button
+            document.querySelectorAll('.mm-subtab-btn').forEach(b => {
+                b.classList.toggle('active', b.getAttribute('onclick')?.includes("'"+key+"'"));
+            });
+            mmRenderItems();
         }
 
     </script>
