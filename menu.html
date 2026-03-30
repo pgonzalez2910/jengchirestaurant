@@ -1293,6 +1293,71 @@
         .mm-inline-name { cursor: text; font-weight: 500; }
         .mm-inline-price{ width: 75px !important; text-align: right; }
 
+
+        /* ===== CATERING SUB-GROUPS ===== */
+        .mm-catering-wrap { display: flex; height: 100%; }
+        .mm-catering-sidebar {
+            width: 200px; flex-shrink: 0; background: #f4f6f4;
+            border-right: 1.5px solid #dde8dd; overflow-y: auto;
+            padding: 0.5rem 0;
+        }
+        .mm-catering-sidebar-title {
+            padding: 0.6rem 0.85rem 0.4rem;
+            font-size: 0.62rem; font-weight: 800; text-transform: uppercase;
+            letter-spacing: 0.12em; color: #888;
+        }
+        .mm-cg-btn {
+            display: block; width: 100%; text-align: left;
+            padding: 0.5rem 0.85rem;
+            background: transparent; border: none; border-left: 3px solid transparent;
+            color: #444; font-size: 0.81rem; font-weight: 500;
+            cursor: pointer; transition: all 0.15s; line-height: 1.3;
+        }
+        .mm-cg-btn:hover { background: #e8f5e9; color: #1e5631; }
+        .mm-cg-btn.active {
+            background: #1e5631; color: white;
+            border-left-color: #a5d6a7; font-weight: 700;
+        }
+        .mm-cg-btn-cnt {
+            float: right; font-size: 0.65rem;
+            background: rgba(0,0,0,0.1); border-radius: 50px;
+            padding: 1px 6px; margin-top: 1px;
+        }
+        .mm-cg-btn.active .mm-cg-btn-cnt { background: rgba(255,255,255,0.25); }
+        .mm-catering-main { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+        .mm-cg-header {
+            padding: 0.75rem 1.25rem; background: #e8f5e9;
+            border-bottom: 1.5px solid #a5d6a7;
+            display: flex; align-items: center; justify-content: space-between;
+            flex-shrink: 0; flex-wrap: wrap; gap: 6px;
+        }
+        .mm-cg-title { font-size: 1rem; font-weight: 700; color: #1e5631; }
+        .mm-cg-stats { font-size: 0.75rem; color: #666; }
+        .mm-catering-content { flex: 1; overflow-y: auto; padding: 0.75rem 1.25rem 1.5rem; }
+        .mm-cg-empty { text-align: center; padding: 3rem 1rem; color: #aaa; }
+        /* Catering add-group btn */
+        .mm-cg-add-group {
+            display: block; width: calc(100% - 1rem); margin: 0.5rem 0.5rem 0;
+            padding: 0.45rem; background: rgba(30,86,49,0.1);
+            border: 1.5px dashed #a5d6a7; border-radius: 6px;
+            color: #1e5631; font-size: 0.75rem; font-weight: 600;
+            cursor: pointer; text-align: center; transition: all 0.15s;
+        }
+        .mm-cg-add-group:hover { background: rgba(30,86,49,0.18); }
+        /* Item table inside catering group */
+        .mm-cg-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+        .mm-cg-table thead th {
+            background: #2e7d32; color: white; padding: 0.5rem 0.75rem;
+            text-align: left; font-size: 0.73rem; text-transform: uppercase;
+            letter-spacing: 0.06em; font-weight: 700; position: sticky; top: 0; z-index: 2;
+        }
+        .mm-cg-table thead th:last-child { text-align: center; }
+        .mm-cg-table tbody tr { border-bottom: 1px solid #f0f0f0; transition: background 0.1s; }
+        .mm-cg-table tbody tr:hover { background: #f1f8e9; }
+        .mm-cg-table td { padding: 0.5rem 0.75rem; vertical-align: middle; }
+        .mm-cg-table td.cg-price { font-weight: 700; color: #2e7d32; text-align: right; }
+        .mm-cg-table td.cg-actions { text-align: center; white-space: nowrap; }
+
     </style>
 </head>
 <body>
@@ -4361,6 +4426,8 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
         // ===================================================
         // JENG CHI MAIN MENU — FEATURE (v2 — all fixes)
         // ===================================================
+        const CATERING_CAT_KEYWORD = 'catering';
+
         const MM_COLOR_PALETTE = [
             {bg:'#e8f5e9',border:'#4caf50',text:'#1b5e20',header:'#2e7d32'},
             {bg:'#e3f2fd',border:'#2196f3',text:'#0d47a1',header:'#1565c0'},
@@ -4483,6 +4550,13 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
             // Load items
             const wrap = document.getElementById('mmItemsWrap');
             if (wrap && !keepScroll) wrap.innerHTML = '<div class="mm-empty"><div class="mm-empty-icon">⏳</div><div>Loading…</div></div>';
+            // Detect catering category — show sub-group view instead
+            if (catName.toLowerCase().includes(CATERING_CAT_KEYWORD)) {
+                mmCurrentGroup = null; // reset so first group auto-selects
+                await mmLoadCateringView();
+                return;
+            }
+
             try {
                 const { data, error } = await db
                     .from('menu_items')
@@ -4866,6 +4940,280 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
             } catch(e) { showToast('Export error: '+errMsg(e), 'err'); }
         }
 
+
+
+        // ===================================================
+        // CATERING SUB-GROUPS
+        // ===================================================
+        let mmCateringGroups   = [];   // all groups from DB
+        let mmCurrentGroup     = null; // selected group {id, name}
+        let mmCateringItems    = [];   // items for current group
+        let mmCateringGroupSaveTimer = {};
+
+        // Called from mmSelectCatById when category name contains "catering"
+        async function mmLoadCateringView() {
+            const wrap = document.getElementById('mmItemsWrap');
+            if (!wrap) return;
+            wrap.innerHTML = '<div class="mm-catering-wrap" id="mmCateringWrap">' +
+                '<div class="mm-catering-sidebar" id="mmCgSidebar">' +
+                  '<div class="mm-catering-sidebar-title">Sub-Groups</div>' +
+                  '<div id="mmCgList"><div style="padding:0.75rem;color:#aaa;font-size:0.8rem;">Loading…</div></div>' +
+                  '<button class="mm-cg-add-group" onclick="mmAddCateringGroup()">➕ New Group</button>' +
+                '</div>' +
+                '<div class="mm-catering-main" id="mmCateringMain">' +
+                  '<div class="mm-cg-empty"><div style="font-size:2rem;margin-bottom:0.5rem;">🍽️</div><div>Select a group from the left</div></div>' +
+                '</div>' +
+              '</div>';
+
+            // Hide the regular toolbar (catering has its own)
+            const tb = document.getElementById('mmToolbar');
+            if (tb) tb.style.display = 'none';
+
+            await mmLoadCateringGroups();
+        }
+
+        async function mmLoadCateringGroups() {
+            try {
+                const { data, error } = await db
+                    .from('catering_groups')
+                    .select('id, name, display_order')
+                    .eq('is_active', true)
+                    .order('display_order');
+                if (error) throw error;
+                mmCateringGroups = data || [];
+
+                // Count items per group
+                const { data: counts } = await db
+                    .from('catering_group_items')
+                    .select('group_id');
+                const groupCounts = {};
+                (counts||[]).forEach(r => {
+                    groupCounts[r.group_id] = (groupCounts[r.group_id]||0) + 1;
+                });
+
+                const list = document.getElementById('mmCgList');
+                if (!list) return;
+                list.innerHTML = mmCateringGroups.map(g => {
+                    const cnt = groupCounts[g.id] || 0;
+                    return `<button class="mm-cg-btn" id="mm-cg-btn-${g.id}"
+                               onclick="mmSelectCateringGroup(${g.id},'${g.name.replace(/'/g,"\\'")}')">
+                        ${g.name} <span class="mm-cg-btn-cnt">${cnt}</span>
+                    </button>`;
+                }).join('');
+
+                // Auto-select first group
+                if (mmCateringGroups.length && !mmCurrentGroup) {
+                    const first = mmCateringGroups[0];
+                    await mmSelectCateringGroup(first.id, first.name);
+                } else if (mmCurrentGroup) {
+                    await mmSelectCateringGroup(mmCurrentGroup.id, mmCurrentGroup.name);
+                }
+            } catch(e) {
+                showToast('Error loading catering groups: ' + errMsg(e), 'err');
+            }
+        }
+
+        async function mmSelectCateringGroup(groupId, groupName) {
+            mmCurrentGroup = { id: groupId, name: groupName };
+
+            // Sidebar highlight
+            document.querySelectorAll('.mm-cg-btn').forEach(b => b.classList.remove('active'));
+            const btn = document.getElementById('mm-cg-btn-' + groupId);
+            if (btn) btn.classList.add('active');
+
+            // Build right panel
+            const main = document.getElementById('mmCateringMain');
+            if (!main) return;
+            main.innerHTML = `
+                <div class="mm-cg-header">
+                    <div>
+                        <div class="mm-cg-title" id="mmCgTitle">${groupName}</div>
+                        <div class="mm-cg-stats" id="mmCgStats">Loading…</div>
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                        <button onclick="mmRenameCateringGroup(${groupId},'${groupName.replace(/'/g,"\\'")}' )"
+                            style="padding:3px 10px;border-radius:6px;border:1px solid #a5d6a7;background:white;color:#1e5631;font-size:0.73rem;font-weight:600;cursor:pointer;">✏️ Rename</button>
+                        <button onclick="mmDeleteCateringGroup(${groupId},'${groupName.replace(/'/g,"\\'")}' )"
+                            style="padding:3px 10px;border-radius:6px;border:1px solid #f44336;background:white;color:#f44336;font-size:0.73rem;font-weight:600;cursor:pointer;">🗑️ Delete Group</button>
+                        <button onclick="mmAddCateringItem(${groupId})"
+                            style="padding:3px 10px;border-radius:6px;border:none;background:#1e5631;color:white;font-size:0.73rem;font-weight:600;cursor:pointer;">➕ Add Item</button>
+                    </div>
+                </div>
+                <div class="mm-catering-content" id="mmCgContent">
+                    <div style="color:#aaa;text-align:center;padding:2rem;">Loading items…</div>
+                </div>`;
+
+            try {
+                const { data, error } = await db
+                    .from('catering_group_items')
+                    .select('id, group_id, item_id, item_name, item_price, display_order, notes, menu_items(id,name,price)')
+                    .eq('group_id', groupId)
+                    .order('display_order');
+                if (error) throw error;
+                mmCateringItems = data || [];
+                mmRenderCateringItems();
+            } catch(e) {
+                const content = document.getElementById('mmCgContent');
+                if (content) content.innerHTML = '<div style="color:#f44336;padding:1rem;">Error: ' + errMsg(e) + '</div>';
+            }
+        }
+
+        function mmRenderCateringItems() {
+            const content = document.getElementById('mmCgContent');
+            const stats   = document.getElementById('mmCgStats');
+            if (!content) return;
+            if (stats) stats.textContent = mmCateringItems.length + ' items';
+
+            if (!mmCateringItems.length) {
+                content.innerHTML = '<div class="mm-cg-empty"><div style="font-size:1.8rem;margin-bottom:0.5rem;">📦</div><div>No items yet — click ➕ Add Item</div></div>';
+                return;
+            }
+
+            let html = `<table class="mm-cg-table">
+                <thead><tr>
+                    <th style="width:40%">Name <span style="font-size:0.63rem;opacity:0.7;">(click to edit)</span></th>
+                    <th style="width:12%;text-align:right;">Price</th>
+                    <th>Notes</th>
+                    <th style="width:10%;text-align:center;">Remove</th>
+                </tr></thead><tbody>`;
+
+            mmCateringItems.forEach(it => {
+                const displayName  = it.menu_items?.name || it.item_name  || '';
+                const displayPrice = parseFloat(it.menu_items?.price ?? it.item_price ?? 0).toFixed(2);
+                html += `<tr id="mm-cg-row-${it.id}">
+                    <td>
+                        <input class="mm-inline-input mm-inline-name" value="${displayName.replace(/"/g,'&quot;')}"
+                               data-rowid="${it.id}"
+                               onchange="mmCgAutoSave(${it.id},{item_name:this.value})"
+                               placeholder="Item name">
+                    </td>
+                    <td>
+                        <input class="mm-inline-input mm-inline-price" type="number" step="0.01" min="0"
+                               value="${displayPrice}" style="width:80px;text-align:right;"
+                               data-rowid="${it.id}"
+                               onchange="mmCgAutoSave(${it.id},{item_price:parseFloat(this.value)||0})">
+                    </td>
+                    <td>
+                        <input class="mm-inline-input" value="${(it.notes||'').replace(/"/g,'&quot;')}"
+                               data-rowid="${it.id}" placeholder="Optional note…"
+                               onchange="mmCgAutoSave(${it.id},{notes:this.value})">
+                    </td>
+                    <td class="cg-actions">
+                        <button class="mm-action-btn del"
+                                onclick="mmDeleteCateringItem(${it.id},'${displayName.replace(/'/g,"\\'")}')">🗑️</button>
+                    </td>
+                </tr>`;
+            });
+
+            html += '</tbody></table>';
+            content.innerHTML = html;
+        }
+
+        // Auto-save a catering_group_items row
+        async function mmCgAutoSave(rowId, fields) {
+            clearTimeout(mmCateringGroupSaveTimer[rowId]);
+            mmCateringGroupSaveTimer[rowId] = setTimeout(async () => {
+                try {
+                    const { error } = await db.from('catering_group_items').update(fields).eq('id', rowId);
+                    if (error) throw error;
+                    // Update local cache
+                    const idx = mmCateringItems.findIndex(i => i.id === rowId);
+                    if (idx >= 0) Object.assign(mmCateringItems[idx], fields);
+                    // Pulse
+                    const row = document.getElementById('mm-cg-row-' + rowId);
+                    if (row) {
+                        row.style.transition = 'background 0.3s';
+                        row.style.background = '#c8f7c5';
+                        setTimeout(() => { row.style.background = ''; }, 700);
+                    }
+                } catch(e) {
+                    showToast('Save error: ' + errMsg(e), 'err');
+                }
+            }, 600);
+        }
+
+        // Add a new item to current catering group
+        async function mmAddCateringItem(groupId) {
+            const name  = prompt('Item name:');
+            if (!name?.trim()) return;
+            const priceStr = prompt('Price (e.g. 4.50):', '0.00');
+            const price = parseFloat(priceStr) || 0;
+            const maxOrder = mmCateringItems.reduce((m,i)=>Math.max(m,i.display_order||0),0)+1;
+            try {
+                const { data, error } = await db.from('catering_group_items')
+                    .insert({ group_id: groupId, item_name: name.trim(), item_price: price, display_order: maxOrder })
+                    .select().single();
+                if (error) throw error;
+                mmCateringItems.push(data);
+                mmRenderCateringItems();
+                showToast('"' + name + '" added ✓', 'ok');
+            } catch(e) {
+                showToast('Error: ' + errMsg(e), 'err');
+            }
+        }
+
+        // Delete a catering item row
+        async function mmDeleteCateringItem(rowId, name) {
+            const ok = await showConfirm('Remove Item', 'Remove "' + name + '" from this group?');
+            if (!ok) return;
+            try {
+                const { error } = await db.from('catering_group_items').delete().eq('id', rowId);
+                if (error) throw error;
+                mmCateringItems = mmCateringItems.filter(i => i.id !== rowId);
+                mmRenderCateringItems();
+                showToast('"' + name + '" removed.', 'ok');
+            } catch(e) { showToast('Error: ' + errMsg(e), 'err'); }
+        }
+
+        // Add a new catering group
+        async function mmAddCateringGroup() {
+            const name = prompt('New group name (e.g. "Beverages"):');
+            if (!name?.trim()) return;
+            const maxOrder = mmCateringGroups.reduce((m,g)=>Math.max(m,g.display_order||0),0)+1;
+            try {
+                const { data, error } = await db.from('catering_groups')
+                    .insert({ name: name.trim(), display_order: maxOrder })
+                    .select().single();
+                if (error) throw error;
+                mmCateringGroups.push(data);
+                showToast('Group "' + name + '" created!', 'ok');
+                await mmLoadCateringGroups();
+                await mmSelectCateringGroup(data.id, data.name);
+            } catch(e) { showToast('Error: ' + errMsg(e), 'err'); }
+        }
+
+        // Rename a catering group
+        async function mmRenameCateringGroup(groupId, oldName) {
+            const newName = prompt('Rename group to:', oldName);
+            if (!newName?.trim() || newName === oldName) return;
+            try {
+                const { error } = await db.from('catering_groups')
+                    .update({ name: newName.trim() }).eq('id', groupId);
+                if (error) throw error;
+                const g = mmCateringGroups.find(x=>x.id===groupId);
+                if (g) g.name = newName.trim();
+                mmCurrentGroup.name = newName.trim();
+                showToast('Renamed to "' + newName + '"', 'ok');
+                await mmLoadCateringGroups();
+            } catch(e) { showToast('Error: ' + errMsg(e), 'err'); }
+        }
+
+        // Delete a catering group
+        async function mmDeleteCateringGroup(groupId, name) {
+            const ok = await showConfirm('Delete Group', 'Delete group "' + name + '" and all its items?');
+            if (!ok) return;
+            try {
+                // Delete items first (cascade should handle it, but just in case)
+                await db.from('catering_group_items').delete().eq('group_id', groupId);
+                const { error } = await db.from('catering_groups')
+                    .update({ is_active: false }).eq('id', groupId);
+                if (error) throw error;
+                mmCateringGroups = mmCateringGroups.filter(g=>g.id!==groupId);
+                mmCurrentGroup = null;
+                showToast('Group "' + name + '" deleted.', 'ok');
+                await mmLoadCateringGroups();
+            } catch(e) { showToast('Error: ' + errMsg(e), 'err'); }
+        }
 
     </script>
 
