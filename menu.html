@@ -1132,6 +1132,12 @@
         }
 
 
+        .mm-cat-label { flex: 1; text-align: left; }
+        .mm-cat-btn { position: relative; display: flex; align-items: center; gap: 4px; }
+
+        /* ===== CATEGORY MANAGER INLINE RENAME ===== */
+        .cat-mgr-name-input:focus { box-shadow: 0 0 0 2px rgba(30,86,49,0.15); }
+
         /* ===== MAIN MENU TAB ===== */
         .mm-outer { display: flex; height: calc(100vh - 130px); min-height: 500px; }
         .mm-sidebar {
@@ -2511,12 +2517,23 @@
     <div id="mainmenu" class="content" style="padding:0;">
       <div class="mm-outer">
         <div class="mm-sidebar" id="mmSidebar">
-          <div class="mm-sidebar-title">Categories</div>
+          <div class="mm-sidebar-title">Categories <span style="font-size:0.55rem;opacity:0.6;display:block;font-weight:400;margin-top:1px;">double-click to rename</span></div>
         </div>
         <div class="mm-main" id="mmMain">
           <div class="mm-cat-header" id="mmCatHeader" style="display:none;">
             <div>
-              <div class="mm-cat-title" id="mmCatTitle">Select a category</div>
+              <input class="mm-cat-title" id="mmCatTitle" value="Select a category"
+                     title="Click to rename this category"
+                     style="background:transparent;border:1.5px solid transparent;border-radius:6px;
+                            padding:2px 6px;font-size:1.1rem;font-weight:700;color:inherit;
+                            font-family:inherit;cursor:text;width:auto;max-width:340px;
+                            transition:border-color 0.15s,background 0.15s;"
+                     onmouseover="this.style.borderColor='rgba(0,0,0,0.18)'"
+                     onmouseout="if(document.activeElement!==this)this.style.borderColor='transparent'"
+                     onfocus="this.style.borderColor='#1e5631';this.style.background='white';this.select()"
+                     onblur="this.style.borderColor='transparent';this.style.background='transparent';mmSaveCatTitle(this.value)"
+                     onkeydown="if(event.key==='Enter'){this.blur();}if(event.key==='Escape'){this.value=mmCurrentCat&&mmCurrentCat.name||this.value;this.blur();}">
+              <div style="font-size:0.62rem;color:#aaa;margin-top:1px;letter-spacing:0.03em;">✎ click name to rename</div>
               <div class="mm-cat-stats" id="mmCatStats"></div>
             </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
@@ -4714,17 +4731,51 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
             allCategories.forEach(cat=>{
                 const div=document.createElement('div');
                 div.className='cat-mgr-card';
-                const k2=cat.name.replace(/'/g,"\\'");
-                div.innerHTML=`<div>
-                    <div class="cat-mgr-name">${cat.name}</div>
-                    <div class="cat-mgr-count">${catCounts[cat.name]||0} items</div>
-                </div>
-                <div class="cat-mgr-actions">
-                    <button class="cat-mgr-btn" onclick="renameCategoryPrompt('${cat.id}','${k2}')">✏️</button>
+                const safeId = cat.id;
+                const safeName = cat.name.replace(/"/g,'&quot;');
+                const cnt = catCounts[cat.name]||0;
+                div.innerHTML=`<div style="flex:1;min-width:0;">
+                    <input class="cat-mgr-name-input"
+                           value="${safeName}"
+                           data-cat-id="${safeId}"
+                           data-original="${safeName}"
+                           title="Click to rename"
+                           style="font-weight:600;font-size:0.9rem;background:transparent;border:1.5px solid transparent;
+                                  border-radius:5px;padding:2px 5px;width:100%;font-family:inherit;cursor:text;
+                                  color:inherit;transition:border-color 0.15s,background 0.15s;"
+                           onmouseover="this.style.borderColor='#ccc'"
+                           onmouseout="if(document.activeElement!==this)this.style.borderColor='transparent'"
+                           onfocus="this.style.borderColor='#1e5631';this.style.background='white';this.select()"
+                           onblur="catMgrInlineSave(this)"
+                           onkeydown="if(event.key==='Enter'){this.blur();}
+                                      if(event.key==='Escape'){this.value=this.dataset.original;this.blur();}">
+                    <div class="cat-mgr-count">${cnt} items &nbsp;<span style="font-size:0.62rem;color:#aaa;">✎ click to rename</span></div>
                 </div>`;
                 grid.appendChild(div);
             });
         }
+
+        async function catMgrInlineSave(input) {
+            input.style.borderColor = 'transparent';
+            input.style.background  = 'transparent';
+            const newName  = (input.value || '').trim();
+            const oldName  = input.dataset.original;
+            const catId    = input.dataset.catId;
+            if (!newName || newName === oldName) { input.value = oldName; return; }
+            try {
+                const { error } = await db.from('categories2026').update({ name: newName }).eq('id', catId);
+                if (error) throw error;
+                input.dataset.original = newName;
+                // Update allCategories cache
+                const cat = allCategories.find(c => String(c.id) === String(catId));
+                if (cat) cat.name = newName;
+                showToast('Renamed to "' + newName + '" ✓', 'ok');
+            } catch(e) {
+                input.value = oldName;
+                showToast('Rename error: ' + errMsg(e), 'err');
+            }
+        }
+
         async function openAddCategoryModal(){
             const name=prompt('New category name:');
             if(!name?.trim())return;
@@ -5127,8 +5178,20 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                     btn.id = 'mm-btn-' + cat.id;
                     btn.dataset.catId   = cat.id;
                     btn.dataset.catName = cat.name;
-                    btn.innerHTML = cat.name + ' <span class="mm-cat-badge">' + cnt + '</span>';
+                    btn.title = cat.name + ' — click to view, double-click name to rename';
+                    btn.innerHTML = `<span class="mm-cat-label">${cat.name}</span> <span class="mm-cat-badge">${cnt}</span>`;
                     btn.onclick = () => mmSelectCatById(cat.id, cat.name, cat);
+                    // Double-click on label triggers inline rename via header input
+                    const label = btn.querySelector('.mm-cat-label');
+                    if (label) {
+                        label.ondblclick = (e) => {
+                            e.stopPropagation();
+                            mmSelectCatById(cat.id, cat.name, cat).then(() => {
+                                const inp = document.getElementById('mmCatTitle');
+                                if (inp) { inp.focus(); inp.select(); }
+                            });
+                        };
+                    }
                     sidebar.appendChild(btn);
                 });
 
@@ -5280,7 +5343,7 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
             const statsEl = document.getElementById('mmCatStats');
             const food = mmAllItems.filter(i=>!i.is_modifier).length;
             const mods = mmAllItems.filter(i=>i.is_modifier).length;
-            if (titleEl) titleEl.textContent = mmCurrentCat.name;
+            if (titleEl) titleEl.value = mmCurrentCat.name;
             if (statsEl) statsEl.textContent = food + ' food · ' + mods + ' modifiers · ' + mmAllItems.length + ' total';
 
             const headerColor = mmCurrentCat?.color_header || '#1e5631';
@@ -5514,6 +5577,44 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                 showToast('"' + name + '" deleted.', 'ok');
                 mmRenderItems();
             } catch(e) { showToast('Error: ' + errMsg(e), 'err'); }
+        }
+
+        // ── RENAME CATEGORY (inline in header) ──────────────────────────────
+        async function mmSaveCatTitle(newName) {
+            if (!mmCurrentCat) return;
+            newName = (newName || '').trim();
+            if (!newName || newName === mmCurrentCat.name) return; // nothing changed
+            const oldName = mmCurrentCat.name;
+            try {
+                const { error } = await db.from('menu_categories')
+                    .update({ name: newName }).eq('id', mmCurrentCat.id);
+                if (error) throw error;
+
+                // Update local state
+                mmCurrentCat.name = newName;
+                const cat = mmAllCats.find(c => c.id === mmCurrentCat.id);
+                if (cat) cat.name = newName;
+
+                // Update sidebar button text (keep the badge)
+                const btn = document.getElementById('mm-btn-' + mmCurrentCat.id);
+                if (btn) {
+                    const badge = btn.querySelector('.mm-cat-badge');
+                    const cnt = badge ? badge.outerHTML : '';
+                    btn.innerHTML = newName + ' ' + cnt;
+                    btn.dataset.catName = newName;
+                }
+
+                // Keep input up to date
+                const inp = document.getElementById('mmCatTitle');
+                if (inp) inp.value = newName;
+
+                showToast('Category renamed to "' + newName + '" ✓', 'ok');
+            } catch(e) {
+                // Revert input on error
+                const inp = document.getElementById('mmCatTitle');
+                if (inp) inp.value = oldName;
+                showToast('Rename error: ' + errMsg(e), 'err');
+            }
         }
 
         // ── ADD CATEGORY ─────────────────────────────────────────────────────
