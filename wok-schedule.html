@@ -1727,20 +1727,42 @@ var msg = 'Applied to ' + applied + ' day' + (applied !== 1 ? 's' : '');
 if (skipped) msg += ' (' + skipped + ' day-off skipped)';
 toast(msg, 'success');
 }
+
+
 function calcStats() {
-var daily = [];
-for (var i = 0; i < 7; i++) daily.push({morning: 0, night: 0, hasLunch: false, hasNoodle: false});
-var keys = Object.keys(currentSchedule);
-for (var ki = 0; ki < keys.length; ki++) {
-var slot = currentSchedule[keys[ki]];
-for (var day = 0; day < slot.shifts.length; day++) {
-var shifts = slot.shifts[day];
-for (var si = 0; si < shifts.length; si++) {
-var s = shifts[si];
-if (s.start && s.end && s.start !== 'vacation' && s.start !== 'disabled') {
-var h = parseInt(s.start.split(':')[0]);
-if (h < 14) daily[day].morning++;
-else daily[day].night++;
+    var daily = [];
+    for (var i = 0; i < 7; i++) daily.push({morning: 0, night: 0, hasLunch: false, hasNoodle: false});
+    
+    var dayOffMap = getDayOffDates(); // Get day-off requests
+    var dayOffMap = getDayOffDates(); // Add this
+
+    var v = document.getElementById('weekStart').value;
+    var ws = v ? new Date(v + 'T00:00:00') : null;
+    
+    var keys = Object.keys(currentSchedule);
+    for (var ki = 0; ki < keys.length; ki++) {
+        var slot = currentSchedule[keys[ki]];
+        for (var day = 0; day < slot.shifts.length; day++) {
+            // Check if this is a requested day-off
+            var cellDate = new Date(ws); 
+            cellDate.setDate(ws.getDate() + day);
+            var cellDateStr = cellDate.getFullYear() + '-' + String(cellDate.getMonth()+1).padStart(2,'0') + '-' + String(cellDate.getDate()).padStart(2,'0');
+            var isDayOff = dayOffMap[slot.employee] && dayOffMap[slot.employee].indexOf(cellDateStr) >= 0;
+            
+            // Skip counting if day-off requested
+            if (isDayOff) continue;
+            
+            var shifts = slot.shifts[day];
+            for (var si = 0; si < shifts.length; si++) {
+                var s = shifts[si];
+                if (s.start && s.end && s.start !== 'vacation' && s.start !== 'disabled') {
+                    var h = parseInt(s.start.split(':')[0]);
+                    if (h < 14) daily[day].morning++;
+                    else daily[day].night++;
+
+
+
+
 }
 }
 }
@@ -1804,6 +1826,11 @@ rows += '</div></div>';
 document.getElementById('empTallyTable').innerHTML = rows;
 renderHoursSummary();
 }
+
+
+
+
+
 function convertForSave() {
 var o = {};
 var keys = Object.keys(currentSchedule);
@@ -1935,124 +1962,154 @@ if (res.error) { toast('Delete failed', 'error'); }
 else { toast('Deleted', 'success'); loadSavedSchedules(); }
 }).catch(function() { toast('Delete failed', 'error'); });
 }
+
+
+
+
 function generatePDFWithJSPDF() {
-var v = document.getElementById('weekStart').value;
-if (!v) { toast('Select a week', 'error'); return; }
-var ws = new Date(v + 'T00:00:00');
-var endDate = new Date(ws);
-endDate.setDate(ws.getDate() + 6);
-var dateRange = (ws.getMonth() + 1) + '/' + ws.getDate() + ' – ' + (endDate.getMonth() + 1) + '/' + endDate.getDate() + '/' + endDate.getFullYear();
-var colDates = [];
-for (var i = 0; i < DAYS.length; i++) {
-var d = new Date(ws);
-d.setDate(ws.getDate() + i);
-colDates.push((d.getMonth() + 1) + '/' + d.getDate() + '/' + d.getFullYear());
+    var v = document.getElementById('weekStart').value;
+    if (!v) { toast('Select a week', 'error'); return; }
+    var ws = new Date(v + 'T00:00:00');
+    var endDate = new Date(ws);
+    endDate.setDate(ws.getDate() + 6);
+    var dateRange = (ws.getMonth() + 1) + '/' + ws.getDate() + ' – ' + (endDate.getMonth() + 1) + '/' + endDate.getDate() + '/' + endDate.getFullYear();
+    var colDates = [];
+    for (var i = 0; i < DAYS.length; i++) {
+        var d = new Date(ws);
+        d.setDate(ws.getDate() + i);
+        colDates.push((d.getMonth() + 1) + '/' + d.getDate() + '/' + d.getFullYear());
+    }
+    
+    // Get day-off requests map
+    var dayOffMap = getDayOffDates();
+    
+    var rows = '';
+    var keys = Object.keys(currentSchedule);
+    for (var ki = 0; ki < keys.length; ki++) {
+        var sk = keys[ki];
+        var slot = currentSchedule[sk];
+        var cells = '';
+        for (var day = 0; day < 7; day++) {
+            // Calculate cell date
+            var cellDate = new Date(ws);
+            cellDate.setDate(ws.getDate() + day);
+            var cellDateStr = cellDate.getFullYear() + '-' + String(cellDate.getMonth()+1).padStart(2,'0') + '-' + String(cellDate.getDate()).padStart(2,'0');
+            
+            var shifts = slot.shifts[day] || [];
+            var isVac = analyze(shifts).isVac;
+            var isDisabled = analyze(shifts).isDisabled;
+            
+            // Check if this is a requested day-off (and not overridden)
+            var isDayOffRequest = !isVac && !isDisabled && dayOffMap[slot.employee] && dayOffMap[slot.employee].indexOf(cellDateStr) >= 0;
+            var overKey = sk + '_' + day;
+            var isOverridden = !!overriddenDayOff[overKey];
+            
+            if (isVac) {
+                cells += '<td class="cell vac-cell">🏖️<br><span class="off-txt">OFF</span></td>';
+                continue;
+            }
+            if (isDisabled) {
+                cells += '<td class="cell off-cell"><span class="off-txt">DISABLED</span></td>';
+                continue;
+            }
+            // NEW: Check for day-off request
+            if (isDayOffRequest && !isOverridden) {
+                cells += '<td class="cell off-cell"><span class="off-txt">OFF (Requested)</span></td>';
+                continue;
+            }
+            
+            var valid = [];
+            for (var si = 0; si < shifts.length; si++) {
+                if (shifts[si].start && shifts[si].end && shifts[si].start !== 'vacation' && shifts[si].start !== 'disabled') valid.push(shifts[si]);
+            }
+            if (valid.length === 0) {
+                cells += '<td class="cell off-cell"><span class="off-txt">OFF</span></td>';
+                continue;
+            }
+            var role = slot.roles ? (slot.roles[day] || {}) : {};
+            var isLunch = role.lunch === slot.employee;
+            var isNoodle = role.noodle === slot.employee;
+            var shiftLines = '';
+            for (var vi = 0; vi < valid.length; vi++) {
+                var s = valid[vi];
+                var sh = parseInt(s.start.split(':')[0]);
+                var ico = sh < 14 ? '☀️' : '🌙';
+                shiftLines += '<div class="shift-line">' + ico + ' ' + to12(s.start) + '–' + to12(s.end) + '</div>';
+            }
+            var badges = '';
+            if (isLunch) badges += '<span class="badge lunch">🍱 Lunch</span>';
+            if (isNoodle) badges += '<span class="badge noodle">🍜 Noodle</span>';
+            cells += '<td class="cell' + (isLunch ? ' lunch-day' : '') + (isNoodle ? ' noodle-day' : '') + '">' + shiftLines + (badges ? '<div class="badges">' + badges + '</div>' : '') + '</td>';
+        }
+        rows += '<tr><td class="emp-cell">' + slot.employee + '</td>' + cells + '</tr>';
+    }
+    var thRows = '';
+    for (var i = 0; i < DAYS.length; i++) {
+        thRows += '<th><span class="date">' + colDates[i] + '</span><span class="zh">' + DAYS[i].zh + '</span><span class="en">' + DAYS[i].en + '</span></th>';
+    }
+    var html = '<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><title>JENG CHI Schedule ' + dateRange + '</title>';
+    html += '<style>';
+    html += '@page{size:8.5in 11in landscape;margin:0.5in 0.45in}';
+    html += '*{box-sizing:border-box;margin:0;padding:0}';
+    html += 'body{font-family:Helvetica Neue,Arial,sans-serif;font-size:13px;color:#0F172A;background:#fff;width:100%}';
+    html += '.page-header{text-align:center;margin-bottom:12px;border-bottom:3px solid #0C1A2E;padding-bottom:10px;display:flex;align-items:center;justify-content:center;gap:18px}';
+    html += '.page-header .logo-img{height:60px;width:auto;object-fit:contain;flex-shrink:0}';
+    html += '.page-header .header-text{text-align:left}';
+    html += '.page-header h1{font-size:20px;font-weight:900;letter-spacing:1.5px;color:#0C1A2E;text-transform:uppercase}';
+    html += '.page-header h2{font-size:15px;font-weight:700;color:#1E3250;margin-top:3px}';
+    html += '.page-header .range{font-size:13px;color:#475569;margin-top:4px;font-weight:600}';
+    html += 'table{width:100%;border-collapse:collapse;table-layout:fixed}';
+    html += 'col.col-emp{width:110px}';
+    html += 'th{background:#F8FAFC;color:#0C1A2E;padding:9px 6px;text-align:center;border:1px solid #CBD5E1;vertical-align:middle}';
+    html += 'th .date{display:block;font-size:10px;color:#64748B;font-weight:500;margin-bottom:3px;font-family:monospace}';
+    html += 'th .zh{display:block;font-size:17px;font-weight:800;line-height:1.2}';
+    html += 'th .en{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:#64748B;margin-top:2px;font-weight:600}';
+    html += 'th.emp-th{background:#E2E8F0;text-align:left;padding:9px 10px}';
+    html += '.emp-cell{background:#F8FAFC;border:1px solid #CBD5E1;font-weight:800;font-size:13px;padding:8px 10px;vertical-align:middle;border-left:4px solid #1A56DB;white-space:nowrap}';
+    html += '.cell{border:1px solid #E2E8F0;padding:7px 6px;vertical-align:top;text-align:center;font-size:12px}';
+    html += '.off-cell{background:#F8FAFC}';
+    html += '.vac-cell{background:#FFF1F2;color:#9F1239}';
+    html += '.off-txt{color:#94A3B8;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.5px}';
+    html += '.shift-line{font-family:monospace;font-size:11.5px;font-weight:600;color:#0F172A;white-space:nowrap;margin-bottom:2px;line-height:1.4}';
+    html += '.badges{margin-top:5px;display:flex;flex-direction:column;gap:3px;align-items:center}';
+    html += '.badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:10px;font-weight:700;white-space:nowrap}';
+    html += '.badge.lunch{background:#EFF6FF;color:#1D4ED8;border:1.5px solid #BFDBFE}';
+    html += '.badge.noodle{background:#ECFDF5;color:#047857;border:1.5px solid #6EE7B7}';
+    html += '.lunch-day{background:#F0F7FF}';
+    html += '.noodle-day{background:#F0FDF4}';
+    html += 'tr:nth-child(even) .emp-cell{background:#F1F5F9}';
+    html += 'tr:nth-child(even) td.cell{background:#FAFBFD}';
+    html += 'tr td{height:72px}';
+    html += '.footer{margin-top:12px;font-size:10px;color:#94A3B8;text-align:right}';
+    html += '@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}';
+    html += '</style></head><body>';
+    html += '<div class="page-header">';
+    html += '<img class="logo-img" src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg" alt="Jeng Chi Logo" onerror="this.style.display=\'none\'">';
+    html += '<div class="header-text">';
+    html += '<h1>JENG CHI RESTAURANT</h1>';
+    html += '<h2>Executive Employee Schedule · 員工排班表</h2>';
+    html += '<div class="range">Week of ' + dateRange + '</div>';
+    html += '</div>';
+    html += '</div>';
+    html += '<table><colgroup><col class="col-emp">';
+    for (var ci = 0; ci < 7; ci++) html += '<col>';
+    html += '</colgroup><thead><tr>';
+    html += '<th class="emp-th" style="font-size:13px;font-weight:800;color:#64748B">Employee<br><span style="font-size:11px;color:#94A3B8">員工</span></th>';
+    html += thRows;
+    html += '</tr></thead><tbody>' + rows + '</tbody></table>';
+    html += '<div class="footer">Generated by JENG CHI Schedule System · ' + new Date().toLocaleString() + '</div>';
+    html += '</body></html>';
+    var w = window.open('', '_blank');
+    w.document.write(html);
+    w.document.close();
+    setTimeout(function() { w.print(); }, 600);
+    toast('Print dialog opened', 'info');
 }
-var rows = '';
-var keys = Object.keys(currentSchedule);
-for (var ki = 0; ki < keys.length; ki++) {
-var sk = keys[ki];
-var slot = currentSchedule[sk];
-var cells = '';
-for (var day = 0; day < 7; day++) {
-var shifts = slot.shifts[day] || [];
-var isVac = analyze(shifts).isVac;
-var isDisabled = analyze(shifts).isDisabled;
-if (isVac) {
-cells += '<td class="cell vac-cell">🏖️<br><span class="off-txt">OFF</span></td>';
-continue;
-}
-if (isDisabled) {
-cells += '<td class="cell off-cell"><span class="off-txt">DISABLED</span></td>';
-continue;
-}
-var valid = [];
-for (var si = 0; si < shifts.length; si++) {
-if (shifts[si].start && shifts[si].end && shifts[si].start !== 'vacation' && shifts[si].start !== 'disabled') valid.push(shifts[si]);
-}
-if (valid.length === 0) {
-cells += '<td class="cell off-cell"><span class="off-txt">OFF</span></td>';
-continue;
-}
-var role = slot.roles ? (slot.roles[day] || {}) : {};
-var isLunch = role.lunch === slot.employee;
-var isNoodle = role.noodle === slot.employee;
-var shiftLines = '';
-for (var vi = 0; vi < valid.length; vi++) {
-var s = valid[vi];
-var sh = parseInt(s.start.split(':')[0]);
-var ico = sh < 14 ? '☀️' : '🌙';
-shiftLines += '<div class="shift-line">' + ico + ' ' + to12(s.start) + '–' + to12(s.end) + '</div>';
-}
-var badges = '';
-if (isLunch) badges += '<span class="badge lunch">🍱 Lunch</span>';
-if (isNoodle) badges += '<span class="badge noodle">🍜 Noodle</span>';
-cells += '<td class="cell' + (isLunch ? ' lunch-day' : '') + (isNoodle ? ' noodle-day' : '') + '">' + shiftLines + (badges ? '<div class="badges">' + badges + '</div>' : '') + '</td>';
-}
-rows += '<tr><td class="emp-cell">' + slot.employee + '</td>' + cells + '</tr>';
-}
-var thRows = '';
-for (var i = 0; i < DAYS.length; i++) {
-thRows += '<th><span class="date">' + colDates[i] + '</span><span class="zh">' + DAYS[i].zh + '</span><span class="en">' + DAYS[i].en + '</span></th>';
-}
-var html = '<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><title>JENG CHI Schedule ' + dateRange + '</title>';
-html += '<style>';
-html += '@page{size:8.5in 11in landscape;margin:0.5in 0.45in}';
-html += '*{box-sizing:border-box;margin:0;padding:0}';
-html += 'body{font-family:Helvetica Neue,Arial,sans-serif;font-size:13px;color:#0F172A;background:#fff;width:100%}';
-html += '.page-header{text-align:center;margin-bottom:12px;border-bottom:3px solid #0C1A2E;padding-bottom:10px;display:flex;align-items:center;justify-content:center;gap:18px}';
-html += '.page-header .logo-img{height:60px;width:auto;object-fit:contain;flex-shrink:0}';
-html += '.page-header .header-text{text-align:left}';
-html += '.page-header h1{font-size:20px;font-weight:900;letter-spacing:1.5px;color:#0C1A2E;text-transform:uppercase}';
-html += '.page-header h2{font-size:15px;font-weight:700;color:#1E3250;margin-top:3px}';
-html += '.page-header .range{font-size:13px;color:#475569;margin-top:4px;font-weight:600}';
-html += 'table{width:100%;border-collapse:collapse;table-layout:fixed}';
-html += 'col.col-emp{width:110px}';
-html += 'th{background:#F8FAFC;color:#0C1A2E;padding:9px 6px;text-align:center;border:1px solid #CBD5E1;vertical-align:middle}';
-html += 'th .date{display:block;font-size:10px;color:#64748B;font-weight:500;margin-bottom:3px;font-family:monospace}';
-html += 'th .zh{display:block;font-size:17px;font-weight:800;line-height:1.2}';
-html += 'th .en{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:#64748B;margin-top:2px;font-weight:600}';
-html += 'th.emp-th{background:#E2E8F0;text-align:left;padding:9px 10px}';
-html += '.emp-cell{background:#F8FAFC;border:1px solid #CBD5E1;font-weight:800;font-size:13px;padding:8px 10px;vertical-align:middle;border-left:4px solid #1A56DB;white-space:nowrap}';
-html += '.cell{border:1px solid #E2E8F0;padding:7px 6px;vertical-align:top;text-align:center;font-size:12px}';
-html += '.off-cell{background:#F8FAFC}';
-html += '.vac-cell{background:#FFF1F2;color:#9F1239}';
-html += '.off-txt{color:#94A3B8;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.5px}';
-html += '.shift-line{font-family:monospace;font-size:11.5px;font-weight:600;color:#0F172A;white-space:nowrap;margin-bottom:2px;line-height:1.4}';
-html += '.badges{margin-top:5px;display:flex;flex-direction:column;gap:3px;align-items:center}';
-html += '.badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:10px;font-weight:700;white-space:nowrap}';
-html += '.badge.lunch{background:#EFF6FF;color:#1D4ED8;border:1.5px solid #BFDBFE}';
-html += '.badge.noodle{background:#ECFDF5;color:#047857;border:1.5px solid #6EE7B7}';
-html += '.lunch-day{background:#F0F7FF}';
-html += '.noodle-day{background:#F0FDF4}';
-html += 'tr:nth-child(even) .emp-cell{background:#F1F5F9}';
-html += 'tr:nth-child(even) td.cell{background:#FAFBFD}';
-html += 'tr td{height:72px}';
-html += '.footer{margin-top:12px;font-size:10px;color:#94A3B8;text-align:right}';
-html += '@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}';
-html += '</style></head><body>';
-html += '<div class="page-header">';
-html += '<img class="logo-img" src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg" alt="Jeng Chi Logo" onerror="this.style.display=\'none\'">';
-html += '<div class="header-text">';
-html += '<h1>JENG CHI RESTAURANT</h1>';
-html += '<h2>Executive Employee Schedule · 員工排班表</h2>';
-html += '<div class="range">Week of ' + dateRange + '</div>';
-html += '</div>';
-html += '</div>';
-html += '<table><colgroup><col class="col-emp">';
-for (var ci = 0; ci < 7; ci++) html += '<col>';
-html += '</colgroup><thead><tr>';
-html += '<th class="emp-th" style="font-size:13px;font-weight:800;color:#64748B">Employee<br><span style="font-size:11px;color:#94A3B8">員工</span></th>';
-html += thRows;
-html += '</tr></thead><tbody>' + rows + '</tbody></table>';
-html += '<div class="footer">Generated by JENG CHI Schedule System · ' + new Date().toLocaleString() + '</div>';
-html += '</body></html>';
-var w = window.open('', '_blank');
-w.document.write(html);
-w.document.close();
-setTimeout(function() { w.print(); }, 600);
-toast('Print dialog opened', 'info');
-}
+
+
+
+
+
 function showDuplicateDialog() {
 closeAllMenus();
 if (!dbConnected) { toast('Database required', 'error'); return; }
@@ -2686,6 +2743,11 @@ function renderHoursSummary() {
 var el = document.getElementById('hoursSummaryTable');
 var badge = document.getElementById('payPeriodBadge');
 if (!el) return;
+
+
+
+
+
 var v = document.getElementById('weekStart').value;
 if (v && badge) {
 var pp = getPayPeriod(v);
