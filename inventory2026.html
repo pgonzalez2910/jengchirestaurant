@@ -10006,7 +10006,7 @@ input[id^="par-input-"]:focus {
 
                                 <label style="display:inline-flex;align-items:center;gap:0.28rem;cursor:pointer;height:28px;">
 
-                                    <input type="checkbox" id="invoiceTaxEnabled" checked onchange="calculateInvoiceTotals()" style="width:14px;height:14px;accent-color:var(--primary-600);cursor:pointer;">
+                                    <input type="checkbox" id="invoiceTaxEnabled" onchange="calculateInvoiceTotals()" style="width:14px;height:14px;accent-color:var(--primary-600);cursor:pointer;">
 
                                     <span style="font-size:0.76rem;font-weight:700;color:var(--primary-600);">Apply</span>
 
@@ -10430,7 +10430,7 @@ input[id^="par-input-"]:focus {
 
                                     <label style="display:inline-flex;align-items:center;justify-content:center;cursor:pointer;height:27px;gap:0.22rem;">
 
-                                        <input type="checkbox" id="newItemIsWeight" style="width:14px;height:14px;cursor:pointer;accent-color:#16a34a;">
+                                        <input type="checkbox" id="newItemIsWeight" onchange="toggleNewItemWeightMode(this.checked)" style="width:14px;height:14px;cursor:pointer;accent-color:#16a34a;">
 
                                         <span style="font-size:0.7rem;color:#166534;font-weight:600;">lbs</span>
 
@@ -11431,9 +11431,43 @@ const VENDOR_TAX_RULES = {
 
     'BakeMark':              { taxAll: false },
 
-    'Autochlor':             { taxAll: false },
+    'Autochlor':             { taxAll: true },
 
 };
+
+// Items forced to display as QTY regardless of has_weight flag in DB
+const QTY_OVERRIDE_CODES = new Set(['951GO']);
+const QTY_OVERRIDE_NAMES = ['green onion', 'green onions', 'cabbage', 'broccoli'];
+function isForceQty(itemCode, productName) {
+    if (itemCode && QTY_OVERRIDE_CODES.has((itemCode || '').trim().toUpperCase())) return true;
+    const n = (productName || '').toLowerCase();
+    return QTY_OVERRIDE_NAMES.some(x => n.includes(x));
+}
+
+// Shared category builder used in invoice product rows
+const CATEGORY_OPTIONS = [
+    ['🥬 PRODUCE', ['Fresh Vegetables','Fresh Fruits','Fresh Herbs','Mushrooms','Vegetable Powders','Sprouts & Microgreens','Exotic Produce']],
+    ['🥩 BEEF',    ['Beef','Ground Beef','Beef Steaks','Beef Roasts']],
+    ['🐖 PORK',    ['Pork','Pork Belly','Pork Chops','Ground Pork','Pork Ribs','Pork Sausage']],
+    ['🐔 POULTRY', ['Poultry','Chicken Breast','Chicken Thighs','Whole Chicken','Chicken Wings','Duck','Turkey']],
+    ['🐑 LAMB',    ['Lamb','Lamb Chops','Ground Lamb','Leg of Lamb']],
+    ['🐟 SEAFOOD', ['Seafood','Fresh Fish','Salmon','White Fish','Shellfish','Shrimp','Frozen Seafood','Squid & Octopus']],
+    ['🥛 DAIRY & EGGS', ['Milk & Cream','Cheese - Hard','Cheese - Soft','Butter','Eggs','Yogurt']],
+    ['🌾 GRAINS',  ['Rice','Noodles','Pasta','Flour','Bread & Buns']],
+    ['🫙 SAUCES',  ['Soy Sauce','Oyster Sauce','Sesame Oil','Vinegar','Hot Sauce','Cooking Wine','Marinades & Glazes']],
+    ['🧂 DRY GOODS',['Spices','Salt & Sugar','Starches','Baking','Canned Goods','Dry Beans & Legumes']],
+    ['🧴 CHEMICALS',['Cleaning Supplies','Sanitizers','Degreasers','Chemicals']],
+    ['📦 PACKAGING',['Containers','Bags','Wraps','Disposables','Labels']],
+    ['🖊 OFFICE',  ['Office Supplies','Paper & Printing','Misc Office']],
+    ['❓ OTHER',   ['Uncategorized','Other']],
+];
+function buildCategorySelect(id, currentVal, onchangeExpr, style) {
+    const opts = CATEGORY_OPTIONS.map(([grp, items]) =>
+        `<optgroup label="${grp}">${items.map(v =>
+            `<option value="${v}"${v===currentVal?' selected':''}>${v}</option>`).join('')}</optgroup>`
+    ).join('');
+    return `<select id="${id}" onchange="${onchangeExpr}" style="${style||''}"><option value="">-- Category --</option>${opts}</select>`;
+}
 
 
 
@@ -11450,6 +11484,9 @@ const TAX_RATE_PDF = 0.0825;
         let filteredData = [];
 
         let invoicesData = [];
+        // Preserve search/filter state across edit modal open/close
+        let _savedSearchTerm = '', _savedVendorFilter = '', _savedYearFilter = '';
+        let _savedAssignedFilter = '', _savedCategoryFilter = '';
 
         let filteredInvoices = [];
 
@@ -16734,7 +16771,7 @@ function rptRenderBody(tabName, cfg, d) {
 
                 const weightVal = parseFloat(it.weight||0);
 
-                const isW = !!(it.has_weight || weightVal > 0);
+                const isW = !isForceQty(it.item_code, it.product_name) && !!(it.has_weight || weightVal > 0);
 
                 const q   = isW ? weightVal : parseFloat(it.quantity||0);
 
@@ -16814,7 +16851,7 @@ function rptRenderBody(tabName, cfg, d) {
 
                     const wv = parseFloat(it.weight||0);
 
-                    const isW = !!(it.has_weight || wv > 0);
+                    const isW = !isForceQty(it.item_code, it.product_name) && !!(it.has_weight || wv > 0);
 
                     const q  = isW ? wv : parseFloat(it.quantity||0);
 
@@ -17908,7 +17945,7 @@ function rptRenderBody(tabName, cfg, d) {
 
                                 const _raw = d.allItems.find(it=>it.id===h.itemId);
 
-                                const isW = !!(_raw?.has_weight || parseFloat(_raw?.weight||0) > 0);
+                                const isW = !isForceQty(_raw?.item_code, _raw?.product_name) && !!(_raw?.has_weight || parseFloat(_raw?.weight||0) > 0);
 
                                 return `
 
@@ -20520,6 +20557,12 @@ async function loadInvoicesForSelection() {
 
 
 async function editItem(id) {
+    // Save current search/filter state so we can restore it after saving
+    _savedSearchTerm     = document.getElementById('searchInput')?.value || '';
+    _savedVendorFilter   = document.getElementById('vendorFilter')?.value || '';
+    _savedYearFilter     = document.getElementById('yearFilter')?.value || '';
+    _savedAssignedFilter = document.getElementById('assignedToFilter')?.value || '';
+    _savedCategoryFilter = document.getElementById('categoryFilter')?.value || '';
 
     console.log('🔍 editItem called with ID:', id, 'Type:', typeof id);
 
@@ -20777,7 +20820,7 @@ function openAddInvoiceModal() {
 
     document.getElementById('invoiceItemsCount').value = '0 items';
 
-    document.getElementById('invoiceTaxEnabled').checked = true;
+    document.getElementById('invoiceTaxEnabled').checked = false;  // auto-set when vendor is selected
 
     
 
@@ -20882,9 +20925,8 @@ async function updateInvoiceTotals(invoiceId) {
         const vendorLower = (invoice.vendor || '').toLowerCase();
 
         const isDelta = vendorLower.includes('delta');
-
+        const isAutochlor = vendorLower.includes('autochlor');
         const isPacificPlus = vendorLower.includes('pacific');
-
         let subtotal = 0;
 
         let totalTax = 0;
@@ -20905,12 +20947,9 @@ async function updateInvoiceTotals(invoiceId) {
 
                 const is752GO = item.item_code === '752GO';
 
-                if (isDelta) {
-
-                    // Delta: tax ALL items
-
+                if (isDelta || isAutochlor) {
+                    // Delta / Autochlor: tax ALL items
                     totalTax += itemSubtotal * TAX_RATE;
-
                 } else if (isPacificPlus && is752GO) {
 
                     // Pacific Plus: tax ONLY 752GO
@@ -20932,7 +20971,7 @@ async function updateInvoiceTotals(invoiceId) {
         let taxStatus = '❌ NO TAX';
 
         if (isDelta) taxStatus = '✅ DELTA - ALL ITEMS TAXED';
-
+        else if (isAutochlor) taxStatus = '✅ AUTOCHLOR - ALL ITEMS TAXED';
         else if (isPacificPlus) taxStatus = '✅ PACIFIC PLUS - 752GO TAXED';
 
         
@@ -21367,7 +21406,15 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
 
         await loadInventoryData();
 
-        
+        // Restore search/filter state so user lands back on their filtered results
+        if (_savedSearchTerm) { const el = document.getElementById('searchInput'); if (el) el.value = _savedSearchTerm; }
+        if (_savedVendorFilter)   { const el = document.getElementById('vendorFilter');     if (el) el.value = _savedVendorFilter; }
+        if (_savedYearFilter)     { const el = document.getElementById('yearFilter');       if (el) el.value = _savedYearFilter; }
+        if (_savedAssignedFilter) { const el = document.getElementById('assignedToFilter'); if (el) el.value = _savedAssignedFilter; }
+        if (_savedCategoryFilter) { const el = document.getElementById('categoryFilter');   if (el) el.value = _savedCategoryFilter; }
+        if (_savedSearchTerm || _savedVendorFilter || _savedYearFilter || _savedAssignedFilter || _savedCategoryFilter) {
+            performSearch();
+        }
 
         // Also reload invoice data so Invoice Tracking tab shows updated totals
 
@@ -21439,6 +21486,8 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
 
             const isDelta = vendorLower.includes('delta');
 
+            const isAutochlor = vendorLower.includes('autochlor');
+
             const isPacificPlus = vendorLower.includes('pacific');
 
             
@@ -21473,8 +21522,7 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
 
                 // 3. All others → no tax
 
-                const taxEnabled = document.getElementById('invoiceTaxEnabled')?.checked ?? true;
-
+                const taxEnabled = document.getElementById('invoiceTaxEnabled')?.checked ?? false;
                 const is752GO = p.item_code === '752GO';
 
                 let itemTax = 0;
@@ -21483,12 +21531,9 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
 
                 if (taxEnabled) {
 
-                    if (isDelta) {
-
-                        // Delta: tax ALL items
-
+                    if (isDelta || isAutochlor) {
+                        // Delta / Autochlor: tax ALL items
                         itemTax = itemSubtotal * TAX_RATE;
-
                     } else if (isPacificPlus && is752GO) {
 
                         // Pacific Plus: tax ONLY 752GO
@@ -21541,15 +21586,13 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
 
             const taxLabel = document.getElementById('taxLabel');
 
-            const taxEnabled = document.getElementById('invoiceTaxEnabled')?.checked ?? true;
-
+            const taxEnabled = document.getElementById('invoiceTaxEnabled')?.checked ?? false;
             const has752GO = selectedInvoiceProducts.some(p => p.item_code === '752GO');
 
             
 
-            if (taxEnabled && isDelta) {
-
-                taxLabel.textContent = '💰 Tax (8.25% - DELTA - ALL ITEMS):';
+            if (taxEnabled && (isDelta || isAutochlor)) {
+                taxLabel.textContent = isDelta ? '💰 Tax (8.25% - DELTA - ALL ITEMS):' : '💰 Tax (8.25% - AUTOCHLOR - ALL ITEMS):';
 
                 taxLabel.style.color = 'var(--success-700)';
 
@@ -21604,6 +21647,11 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
                 // ✅ Load credit balance for selected vendor
 
                 loadCreditBalanceForVendor(vendor);
+
+                // Auto-set tax checkbox based on vendor rules
+                const vl = vendor.toLowerCase();
+                document.getElementById('invoiceTaxEnabled').checked =
+                    vl.includes('delta') || vl.includes('autochlor') || vl.includes('pacific');
 
             }
 
@@ -21674,13 +21722,48 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
 
 
     if (uniqueProducts.length === 0) {
+        // Search by name across ALL vendors — same product, different vendor/code
+        const currentVendor = document.getElementById('invoiceVendorDropdown').value;
+        const nameMatches = searchTerm
+            ? inventoryData.filter(item => (item.product_name || '').toLowerCase().includes(searchTerm))
+            : [];
+        const nameMap = new Map();
+        nameMatches.forEach(item => {
+            const key = (item.product_name || '').toLowerCase();
+            if (!nameMap.has(key)) nameMap.set(key, item);
+        });
+        const nameResults = Array.from(nameMap.values());
 
-        resultsDiv.innerHTML = '<p style="color: var(--neutral-500); text-align: center; padding: 1rem;">No products found</p>';
-
+        if (nameResults.length > 0) {
+            resultsDiv.innerHTML = `
+                <div style="padding:0.75rem 1rem;background:#fef9c3;border:1.5px solid #fde047;border-radius:8px;">
+                    <div style="font-size:0.78rem;font-weight:700;color:#854d0e;margin-bottom:0.4rem;">
+                        ⚠️ Not found for <strong>${currentVendor || 'this vendor'}</strong> — found under a different vendor:
+                    </div>
+                    ${nameResults.map(item => `
+                    <div style="display:flex;align-items:center;gap:0.65rem;background:white;border-radius:6px;padding:0.5rem 0.65rem;margin-bottom:0.35rem;border:1px solid #fde047;">
+                        <img src="${resolveImage(item.image_path)}" onerror="this.src='${PLACEHOLDER_IMAGE}'"
+                             style="width:38px;height:38px;border-radius:5px;object-fit:cover;flex-shrink:0;">
+                        <div style="flex:1;min-width:0;">
+                            <div style="font-weight:700;font-size:0.82rem;color:#1e293b;">${item.product_name}</div>
+                            <div style="font-size:0.72rem;color:#64748b;">
+                                <span style="font-family:var(--font-mono);background:#f1f5f9;padding:0.1rem 0.3rem;border-radius:3px;">${item.item_code||'—'}</span>
+                                · ${item.vendor||''}
+                                · $${parseFloat(item.unit_price||0).toFixed(2)}
+                            </div>
+                        </div>
+                        <button type="button"
+                            onclick="openSameProductNewVendorModal('${(item.product_name||'').replace(/'/g,'\'').replace(/"/g,'&quot;')}','${(item.item_code||'').replace(/'/g,"\'")}','${(item.vendor||'').replace(/'/g,"\'")}',${parseFloat(item.unit_price||0)},'${(item.category||'').replace(/'/g,"\'")}','${(item.image_path||'').replace(/'/g,"\'")}',${!!(item.has_weight)})"
+                            style="padding:0.35rem 0.7rem;background:linear-gradient(135deg,var(--primary-500),var(--primary-600));color:white;border:none;border-radius:6px;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0;">
+                            ➕ New Code / Vendor
+                        </button>
+                    </div>`).join('')}
+                </div>`;
+        } else {
+            resultsDiv.innerHTML = '<p style="color: var(--neutral-500); text-align: center; padding: 1rem;">No products found</p>';
+        }
         resultsDiv.style.display = 'block';
-
         return;
-
     }
 
 
@@ -22046,6 +22129,14 @@ function renderSelectedInvoiceProducts(_scrollToLast = false) {
               <span style="font-size:0.68rem;color:#94a3b8;">${product.vendor||''}</span>
 
             </div>
+            <div style="margin-top:0.22rem;">
+              ${buildCategorySelect(
+                  'invCat_'+idx,
+                  product.category||'',
+                  'updateInvoiceProductFieldInPlace('+idx+',\'category\',this.value)',
+                  'width:100%;font-size:0.68rem;border:1px solid transparent;border-radius:4px;padding:0.18rem 0.3rem;background:transparent;color:var(--neutral-600);cursor:pointer;transition:all 0.15s;'
+              )}
+            </div>
 
           </td>
 
@@ -22328,6 +22419,7 @@ function updateInvoiceProductFieldInPlace(index, field, value) {
     else if (field === 'product_name')    { product.product_name = value; }
 
     else if (field === 'item_code')       { product.item_code    = value; }
+    else if (field === 'category')        { product.category     = value; }
 
 
 
@@ -22390,11 +22482,9 @@ async function autoSaveInvoiceItem(index) {
         const { error } = await supabaseClient.from('invoice_items')
 
             .update({ item_code: product.item_code, product_name: product.product_name,
-
+                      category: product.category || null,
                       quantity: qt, unit_price: up, weight: wt, price_per_unit: ppu,
-
                       has_weight: hw, line_total: hw ? (wt*ppu) : (qt*up) })
-
             .eq('id', product._dbId);
 
         if (!error) {
@@ -46750,8 +46840,204 @@ async function grpToggle(productName, el){
 
 </script>
 
-</body>
+<!-- ═══════════════════════════════════════════════════════
+     NEW FUNCTIONS: weight toggle, same-product-new-vendor
+═══════════════════════════════════════════════════════ -->
+<script>
+function toggleNewItemWeightMode(isWeight) {
+    const qtyEl = document.getElementById('newItemQty');
+    if (qtyEl) {
+        const lbl = qtyEl.closest('div')?.querySelector('label');
+        if (lbl) lbl.textContent = isWeight ? 'Lbs (enter 0)' : 'Qty';
+        qtyEl.style.background = isWeight ? '#fef9c3' : '';
+    }
+    const priceEl = document.getElementById('newItemPrice');
+    if (priceEl) {
+        const lbl = priceEl.closest('div')?.querySelector('label');
+        if (lbl) lbl.textContent = isWeight ? 'Price / lb *' : 'Price *';
+    }
+}
 
+function openSameProductNewVendorModal(productName, oldCode, oldVendor, oldPrice, category, imagePath, hasWeight) {
+    const m = document.getElementById('sameProductNewVendorModal');
+    if (!m) return;
+    const currentVendor = document.getElementById('invoiceVendorDropdown')?.value || '';
+    document.getElementById('spnv_productName').value   = productName;
+    document.getElementById('spnv_oldCode').textContent  = oldCode || '—';
+    document.getElementById('spnv_oldVendor').textContent= oldVendor || '—';
+    document.getElementById('spnv_newVendor').value     = currentVendor;
+    document.getElementById('spnv_newCode').value       = '';
+    document.getElementById('spnv_price').value         = '';
+    document.getElementById('spnv_isWeight').checked    = hasWeight || false;
+    document.getElementById('spnv_category').value      = category || '';
+    document.getElementById('spnv_imagePath').value     = imagePath || '';
+    document.getElementById('spnv_status').innerHTML    = '';
+    m.style.display = 'flex';
+    setTimeout(() => document.getElementById('spnv_newCode')?.focus(), 60);
+}
+
+function closeSameProductNewVendorModal() {
+    const m = document.getElementById('sameProductNewVendorModal');
+    if (m) m.style.display = 'none';
+}
+
+async function saveSameProductNewVendor() {
+    const statusEl   = document.getElementById('spnv_status');
+    const productName = (document.getElementById('spnv_productName').value || '').trim();
+    const newCode    = (document.getElementById('spnv_newCode').value || '').trim().toUpperCase();
+    const newVendor  = (document.getElementById('spnv_newVendor').value || '').trim();
+    const price      = parseFloat(document.getElementById('spnv_price').value) || 0;
+    const isWeight   = document.getElementById('spnv_isWeight').checked;
+    const category   = document.getElementById('spnv_category').value || '';
+    const imagePath  = (document.getElementById('spnv_imagePath').value || '').trim();
+    const invoiceId  = document.getElementById('invoiceForm')?.dataset?.editId;
+
+    if (!productName) { statusEl.innerHTML = '<span style="color:#dc2626;">Product name required</span>'; return; }
+    if (!newCode)     { statusEl.innerHTML = '<span style="color:#dc2626;">New item code required</span>'; return; }
+    if (!newVendor)   { statusEl.innerHTML = '<span style="color:#dc2626;">Vendor required</span>'; return; }
+    if (!invoiceId)   { statusEl.innerHTML = '<span style="color:#dc2626;">Please save the invoice header first</span>'; return; }
+    if (price <= 0)   { statusEl.innerHTML = '<span style="color:#dc2626;">Price must be greater than 0</span>'; return; }
+
+    statusEl.innerHTML = '<span style="color:#2563eb;">💾 Saving...</span>';
+
+    try {
+        const payload = {
+            invoice_id:     invoiceId,
+            product_name:   productName,
+            item_code:      newCode,
+            vendor:         newVendor,
+            category:       category || null,
+            image_path:     imagePath || null,
+            has_weight:     isWeight,
+            quantity:       isWeight ? 0 : 1,
+            unit_price:     isWeight ? 0 : price,
+            weight:         0,
+            price_per_unit: isWeight ? price : 0,
+            line_total:     price,
+        };
+
+        const { data: inserted, error: insertErr } = await supabaseClient
+            .from('invoice_items')
+            .insert([payload])
+            .select()
+            .single();
+
+        if (insertErr) throw insertErr;
+
+        selectedInvoiceProducts.push({
+            _dbId:          inserted.id,
+            item_code:      newCode,
+            product_name:   productName,
+            vendor:         newVendor,
+            category:       category || null,
+            image_path:     imagePath || null,
+            has_weight:     isWeight,
+            quantity:       isWeight ? 0 : 1,
+            invoice_price:  isWeight ? 0 : price,
+            price_per_unit: isWeight ? price : 0,
+            weight:         0,
+            unit_price:     price,
+        });
+
+        await updateInvoiceTotals(invoiceId);
+        statusEl.innerHTML = '<span style="color:#16a34a;">✅ Added to invoice!</span>';
+        setTimeout(() => {
+            closeSameProductNewVendorModal();
+            renderSelectedInvoiceProducts(true);
+        }, 700);
+
+    } catch (err) {
+        console.error('saveSameProductNewVendor:', err);
+        statusEl.innerHTML = `<span style="color:#dc2626;">❌ ${err.message}</span>`;
+    }
+}
+</script>
+
+<!-- ═══════════════════════════════════════════════════════
+     SAME PRODUCT / NEW VENDOR MODAL
+═══════════════════════════════════════════════════════ -->
+<div id="sameProductNewVendorModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:white;border-radius:14px;width:min(520px,95vw);box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden;">
+    <div style="background:linear-gradient(135deg,var(--primary-700),var(--primary-600));padding:1rem 1.25rem;display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <h3 style="color:white;font-size:1rem;font-weight:700;margin:0;">➕ Same Product — New Vendor / Code</h3>
+        <p style="color:rgba(255,255,255,0.75);font-size:0.72rem;margin:0.2rem 0 0;">Creates a new entry: same product name, new item code &amp; vendor</p>
+      </div>
+      <button onclick="closeSameProductNewVendorModal()" style="width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,0.2);color:white;border:none;font-size:1.1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;">×</button>
+    </div>
+    <div style="padding:1.1rem 1.25rem;">
+      <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:7px;padding:0.6rem 0.85rem;margin-bottom:0.9rem;font-size:0.78rem;color:#166534;">
+        <strong>📦 Existing entry kept:</strong>
+        Code <code id="spnv_oldCode" style="font-family:monospace;background:#dcfce7;padding:0.1rem 0.35rem;border-radius:3px;"></code>
+        · Vendor: <strong id="spnv_oldVendor"></strong>
+        <br><span style="font-size:0.7rem;opacity:0.8;">Both vendors will exist in the catalog independently</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem;margin-bottom:0.65rem;">
+        <div style="grid-column:1/-1;">
+          <label style="font-size:0.7rem;font-weight:700;color:#475569;text-transform:uppercase;display:block;margin-bottom:0.2rem;">Product Name</label>
+          <input type="text" id="spnv_productName" style="width:100%;padding:0.35rem 0.55rem;border:1.5px solid #e2e8f0;border-radius:6px;font-size:0.85rem;font-weight:600;">
+        </div>
+        <div>
+          <label style="font-size:0.7rem;font-weight:700;color:#475569;text-transform:uppercase;display:block;margin-bottom:0.2rem;">🆕 New Item Code *</label>
+          <input type="text" id="spnv_newCode" placeholder="e.g. SCW02" autocomplete="off"
+                 oninput="this.value=this.value.toUpperCase()"
+                 style="width:100%;padding:0.35rem 0.55rem;border:1.5px solid #86efac;border-radius:6px;font-size:0.85rem;font-family:monospace;font-weight:700;text-transform:uppercase;">
+        </div>
+        <div>
+          <label style="font-size:0.7rem;font-weight:700;color:#475569;text-transform:uppercase;display:block;margin-bottom:0.2rem;">🆕 New Vendor *</label>
+          <input type="text" id="spnv_newVendor" placeholder="Vendor name"
+                 style="width:100%;padding:0.35rem 0.55rem;border:1.5px solid #86efac;border-radius:6px;font-size:0.85rem;">
+        </div>
+        <div>
+          <label style="font-size:0.7rem;font-weight:700;color:#475569;text-transform:uppercase;display:block;margin-bottom:0.2rem;">Price *</label>
+          <input type="number" id="spnv_price" placeholder="0.00" min="0" step="0.01"
+                 style="width:100%;padding:0.35rem 0.55rem;border:1.5px solid #e2e8f0;border-radius:6px;font-size:0.85rem;">
+        </div>
+        <div>
+          <label style="font-size:0.7rem;font-weight:700;color:#475569;text-transform:uppercase;display:block;margin-bottom:0.2rem;">Category</label>
+          <select id="spnv_category" style="width:100%;padding:0.35rem 0.55rem;border:1.5px solid #e2e8f0;border-radius:6px;font-size:0.78rem;background:white;">
+            <option value="">-- Category --</option>
+            <optgroup label="🥬 PRODUCE"><option>Fresh Vegetables</option><option>Fresh Fruits</option><option>Fresh Herbs</option><option>Mushrooms</option></optgroup>
+            <optgroup label="🥩 BEEF"><option>Beef</option><option>Ground Beef</option><option>Beef Steaks</option></optgroup>
+            <optgroup label="🐖 PORK"><option>Pork</option><option>Pork Belly</option><option>Pork Chops</option><option>Ground Pork</option></optgroup>
+            <optgroup label="🐔 POULTRY"><option>Poultry</option><option>Chicken Breast</option><option>Chicken Thighs</option><option>Duck</option></optgroup>
+            <optgroup label="🐟 SEAFOOD"><option>Seafood</option><option>Fresh Fish</option><option>Shrimp</option><option>Salmon</option></optgroup>
+            <optgroup label="🥛 DAIRY & EGGS"><option>Eggs</option><option>Butter</option><option>Milk & Cream</option></optgroup>
+            <optgroup label="🌾 GRAINS"><option>Rice</option><option>Noodles</option><option>Flour</option></optgroup>
+            <optgroup label="🫙 SAUCES"><option>Soy Sauce</option><option>Oyster Sauce</option><option>Cooking Wine</option><option>Marinades & Glazes</option></optgroup>
+            <optgroup label="🧂 DRY GOODS"><option>Spices</option><option>Canned Goods</option><option>Starches</option></optgroup>
+            <optgroup label="🧴 CHEMICALS"><option>Cleaning Supplies</option><option>Chemicals</option><option>Sanitizers</option></optgroup>
+            <optgroup label="📦 PACKAGING"><option>Containers</option><option>Bags</option><option>Disposables</option></optgroup>
+            <optgroup label="🖊 OFFICE"><option>Office Supplies</option><option>Paper & Printing</option></optgroup>
+            <optgroup label="❓ OTHER"><option>Uncategorized</option><option>Other</option></optgroup>
+          </select>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.45rem;padding-top:1.3rem;">
+          <input type="checkbox" id="spnv_isWeight" style="width:16px;height:16px;cursor:pointer;accent-color:var(--primary-600);">
+          <label for="spnv_isWeight" style="font-size:0.78rem;font-weight:600;color:#475569;cursor:pointer;">⚖ Sold by weight (lbs)?</label>
+        </div>
+        <div style="grid-column:1/-1;">
+          <label style="font-size:0.7rem;font-weight:700;color:#475569;text-transform:uppercase;display:block;margin-bottom:0.2rem;">Image URL (optional)</label>
+          <input type="text" id="spnv_imagePath" placeholder="https://..."
+                 style="width:100%;padding:0.35rem 0.55rem;border:1.5px solid #e2e8f0;border-radius:6px;font-size:0.78rem;">
+        </div>
+      </div>
+      <div id="spnv_status" style="font-size:0.78rem;min-height:1.2rem;margin-bottom:0.65rem;"></div>
+      <div style="display:flex;gap:0.6rem;justify-content:flex-end;">
+        <button type="button" onclick="closeSameProductNewVendorModal()"
+                style="padding:0.5rem 1.1rem;background:#e2e8f0;border:none;color:#475569;border-radius:7px;font-weight:600;font-size:0.82rem;cursor:pointer;">
+          Cancel
+        </button>
+        <button type="button" onclick="saveSameProductNewVendor()"
+                style="padding:0.5rem 1.3rem;background:linear-gradient(135deg,var(--primary-500),var(--primary-600));border:none;color:white;border-radius:7px;font-weight:700;font-size:0.82rem;cursor:pointer;">
+          💾 Save &amp; Add to Invoice
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
 
 
 
