@@ -18474,6 +18474,17 @@ function rptRenderBody(tabName, cfg, d) {
                     </div>
                 </div>
 
+                <!-- ── Stock Consumption Chart (Rony's daily counts) ── -->
+                <div style="padding:.65rem 1.1rem .75rem;border-bottom:1px solid #f0f0f0;">
+                    <div style="font-size:.65rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.3rem;">
+                        📉 Stock Consumption — Rony's Daily Counts
+                        <span style="font-size:.6rem;font-weight:500;color:#9ca3af;margin-left:.4rem;">Green dot = delivery · Red = consumed</span>
+                    </div>
+                    <div id="acStock_${safeId}" style="min-height:60px;display:flex;align-items:center;justify-content:center;">
+                        <span style="font-size:.72rem;color:#d1d5db;">⏳ Loading stock data...</span>
+                    </div>
+                </div>
+
                 <!-- ── Change Log Table ── -->
                 ${prod.trackDates.length>0 ? `
                 <div style="padding:.65rem 1.1rem .85rem;">
@@ -18540,6 +18551,153 @@ function rptRenderBody(tabName, cfg, d) {
                     }
                 });
             }); // end acRows.forEach
+
+            // ── Fetch stock snapshots for ALL Autochlor products at once ──
+            (async () => {
+                try {
+                    const acProdNames = acRows.map(r => r.name);
+                    const { data: stockRows } = await supabaseClient
+                        .from('current_stock')
+                        .select('product_name, stock_date, quantity_in_stock')
+                        .in('product_name', acProdNames)
+                        .order('stock_date', { ascending: true });
+
+                    // Group by product
+                    const stockMap = {};
+                    (stockRows || []).forEach(s => {
+                        if (!stockMap[s.product_name]) stockMap[s.product_name] = [];
+                        stockMap[s.product_name].push({ date: s.stock_date, qty: parseFloat(s.quantity_in_stock || 0) });
+                    });
+
+                    // Render stock chart for each product
+                    acRows.forEach(prod => {
+                        const safeId  = prod.name.replace(/[^a-z0-9]/gi, '_');
+                        const container = document.getElementById('acStock_' + safeId);
+                        if (!container) return;
+
+                        const snaps = stockMap[prod.name] || [];
+
+                        if (snaps.length === 0) {
+                            container.innerHTML = '<span style="font-size:.72rem;color:#d1d5db;">No stock entries yet — Rony needs to count this product</span>';
+                            return;
+                        }
+
+                        if (snaps.length === 1) {
+                            container.innerHTML = `<span style="font-size:.72rem;color:#92400e;background:#fef9c3;padding:.2rem .5rem;border-radius:5px;">Only 1 count (${snaps[0].date.slice(5)}: ${snaps[0].qty}) — need 2+ entries to show trend</span>`;
+                            return;
+                        }
+
+                        // Calc daily consumption rate
+                        const first = snaps[0], last = snaps[snaps.length - 1];
+                        const daySpan = Math.round((new Date(last.date) - new Date(first.date)) / 86400000) || 1;
+                        const totalConsumed = snaps.reduce((sum, s, i) => {
+                            if (i === 0) return sum;
+                            const diff = snaps[i-1].qty - s.qty;
+                            return sum + (diff > 0 ? diff : 0); // only count decreases
+                        }, 0);
+                        const dailyRate = (totalConsumed / daySpan).toFixed(2);
+                        const daysLeft  = last.qty > 0 && dailyRate > 0 ? Math.round(last.qty / dailyRate) : null;
+
+                        // Point colors: green = went up (delivery), red = went down (consumed), gray = no change
+                        const ptColors = snaps.map((s, i) => {
+                            if (i === 0) return '#6b7280';
+                            const d = s.qty - snaps[i-1].qty;
+                            return d > 0.05 ? '#16a34a' : d < -0.05 ? '#dc2626' : '#6b7280';
+                        });
+                        const ptSizes = snaps.map((s, i) => {
+                            if (i === 0) return 4;
+                            return Math.abs(s.qty - snaps[i-1].qty) > 0.1 ? 7 : 4;
+                        });
+
+                        // Build stats line
+                        const statsHtml = `<div style="font-size:.68rem;color:#374151;margin-bottom:.35rem;display:flex;gap:.65rem;flex-wrap:wrap;">
+                            <span>📊 <strong>${snaps.length}</strong> counts</span>
+                            <span>📉 Consumed: <strong>${totalConsumed.toFixed(1)}</strong> units</span>
+                            <span>⚡ Daily rate: <strong>${dailyRate}</strong>/day</span>
+                            <span>📦 On hand: <strong>${last.qty.toFixed(1)}</strong></span>
+                            ${daysLeft !== null ? `<span style="background:${daysLeft < 7 ? '#fee2e2' : daysLeft < 14 ? '#fef9c3' : '#dcfce7'};padding:.1rem .4rem;border-radius:4px;font-weight:700;color:${daysLeft < 7 ? '#dc2626' : daysLeft < 14 ? '#92400e' : '#15803d'};">⏱ ~${daysLeft}d remaining</span>` : ''}
+                        </div>`;
+
+                        // Render canvas
+                        const cid = 'acStockChart_' + safeId + '_' + (++window._rptChartSeq);
+                        container.innerHTML = statsHtml + `<canvas id="${cid}" height="80"></canvas>`;
+
+                        // Data table under chart
+                        const tableHtml = `<table style="width:100%;border-collapse:collapse;font-size:.65rem;margin-top:.4rem;">
+                            <tr style="background:#f8fafc;">
+                                <th style="padding:.18rem .4rem;text-align:left;color:#64748b;">Date</th>
+                                <th style="padding:.18rem .4rem;text-align:right;color:#64748b;">Stock</th>
+                                <th style="padding:.18rem .4rem;text-align:right;color:#64748b;">Change</th>
+                            </tr>
+                            ${snaps.map((s, i) => {
+                                const prev = i > 0 ? snaps[i-1].qty : null;
+                                const chg = prev !== null ? s.qty - prev : null;
+                                const chgStr = chg === null ? '—'
+                                    : chg > 0 ? `<span style="color:#16a34a;font-weight:700;">+${chg.toFixed(1)} 🚚</span>`
+                                    : chg < 0 ? `<span style="color:#dc2626;font-weight:700;">${chg.toFixed(1)}</span>`
+                                    : '<span style="color:#9ca3af;">0.0</span>';
+                                return `<tr style="border-bottom:1px solid #f0f0f0;background:${i%2?'white':'#fafafa'};">
+                                    <td style="padding:.18rem .4rem;color:#374151;">${s.date.slice(5)}</td>
+                                    <td style="padding:.18rem .4rem;text-align:right;font-weight:600;">${s.qty.toFixed(1)}</td>
+                                    <td style="padding:.18rem .4rem;text-align:right;">${chgStr}</td>
+                                </tr>`;
+                            }).join('')}
+                        </table>`;
+                        container.innerHTML += tableHtml;
+
+                        requestAnimationFrame(() => {
+                            const cv = document.getElementById(cid);
+                            if (!cv) return;
+                            { const ec = Chart.getChart(cv); if(ec) ec.destroy(); }
+                            new Chart(cv, {
+                                type: 'line',
+                                data: {
+                                    labels: snaps.map(s => s.date.slice(5)),
+                                    datasets: [{
+                                        label: 'Stock on Hand',
+                                        data: snaps.map(s => s.qty),
+                                        borderColor: '#0d9488',
+                                        backgroundColor: 'rgba(13,148,136,.08)',
+                                        fill: true,
+                                        tension: 0.2,
+                                        borderWidth: 2.5,
+                                        pointRadius: ptSizes,
+                                        pointBackgroundColor: ptColors,
+                                        pointBorderColor: ptColors,
+                                        pointBorderWidth: 2,
+                                    }]
+                                },
+                                options: {
+                                    responsive: true,
+                                    plugins: {
+                                        legend: { display: false },
+                                        tooltip: {
+                                            callbacks: {
+                                                label: ctx => {
+                                                    const i = ctx.dataIndex;
+                                                    const qty = snaps[i].qty;
+                                                    const prev = i > 0 ? snaps[i-1].qty : null;
+                                                    const diff = prev !== null ? qty - prev : null;
+                                                    let label = ' Stock: ' + qty.toFixed(1);
+                                                    if (diff !== null) label += diff > 0 ? ' (+'+diff.toFixed(1)+' delivery 🚚)' : diff < 0 ? ' ('+diff.toFixed(1)+' consumed)' : ' (no change)';
+                                                    return label;
+                                                }
+                                            }
+                                        }
+                                    },
+                                    scales: {
+                                        y: { beginAtZero: true, ticks: { callback: v => v.toFixed(1), font: { size: 9 } } },
+                                        x: { ticks: { font: { size: 9 } } }
+                                    }
+                                }
+                            });
+                        });
+                    });
+                } catch(e) {
+                    console.warn('Autochlor stock fetch failed:', e);
+                }
+            })();
+
         } // end if(extEl)
 
         // ── 7. Summary table ──────────────────────────────────────────────
@@ -21524,32 +21682,31 @@ async function saveNewItemAndAddToInvoice() {
 
     try {
 
-        // Save to inventory_management (with auto-resolved assigned_to)
+        // ✅ CHECK FIRST: only insert into inventory_management if product doesn't already exist
+        const { data: existingMgmt } = await supabaseClient
+            .from('inventory_management')
+            .select('id, assigned_to, image_url, item_code')
+            .ilike('product_name', name)
+            .eq('is_hidden', false)
+            .limit(1);
 
-        const mgmtRecord = { product_name: name, image_url: imageUrl, vendors: vendor, category: category, on_hand: 0, par: 0 };
-
-        if (resolvedAssignTo) mgmtRecord.assigned_to = [resolvedAssignTo];
-
-        const { error: mgmtErr } = await supabaseClient.from('inventory_management').insert([mgmtRecord]);
-
-        if (mgmtErr && !(mgmtErr.message||'').includes('duplicate')) throw mgmtErr;
-
-
-
-        // Save to inventory_management
-
-        if (code || price > 0) {
-
-            const { error: invErr } = await supabaseClient.from('inventory_management').insert([{
-
-                item_code: code || null, product_name: name,
-
-                vendor: vendor, unit_price: price, image_path: imageUrl
-
-            }]);
-
-            if (invErr && !(invErr.message||'').includes('duplicate')) console.warn('inventory_management warn:', invErr);
-
+        if (!existingMgmt || existingMgmt.length === 0) {
+            // Product doesn't exist — safe to insert
+            const mgmtRecord = { product_name: name, image_url: imageUrl, vendors: vendor, category: category, on_hand: 0, par: 0 };
+            if (resolvedAssignTo) mgmtRecord.assigned_to = [resolvedAssignTo];
+            const { error: mgmtErr } = await supabaseClient.from('inventory_management').insert([mgmtRecord]);
+            if (mgmtErr && !(mgmtErr.message||'').includes('duplicate')) throw mgmtErr;
+            console.log('✅ New product added to inventory_management:', name);
+        } else {
+            // Product already exists — just update image/item_code if missing
+            const existing = existingMgmt[0];
+            const updates = {};
+            if (!existing.image_url && imageUrl) updates.image_url = imageUrl;
+            if (!existing.item_code && code)     updates.item_code  = code;
+            if (Object.keys(updates).length > 0) {
+                await supabaseClient.from('inventory_management').update(updates).eq('id', existing.id);
+            }
+            console.log('ℹ️ Product already in inventory_management — skipped duplicate insert:', name);
         }
 
 
@@ -43989,6 +44146,9 @@ async function rdSaveNew(){
     if(!name){invToast('Product name required','err');return;}
     if(!cat) {invToast('Please select a category','err');return;}
     const assigned=user==='both'?['rony','julio']:[user];
+    // ✅ Check if product already exists before inserting
+    const{data:existCheck}=await sb.from('inventory_management').select('id').ilike('product_name',name).eq('is_hidden',false).limit(1);
+    if(existCheck&&existCheck.length>0){invToast('⚠️ '+name+' already exists in catalog','warn');return;}
     const{error}=await sb.from('inventory_management').insert({product_name:name,category:cat,par:par?parseFloat(par):null,on_hand:qty,assigned_to:assigned});
     if(error){invToast('Error: '+error.message,'err');return;}
     if(utype==='case'&&upc){
