@@ -21663,7 +21663,7 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
 
 
 
-       function searchInvoiceProducts() {
+       async function searchInvoiceProducts() {
 
     const searchTerm = document.getElementById('invoiceProductSearch').value.toLowerCase();
 
@@ -21722,11 +21722,35 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
 
 
     if (uniqueProducts.length === 0) {
-        // Search by name across ALL vendors — same product, different vendor/code
+        // Search by name across ALL vendors in inventory_management (not just inventoryData)
         const currentVendor = document.getElementById('invoiceVendorDropdown').value;
-        const nameMatches = searchTerm
+
+        // First try inventoryData (fast, in-memory)
+        let nameMatches = searchTerm
             ? inventoryData.filter(item => (item.product_name || '').toLowerCase().includes(searchTerm))
             : [];
+
+        // If nothing in inventoryData, search inventory_management directly in Supabase
+        if (nameMatches.length === 0 && searchTerm) {
+            try {
+                const { data: mgmtMatches } = await supabaseClient
+                    .from('inventory_management')
+                    .select('product_name, image_url, item_code, vendors, category, is_hidden')
+                    .ilike('product_name', `%${searchTerm}%`)
+                    .eq('is_hidden', false)
+                    .limit(10);
+                nameMatches = (mgmtMatches || []).map(m => ({
+                    product_name: m.product_name,
+                    image_path:   m.image_url,
+                    item_code:    m.item_code,
+                    vendor:       m.vendors,
+                    category:     m.category,
+                    unit_price:   0,
+                    has_weight:   false,
+                }));
+            } catch(e) { console.warn('Supabase name search failed:', e); }
+        }
+
         const nameMap = new Map();
         nameMatches.forEach(item => {
             const key = (item.product_name || '').toLowerCase();
@@ -24732,6 +24756,7 @@ async function loadJulioOrders() {
             const assigned = String(p.assigned_to || '').toLowerCase();
 
             if (!name || !assigned.includes('julio')) return;
+        if (window._hiddenProducts && window._hiddenProducts.has(name)) return;
             if (window._hiddenProducts && window._hiddenProducts.has(name)) return;
 
 
@@ -25689,8 +25714,6 @@ async function loadRonyOrders() {
             const assigned = String(p.assigned_to || '').toLowerCase();
 
             if (!name || !assigned.includes('rony')) return;
-
-            if (window._hiddenProducts && window._hiddenProducts.has(name)) return;
 
             
 
