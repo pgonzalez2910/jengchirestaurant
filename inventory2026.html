@@ -18945,14 +18945,11 @@ function rptRenderBody(tabName, cfg, d) {
     case 'rpt_autochlor': {
 
         // ═══════════════════════════════════════════════════════════════
-        //  AUTOCHLOR TRACKING  —  Enterprise Dashboard Rebuild
-        //  Charts: vendor spend over time · spend per product ·
-        //          change frequency per product · per-product timeline
-        //  Features: product images · manual date entry · old vs new date
+        //  AUTOCHLOR — Two-Tab Dashboard: Consumption | Invoice Amounts
         // ═══════════════════════════════════════════════════════════════
 
         // ── helpers ──────────────────────────────────────────────────────
-        const fmt$ = n => '$' + Math.round(n||0).toLocaleString('en-US');
+        const fmt$ = n => '$' + (n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
         const fmtD = ymd => {
             if (!ymd) return '—';
             const [y,m,dd] = ymd.split('-');
@@ -18964,483 +18961,543 @@ function rptRenderBody(tabName, cfg, d) {
             return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
         };
         const todayStr = chiToday();
+        const MO_NAMES = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        const fmtMo = m => { const [y,mo]=m.split('-'); return MO_NAMES[parseInt(mo)-1]+' '+y.slice(2); };
 
-        // ── 1. Build image map from mgmt ─────────────────────────────────
+        // ── Image map ────────────────────────────────────────────────────
         const acImgMap = new Map();
         (d.mgmt||[]).forEach(p => {
             if (p.image_url) acImgMap.set((p.product_name||'').toLowerCase().trim(), p.image_url);
         });
         const getAcImg = name => {
-            const k = (name||'').toLowerCase().trim();
-            const raw = acImgMap.get(k) || null;
+            const raw = acImgMap.get((name||'').toLowerCase().trim()) || null;
             if (!raw) return null;
-            if (raw.startsWith('http')) return raw;
-            return `https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/${raw}`;
+            return raw.startsWith('http') ? raw : `https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/${raw}`;
         };
 
-        // ── 2. Aggregate data by product ────────────────────────────────
+        // ── Aggregate by product ─────────────────────────────────────────
         const acByProd = {};
         const acBucket = (name, cat) => {
             if (!acByProd[name]) acByProd[name] = {
                 name, cat: cat||'Janitorial & Chemicals',
-                trackDates: [], invoiceDates: [], totalSpend: 0,
-                spendByMonth: {}  // 'YYYY-MM' → amount
+                trackDates: [], invoiceLines: [], totalSpend: 0,
+                spendByMonth: {}, qtyByMonth: {}
             };
             return acByProd[name];
         };
 
-        // tracking logs
         (d.allAcTracking||[]).forEach(row => {
             if (!row.date_changed) return;
             const b = acBucket(row.product_name, 'Janitorial & Chemicals');
-            b.trackDates.push({ id: row.id||null, date: row.date_changed, qty: row.qty||null, unit: row.unit||null, notes: row.notes||null });
+            b.trackDates.push({ id: row.id||null, date: row.date_changed, notes: row.notes||null });
         });
 
-        // invoice spend
         d.allEnriched.filter(it => (it.vendor||'').toLowerCase() === 'autochlor').forEach(it => {
             const b = acBucket(it.product_name, it.category||'Janitorial & Chemicals');
-            b.invoiceDates.push(it.invoice_date);
+            b.invoiceLines.push({ date: it.invoice_date, price: it.price||0, qty: it.qty||1, total: it.total||0, invoiceId: it.invoice_id });
             b.totalSpend += it.total||0;
             const mo = (it.invoice_date||'').slice(0,7);
-            if (mo) b.spendByMonth[mo] = (b.spendByMonth[mo]||0) + (it.total||0);
+            if (mo) {
+                b.spendByMonth[mo] = (b.spendByMonth[mo]||0) + (it.total||0);
+                b.qtyByMonth[mo]   = (b.qtyByMonth[mo]||0)  + (it.qty||1);
+            }
         });
 
-        // catalog (vendor = autochlor)
         d.mgmt.filter(p => (p.vendors||'').toLowerCase().includes('autochlor'))
               .forEach(p => acBucket(p.product_name, p.category));
 
-        // ── 3. Compute per-product stats ─────────────────────────────────
+        // ── Compute stats ─────────────────────────────────────────────────
         const acRows = Object.values(acByProd).map(p => {
             p.trackDates.sort((a,b) => a.date.localeCompare(b.date));
-            const allDates = p.trackDates.map(x=>x.date);
+            const allDates  = p.trackDates.map(x=>x.date);
             const lastDate  = allDates[allDates.length-1]||null;
             const firstDate = allDates[0]||null;
             const daysActive = (lastDate&&firstDate&&lastDate!==firstDate)
                 ? Math.round((new Date(lastDate+'T12:00:00')-new Date(firstDate+'T12:00:00'))/86400000) : null;
             const daysSinceLast = lastDate
                 ? Math.round((new Date(todayStr+'T12:00:00')-new Date(lastDate+'T12:00:00'))/86400000) : null;
-            let avgDaysBetween = null;
+            let avgDaysBetween = null, cycles = [];
             if (allDates.length >= 2) {
-                const gaps = [];
                 for (let i=1;i<allDates.length;i++)
-                    gaps.push(Math.round((new Date(allDates[i]+'T12:00:00')-new Date(allDates[i-1]+'T12:00:00'))/86400000));
-                const valid = gaps.filter(g => g>=0 && g<3650);
+                    cycles.push(Math.round((new Date(allDates[i]+'T12:00:00')-new Date(allDates[i-1]+'T12:00:00'))/86400000));
+                const valid = cycles.filter(g=>g>=0&&g<3650);
                 if (valid.length) avgDaysBetween = Math.round(valid.reduce((a,b)=>a+b,0)/valid.length);
             }
-            return {...p, allDates, lastDate, firstDate, daysActive, daysSinceLast, avgDaysBetween,
-                    trackCount: p.trackDates.length, invoiceCount: p.invoiceDates.length};
-        }).sort((a,b) => b.totalSpend-a.totalSpend);
+            return {...p, allDates, cycles, lastDate, firstDate, daysActive, daysSinceLast, avgDaysBetween,
+                    trackCount: p.trackDates.length};
+        }).sort((a,b) => b.totalSpend - a.totalSpend);
 
-        // ── 4. KPIs ──────────────────────────────────────────────────────
-        const totalProds   = acRows.length;
-        const trackedProds = acRows.filter(r=>r.trackCount>0).length;
-        const cycleProds   = acRows.filter(r=>r.avgDaysBetween>0);
-        const avgCycle     = cycleProds.length ? Math.round(cycleProds.reduce((s,r)=>s+r.avgDaysBetween,0)/cycleProds.length) : 0;
-        const totalSpendAll= acRows.reduce((s,r)=>s+r.totalSpend,0);
-        const overdueCnt   = acRows.filter(r=>r.daysSinceLast!==null&&r.avgDaysBetween&&r.daysSinceLast>r.avgDaysBetween*1.2).length;
+        // ── Global KPIs (shown above both tabs) ──────────────────────────
+        const totalProds    = acRows.length;
+        const trackedProds  = acRows.filter(r=>r.trackCount>0).length;
+        const cycleProds    = acRows.filter(r=>r.avgDaysBetween>0);
+        const avgCycle      = cycleProds.length ? Math.round(cycleProds.reduce((s,r)=>s+r.avgDaysBetween,0)/cycleProds.length) : 0;
+        const totalSpendAll = acRows.reduce((s,r)=>s+r.totalSpend,0);
+        const overdueCnt    = acRows.filter(r=>r.daysSinceLast!==null&&r.avgDaysBetween&&r.daysSinceLast>r.avgDaysBetween*1.2).length;
 
         kpiEl.innerHTML =
-            kpi('🧪','Products Tracked',  `${trackedProds}/${totalProds}`, 'With change logs', colHex) +
-            kpi('📅','Avg Change Cycle',  avgCycle ? avgCycle+'d' : '—', 'Days between changes', colHex) +
-            kpi('⚠️','Overdue Changes',   overdueCnt, overdueCnt?'Need attention':'All on time', overdueCnt?'#dc2626':'#16a34a') +
-            kpi('💰','Total AC Spend',    fmt$(totalSpendAll), 'All invoices', '#0d9488');
+            kpi('🧪','Products',  `${trackedProds}/${totalProds}`, 'Tracked / Total', colHex) +
+            kpi('📅','Avg Cycle',  avgCycle ? avgCycle+'d' : '—', 'Days between changes', colHex) +
+            kpi('⚠️','Overdue',   overdueCnt, overdueCnt?'Need attention':'All on time', overdueCnt?'#dc2626':'#16a34a') +
+            kpi('💰','Total Spend', fmt$(totalSpendAll), 'All invoices', '#0d9488');
 
-        // ── 5. TOP CHARTS ROW ────────────────────────────────────────────
-        // Build month list for vendor spend over time
-        const allMonths = [...new Set(
-            acRows.flatMap(r => Object.keys(r.spendByMonth))
-        )].sort();
-
+        // ── Build ALL months from invoice data ────────────────────────────
+        const allMonths = [...new Set(acRows.flatMap(r=>Object.keys(r.spendByMonth)))].sort();
         const vendorSpendByMonth = {};
-        allMonths.forEach(mo => {
-            vendorSpendByMonth[mo] = acRows.reduce((s,r) => s+(r.spendByMonth[mo]||0), 0);
+        allMonths.forEach(mo => { vendorSpendByMonth[mo] = acRows.reduce((s,r)=>s+(r.spendByMonth[mo]||0),0); });
+
+        // ══════════════════════════════════════════════════════════════════
+        // BUILD TWO-TAB SHELL
+        // ══════════════════════════════════════════════════════════════════
+        chartEl.innerHTML = '';
+        if (extEl) extEl.innerHTML = '';
+
+        const acTabId = 'acTab_'+(++window._rptChartSeq);
+
+        const shell = document.createElement('div');
+        shell.innerHTML = `
+        <!-- Autochlor Tab Bar -->
+        <div style="display:flex;gap:0;margin-bottom:1.25rem;background:#f0fdfa;border-radius:10px;padding:4px;border:1px solid #99f6e4;">
+            <button id="${acTabId}_consumption"
+                onclick="acSwitchTab('${acTabId}','consumption')"
+                style="flex:1;padding:.5rem 1rem;border:none;border-radius:7px;font-size:.82rem;font-weight:700;cursor:pointer;background:linear-gradient(135deg,#0d9488,#0f766e);color:white;transition:all .2s;box-shadow:0 2px 6px rgba(13,148,136,.3);">
+                🔬 Consumption
+            </button>
+            <button id="${acTabId}_invoices"
+                onclick="acSwitchTab('${acTabId}','invoices')"
+                style="flex:1;padding:.5rem 1rem;border:none;border-radius:7px;font-size:.82rem;font-weight:700;cursor:pointer;background:transparent;color:#0f766e;transition:all .2s;">
+                💰 Invoice Amounts
+            </button>
+        </div>
+        <!-- Tab Panels -->
+        <div id="${acTabId}_panel_consumption"></div>
+        <div id="${acTabId}_panel_invoices" style="display:none;"></div>`;
+        chartEl.appendChild(shell);
+
+        // ── Tab switch function ──────────────────────────────────────────
+        window.acSwitchTab = function(tabId, which) {
+            ['consumption','invoices'].forEach(t => {
+                const btn = document.getElementById(`${tabId}_${t}`);
+                const panel = document.getElementById(`${tabId}_panel_${t}`);
+                const active = t === which;
+                if (btn) {
+                    btn.style.background = active ? 'linear-gradient(135deg,#0d9488,#0f766e)' : 'transparent';
+                    btn.style.color      = active ? 'white' : '#0f766e';
+                    btn.style.boxShadow  = active ? '0 2px 6px rgba(13,148,136,.3)' : 'none';
+                }
+                if (panel) panel.style.display = active ? 'block' : 'none';
+            });
+        };
+
+        // ══════════════════════════════════════════════════════════════════
+        // TAB 1 — CONSUMPTION
+        // ══════════════════════════════════════════════════════════════════
+        const consPanel = document.getElementById(`${acTabId}_panel_consumption`);
+
+        // ── Consumption summary chart (all products, change count per month) ─
+        const cSumId = 'acCS_'+(++window._rptChartSeq);
+        const cSumWrap = document.createElement('div');
+        cSumWrap.style.cssText = 'background:white;border-radius:14px;padding:1.25rem;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:1.25rem;';
+        cSumWrap.innerHTML = `
+            <div style="font-size:.82rem;font-weight:800;color:#0f766e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.15rem;">🔄 Change Frequency Overview — All Products</div>
+            <div style="font-size:.68rem;color:#6b7280;margin-bottom:.85rem;">Number of product changes logged per month across all Autochlor chemicals</div>
+            <canvas id="${cSumId}" height="90"></canvas>`;
+        consPanel.appendChild(cSumWrap);
+
+        // Build changes-per-month data
+        const changesByMonth = {};
+        acRows.forEach(r => r.trackDates.forEach(e => {
+            const mo = e.date.slice(0,7);
+            changesByMonth[mo] = (changesByMonth[mo]||0)+1;
+        }));
+        const chgMonths = Object.keys(changesByMonth).sort();
+
+        requestAnimationFrame(() => {
+            const cv = document.getElementById(cSumId); if(!cv)return;
+            {const e=Chart.getChart(cv);if(e)e.destroy();}
+            if (chgMonths.length > 0) {
+                new Chart(cv, {
+                    type:'bar',
+                    data:{ labels: chgMonths.map(fmtMo),
+                        datasets:[{ label:'Changes Logged', data: chgMonths.map(m=>changesByMonth[m]||0),
+                            backgroundColor:'rgba(13,148,136,.7)', borderRadius:5, borderWidth:0 }]},
+                    options:{ responsive:true,
+                        plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>c.parsed.y+' changes'}} },
+                        scales:{ y:{beginAtZero:true,ticks:{stepSize:1,font:{size:10}}}, x:{ticks:{font:{size:10}}} }}
+                });
+            } else {
+                cv.insertAdjacentHTML('afterend','<div style="text-align:center;padding:2rem;color:#9ca3af;font-size:.8rem;">No change logs yet</div>');
+            }
         });
 
-        chartEl.innerHTML = '';
+        // Quick status strip
+        const strip = document.createElement('div');
+        strip.style.cssText = 'display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:1.25rem;padding:.75rem;background:#f0fdfa;border-radius:10px;border:1px solid #99f6e4;';
+        strip.innerHTML = '<div style="width:100%;font-size:.68rem;font-weight:800;color:#0f766e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem;">⏱ Days Since Last Change</div>' +
+            acRows.filter(r=>r.trackCount>0).map(p => {
+                const c = p.daysSinceLast>60?'#dc2626':p.daysSinceLast>30?'#d97706':'#16a34a';
+                return `<span style="display:inline-flex;align-items:center;gap:.35rem;background:white;border:1px solid #e5e7eb;border-radius:8px;padding:.28rem .6rem;font-size:.7rem;">
+                    <strong style="color:#1e293b;">${p.name.length>22?p.name.slice(0,21)+'…':p.name}</strong>
+                    <span style="background:${c};color:white;border-radius:99px;padding:.05rem .4rem;font-weight:700;font-size:.67rem;">${p.daysSinceLast===0?'Today':p.daysSinceLast+'d ago'}</span>
+                </span>`;
+            }).join('');
+        consPanel.appendChild(strip);
 
-        // Chart grid: 2 cols top row
-        const topGrid = document.createElement('div');
-        topGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;';
+        // ── Per-product consumption cards ────────────────────────────────
+        acRows.filter(r=>r.trackCount>0||r.totalSpend>0).forEach(prod => {
+            const isOverdue = prod.avgDaysBetween && prod.daysSinceLast > prod.avgDaysBetween*1.2;
+            const daysColor = prod.daysSinceLast===null?'#9ca3af':prod.daysSinceLast>60?'#dc2626':prod.daysSinceLast>30?'#d97706':'#16a34a';
+            const imgSrc    = getAcImg(prod.name);
+            const safeId    = prod.name.replace(/[^a-z0-9]/gi,'_');
+            const chartId   = 'acLC_'+(++window._rptChartSeq);
+            const logDateId = 'acLD_'+safeId;
+            const logNoteId = 'acLN_'+safeId;
+            const safeName  = (prod.name||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
 
-        // Chart A: Vendor total spend by month (line)
-        const cA_id = 'acCA_'+(++window._rptChartSeq);
-        const cA = document.createElement('div');
-        cA.style.cssText = 'background:white;border-radius:14px;padding:1.25rem 1.25rem 1rem;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);';
-        cA.innerHTML = `<div style="font-size:.8rem;font-weight:800;color:#0f766e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.15rem;">💰 Vendor Total Spend Over Time</div>
-            <div style="font-size:.68rem;color:#6b7280;margin-bottom:.85rem;">Monthly invoice spend — Autochlor</div>
-            <canvas id="${cA_id}" height="140"></canvas>`;
-        topGrid.appendChild(cA);
+            // Build change log rows
+            const logRows = prod.trackDates.map((entry, i) => {
+                const prev    = i>0 ? prod.trackDates[i-1] : null;
+                const gapDays = prev ? Math.round((new Date(entry.date+'T12:00:00')-new Date(prev.date+'T12:00:00'))/86400000) : null;
+                const gapBadge = gapDays===null
+                    ? '<span style="background:#ede9fe;color:#7c3aed;border-radius:99px;padding:.1rem .45rem;font-size:.67rem;font-weight:700;">1st</span>'
+                    : `<span style="background:${gapDays<=7?'#dcfce7':gapDays<=30?'#e0f2fe':'#fef9c3'};color:${gapDays<=7?'#15803d':gapDays<=30?'#0369a1':'#92400e'};border-radius:99px;padding:.1rem .45rem;font-size:.67rem;font-weight:700;">+${gapDays}d</span>`;
+                const safeE = (entry.date||'').replace(/'/g,"\\'");
+                const safeN = (entry.notes||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+                const safeND= (prod.name||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+                const editBtn = entry.id ? `<button onclick="acEditLog('${entry.id}','${safeE}','${safeN}',this)" style="background:#eff6ff;border:1px solid #bfdbfe;color:#2563eb;border-radius:5px;padding:.15rem .4rem;font-size:.68rem;cursor:pointer;font-weight:600;">✏️</button>` : '';
+                const delBtn  = entry.id ? `<button onclick="acDeleteLog('${entry.id}','${safeND}')" style="background:#fff1f2;border:1px solid #fecdd3;color:#dc2626;border-radius:5px;padding:.15rem .4rem;font-size:.68rem;cursor:pointer;font-weight:600;">🗑</button>` : '';
+                return `<tr style="background:${i%2?'#fff':'#f8fafc'};">
+                    <td style="padding:.4rem .65rem;font-family:var(--font-mono);font-size:.78rem;font-weight:700;color:#1e293b;white-space:nowrap;">${fmtD(entry.date)}</td>
+                    <td style="padding:.4rem .5rem;text-align:center;">${gapBadge}</td>
+                    <td style="padding:.4rem .65rem;font-size:.75rem;color:#374151;">${entry.notes||'<span style="color:#d1d5db;font-style:italic;">—</span>'}</td>
+                    <td style="padding:.4rem .5rem;text-align:right;white-space:nowrap;"><div style="display:flex;gap:.25rem;justify-content:flex-end;">${editBtn}${delBtn}</div></td>
+                </tr>`;
+            }).join('');
 
-        // Chart B: Spend per product (horizontal bar)
-        const cB_id = 'acCB_'+(++window._rptChartSeq);
-        const cB = document.createElement('div');
-        cB.style.cssText = 'background:white;border-radius:14px;padding:1.25rem 1.25rem 1rem;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);';
-        cB.innerHTML = `<div style="font-size:.8rem;font-weight:800;color:#7c3aed;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.15rem;">📊 Spend Per Product</div>
-            <div style="font-size:.68rem;color:#6b7280;margin-bottom:.85rem;">All-time invoice spend by product</div>
-            <canvas id="${cB_id}" height="140"></canvas>`;
-        topGrid.appendChild(cB);
-        chartEl.appendChild(topGrid);
+            const card = document.createElement('div');
+            card.style.cssText = `background:white;border-radius:14px;border:1.5px solid ${isOverdue?'#fca5a5':'#e2e8f0'};box-shadow:0 2px 10px rgba(0,0,0,.06);margin-bottom:1.1rem;overflow:hidden;`;
 
-        // Chart C: Change frequency per product (bar — full width)
-        const cC_id = 'acCC_'+(++window._rptChartSeq);
-        const cC = document.createElement('div');
-        cC.style.cssText = 'background:white;border-radius:14px;padding:1.25rem 1.25rem 1rem;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:1rem;';
-        cC.innerHTML = `<div style="font-size:.8rem;font-weight:800;color:#1d4ed8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.15rem;">🔄 Change Frequency per Product</div>
-            <div style="font-size:.68rem;color:#6b7280;margin-bottom:.85rem;">Number of logged changes · avg days between changes</div>
-            <canvas id="${cC_id}" height="110"></canvas>`;
-        chartEl.appendChild(cC);
+            card.innerHTML = `
+            <!-- Header -->
+            <div style="display:flex;align-items:center;gap:.9rem;padding:.8rem 1.1rem;${isOverdue?'background:#fff7f7;':'background:linear-gradient(135deg,#f8fafc,#f0fdfa);'}border-bottom:1px solid ${isOverdue?'#fecaca':'#e5e7eb'};">
+                <div style="width:52px;height:52px;flex-shrink:0;border-radius:9px;overflow:hidden;background:#f1f5f9;border:1.5px solid #e2e8f0;display:flex;align-items:center;justify-content:center;">
+                    ${imgSrc ? `<img src="${imgSrc}" style="width:100%;height:100%;object-fit:contain;" onerror="this.parentElement.innerHTML='<span style=\\'font-size:1.5rem;\\'>🧪</span>'">` : '<span style="font-size:1.5rem;">🧪</span>'}
+                </div>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:.92rem;font-weight:800;color:#0f172a;">${isOverdue?'⚠️ ':''}${prod.name}</div>
+                    <div style="font-size:.7rem;color:#6b7280;margin-top:.18rem;display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;">
+                        ${prod.trackCount>0?`<span style="background:#f0fdfa;color:#0f766e;border-radius:99px;padding:.04rem .4rem;font-weight:700;border:1px solid #99f6e4;">${prod.trackCount} changes logged</span>`:''}
+                        ${prod.avgDaysBetween?`<span style="background:#eff6ff;color:#1d4ed8;border-radius:99px;padding:.04rem .4rem;font-weight:700;border:1px solid #bfdbfe;">avg ${prod.avgDaysBetween}d cycle</span>`:''}
+                        ${prod.daysActive!==null?`<span style="background:#faf5ff;color:#7c3aed;border-radius:99px;padding:.04rem .4rem;font-weight:700;border:1px solid #e9d5ff;">${prod.daysActive}d tracked</span>`:''}
+                    </div>
+                </div>
+                <div style="flex-shrink:0;text-align:center;">
+                    <div style="background:${daysColor};color:white;font-size:.8rem;font-weight:800;border-radius:9px;padding:.28rem .65rem;min-width:62px;">
+                        ${prod.daysSinceLast===null?'No logs':prod.daysSinceLast===0?'Today':prod.daysSinceLast+'d ago'}
+                    </div>
+                    <div style="font-size:.62rem;color:#9ca3af;margin-top:.15rem;">Last: ${fmtD(prod.lastDate)}</div>
+                    <div style="font-size:.62rem;color:#9ca3af;">First: ${fmtD(prod.firstDate)}</div>
+                </div>
+            </div>
 
-        // Render charts
-        requestAnimationFrame(() => {
-            // Chart A — vendor spend over time
-            const ctxA = document.getElementById(cA_id);
-            if (ctxA && allMonths.length > 0) {
-                {const e=Chart.getChart(ctxA);if(e)e.destroy();}
-                new Chart(ctxA, {
-                    type: 'line',
-                    data: {
-                        labels: allMonths.map(m => {
-                            const [y,mo] = m.split('-');
-                            return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(mo)-1]+' '+y.slice(2);
-                        }),
-                        datasets: [{
-                            label: 'Monthly Spend',
-                            data: allMonths.map(m => vendorSpendByMonth[m]||0),
-                            borderColor: '#0d9488', backgroundColor: 'rgba(13,148,136,.12)',
-                            fill: true, tension: .35, borderWidth: 2.5,
-                            pointRadius: 5, pointBackgroundColor: '#0d9488',
-                            pointHoverRadius: 7
-                        }]
-                    },
-                    options: {
-                        responsive:true, plugins:{ legend:{display:false},
-                            tooltip:{ callbacks:{ label: c => ' '+fmt$(c.parsed.y) } } },
-                        scales:{ y:{ beginAtZero:true, ticks:{ callback:v=>'$'+v.toLocaleString() } },
-                                 x:{ ticks:{ font:{size:10} } } }
-                    }
-                });
-            } else if (ctxA) {
-                ctxA.parentElement.insertAdjacentHTML('beforeend','<div style="text-align:center;padding:2rem;color:#9ca3af;font-size:.8rem;">No invoice data yet</div>');
-            }
+            <!-- Log entry row -->
+            <div style="padding:.5rem 1.1rem;background:#fafafa;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
+                <span style="font-size:.7rem;font-weight:700;color:#374151;white-space:nowrap;">📅 Log Change:</span>
+                <input type="date" id="${logDateId}" value="${todayStr}"
+                    style="border:1.5px solid #d1d5db;border-radius:7px;padding:.22rem .5rem;font-size:.78rem;font-family:var(--font-mono);"
+                    onfocus="this.style.borderColor='#0d9488'" onblur="this.style.borderColor='#d1d5db'">
+                <input type="text" id="${logNoteId}" placeholder="Notes (optional) — Enter to save"
+                    style="border:1.5px solid #d1d5db;border-radius:7px;padding:.22rem .5rem;font-size:.73rem;flex:1;min-width:120px;"
+                    onfocus="this.style.borderColor='#0d9488'" onblur="this.style.borderColor='#d1d5db'"
+                    onkeydown="if(event.key==='Enter'){document.getElementById('acBtn_${safeId}').click();}">
+                <button id="acBtn_${safeId}" onclick="acLogDate('${safeName}','${logDateId}','${logNoteId}',this)"
+                    style="background:linear-gradient(135deg,#0d9488,#0f766e);color:white;border:none;border-radius:7px;padding:.25rem .75rem;font-size:.75rem;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 2px 5px rgba(13,148,136,.3);">
+                    + Log Change
+                </button>
+                <span id="acStatus_${safeId}" style="font-size:.68rem;font-weight:700;color:#16a34a;display:none;"></span>
+            </div>
 
-            // Chart B — spend per product
-            const ctxB = document.getElementById(cB_id);
-            if (ctxB) {
-                const prodSpend = acRows.filter(r=>r.totalSpend>0).sort((a,b)=>b.totalSpend-a.totalSpend).slice(0,10);
-                {const e=Chart.getChart(ctxB);if(e)e.destroy();}
-                if (prodSpend.length) {
-                    new Chart(ctxB, {
-                        type: 'bar',
-                        data: {
-                            labels: prodSpend.map(r => r.name.length>20 ? r.name.slice(0,19)+'…' : r.name),
-                            datasets: [{
-                                label: 'Spend',
-                                data: prodSpend.map(r => r.totalSpend),
-                                backgroundColor: prodSpend.map((_,i) => `hsla(${260+i*15},70%,58%,.8)`),
-                                borderRadius: 5, borderWidth: 0
-                            }]
-                        },
-                        options: {
-                            indexAxis: 'y', responsive:true,
-                            plugins:{ legend:{display:false},
-                                tooltip:{ callbacks:{ label: c=>' '+fmt$(c.parsed.x) } } },
-                            scales:{ x:{ beginAtZero:true, ticks:{ callback:v=>'$'+v.toLocaleString() } },
-                                     y:{ ticks:{ font:{size:10} } } }
+            <!-- Consumption Line Chart -->
+            <div style="padding:.7rem 1.1rem .5rem;border-bottom:1px solid #f0f0f0;">
+                <div style="font-size:.65rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.3rem;">
+                    📈 Consumption Timeline — Days Between Changes
+                    ${prod.avgDaysBetween ? `<span style="margin-left:.5rem;background:#eff6ff;color:#1d4ed8;border-radius:99px;padding:.05rem .45rem;font-size:.66rem;font-weight:700;border:1px solid #bfdbfe;">baseline avg: ${prod.avgDaysBetween}d</span>` : ''}
+                </div>
+                <canvas id="${chartId}" height="80"></canvas>
+            </div>
+
+            <!-- Change log table -->
+            ${prod.trackDates.length>0 ? `
+            <div style="padding:.6rem 1.1rem .85rem;">
+                <div style="font-size:.7rem;font-weight:700;color:#475569;margin-bottom:.4rem;">📋 Change Log — ${prod.trackDates.length} entries · Started ${fmtD(prod.firstDate)} · Last replaced ${fmtD(prod.lastDate)}</div>
+                <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+                    <table style="width:100%;border-collapse:collapse;font-size:.78rem;">
+                        <thead><tr style="background:#f1f5f9;border-bottom:2px solid #e2e8f0;">
+                            <th style="padding:.3rem .65rem;text-align:left;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;">Date Changed</th>
+                            <th style="padding:.3rem .5rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;">Cycle Length</th>
+                            <th style="padding:.3rem .65rem;text-align:left;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;">Notes</th>
+                            <th style="padding:.3rem .5rem;text-align:right;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;">Actions</th>
+                        </tr></thead>
+                        <tbody>${logRows}</tbody>
+                    </table>
+                </div>
+            </div>` :
+            `<div style="padding:.55rem 1.1rem .7rem;font-size:.75rem;color:#9ca3af;">No change entries yet — use Log Change above.</div>`}`;
+
+            consPanel.appendChild(card);
+
+            // Render consumption line chart
+            requestAnimationFrame(() => {
+                const cv = document.getElementById(chartId); if(!cv)return;
+                {const ec=Chart.getChart(cv);if(ec)ec.destroy();}
+                if (prod.trackDates.length >= 2) {
+                    const labels=[], gaps=[];
+                    prod.trackDates.forEach((e,i)=>{
+                        if(i===0)return;
+                        const g=Math.round((new Date(e.date+'T12:00:00')-new Date(prod.trackDates[i-1].date+'T12:00:00'))/86400000);
+                        labels.push(fmtD(e.date)); gaps.push(g);
+                    });
+                    const avgLine = prod.avgDaysBetween ? labels.map(()=>prod.avgDaysBetween) : null;
+                    const datasets = [{
+                        label: 'Days since prev change',
+                        data: gaps, borderColor:'#0d9488', backgroundColor:'rgba(13,148,136,.1)',
+                        fill:true, tension:.35, borderWidth:2.5, pointRadius:5, pointHoverRadius:7
+                    }];
+                    if (avgLine) datasets.push({
+                        label: `Avg baseline (${prod.avgDaysBetween}d)`,
+                        data: avgLine, borderColor:'#f59e0b', borderDash:[5,4],
+                        borderWidth:1.8, pointRadius:0, fill:false, tension:0
+                    });
+                    new Chart(cv, {
+                        type:'line',
+                        data:{ labels, datasets },
+                        options:{ responsive:true,
+                            plugins:{ legend:{display:!!avgLine,labels:{font:{size:10},boxWidth:14}},
+                                tooltip:{callbacks:{label:c=>c.dataset.label+': '+c.parsed.y+'d'}} },
+                            scales:{ y:{beginAtZero:true,ticks:{callback:v=>v+'d',font:{size:9}}}, x:{ticks:{font:{size:9},maxRotation:30}} }
                         }
                     });
                 } else {
-                    ctxB.parentElement.insertAdjacentHTML('beforeend','<div style="text-align:center;padding:2rem;color:#9ca3af;font-size:.8rem;">No invoice data yet</div>');
+                    cv.style.display='none';
+                    cv.insertAdjacentHTML('afterend',`<div style="text-align:center;padding:1rem 0;color:#d1d5db;font-size:.75rem;">Log 2+ changes to see consumption timeline</div>`);
                 }
+            });
+        }); // end acRows.forEach (consumption)
+
+        // Consumption summary table at the bottom
+        const consTblWrap = document.createElement('div');
+        consTblWrap.style.cssText = 'background:white;border-radius:14px;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;margin-top:.75rem;';
+        consTblWrap.innerHTML = `
+            <div style="padding:.65rem 1.1rem;background:#f8fafc;border-bottom:2px solid #e2e8f0;">
+                <span style="font-size:.78rem;font-weight:800;color:#0f766e;">📊 Consumption Summary — All Products</span>
+            </div>
+            <div style="overflow-x:auto;">
+                <table style="width:100%;border-collapse:collapse;font-size:.78rem;">
+                    <thead><tr style="background:#f1f5f9;">
+                        <th style="padding:.4rem .75rem;text-align:left;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Product</th>
+                        <th style="padding:.4rem .6rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">First Log</th>
+                        <th style="padding:.4rem .6rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Last Replaced</th>
+                        <th style="padding:.4rem .6rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Days Tracked</th>
+                        <th style="padding:.4rem .6rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Avg Cycle</th>
+                        <th style="padding:.4rem .6rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;"># Changes</th>
+                        <th style="padding:.4rem .6rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Days Since Last</th>
+                        <th style="padding:.4rem .6rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Status</th>
+                    </tr></thead>
+                    <tbody>
+                        ${acRows.map((r,i) => {
+                            const overdue = r.avgDaysBetween && r.daysSinceLast > r.avgDaysBetween*1.2;
+                            const dc = r.daysSinceLast===null?'#9ca3af':r.daysSinceLast>60?'#dc2626':r.daysSinceLast>30?'#d97706':'#16a34a';
+                            return `<tr style="background:${i%2?'#fff':'#f8fafc'};${overdue?'outline:1.5px solid #fca5a5;':''}">
+                                <td style="padding:.45rem .75rem;font-weight:700;color:#0f172a;">${r.name}</td>
+                                <td style="padding:.45rem .6rem;text-align:center;font-family:var(--font-mono);font-size:.75rem;">${fmtD(r.firstDate)}</td>
+                                <td style="padding:.45rem .6rem;text-align:center;font-family:var(--font-mono);font-size:.75rem;">${fmtD(r.lastDate)}</td>
+                                <td style="padding:.45rem .6rem;text-align:center;">${r.daysActive!==null?r.daysActive+'d':'—'}</td>
+                                <td style="padding:.45rem .6rem;text-align:center;font-weight:700;color:#1d4ed8;">${r.avgDaysBetween!==null?r.avgDaysBetween+'d':'—'}</td>
+                                <td style="padding:.45rem .6rem;text-align:center;">${r.trackCount||'—'}</td>
+                                <td style="padding:.45rem .6rem;text-align:center;"><span style="background:${dc};color:white;border-radius:99px;padding:.08rem .5rem;font-size:.72rem;font-weight:700;">${r.daysSinceLast===null?'No data':r.daysSinceLast+'d'}</span></td>
+                                <td style="padding:.45rem .6rem;text-align:center;font-size:.72rem;font-weight:700;color:${overdue?'#dc2626':'#16a34a'};">${overdue?'⚠️ OVERDUE':'✅ OK'}</td>
+                            </tr>`;
+                        }).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+        consPanel.appendChild(consTblWrap);
+
+        // ══════════════════════════════════════════════════════════════════
+        // TAB 2 — INVOICE AMOUNTS
+        // ══════════════════════════════════════════════════════════════════
+        const invPanel = document.getElementById(`${acTabId}_panel_invoices`);
+
+        // ── Monthly spend chart ──────────────────────────────────────────
+        const invChartId  = 'acIC_'+(++window._rptChartSeq);
+        const invChart2Id = 'acIC2_'+(++window._rptChartSeq);
+
+        const invChartGrid = document.createElement('div');
+        invChartGrid.style.cssText = 'display:grid;grid-template-columns:1.4fr 1fr;gap:1rem;margin-bottom:1.25rem;';
+
+        const invChartA = document.createElement('div');
+        invChartA.style.cssText = 'background:white;border-radius:14px;padding:1.25rem;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);';
+        invChartA.innerHTML = `
+            <div style="font-size:.82rem;font-weight:800;color:#0f766e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.1rem;">💰 Monthly Spend — Autochlor</div>
+            <div style="font-size:.68rem;color:#6b7280;margin-bottom:.8rem;">Total invoice amount per month</div>
+            <canvas id="${invChartId}" height="120"></canvas>`;
+
+        const invChartB = document.createElement('div');
+        invChartB.style.cssText = 'background:white;border-radius:14px;padding:1.25rem;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);';
+        invChartB.innerHTML = `
+            <div style="font-size:.82rem;font-weight:800;color:#7c3aed;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.1rem;">📊 Spend by Product</div>
+            <div style="font-size:.68rem;color:#6b7280;margin-bottom:.8rem;">All-time total per product</div>
+            <canvas id="${invChart2Id}" height="120"></canvas>`;
+
+        invChartGrid.appendChild(invChartA);
+        invChartGrid.appendChild(invChartB);
+        invPanel.appendChild(invChartGrid);
+
+        requestAnimationFrame(() => {
+            // Chart A — monthly spend line
+            const cvA = document.getElementById(invChartId); if(!cvA)return;
+            {const e=Chart.getChart(cvA);if(e)e.destroy();}
+            if (allMonths.length>0) {
+                new Chart(cvA, {
+                    type:'line',
+                    data:{ labels: allMonths.map(fmtMo),
+                        datasets:[{
+                            label:'Monthly Spend', data: allMonths.map(m=>vendorSpendByMonth[m]||0),
+                            borderColor:'#0d9488', backgroundColor:'rgba(13,148,136,.1)',
+                            fill:true, tension:.35, borderWidth:2.5, pointRadius:5, pointBackgroundColor:'#0d9488', pointHoverRadius:7
+                        }]},
+                    options:{ responsive:true,
+                        plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>' '+fmt$(c.parsed.y)}} },
+                        scales:{ y:{beginAtZero:true,ticks:{callback:v=>'$'+v.toLocaleString(),font:{size:10}}}, x:{ticks:{font:{size:10}}} }
+                    }
+                });
+            } else {
+                cvA.insertAdjacentHTML('afterend','<div style="text-align:center;padding:2rem;color:#9ca3af;font-size:.8rem;">No invoice data yet</div>');
             }
 
-            // Chart C — frequency
-            const ctxC = document.getElementById(cC_id);
-            if (ctxC) {
-                const freqRows = acRows.filter(r=>r.trackCount>0).slice(0,14);
-                {const e=Chart.getChart(ctxC);if(e)e.destroy();}
-                if (freqRows.length) {
-                    new Chart(ctxC, {
-                        type: 'bar',
-                        data: {
-                            labels: freqRows.map(r => r.name.length>18 ? r.name.slice(0,17)+'…' : r.name),
-                            datasets: [
-                                { label:'# Changes', data: freqRows.map(r=>r.trackCount),
-                                  backgroundColor:'rgba(29,78,216,.75)', borderRadius:4, yAxisID:'y' },
-                                { label:'Avg Cycle (days)', data: freqRows.map(r=>r.avgDaysBetween||0),
-                                  type:'line', borderColor:'#f59e0b', backgroundColor:'rgba(245,158,11,.1)',
-                                  borderWidth:2.5, pointRadius:5, tension:.3, fill:false, yAxisID:'y2' }
-                            ]
-                        },
-                        options: {
-                            responsive:true,
-                            plugins:{ legend:{ display:true, labels:{font:{size:11}} },
-                                      tooltip:{ mode:'index', intersect:false } },
-                            scales:{
-                                x:{ ticks:{ font:{size:10} } },
-                                y:{ beginAtZero:true, position:'left',
-                                    title:{display:true,text:'# Changes',font:{size:10}} },
-                                y2:{ beginAtZero:true, position:'right', grid:{drawOnChartArea:false},
-                                     title:{display:true,text:'Avg Days',font:{size:10}} }
-                            }
-                        }
-                    });
-                }
+            // Chart B — spend per product (horizontal bar)
+            const cvB = document.getElementById(invChart2Id); if(!cvB)return;
+            {const e=Chart.getChart(cvB);if(e)e.destroy();}
+            const prodSpend = acRows.filter(r=>r.totalSpend>0).slice(0,10);
+            if (prodSpend.length) {
+                new Chart(cvB, {
+                    type:'bar',
+                    data:{ labels: prodSpend.map(r=>r.name.length>22?r.name.slice(0,21)+'…':r.name),
+                        datasets:[{ label:'Spend', data: prodSpend.map(r=>r.totalSpend),
+                            backgroundColor: prodSpend.map((_,i)=>`hsla(${260+i*18},65%,58%,.8)`),
+                            borderRadius:5, borderWidth:0 }]},
+                    options:{ indexAxis:'y', responsive:true,
+                        plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>' '+fmt$(c.parsed.x)}} },
+                        scales:{ x:{beginAtZero:true,ticks:{callback:v=>'$'+v.toLocaleString(),font:{size:10}}}, y:{ticks:{font:{size:10}}} }
+                    }
+                });
+            } else {
+                cvB.insertAdjacentHTML('afterend','<div style="text-align:center;padding:2rem;color:#9ca3af;font-size:.8rem;">No invoice data</div>');
             }
         });
 
-        // ── 6. Per-product cards ──────────────────────────────────────────
-        if (extEl) {
-            // Vendor header banner
-            extEl.innerHTML = `
-            <div style="display:flex;align-items:center;gap:1rem;background:linear-gradient(135deg,#0f766e,#0d9488);border-radius:14px;padding:1rem 1.5rem;margin-bottom:1.25rem;color:white;box-shadow:0 4px 16px rgba(13,148,136,.25);">
-                <img src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/autochlor.jpg"
-                     style="height:52px;border-radius:10px;object-fit:contain;background:white;padding:3px;box-shadow:0 2px 8px rgba(0,0,0,.2);"
-                     onerror="this.style.display='none'">
-                <div style="flex:1;">
-                    <div style="font-size:1.1rem;font-weight:800;letter-spacing:-.01em;">🧪 Autochlor — Product Change Tracking</div>
-                    <div style="font-size:.77rem;opacity:.85;margin-top:.2rem;">
-                        <strong>${totalProds}</strong> products · <strong>${trackedProds}</strong> with logs ·
-                        Total spend: <strong>${fmt$(totalSpendAll)}</strong> ·
-                        Avg change cycle: <strong>${avgCycle ? avgCycle+'d' : '—'}</strong>
-                    </div>
-                </div>
-                <div style="text-align:right;font-size:.72rem;opacity:.75;">All times Chicago (CST)</div>
+        // ── Monthly detail table ─────────────────────────────────────────
+        const invTblWrap = document.createElement('div');
+        invTblWrap.style.cssText = 'background:white;border-radius:14px;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;margin-bottom:1.25rem;';
+
+        // Build month-level rows: month → { total, items: [{name, qty, price, total}] }
+        const moDetail = {};
+        acRows.forEach(r => {
+            r.invoiceLines.forEach(line => {
+                const mo = (line.date||'').slice(0,7);
+                if (!mo) return;
+                if (!moDetail[mo]) moDetail[mo] = { mo, total:0, items:{} };
+                moDetail[mo].total += line.total||0;
+                const k = r.name;
+                if (!moDetail[mo].items[k]) moDetail[mo].items[k] = { name:k, qty:0, price:line.price||0, total:0, lines:0 };
+                moDetail[mo].items[k].qty   += line.qty||1;
+                moDetail[mo].items[k].total += line.total||0;
+                moDetail[mo].items[k].lines++;
+                // Use latest price
+                if (line.price > 0) moDetail[mo].items[k].price = line.price;
+            });
+        });
+
+        const moRows = Object.values(moDetail).sort((a,b)=>b.mo.localeCompare(a.mo));
+        const grandTotal = moRows.reduce((s,r)=>s+r.total,0);
+
+        let tblHtml = `
+            <div style="padding:.65rem 1.1rem;background:#f8fafc;border-bottom:2px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:.78rem;font-weight:800;color:#0f766e;">📋 Monthly Invoice Detail</span>
+                <span style="font-size:.78rem;font-weight:700;color:#7c3aed;">Grand Total: ${fmt$(grandTotal)}</span>
             </div>
-            ${d.acTrackingError ? '<div style="padding:.75rem 1rem;background:#fef9c3;border:1px solid #fde047;border-radius:8px;font-size:.8rem;color:#713f12;margin-bottom:1rem;">⚠️ Could not load autochlor_date_tracking — check console.</div>' : ''}`;
+            <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:.78rem;">
+                <thead><tr style="background:#f1f5f9;">
+                    <th style="padding:.4rem .75rem;text-align:left;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Month</th>
+                    <th style="padding:.4rem .75rem;text-align:left;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Product</th>
+                    <th style="padding:.4rem .6rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Qty</th>
+                    <th style="padding:.4rem .6rem;text-align:right;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Unit Price</th>
+                    <th style="padding:.4rem .6rem;text-align:right;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Line Total</th>
+                </tr></thead>
+                <tbody>`;
 
-            // Quick-status strip
-            const strip = document.createElement('div');
-            strip.style.cssText = 'display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:1.25rem;padding:.75rem;background:#f0fdfa;border-radius:10px;border:1px solid #99f6e4;';
-            strip.innerHTML = '<div style="width:100%;font-size:.68rem;font-weight:800;color:#0f766e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem;">📊 Quick Status — Days Since Last Log</div>' +
-                acRows.filter(r=>r.trackCount>0).map(p => {
-                    const c = p.daysSinceLast>60?'#dc2626':p.daysSinceLast>30?'#d97706':'#16a34a';
-                    return `<span style="display:inline-flex;align-items:center;gap:.35rem;background:white;border:1px solid #e5e7eb;border-radius:8px;padding:.28rem .6rem;font-size:.7rem;">
-                        <strong style="color:#1e293b;">${p.name.length>20?p.name.slice(0,19)+'…':p.name}</strong>
-                        <span style="background:${c};color:white;border-radius:99px;padding:.05rem .4rem;font-weight:700;font-size:.67rem;">${p.daysSinceLast===0?'Today':p.daysSinceLast+'d ago'}</span>
-                    </span>`;
-                }).join('');
-            extEl.appendChild(strip);
+        moRows.forEach((mo, mi) => {
+            const items = Object.values(mo.items).sort((a,b)=>b.total-a.total);
+            items.forEach((item, ii) => {
+                const rowBg = mi%2===0 ? '#fff' : '#f8fafc';
+                tblHtml += `<tr style="background:${rowBg};">
+                    <td style="padding:.4rem .75rem;font-family:var(--font-mono);font-weight:700;color:#0f766e;white-space:nowrap;vertical-align:top;">
+                        ${ii===0 ? `<div style="font-weight:800;font-size:.82rem;">${fmtMo(mo.mo)}</div><div style="font-size:.65rem;color:#9ca3af;font-weight:400;">Total: ${fmt$(mo.total)}</div>` : ''}
+                    </td>
+                    <td style="padding:.4rem .75rem;font-weight:600;color:#1e293b;">${item.name}</td>
+                    <td style="padding:.4rem .6rem;text-align:center;color:#374151;">${item.qty}</td>
+                    <td style="padding:.4rem .6rem;text-align:right;font-family:var(--font-mono);color:#374151;">${item.price>0?fmt$(item.price):'—'}</td>
+                    <td style="padding:.4rem .6rem;text-align:right;font-family:var(--font-mono);font-weight:700;color:#0f766e;">${fmt$(item.total)}</td>
+                </tr>`;
+            });
+            // Month subtotal row
+            tblHtml += `<tr style="background:${mi%2===0?'#f0fdfa':'#e0fdf4'};border-top:1.5px solid #99f6e4;border-bottom:2px solid #e2e8f0;">
+                <td colspan="4" style="padding:.35rem .75rem;font-size:.75rem;font-weight:800;color:#0f766e;">📅 ${fmtMo(mo.mo)} Total</td>
+                <td style="padding:.35rem .6rem;text-align:right;font-family:var(--font-mono);font-weight:800;font-size:.88rem;color:#0f766e;">${fmt$(mo.total)}</td>
+            </tr>`;
+        });
 
-            // Per-product cards
-            acRows.forEach(prod => {
-                const isOverdue  = prod.avgDaysBetween && prod.daysSinceLast > prod.avgDaysBetween*1.2;
-                const daysColor  = prod.daysSinceLast===null?'#9ca3af':prod.daysSinceLast>60?'#dc2626':prod.daysSinceLast>30?'#d97706':'#16a34a';
-                const imgSrc     = getAcImg(prod.name);
-                const safeId     = prod.name.replace(/[^a-z0-9]/gi,'_');
-                const logDateId  = 'acLD_'+safeId;
-                const logNoteId  = 'acLN_'+safeId;
-                const chartId    = 'acLC_'+(++window._rptChartSeq);
-                const spendChId  = 'acSC_'+(++window._rptChartSeq);
-                const safeName   = (prod.name||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+        tblHtml += `</tbody></table></div>`;
+        invTblWrap.innerHTML = tblHtml;
+        invPanel.appendChild(invTblWrap);
 
-                // ── Build change log table ──
-                const logTableId = 'acTbl_' + safeId;
-                const logRows = prod.trackDates.map((entry, i) => {
-                    const prev    = i>0 ? prod.trackDates[i-1] : null;
-                    const gapDays = prev ? Math.round((new Date(entry.date+'T12:00:00')-new Date(prev.date+'T12:00:00'))/86400000) : null;
-                    const gapBadge = gapDays===null
-                        ? '<span style="background:#ede9fe;color:#7c3aed;border-radius:99px;padding:.1rem .45rem;font-size:.67rem;font-weight:700;">1st</span>'
-                        : `<span style="background:${gapDays<=7?'#dcfce7':gapDays<=30?'#e0f2fe':'#fef9c3'};color:${gapDays<=7?'#15803d':gapDays<=30?'#0369a1':'#92400e'};border-radius:99px;padding:.1rem .45rem;font-size:.67rem;font-weight:700;">+${gapDays}d</span>`;
-                    const safeE  = (entry.date||'').replace(/'/g,"\\'");
-                    const safeN  = (entry.notes||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
-                    const safeND = (prod.name||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
-                    const editBtn = entry.id
-                        ? `<button onclick="acEditLog('${entry.id}','${safeE}','${safeN}',this)"
-                            style="background:#eff6ff;border:1px solid #bfdbfe;color:#2563eb;border-radius:5px;padding:.15rem .4rem;font-size:.68rem;cursor:pointer;font-weight:600;">✏️</button>` : '';
-                    const delBtn = entry.id
-                        ? `<button onclick="acDeleteLog('${entry.id}','${safeND}')"
-                            style="background:#fff1f2;border:1px solid #fecdd3;color:#dc2626;border-radius:5px;padding:.15rem .4rem;font-size:.68rem;cursor:pointer;font-weight:600;">🗑</button>` : '';
-                    return `<tr data-entry-id="${entry.id||''}" style="background:${i%2?'#fff':'#f8fafc'};">
-                        <td style="padding:.35rem .45rem;text-align:center;">
-                            <input type="checkbox" class="ac-row-chk" data-id="${entry.id||''}"
-                                style="width:14px;height:14px;cursor:pointer;accent-color:#dc2626;"
-                                onchange="acUpdateBulkBar('${safeId}')">
-                        </td>
-                        <td style="padding:.4rem .65rem;font-family:var(--font-mono);font-size:.78rem;font-weight:700;color:#1e293b;white-space:nowrap;">
-                            ${fmtD(entry.date)}
-                        </td>
-                        <td style="padding:.4rem .5rem;text-align:center;">${gapBadge}</td>
-                        <td style="padding:.4rem .65rem;font-size:.75rem;color:#374151;">${entry.notes||'<span style="color:#d1d5db;font-style:italic;">—</span>'}</td>
-                        <td style="padding:.4rem .5rem;text-align:right;white-space:nowrap;"><div style="display:flex;gap:.25rem;justify-content:flex-end;">${editBtn}${delBtn}</div></td>
+        // ── Per-product spend history table ──────────────────────────────
+        const prodTblWrap = document.createElement('div');
+        prodTblWrap.style.cssText = 'background:white;border-radius:14px;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);overflow:hidden;';
+        let prodTblHtml = `
+            <div style="padding:.65rem 1.1rem;background:#f8fafc;border-bottom:2px solid #e2e8f0;">
+                <span style="font-size:.78rem;font-weight:800;color:#7c3aed;">📦 Product Spend History — All Time</span>
+            </div>
+            <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:.78rem;">
+                <thead><tr style="background:#f1f5f9;">
+                    <th style="padding:.4rem .75rem;text-align:left;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Product</th>
+                    <th style="padding:.4rem .6rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Total Qty</th>
+                    <th style="padding:.4rem .6rem;text-align:right;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Last Price</th>
+                    <th style="padding:.4rem .6rem;text-align:right;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Total Spend</th>
+                    <th style="padding:.4rem .6rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">Months Active</th>
+                    <th style="padding:.4rem .6rem;text-align:right;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;border-bottom:2px solid #e2e8f0;">% of Total</th>
+                </tr></thead>
+                <tbody>
+                ${acRows.filter(r=>r.totalSpend>0).map((r,i) => {
+                    const totalQty   = r.invoiceLines.reduce((s,l)=>s+(l.qty||1),0);
+                    const lastPrice  = r.invoiceLines.slice().sort((a,b)=>b.date.localeCompare(a.date))[0]?.price||0;
+                    const moActive   = Object.keys(r.spendByMonth).length;
+                    const pct        = grandTotal>0 ? (r.totalSpend/grandTotal*100).toFixed(1)+'%' : '—';
+                    return `<tr style="background:${i%2?'#fff':'#f8fafc'};">
+                        <td style="padding:.45rem .75rem;font-weight:700;color:#0f172a;">${r.name}</td>
+                        <td style="padding:.45rem .6rem;text-align:center;">${totalQty}</td>
+                        <td style="padding:.45rem .6rem;text-align:right;font-family:var(--font-mono);">${lastPrice>0?fmt$(lastPrice):'—'}</td>
+                        <td style="padding:.45rem .6rem;text-align:right;font-family:var(--font-mono);font-weight:700;color:#7c3aed;">${fmt$(r.totalSpend)}</td>
+                        <td style="padding:.45rem .6rem;text-align:center;">${moActive}</td>
+                        <td style="padding:.45rem .6rem;text-align:right;color:#6b7280;">${pct}</td>
                     </tr>`;
-                }).join('');
-
-                const logTable = prod.trackDates.length ? `
-                    <!-- Bulk action bar (hidden until rows checked) -->
-                    <div id="acBulkBar_${safeId}" style="display:none;background:#fef2f2;border-bottom:1.5px solid #fecaca;padding:.4rem .75rem;display:none;align-items:center;gap:.65rem;">
-                        <span id="acBulkCount_${safeId}" style="font-size:.75rem;font-weight:700;color:#dc2626;">0 selected</span>
-                        <button onclick="acDeleteSelected('${safeId}','${safeName}')"
-                            style="background:#dc2626;color:white;border:none;border-radius:6px;padding:.22rem .7rem;font-size:.73rem;font-weight:700;cursor:pointer;">
-                            🗑 Delete Selected
-                        </button>
-                        <button onclick="acClearSelection('${safeId}')"
-                            style="background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;border-radius:6px;padding:.22rem .6rem;font-size:.73rem;cursor:pointer;">
-                            ✕ Clear
-                        </button>
-                    </div>
-                    <table id="${logTableId}" style="width:100%;border-collapse:collapse;font-size:.78rem;">
-                        <thead><tr style="background:#f1f5f9;border-bottom:2px solid #e2e8f0;">
-                            <th style="padding:.32rem .45rem;text-align:center;width:32px;">
-                                <input type="checkbox" title="Select all" class="ac-select-all"
-                                    data-safe-id="${safeId}"
-                                    style="width:14px;height:14px;cursor:pointer;accent-color:#dc2626;"
-                                    onchange="acToggleAll('${safeId}',this)">
-                            </th>
-                            <th style="padding:.32rem .65rem;text-align:left;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;">Date Logged</th>
-                            <th style="padding:.32rem .5rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;">Gap</th>
-                            <th style="padding:.32rem .65rem;text-align:left;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;">Notes</th>
-                            <th style="padding:.32rem .5rem;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;text-align:right;">Actions</th>
-                        </tr></thead>
-                        <tbody>${logRows}</tbody>
-                    </table>` : '';
-
-                // ── Build spend-by-month sparkline data ──
-                const prodMonths = Object.keys(prod.spendByMonth).sort();
-
-                // ── Card HTML ──
-                const card = document.createElement('div');
-                card.style.cssText = `background:white;border-radius:14px;border:1.5px solid ${isOverdue?'#fca5a5':'#e2e8f0'};box-shadow:0 2px 10px rgba(0,0,0,.06);margin-bottom:1rem;overflow:hidden;`;
-                card.classList.add('ac-product-card');
-                card.dataset.prodName = prod.name;
-
-                card.innerHTML = `
-                <!-- ── Card Header ── -->
-                <div style="display:flex;align-items:center;gap:1rem;padding:.85rem 1.1rem;${isOverdue?'background:#fff7f7;':'background:linear-gradient(135deg,#f8fafc,#f0fdfa);'}border-bottom:1px solid ${isOverdue?'#fecaca':'#e5e7eb'};">
-                    <!-- Product image -->
-                    <div style="width:58px;height:58px;flex-shrink:0;border-radius:10px;overflow:hidden;background:#f1f5f9;border:1.5px solid #e2e8f0;display:flex;align-items:center;justify-content:center;">
-                        ${imgSrc
-                            ? `<img src="${imgSrc}" style="width:100%;height:100%;object-fit:contain;" onerror="this.parentElement.innerHTML='<span style=\\'font-size:1.6rem;\\'>🧪</span>'">`
-                            : '<span style="font-size:1.6rem;">🧪</span>'}
-                    </div>
-                    <!-- Title + meta -->
-                    <div style="flex:1;min-width:0;">
-                        <div style="font-size:.95rem;font-weight:800;color:#0f172a;line-height:1.2;">${isOverdue?'⚠️ ':''}${prod.name}</div>
-                        <div style="font-size:.7rem;color:#6b7280;margin-top:.2rem;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;">
-                            <span>${prod.cat}</span>
-                            ${prod.trackCount>0?`<span style="background:#f0fdfa;color:#0f766e;border-radius:99px;padding:.05rem .45rem;font-weight:700;border:1px solid #99f6e4;">${prod.trackCount} logs</span>`:''}
-                            ${prod.avgDaysBetween?`<span style="background:#eff6ff;color:#1d4ed8;border-radius:99px;padding:.05rem .45rem;font-weight:700;border:1px solid #bfdbfe;">avg ${prod.avgDaysBetween}d cycle</span>`:''}
-                            ${prod.totalSpend>0?`<span style="background:#faf5ff;color:#7c3aed;border-radius:99px;padding:.05rem .45rem;font-weight:700;border:1px solid #e9d5ff;">${fmt$(prod.totalSpend)} spent</span>`:''}
-                        </div>
-                    </div>
-                    <!-- Days badge -->
-                    <div style="flex-shrink:0;text-align:center;">
-                        <div id="acDays_${safeId}" style="background:${daysColor};color:white;font-size:.82rem;font-weight:800;border-radius:10px;padding:.3rem .7rem;min-width:64px;">
-                            ${prod.daysSinceLast===null?'No logs':prod.daysSinceLast===0?'Today':prod.daysSinceLast+'d ago'}
-                        </div>
-                        <div id="acLastDate_${safeId}" style="font-size:.62rem;color:#9ca3af;margin-top:.2rem;">Last: ${fmtD(prod.lastDate)}</div>
-                    </div>
-                </div>
-
-                <!-- ── Log Date Row ── -->
-                <div style="padding:.55rem 1.1rem;background:#fafafa;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
-                    <span style="font-size:.7rem;font-weight:700;color:#374151;white-space:nowrap;">📅 Log Change Date:</span>
-                    <input type="date" id="${logDateId}" value="${todayStr}"
-                        style="border:1.5px solid #d1d5db;border-radius:7px;padding:.25rem .5rem;font-size:.8rem;font-family:var(--font-mono);cursor:pointer;"
-                        onfocus="this.style.borderColor='#0d9488'"
-                        onblur="this.style.borderColor='#d1d5db'">
-                    <input type="text" id="${logNoteId}" placeholder="Notes (optional) — press Enter to save"
-                        style="border:1.5px solid #d1d5db;border-radius:7px;padding:.25rem .55rem;font-size:.75rem;flex:1;min-width:110px;"
-                        onfocus="this.style.borderColor='#0d9488'" onblur="this.style.borderColor='#d1d5db'"
-                        onkeydown="if(event.key==='Enter'){ document.getElementById('acBtn_${safeId}').click(); }">
-                    <button id="acBtn_${safeId}" onclick="acLogDate('${safeName}','${logDateId}','${logNoteId}',this)"
-                        style="background:linear-gradient(135deg,#0d9488,#0f766e);color:white;border:none;border-radius:7px;padding:.27rem .8rem;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 2px 6px rgba(13,148,136,.3);">
-                        + Log Change
-                    </button>
-                    <span id="acStatus_${safeId}" style="font-size:.68rem;font-weight:700;color:#16a34a;display:none;"></span>
-                </div>
-
-                <!-- ── Charts Row (always shown) ── -->
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid #f0f0f0;">
-                    <div style="padding:.65rem 1.1rem .55rem;border-right:1px solid #f0f0f0;">
-                        <div style="font-size:.65rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.3rem;">🔄 Change Frequency (days between changes)</div>
-                        <canvas id="${chartId}" height="75"></canvas>
-                    </div>
-                    <div style="padding:.65rem 1.1rem .55rem;">
-                        <div style="font-size:.65rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.3rem;">💸 Spend Per Month</div>
-                        <canvas id="${spendChId}" height="75"></canvas>
-                    </div>
-                </div>
-
-                <!-- ── Change Log Table ── -->
-                ${prod.trackDates.length>0 ? `
-                <div style="padding:.65rem 1.1rem .85rem;">
-                    <div style="font-size:.7rem;font-weight:700;color:#475569;margin-bottom:.4rem;">📋 Change Log — <span id="acLogCount_${safeId}">${prod.trackDates.length}</span> entries</div>
-                    <div id="acLogWrap_${safeId}" style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">${logTable}</div>
-                </div>` :
-                `<div id="acLogWrap_${safeId}" style="padding:.55rem 1.1rem .75rem;font-size:.75rem;color:#9ca3af;">No entries yet — use the Log Change Date button above.</div>`}`;
-
-                extEl.appendChild(card);
-
-                // ── Render frequency chart (always) ──
-                requestAnimationFrame(() => {
-                    const cv = document.getElementById(chartId); if(!cv)return;
-                    {const ec=Chart.getChart(cv);if(ec)ec.destroy();}
-                    if (prod.trackDates.length >= 2) {
-                        const labels=[], gaps=[];
-                        prod.trackDates.forEach((e,i) => {
-                            if(i===0)return;
-                            const g = Math.round((new Date(e.date+'T12:00:00')-new Date(prod.trackDates[i-1].date+'T12:00:00'))/86400000);
-                            labels.push(e.date.slice(5)); gaps.push(g);
-                        });
-                        new Chart(cv, {
-                            type:'line',
-                            data:{ labels, datasets:[{
-                                label:'Days since prev',
-                                data: gaps,
-                                borderColor:'#0d9488', backgroundColor:'rgba(13,148,136,.1)',
-                                fill:true, tension:.35, borderWidth:2, pointRadius:4, pointHoverRadius:6
-                            }]},
-                            options:{ responsive:true,
-                                plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:c=>c.parsed.y+'d since prev change' } } },
-                                scales:{ y:{beginAtZero:true,ticks:{callback:v=>v+'d',font:{size:9}}}, x:{ticks:{font:{size:9}}} }
-                            }
-                        });
-                    } else {
-                        cv.style.display='none';
-                        cv.insertAdjacentHTML('afterend','<div style="text-align:center;padding:1.5rem 0;color:#d1d5db;font-size:.75rem;">Log 2+ changes to see frequency chart</div>');
-                    }
-                });
-
-                // ── Render spend-by-month chart (always) ──
-                requestAnimationFrame(() => {
-                    const cv = document.getElementById(spendChId); if(!cv)return;
-                    {const ec=Chart.getChart(cv);if(ec)ec.destroy();}
-                    if (prodMonths.length > 0) {
-                        new Chart(cv, {
-                            type:'bar',
-                            data:{ labels: prodMonths.map(m=>{
-                                    const [y,mo]=m.split('-');
-                                    return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(mo)-1]+' '+y.slice(2);
-                                }),
-                                datasets:[{ label:'Spend', data:prodMonths.map(m=>prod.spendByMonth[m]||0),
-                                    backgroundColor:'rgba(124,58,237,.7)', borderRadius:4, borderWidth:0 }]
-                            },
-                            options:{ responsive:true,
-                                plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:c=>' '+fmt$(c.parsed.y) } } },
-                                scales:{ y:{beginAtZero:true,ticks:{callback:v=>'$'+v.toLocaleString(),font:{size:9}}},
-                                         x:{ticks:{font:{size:9}}} }
-                            }
-                        });
-                    } else {
-                        cv.style.display='none';
-                        cv.insertAdjacentHTML('afterend','<div style="text-align:center;padding:1.5rem 0;color:#d1d5db;font-size:.75rem;">No invoice data yet</div>');
-                    }
-                });
-            }); // end acRows.forEach
-        } // end if(extEl)
-
-        // ── 7. Summary table ──────────────────────────────────────────────
-        rptSetTable('Autochlor Product Tracking',
-            ['Product','Category','First Change','Last Change','Days Active','Days Since Last','Avg Cycle','# Changes','Invoice Spend'],
-            acRows.map(r=>[
-                r.name, r.cat,
-                fmtD(r.firstDate), fmtD(r.lastDate),
-                r.daysActive!==null?r.daysActive+'d':'—',
-                r.daysSinceLast!==null?r.daysSinceLast+'d':'—',
-                r.avgDaysBetween!==null?r.avgDaysBetween+'d':'—',
-                r.trackCount,
-                fmt$(r.totalSpend)
-            ]));
+                }).join('')}
+                </tbody>
+            </table></div>`;
+        prodTblWrap.innerHTML = prodTblHtml;
+        invPanel.appendChild(prodTblWrap);
 
         break;
     }
