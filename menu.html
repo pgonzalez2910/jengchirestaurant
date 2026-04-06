@@ -2296,6 +2296,7 @@
             <button class="corp-dd-item" onclick="closeDDs();switchTab('mainmenu');setTimeout(()=>mmJumpToGroup('pos'),400)">↳ POS Menu</button>
             <button class="corp-dd-item" onclick="closeDDs();switchTab('mainmenu');setTimeout(()=>mmJumpToGroup('beverages'),400)">↳ Beverages</button>
             <button class="corp-dd-item" onclick="closeDDs();switchTab('mainmenu');setTimeout(()=>mmJumpToGroup('bakery'),400)">↳ Bakery</button>
+            <button class="corp-dd-item" onclick="closeDDs();switchTab('mainmenu');setTimeout(()=>mmJumpToGroup('takeaway'),400)">↳ Take Away</button>
             <button class="corp-dd-item" onclick="closeDDs();switchTab('mainmenu');setTimeout(()=>mmJumpToGroup('bar'),400)">↳ Bar / Secret Menu</button>
             <div class="corp-dd-sep"></div>
             <div class="corp-dd-section">Actions</div>
@@ -5554,6 +5555,12 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                         filter: cat => cat.name.toLowerCase().includes('baker')
                     },
                     {
+                        key: 'takeaway',
+                        label: 'Take Away',
+                        icon: '📦',
+                        filter: cat => cat.name.toLowerCase().includes('take away') || cat.name.toLowerCase().includes('takeaway')
+                    },
+                    {
                         key: 'bar',
                         label: 'Bar / Secret Menu',
                         icon: '🍸',
@@ -5726,7 +5733,7 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
 
             // Detect secret menu OR Beverages OR Soups — all use modifier group view
             // Soups stays as regular item view (remove soups from this check)
-            if (catName.toLowerCase().includes(SECRET_MENU_KEYWORD) || catName.toLowerCase().includes('beverage') || catName.toLowerCase().includes('baker') || catName.toLowerCase() === 'soups') {
+            if (catName.toLowerCase().includes(SECRET_MENU_KEYWORD) || catName.toLowerCase().includes('beverage') || catName.toLowerCase().includes('baker') || catName.toLowerCase().includes('take away') || catName.toLowerCase() === 'soups') {
                 smCurrentSubcat = null;
                 await smLoadView();
                 return;
@@ -6702,13 +6709,13 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
 
         async function smRenderGroups() {
             const main = document.getElementById('smMain');
-            if (!main || !smCurrentSubcat || smCurrentSubcat === 'uncategorized') {
-                // For uncategorized, smModGroups is already fresh — skip re-fetch
-            } else if (smCurrentSubcat?.id) {
-                // Always re-fetch fresh from DB to pick up any external changes
+            if (!main) return;
+
+            // Re-fetch fresh data
+            if (smCurrentSubcat && smCurrentSubcat !== 'uncategorized' && smCurrentSubcat?.id) {
                 const { data: freshGroups } = await db
                     .from('modifier_groups')
-                    .select('id, name, description, combo_price, min_select, max_select, is_required, display_order')
+                    .select('id, name, combo_price, min_select, max_select, is_required, display_order')
                     .eq('subcategory_id', smCurrentSubcat.id)
                     .eq('is_active', true)
                     .order('display_order');
@@ -6718,15 +6725,17 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
             if (!smModGroups.length) {
                 main.innerHTML = `<div class="sm-empty">
                     <div style="font-size:2rem;margin-bottom:.5rem;">📋</div>
-                    <div style="color:#333333;font-weight:600;margin-bottom:.5rem;">No modifier groups yet</div>
-                    <div style="color:#aaa;font-size:.82rem;">Click the button below to add one</div>
+                    <div style="font-weight:600;margin-bottom:.5rem;">No items yet</div>
+                    <div style="color:#aaa;font-size:.82rem;">Click ➕ Add Item below to get started</div>
                 </div>
-                <button class="mg-add-card-btn" onclick="smAddGroup()">➕ Add Modifier Group</button>`;
+                <div style="padding:1rem 1.5rem;">
+                  <button onclick="smAddGroup()" style="padding:8px 18px;background:#1a1a1a;color:white;border:none;border-radius:6px;font-size:0.82rem;font-weight:600;cursor:pointer;">➕ Add Item</button>
+                </div>`;
                 return;
             }
 
-            // Load options for all groups in one query
-            const groupIds = smModGroups.map(g=>g.id);
+            // Load all options for all groups at once
+            const groupIds = smModGroups.map(g => g.id);
             const { data: allOpts } = await db
                 .from('modifier_options')
                 .select('id, group_id, name, price_override, is_default, display_order')
@@ -6735,101 +6744,258 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                 .order('display_order');
 
             const optsByGroup = {};
-            (allOpts||[]).forEach(o => {
+            (allOpts || []).forEach(o => {
                 if (!optsByGroup[o.group_id]) optsByGroup[o.group_id] = [];
                 optsByGroup[o.group_id].push(o);
             });
 
-            let html = '';
-            smModGroups.forEach(grp => {
-                const opts = optsByGroup[grp.id] || [];
-                const ruleLabel = `Choose ${grp.min_select}${grp.max_select!==grp.min_select?' – '+grp.max_select:''} of ${opts.length||'?'}`;
+            // Detect if this is a MULTI-SIZE sub-category
+            // Multi-size = any group has more than 1 option OR option name is not "Regular"
+            const isMultiSize = smModGroups.some(g => {
+                const opts = optsByGroup[g.id] || [];
+                return opts.length > 1 || (opts.length === 1 && opts[0].name !== 'Regular');
+            });
 
-                html += `<div class="mg-card" id="mg-card-${grp.id}">
-                  <div class="mg-card-header">
-                    <div class="mg-card-name">
-                      <input value="${grp.name.replace(/"/g,'&quot;')}" placeholder="Group name"
-                             onchange="smAutoSaveGroup(${grp.id},{name:this.value})"
-                             title="Click to rename">
-                    </div>
-                    ${grp.name === 'Combo Appetizer' ? `
-                    <span class="mg-pill mg-pill-price">
-                      $<input class="mg-inline-num" type="number" step="0.01" min="0"
-                             value="${parseFloat(grp.combo_price||0).toFixed(2)}"
-                             onchange="smAutoSaveGroup(${grp.id},{combo_price:parseFloat(this.value)||0})"
-                             title="Combo price" style="width:56px;">
-                    </span>` : ''}
-                    ${grp.name === 'Combo Appetizer' ? `
-                    <span class="mg-pill mg-pill-rule" title="Min / Max selections">
-                      Min <input class="mg-inline-num" type="number" min="0" value="${grp.min_select}"
-                                 onchange="smAutoSaveGroup(${grp.id},{min_select:parseInt(this.value)||1})"
-                                 style="width:38px;">
-                      / Max <input class="mg-inline-num" type="number" min="1" value="${grp.max_select}"
-                                  onchange="smAutoSaveGroup(${grp.id},{max_select:parseInt(this.value)||1})"
-                                  style="width:38px;">
-                    </span>` : ''}
-                    ${grp.name === 'Combo Appetizer' ? `
-                    <label style="display:flex;align-items:center;gap:4px;font-size:.72rem;color:#666;cursor:pointer;">
-                      <input type="checkbox" ${grp.is_required?'checked':''}
-                             onchange="smAutoSaveGroup(${grp.id},{is_required:this.checked})"
-                             style="accent-color:#333333;">
-                      Required
-                    </label>` : ''}
-                    <div class="mg-card-actions" style="margin-left:auto;">
-                      <button class="mg-action-btn del" onclick="smDeleteGroup(${grp.id},'${grp.name.replace(/'/g,"\\'")}')">🗑️ Delete group</button>
-                    </div>
-                  </div>
+            // Collect all unique size names across all groups (for column headers)
+            const allSizeNames = [];
+            if (isMultiSize) {
+                smModGroups.forEach(g => {
+                    (optsByGroup[g.id] || []).forEach(o => {
+                        if (!allSizeNames.includes(o.name)) allSizeNames.push(o.name);
+                    });
+                });
+            }
 
-                  <!-- Options table -->
-                  <table class="mg-options-table">
-                    <thead><tr>
-                      <th title="Default selected">Default</th>
-                      <th>Name <span style="font-size:.6rem;opacity:.6;">(click to edit)</span></th>
-                      <th style="text-align:right;">Price override</th>
-                      <th>Remove</th>
-                    </tr></thead>
-                    <tbody id="mg-opts-${grp.id}">`;
+            // ── GRID STYLES ──────────────────────────────────────────────
+            const gridStyle = `
+                <style>
+                .sm-grid-wrap { padding: 1rem 1.5rem 2rem; overflow-x: auto; }
+                .sm-grid { width: 100%; border-collapse: collapse; font-size: 0.87rem; }
+                .sm-grid thead th {
+                    background: #1a1a1a; color: rgba(255,255,255,0.85);
+                    padding: 0.6rem 1rem; text-align: left;
+                    font-size: 0.65rem; font-weight: 700;
+                    text-transform: uppercase; letter-spacing: 0.1em;
+                    position: sticky; top: 0; z-index: 2; white-space: nowrap;
+                }
+                .sm-grid thead th.th-price { text-align: right; min-width: 100px; }
+                .sm-grid thead th.th-del { text-align: center; width: 50px; }
+                .sm-grid tbody tr { border-bottom: 1px solid #f0f0f0; transition: background 0.1s; }
+                .sm-grid tbody tr:hover { background: #fafafa; }
+                .sm-grid td { padding: 0.5rem 1rem; vertical-align: middle; }
+                .sm-grid td.td-name { font-weight: 500; min-width: 200px; }
+                .sm-grid td.td-price { text-align: right; }
+                .sm-grid td.td-del { text-align: center; }
+                .sm-grid-name-inp {
+                    width: 100%; background: transparent; border: 1.5px solid transparent;
+                    border-radius: 4px; padding: 3px 6px; font-size: 0.87rem;
+                    font-family: inherit; font-weight: 500; cursor: text;
+                    transition: all 0.15s;
+                }
+                .sm-grid-name-inp:hover { border-color: #ccc; background: white; }
+                .sm-grid-name-inp:focus { border-color: #1a1a1a; background: white; outline: none; }
+                .sm-grid-price-inp {
+                    width: 80px; text-align: right; background: transparent;
+                    border: 1.5px solid transparent; border-radius: 4px;
+                    padding: 3px 6px; font-size: 0.87rem; font-family: 'Courier New', monospace;
+                    font-weight: 700; color: #1e5631; cursor: text; transition: all 0.15s;
+                }
+                .sm-grid-price-inp:hover { border-color: #ccc; background: white; }
+                .sm-grid-price-inp:focus { border-color: #1e5631; background: white; outline: none; }
+                .sm-grid-del {
+                    background: none; border: none; cursor: pointer;
+                    color: #e53935; font-size: 1rem; padding: 4px 8px;
+                    border-radius: 4px; transition: background 0.15s; opacity: 0.4;
+                    transition: opacity 0.15s;
+                }
+                .sm-grid tbody tr:hover .sm-grid-del { opacity: 1; }
+                .sm-grid-del:hover { background: #ffebee; }
+                .sm-grid-add-row { background: #f8fff8 !important; }
+                .sm-grid-add-inp {
+                    width: 100%; padding: 5px 8px; border: 1.5px solid #1e5631;
+                    border-radius: 4px; font-size: 0.85rem; font-family: inherit;
+                }
+                .sm-grid-add-price {
+                    width: 80px; text-align: right; padding: 5px 6px;
+                    border: 1.5px solid #1e5631; border-radius: 4px;
+                    font-size: 0.85rem; font-family: 'Courier New', monospace;
+                }
+                </style>`;
 
-                opts.forEach(opt => {
-                    html += `<tr id="mg-opt-row-${opt.id}">
-                      <td>
-                        <input type="checkbox" class="mg-default-chk" ${opt.is_default?'checked':''}
-                               onchange="smAutoSaveOption(${opt.id},{is_default:this.checked})">
+            let html = gridStyle + '<div class="sm-grid-wrap">';
+
+            if (isMultiSize) {
+                // ── MULTI-SIZE GRID (Custom Cakes style) ────────────────
+                // Columns: Item Name | Size1 | Size2 | ... | Delete
+                html += `<table class="sm-grid">
+                <thead><tr>
+                  <th>Item</th>
+                  ${allSizeNames.map(s => `<th class="th-price">${s}</th>`).join('')}
+                  <th class="th-del">Del</th>
+                </tr></thead><tbody>`;
+
+                smModGroups.forEach(grp => {
+                    const opts = optsByGroup[grp.id] || [];
+                    const optMap = {};
+                    opts.forEach(o => { optMap[o.name] = o; });
+
+                    html += `<tr id="sm-grid-row-${grp.id}">
+                      <td class="td-name">
+                        <input class="sm-grid-name-inp"
+                               value="${grp.name.replace(/"/g,'&quot;')}"
+                               onchange="smAutoSaveGroup(${grp.id},{name:this.value})"
+                               placeholder="Item name">
+                      </td>`;
+
+                    allSizeNames.forEach(sizeName => {
+                        const opt = optMap[sizeName];
+                        if (opt) {
+                            html += `<td class="td-price">
+                              <span style="color:#999;font-size:0.72rem;">$</span>
+                              <input class="sm-grid-price-inp" type="number" step="0.01" min="0"
+                                     value="${parseFloat(opt.price_override || 0).toFixed(2)}"
+                                     onchange="smAutoSaveOption(${opt.id},{price_override:parseFloat(this.value)||0})"
+                                     title="${sizeName}">
+                            </td>`;
+                        } else {
+                            // No price for this size — show empty editable
+                            html += `<td class="td-price" style="color:#ccc;text-align:right;">—</td>`;
+                        }
+                    });
+
+                    html += `<td class="td-del">
+                      <button class="sm-grid-del" onclick="smDeleteGroup(${grp.id},'${grp.name.replace(/'/g,"\\'")}')">🗑️</button>
+                    </td></tr>`;
+                });
+
+                // Add new row
+                html += `<tr class="sm-grid-add-row">
+                  <td><input class="sm-grid-add-inp" id="sm-new-grp-name" placeholder="New item name…"
+                             onkeydown="if(event.key==='Enter')smGridAddItem()"></td>
+                  ${allSizeNames.map((s,i) => `<td class="td-price">
+                    <input class="sm-grid-add-price" id="sm-new-size-${i}" type="number" step="0.01" placeholder="0.00">
+                  </td>`).join('')}
+                  <td class="td-del">
+                    <button onclick="smGridAddItem(${JSON.stringify(allSizeNames)})"
+                      style="padding:4px 10px;background:#1a1a1a;color:white;border:none;border-radius:4px;font-size:0.75rem;font-weight:600;cursor:pointer;">+ Add</button>
+                  </td>
+                </tr>`;
+
+                html += '</tbody></table>';
+
+            } else {
+                // ── FLAT TABLE (Cake Squares, Cookies, etc.) ────────────
+                // Columns: Item Name | Price | Delete
+                html += `<table class="sm-grid">
+                <thead><tr>
+                  <th>Item Name</th>
+                  <th class="th-price">Price</th>
+                  <th class="th-del">Del</th>
+                </tr></thead><tbody>`;
+
+                smModGroups.forEach(grp => {
+                    const opts = optsByGroup[grp.id] || [];
+                    const opt = opts[0]; // flat = single option
+                    const price = opt ? parseFloat(opt.price_override || 0).toFixed(2) : '0.00';
+                    const optId = opt ? opt.id : null;
+
+                    html += `<tr id="sm-grid-row-${grp.id}">
+                      <td class="td-name">
+                        <input class="sm-grid-name-inp"
+                               value="${grp.name.replace(/"/g,'&quot;')}"
+                               onchange="smAutoSaveGroup(${grp.id},{name:this.value})"
+                               placeholder="Item name">
                       </td>
-                      <td>
-                        <input class="mg-opt-name-input" value="${opt.name.replace(/"/g,'&quot;')}"
-                               onchange="smAutoSaveOption(${opt.id},{name:this.value})">
+                      <td class="td-price">
+                        <span style="color:#999;font-size:0.72rem;">$</span>
+                        <input class="sm-grid-price-inp" type="number" step="0.01" min="0"
+                               value="${price}"
+                               ${optId ? `onchange="smAutoSaveOption(${optId},{price_override:parseFloat(this.value)||0})"` : `onchange="smGridCreateOption(${grp.id},parseFloat(this.value)||0)"`}>
                       </td>
-                      <td style="text-align:right;">
-                        <input class="mg-opt-price-input" type="number" step="0.01" min="0"
-                               value="${opt.price_override!=null?parseFloat(opt.price_override).toFixed(2):''}"
-                               placeholder="—"
-                               onchange="smAutoSaveOption(${opt.id},{price_override:this.value?parseFloat(this.value):null})"
-                               title="Leave blank = use combo price">
-                      </td>
-                      <td>
-                        <button class="mg-action-btn del" onclick="smDeleteOption(${opt.id},'${opt.name.replace(/'/g,"\\'")}',${grp.id})">✕</button>
+                      <td class="td-del">
+                        <button class="sm-grid-del" onclick="smDeleteGroup(${grp.id},'${grp.name.replace(/'/g,"\\'")}')">🗑️</button>
                       </td>
                     </tr>`;
                 });
 
-                html += `</tbody></table>
-                  <!-- Add option row -->
-                  <div class="mg-add-option-row">
-                    <input class="mg-add-option-input" id="mg-new-opt-name-${grp.id}"
-                           placeholder="New option name…"
-                           onkeydown="if(event.key==='Enter')smAddOption(${grp.id})">
-                    <input class="mg-add-option-input" type="number" step="0.01" min="0"
-                           id="mg-new-opt-price-${grp.id}"
-                           placeholder="Price (opt.)" style="max-width:90px;">
-                    <button class="mg-add-option-btn" onclick="smAddOption(${grp.id})">➕ Add option</button>
-                  </div>
-                </div>`;
-            });
+                // Add new item row
+                html += `<tr class="sm-grid-add-row">
+                  <td><input class="sm-grid-add-inp" id="sm-new-grp-name" placeholder="New item name…"
+                             onkeydown="if(event.key==='Enter')smGridAddFlat()"></td>
+                  <td class="td-price">
+                    <span style="color:#999;font-size:0.72rem;">$</span>
+                    <input class="sm-grid-add-price" id="sm-new-grp-price" type="number" step="0.01" placeholder="0.00"
+                           onkeydown="if(event.key==='Enter')smGridAddFlat()">
+                  </td>
+                  <td class="td-del">
+                    <button onclick="smGridAddFlat()"
+                      style="padding:4px 10px;background:#1a1a1a;color:white;border:none;border-radius:4px;font-size:0.75rem;font-weight:600;cursor:pointer;">+ Add</button>
+                  </td>
+                </tr>`;
 
-            html += `<button class="mg-add-card-btn" onclick="smAddGroup()">➕ Add Another Modifier Group</button>
-                     <div style="height:2rem;"></div>`;
+                html += '</tbody></table>';
+            }
+
+            html += '</div>'; // sm-grid-wrap
             main.innerHTML = html;
+        }
+
+        // ── Add a flat item (name + single price) ──────────────────────
+        async function smGridAddFlat() {
+            const name  = document.getElementById('sm-new-grp-name')?.value?.trim();
+            const price = parseFloat(document.getElementById('sm-new-grp-price')?.value || 0);
+            if (!name) { showToast('Item name required.', 'err'); return; }
+            const scId = smCurrentSubcat?.id || null;
+            const maxOrd = smModGroups.reduce((m,g) => Math.max(m, g.display_order||0), 0) + 1;
+            try {
+                const { data: grp, error } = await db.from('modifier_groups')
+                    .insert({ subcategory_id: scId, category_id: mmCurrentCat.id,
+                              name, combo_price: price, min_select:1, max_select:1,
+                              is_required: false, display_order: maxOrd })
+                    .select().single();
+                if (error) throw error;
+                // Insert the single "Regular" option
+                await db.from('modifier_options')
+                    .insert({ group_id: grp.id, name: 'Regular', price_override: price, is_default: true, display_order: 1 });
+                smModGroups.push(grp);
+                showToast(`"${name}" added ✓`, 'ok');
+                await smRenderGroups();
+            } catch(e) { showToast('Error: ' + errMsg(e), 'err'); }
+        }
+
+        // ── Add a multi-size item ───────────────────────────────────────
+        async function smGridAddItem(sizeNames) {
+            const name = document.getElementById('sm-new-grp-name')?.value?.trim();
+            if (!name) { showToast('Item name required.', 'err'); return; }
+            const scId = smCurrentSubcat?.id || null;
+            const maxOrd = smModGroups.reduce((m,g) => Math.max(m, g.display_order||0), 0) + 1;
+            try {
+                const { data: grp, error } = await db.from('modifier_groups')
+                    .insert({ subcategory_id: scId, category_id: mmCurrentCat.id,
+                              name, combo_price: 0, min_select:1, max_select:1,
+                              is_required: false, display_order: maxOrd })
+                    .select().single();
+                if (error) throw error;
+                // Insert options for each size
+                const optInserts = sizeNames.map((s, i) => {
+                    const priceEl = document.getElementById('sm-new-size-' + i);
+                    const p = parseFloat(priceEl?.value || 0);
+                    return { group_id: grp.id, name: s, price_override: p, is_default: i===0, display_order: i+1 };
+                });
+                if (optInserts.length) await db.from('modifier_options').insert(optInserts);
+                smModGroups.push(grp);
+                showToast(`"${name}" added ✓`, 'ok');
+                await smRenderGroups();
+            } catch(e) { showToast('Error: ' + errMsg(e), 'err'); }
+        }
+
+        // ── Create option on price change when none existed ─────────────
+        async function smGridCreateOption(groupId, price) {
+            try {
+                await db.from('modifier_options')
+                    .insert({ group_id: groupId, name: 'Regular', price_override: price, is_default: true, display_order: 1 });
+                showToast('Price saved ✓', 'ok');
+            } catch(e) { showToast('Error: ' + errMsg(e), 'err'); }
         }
 
         // ── AUTO-SAVE helpers ────────────────────────────────────────────────
