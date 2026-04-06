@@ -6758,7 +6758,124 @@ Rules: Round to nearest $0.25. Higher qty = justify higher increase. Never sugge
                 optsByGroup[o.group_id].push(o);
             });
 
-            // Detect if this is a MULTI-SIZE sub-category
+            // ── PACKAGE 2024 special card layout ────────────────────────
+            const isPackage = smCurrentSubcat?.name === 'Package 2024';
+            if (isPackage) {
+                const gridStyle = `<style>
+                .pkg-grid { display:grid; grid-template-columns: repeat(3,1fr); gap:1rem; padding:1.5rem; }
+                @media(max-width:900px){ .pkg-grid { grid-template-columns: 1fr 1fr; } }
+                .pkg-card {
+                    background:white; border-radius:10px;
+                    border:2px solid #e0e0e0;
+                    overflow:hidden; transition:border-color 0.15s;
+                }
+                .pkg-card:hover { border-color:#1a1a1a; }
+                .pkg-card-jade { border-top:4px solid #1e5631; }
+                .pkg-card-silver { border-top:4px solid #607d8b; }
+                .pkg-card-gold { border-top:4px solid #f9a825; }
+                .pkg-card-header {
+                    padding:1rem 1.25rem 0.75rem;
+                    display:flex; justify-content:space-between; align-items:flex-start;
+                }
+                .pkg-card-name { font-size:1rem; font-weight:700; color:#1a1a1a; }
+                .pkg-card-size {
+                    font-size:0.65rem; font-weight:700; text-transform:uppercase;
+                    letter-spacing:0.1em; padding:2px 8px; border-radius:50px;
+                }
+                .pkg-size-half { background:#f3f4f6; color:#555; }
+                .pkg-size-full { background:#1a1a1a; color:white; }
+                .pkg-price {
+                    padding:0 1.25rem 0.75rem;
+                    font-size:1.6rem; font-weight:700; color:#1e5631;
+                    font-family:'Courier New',monospace;
+                    border-bottom:1px solid #f0f0f0;
+                }
+                .pkg-includes { padding:0.75rem 1.25rem 1rem; }
+                .pkg-includes-title {
+                    font-size:0.6rem; font-weight:700; text-transform:uppercase;
+                    letter-spacing:0.12em; color:#aaa; margin-bottom:6px;
+                }
+                .pkg-include-row {
+                    display:flex; align-items:flex-start; gap:6px;
+                    font-size:0.78rem; color:#444; padding:3px 0;
+                    line-height:1.4;
+                }
+                .pkg-include-icon { color:#1e5631; font-size:0.7rem; flex-shrink:0; margin-top:2px; }
+                .pkg-price-edit {
+                    width:90px; text-align:right; padding:3px 6px;
+                    border:1.5px solid transparent; border-radius:4px;
+                    font-size:1.6rem; font-weight:700; color:#1e5631;
+                    font-family:'Courier New',monospace; background:transparent;
+                    cursor:text; transition:all 0.15s;
+                }
+                .pkg-price-edit:hover { border-color:#ccc; background:#f9f9f9; }
+                .pkg-price-edit:focus { border-color:#1e5631; background:white; outline:none; }
+                .pkg-del-btn {
+                    display:none; position:absolute; top:8px; right:8px;
+                    background:none; border:none; color:#e53935; cursor:pointer;
+                    font-size:0.9rem; padding:2px 6px; border-radius:4px;
+                }
+                .pkg-card:hover .pkg-del-btn { display:block; }
+                </style>`;
+
+                let html = gridStyle + '<div class="pkg-grid">';
+
+                smModGroups.forEach(grp => {
+                    const opts = optsByGroup[grp.id] || [];
+                    const priceOpt = opts[0];
+                    const price = priceOpt ? parseFloat(priceOpt.price_override||0).toFixed(2) : '0.00';
+                    const optId  = priceOpt?.id;
+                    const includes = opts.slice(1); // everything after price is an "included" row
+
+                    const nameLower = grp.name.toLowerCase();
+                    const cardClass = nameLower.includes('jade') ? 'pkg-card-jade'
+                                    : nameLower.includes('silver') ? 'pkg-card-silver'
+                                    : 'pkg-card-gold';
+
+                    // Size badge — 50 = Full Size, otherwise Half Size
+                    const isFull = grp.name.includes('50');
+                    const sizeBadge = isFull
+                        ? '<span class="pkg-card-size pkg-size-full">Full Size</span>'
+                        : '<span class="pkg-card-size pkg-size-half">Half Size</span>';
+
+                    const includeRows = includes
+                        .filter(o => o.name !== 'Guests: 15' && o.name !== 'Guests: 25' && o.name !== 'Guests: 50')
+                        .map(o => `<div class="pkg-include-row">
+                            <span class="pkg-include-icon">✓</span>
+                            <span>${o.name.replace('✓ ','')}</span>
+                        </div>`).join('');
+
+                    const guestOpt = includes.find(o => o.name.startsWith('Guests:'));
+                    const guestLabel = guestOpt ? `<span style="font-size:0.72rem;color:#888;">${guestOpt.name}</span>` : '';
+
+                    html += `<div class="pkg-card ${cardClass}" style="position:relative;">
+                        <div class="pkg-card-header">
+                            <div>
+                                <div class="pkg-card-name">${grp.name}</div>
+                                ${guestLabel}
+                            </div>
+                            ${sizeBadge}
+                        </div>
+                        <div class="pkg-price">
+                            <span style="font-size:1rem;color:#999;font-family:inherit;font-weight:400;">$</span>
+                            <input class="pkg-price-edit" type="number" step="0.01" min="0"
+                                   value="${price}"
+                                   ${optId ? `onchange="smAutoSaveOption(${optId},{price_override:parseFloat(this.value)||0})"` : ''}>
+                        </div>
+                        <div class="pkg-includes">
+                            <div class="pkg-includes-title">What''s Included</div>
+                            ${includeRows || '<div style="color:#aaa;font-size:0.78rem;font-style:italic;">No items listed yet</div>'}
+                        </div>
+                        <button class="pkg-del-btn" onclick="smDeleteGroup(${grp.id},'${grp.name.replace(/'/g,"\\'")}')">🗑️</button>
+                    </div>`;
+                });
+
+                html += '</div>';
+                main.innerHTML = html;
+                return;
+            }
+
+            // ── DETECT LAYOUT TYPE ───────────────────────────────────────
             // Multi-size = any group has more than 1 option OR option name is not "Regular"
             const isMultiSize = smModGroups.some(g => {
                 const opts = optsByGroup[g.id] || [];
