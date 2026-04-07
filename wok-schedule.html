@@ -462,6 +462,9 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 <div class="cnote"><i class="fas fa-info-circle"></i> Only Sundays can be saved</div>
 </div>
 <div class="ibg" style="margin-left:2px">
+<button id="undoBtn" class="ib" onclick="ScheduleApp.undo()" data-tip="Undo (Ctrl+Z)" disabled style="opacity:.4"><i class="fas fa-undo"></i></button>
+<button id="redoBtn" class="ib" onclick="ScheduleApp.redo()" data-tip="Redo (Ctrl+Y)" disabled style="opacity:.4"><i class="fas fa-redo" style="transform:scaleX(-1)"></i></button>
+<div style="width:1px;height:20px;background:#E2E8F0;margin:0 2px"></div>
 <button id="saveScheduleIconBtn" class="ib sav" onclick="ScheduleApp.saveSchedule()" data-tip="Save Schedule"><i class="fas fa-save"></i></button>
 <button class="ib" onclick="ScheduleApp.autoAssignWeek()" data-tip="Auto-Assign Roles"><i class="fas fa-magic"></i></button>
 <button class="ib" onclick="ScheduleApp.showDuplicateDialog()" data-tip="Duplicate Schedule"><i class="fas fa-copy"></i></button>
@@ -713,6 +716,46 @@ try { supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY); 
 var employees = ['FEI', 'DAMIAN', 'CHANG LI', 'PEDRO', 'YUXI YE'];
 var currentSchedule = {}, currentScheduleId = null, selectedScheduleForDuplicate = null;
 var viewMode = 'compact';
+// === Undo / Redo ===
+var _undoStack = [], _redoStack = [], _undoMaxDepth = 50;
+function _snapshot() {
+return JSON.stringify({schedule: currentSchedule, employees: employees.slice()});
+}
+function _pushUndo() {
+_undoStack.push(_snapshot());
+if (_undoStack.length > _undoMaxDepth) _undoStack.shift();
+_redoStack = [];
+_updateUndoRedoBtns();
+}
+function _updateUndoRedoBtns() {
+var u = document.getElementById('undoBtn'), r = document.getElementById('redoBtn');
+if (u) { u.disabled = _undoStack.length === 0; u.style.opacity = _undoStack.length === 0 ? '.4' : '1'; }
+if (r) { r.disabled = _redoStack.length === 0; r.style.opacity = _redoStack.length === 0 ? '.4' : '1'; }
+}
+function undo() {
+if (_undoStack.length === 0) { toast('Nothing to undo', 'info'); return; }
+_redoStack.push(_snapshot());
+var state = JSON.parse(_undoStack.pop());
+currentSchedule = state.schedule;
+employees = state.employees;
+renderEmployeeList();
+generateSchedule(true);
+_updateUndoRedoBtns();
+toast('Undo ✓', 'info');
+scheduleAutoSave();
+}
+function redo() {
+if (_redoStack.length === 0) { toast('Nothing to redo', 'info'); return; }
+_undoStack.push(_snapshot());
+var state = JSON.parse(_redoStack.pop());
+currentSchedule = state.schedule;
+employees = state.employees;
+renderEmployeeList();
+generateSchedule(true);
+_updateUndoRedoBtns();
+toast('Redo ✓', 'info');
+scheduleAutoSave();
+}
 var EMP_COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#06B6D4', '#EC4899', '#F97316'];
 var EMP_BG = ['#EFF6FF', '#ECFDF5', '#FFFBEB', '#FEF2F2', '#F5F3FF', '#ECFEFF', '#FDF2F8', '#FFF7ED'];
 var DAYS = [
@@ -859,23 +902,40 @@ if (r.noodle === slot.employee) noodle++;
 }
 return {lunch: lunch, noodle: noodle};
 }
+// === Sort shifts so AM always comes before PM ===
+function sortShiftsAMPM(sk, day) {
+var shifts = currentSchedule[sk] && currentSchedule[sk].shifts[day];
+if (!shifts || shifts.length < 2) return;
+shifts.sort(function(a, b) {
+var ah = a.start && a.start !== 'vacation' && a.start !== 'disabled' ? parseInt(a.start.split(':')[0]) : 99;
+var bh = b.start && b.start !== 'vacation' && b.start !== 'disabled' ? parseInt(b.start.split(':')[0]) : 99;
+return ah - bh;
+});
+}
 function setPreset(slotKey, day, preset) {
 if (!currentSchedule[slotKey]) return;
 if (isRequestedDayOff(slotKey, day) && preset !== 'off' && preset !== 'vac') { toast((currentSchedule[slotKey].employee || 'This chef') + ' has a day-off request for this date', 'error'); return; }
+_pushUndo();
 if (currentSchedule[slotKey].roles) delete currentSchedule[slotKey].roles[day];
 if (preset === 'am') currentSchedule[slotKey].shifts[day] = [{start: AM_S, end: AM_E}];
 else if (preset === 'pm') currentSchedule[slotKey].shifts[day] = [{start: PM_S, end: PM_E}];
 else if (preset === 'dbl') currentSchedule[slotKey].shifts[day] = [{start: AM_S, end: AM_E}, {start: PM_S, end: PM_E}];
 else if (preset === 'off') currentSchedule[slotKey].shifts[day] = [{start: '', end: ''}];
 else if (preset === 'vac') currentSchedule[slotKey].shifts[day] = [{start: 'vacation', end: 'vacation'}];
+else if (preset === 'wkndA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:00'},{start:'14:45',end:'21:00'}];
+else if (preset === 'wkndB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:45'},{start:'15:30',end:'21:00'}];
+else if (preset === 'wkndFull') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:15'},{start:'17:00',end:'21:00'}];
+sortShiftsAMPM(slotKey, day);
 refreshCell(slotKey, day);
 refreshEmpCol(slotKey);
 calcStats();
+scheduleAutoSave();
 }
 // === Shift Control Functions ===
 function disableShift(slotKey, day) {
 if (!currentSchedule[slotKey]) return;
 if (!confirm('Disable this day? The chef will be marked OFF and cannot be scheduled.')) return;
+_pushUndo();
 currentSchedule[slotKey].shifts[day] = [{start: 'disabled', end: 'disabled'}];
 if (currentSchedule[slotKey].roles) delete currentSchedule[slotKey].roles[day];
 refreshCell(slotKey, day);
@@ -886,6 +946,7 @@ scheduleAutoSave();
 }
 function enableShift(slotKey, day) {
 if (!currentSchedule[slotKey]) return;
+_pushUndo();
 currentSchedule[slotKey].shifts[day] = [{start: '', end: ''}];
 refreshCell(slotKey, day);
 refreshEmpCol(slotKey);
@@ -1331,6 +1392,7 @@ if (isRequestedDayOff(sk, day)) { toast((currentSchedule[sk].employee || 'This c
 if (!currentSchedule[sk].shifts[day]) currentSchedule[sk].shifts[day] = [];
 var shifts = currentSchedule[sk].shifts[day];
 if (shifts.length >= 3) { toast('Maximum 3 shifts per day', 'info'); return; }
+_pushUndo();
 shifts.push({start: '', end: ''});
 refreshCell(sk, day);
 calcStats();
@@ -1338,6 +1400,7 @@ scheduleAutoSave();
 }
 function deleteShift(sk, day, idx) {
 if (!confirm('Delete this shift?')) return false;
+_pushUndo();
 var s = currentSchedule[sk].shifts[day];
 s.splice(idx, 1);
 if (s.length === 0) s.push({start: '', end: ''});
@@ -1351,8 +1414,10 @@ function updateShiftTime(sk, day, idx, field, value) {
 if (!currentSchedule[sk]) return;
 if (isRequestedDayOff(sk, day)) { toast((currentSchedule[sk].employee || 'This chef') + ' has a day-off request for this date', 'error'); return; }
 if (!currentSchedule[sk].shifts[day]) currentSchedule[sk].shifts[day] = [];
+_pushUndo();
 if (!currentSchedule[sk].shifts[day][idx]) currentSchedule[sk].shifts[day][idx] = {start: '', end: ''};
 currentSchedule[sk].shifts[day][idx][field] = value;
+sortShiftsAMPM(sk, day);
 refreshCell(sk, day);
 calcStats();
 scheduleAutoSave();
@@ -1431,6 +1496,7 @@ if (t.noodle >= MAX_NOODLES) { toast(emp + ' already has max ' + MAX_NOODLES + '
 r.noodle = emp;
 toast('Noodles assigned to ' + emp, 'success');
 }
+_pushUndo();
 refreshCell(sk, day);
 refreshEmpCol(sk);
 calcStats();
@@ -1439,6 +1505,7 @@ scheduleAutoSave();
 function autoAssignWeek() {
 var v = document.getElementById('weekStart').value;
 if (!v) { toast('Select a week first', 'error'); return; }
+_pushUndo();
 var keys = Object.keys(currentSchedule);
 for (var ki = 0; ki < keys.length; ki++) { currentSchedule[keys[ki]].roles = {}; }
 var weeklyNoodles = {};
@@ -1551,6 +1618,7 @@ var s = srcShifts[i];
 if (s.start && s.end && s.start !== 'vacation' && s.start !== 'disabled') valid.push({start:s.start, end:s.end});
 }
 if (valid.length === 0) { toast('No valid shifts to copy', 'error'); return; }
+_pushUndo();
 var applied = 0, skipped = 0;
 for (var d = 0; d < 7; d++) {
 if (d === srcDay) continue;
@@ -1635,6 +1703,7 @@ var destAnalysis = analyze(currentSchedule[destSk].shifts[destDay] || []);
 if (destAnalysis.isVac || destAnalysis.isDisabled) { toast('Cannot drop on a vacation or disabled day', 'error'); return; }
 if (isRequestedDayOff(destSk, destDay)) { toast('Day-off requested — cannot drop here', 'error'); return; }
 // Add shift to destination
+_pushUndo();
 var newShift = {start: data.start, end: data.end};
 var destShifts = currentSchedule[destSk].shifts[destDay] || [];
 var hasEmpty = destShifts.length === 1 && !destShifts[0].start && !destShifts[0].end;
@@ -1649,6 +1718,8 @@ toast('Max 3 shifts per day reached', 'error'); return;
 var srcShifts = currentSchedule[data.sk].shifts[data.day];
 srcShifts.splice(data.idx, 1);
 if (srcShifts.length === 0) srcShifts.push({start:'', end:''});
+sortShiftsAMPM(destSk, destDay);
+sortShiftsAMPM(data.sk, data.day);
 // Refresh
 refreshCell(data.sk, data.day);
 refreshEmpCol(data.sk);
@@ -1882,6 +1953,12 @@ else if (typeof s === 'string' && s.trim()) newDs.push(parseTS(s));
 else if (typeof s === 'object' && s) newDs.push({start: s.start || '', end: s.end || ''});
 else newDs.push({start: '', end: ''});
 }
+// Always sort AM before PM on load
+newDs.sort(function(a, b) {
+var ah = a.start && a.start !== 'vacation' && a.start !== 'disabled' ? parseInt(a.start.split(':')[0]) : 99;
+var bh = b.start && b.start !== 'vacation' && b.start !== 'disabled' ? parseInt(b.start.split(':')[0]) : 99;
+return ah - bh;
+});
 o[k].shifts.push(newDs);
 }
 }
@@ -2470,12 +2547,14 @@ if (!sv || !ev || !sv.value || !ev.value) return;
 var slot = currentSchedule[sk];
 if (!slot) return;
 if (!slot.shifts[day]) slot.shifts[day] = [];
+_pushUndo();
 var newShift = {start: sv.value, end: ev.value};
 if (idx === null) {
 slot.shifts[day].push(newShift);
 } else {
 slot.shifts[day][idx] = newShift;
 }
+sortShiftsAMPM(sk, day);
 closeChipEdit(sk, day);
 refreshCell(sk, day);
 calcStats();
@@ -2484,6 +2563,7 @@ scheduleAutoSave();
 function deleteShiftCP(sk, day, idx) {
 var slot = currentSchedule[sk];
 if (!slot) return;
+_pushUndo();
 slot.shifts[day].splice(idx, 1);
 if (!slot.shifts[day].length) slot.shifts[day] = [{start:'',end:''}];
 closeChipEdit(sk, day);
@@ -2492,29 +2572,7 @@ calcStats();
 scheduleAutoSave();
 toast('Shift deleted', 'success');
 }
-// ─── EXTENDED setPreset with weekend patterns ─────────────────────
-var _origSetPreset = setPreset;
-function setPreset(slotKey, day, preset) {
-if (preset === 'wkndA') {
-if (!currentSchedule[slotKey]) return;
-currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:00'},{start:'14:45',end:'21:00'}];
-if (currentSchedule[slotKey].roles) delete currentSchedule[slotKey].roles[day];
-refreshCell(slotKey, day); refreshEmpCol(slotKey); calcStats(); scheduleAutoSave(); return;
-}
-if (preset === 'wkndB') {
-if (!currentSchedule[slotKey]) return;
-currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:45'},{start:'15:30',end:'21:00'}];
-if (currentSchedule[slotKey].roles) delete currentSchedule[slotKey].roles[day];
-refreshCell(slotKey, day); refreshEmpCol(slotKey); calcStats(); scheduleAutoSave(); return;
-}
-if (preset === 'wkndFull') {
-if (!currentSchedule[slotKey]) return;
-currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:15'},{start:'17:00',end:'21:00'}];
-if (currentSchedule[slotKey].roles) delete currentSchedule[slotKey].roles[day];
-refreshCell(slotKey, day); refreshEmpCol(slotKey); calcStats(); scheduleAutoSave(); return;
-}
-_origSetPreset(slotKey, day, preset);
-}
+// ─── Weekend patterns are now handled inside the main setPreset above ───────
 // ─── SMART AUTO-ASSIGN ───────────────────────────────────────────
 var saWeekType = 'A';
 var saFeiDays = '12'; // '12' = Mon/Tue, '23' = Tue/Wed
@@ -2923,11 +2981,21 @@ setSaWeek: setSaWeek,
 setSaFei: setSaFei,
 setSaChangli: setSaChangli,
 toggleSaEzCater: toggleSaEzCater,
-applySmartAssign: applySmartAssign
+applySmartAssign: applySmartAssign,
+// === Undo / Redo ===
+undo: undo,
+redo: redo
 };
 })();
 document.addEventListener('DOMContentLoaded', function() {
 ScheduleApp.init();
+// Keyboard shortcuts: Ctrl+Z = Undo, Ctrl+Y / Ctrl+Shift+Z = Redo
+document.addEventListener('keydown', function(e) {
+var tag = document.activeElement ? document.activeElement.tagName : '';
+if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') { e.preventDefault(); ScheduleApp.undo(); }
+if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) { e.preventDefault(); ScheduleApp.redo(); }
+});
 // Clean up drag ghost on dragend anywhere
 document.addEventListener('dragend', function() {
 document.querySelectorAll('.drag-ghost').forEach(function(el){ el.classList.remove('drag-ghost'); });
