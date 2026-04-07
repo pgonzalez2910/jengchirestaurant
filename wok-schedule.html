@@ -965,14 +965,19 @@ if (shiftsEl) shiftsEl.innerHTML = renderShifts(slotKey, day, viewMode === 'comp
 function loadEmployees() {
 return new Promise(function(resolve) {
 if (!dbConnected) { resolve(); return; }
-supabase.from('wok_chefs').select('short_name, display_order').eq('active', true).order('display_order').then(function(result) {
+supabase.from('wok_chefs').select('short_name, display_order, active').order('display_order').then(function(result) {
+console.log('wok_chefs raw data:', JSON.stringify(result.data));
 if (result.data && result.data.length) {
 employees = [];
-for (var i = 0; i < result.data.length; i++) employees.push(result.data[i].short_name);
+for (var i = 0; i < result.data.length; i++) {
+console.log('row:', result.data[i].short_name, 'active:', result.data[i].active);
+if (result.data[i].active) employees.push(result.data[i].short_name);
+}
+console.log('employees loaded:', employees);
 }
 renderEmployeeList();
 resolve();
-}).catch(function() { resolve(); });
+}).catch(function(e) { console.error('loadEmployees error:', e); resolve(); });
 });
 }
 function addEmployee() {
@@ -981,20 +986,29 @@ if (!name) { toast('Enter name', 'error'); return; }
 if (employees.indexOf(name) >= 0) { toast('Already exists', 'error'); return; }
 employees.push(name);
 document.getElementById('newEmployeeName').value = '';
+// Inject into current schedule immediately
+var newSlotKey = 'slot_' + (Object.keys(currentSchedule).length);
+while (currentSchedule[newSlotKey]) newSlotKey = 'slot_x' + Math.random().toString(36).slice(2,7);
+currentSchedule[newSlotKey] = {employee: name, shifts: [], roles: {}};
+for (var d = 0; d < 7; d++) currentSchedule[newSlotKey].shifts.push([{start: '', end: ''}]);
 if (dbConnected) {
-// Get next display_order
 supabase.from('wok_chefs').select('display_order').order('display_order', {ascending: false}).limit(1).then(function(r) {
 var nextOrder = (r.data && r.data.length) ? (r.data[0].display_order + 1) : 0;
 return supabase.from('wok_chefs').insert({short_name: name, full_name: name, display_order: nextOrder, active: true});
 }).then(function(res) {
 if (res && res.error) {
+if (res.error.code === '23505') {
+// Already in DB — just make sure active = true
+supabase.from('wok_chefs').update({active: true}).eq('short_name', name).then(function(){});
+} else {
 console.error('addEmployee error:', JSON.stringify(res.error));
 toast('DB save failed: ' + (res.error.message || JSON.stringify(res.error)), 'error');
+}
 }
 }).catch(function(e) { toast('DB save failed: ' + (e.message || e), 'error'); });
 }
 renderEmployeeList();
-generateSchedule();
+generateSchedule(true);
 toast('"' + name + '" added', 'success');
 }
 function removeEmployee(name) {
@@ -1045,10 +1059,30 @@ if (result.data) {
 currentScheduleId = result.data.id;
 currentSchedule = convertForLoad(result.data.schedule_data || {});
 if (result.data.employees) employees = result.data.employees;
+// Merge in any active wok_chefs not already in the saved employee list
+supabase.from('wok_chefs').select('short_name, display_order').eq('active', true).order('display_order').then(function(chefResult) {
+if (chefResult.data) {
+for (var ci = 0; ci < chefResult.data.length; ci++) {
+var sn = chefResult.data[ci].short_name;
+if (employees.indexOf(sn) === -1) {
+employees.push(sn);
+// Add empty slot to current schedule so they show in the grid
+var newKey = 'slot_x' + sn.replace(/\s+/g,'_');
+currentSchedule[newKey] = {employee: sn, shifts: [], roles: {}};
+for (var d = 0; d < 7; d++) currentSchedule[newKey].shifts.push([{start:'',end:''}]);
+}
+}
+}
 renderEmployeeList();
 generateSchedule(true);
 updateSaveBtn(true);
 toast('Schedule loaded', 'success');
+}).catch(function() {
+renderEmployeeList();
+generateSchedule(true);
+updateSaveBtn(true);
+toast('Schedule loaded', 'success');
+});
 } else {
 currentScheduleId = null;
 generateSchedule(false);
