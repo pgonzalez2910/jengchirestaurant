@@ -799,6 +799,9 @@ let _dashFilter  = 'all';    // 'day'|'week'|'month'|'year'|'all'
 let _dashMetric  = 'sold';   // 'sold'|'stock'|'made'
 let _dashNoodles = new Set(['white','yellow','turmeric','green']);
 
+/* ── Sold Dashboard filter state ───────────── */
+let _soldFilter  = 'all';    // 'today'|'week'|'month'|'all'
+
 /* ── Chart.js data-label inline plugin ─────── */
 const DATALABEL_PLUGIN = {
   id:'jcLabels',
@@ -1091,6 +1094,136 @@ function nav(view, opts = {}) {
 }
 
 /* ══════════════════════════════════════════════════════
+   §6b  SOLD DASHBOARD SECTION
+══════════════════════════════════════════════════════ */
+function setSoldFilter(f) {
+  _soldFilter = f;
+  const section = document.getElementById('sold-dashboard-section');
+  if (section) section.outerHTML = renderSoldSection();
+}
+
+function getSoldSessions() {
+  // All sessions sorted oldest → newest, one per date (latest wins)
+  const allSorted = [...S.sessions].sort((a,b) => a.date > b.date ? 1 : a.date < b.date ? -1 : a.timestamp - b.timestamp);
+  const byDate = {};
+  allSorted.forEach(s => { byDate[s.date] = s; });
+  const deduped = Object.values(byDate).sort((a,b) => a.date > b.date ? 1 : -1);
+
+  const today = new Date(); today.setHours(0,0,0,0);
+  if (_soldFilter === 'today') {
+    const todayStr2 = today.toISOString().split('T')[0];
+    return deduped.filter(s => s.date === todayStr2);
+  } else if (_soldFilter === 'week') {
+    const from = new Date(today); from.setDate(today.getDate() - 6);
+    return deduped.filter(s => new Date(s.date+'T12:00:00') >= from);
+  } else if (_soldFilter === 'month') {
+    const from = new Date(today.getFullYear(), today.getMonth(), 1);
+    return deduped.filter(s => new Date(s.date+'T12:00:00') >= from);
+  }
+  return deduped; // 'all'
+}
+
+function renderSoldSection() {
+  const sessions = getSoldSessions();
+
+  // Build rows: for each session, calculate sold using calcSold logic
+  // We need the full sorted list for calcSold to work (it looks for the next session)
+  const rows = sessions.map(sess => {
+    const c = calcSold(sess);
+    const isPending = NOODLES.some(n => c[n.id]?.pending);
+    const totSold = NOODLES.reduce((s, n) => s + (c[n.id]?.sold || 0), 0);
+    return { sess, c, isPending, totSold };
+  });
+
+  // Reverse so newest is at top
+  rows.reverse();
+
+  // Totals (only non-pending rows)
+  const confirmedRows = rows.filter(r => !r.isPending);
+  const grandTotals = NOODLES.map(n =>
+    confirmedRows.reduce((s, r) => s + (r.c[n.id]?.sold || 0), 0)
+  );
+  const grandTotal = grandTotals.reduce((a,b) => a+b, 0);
+
+  const filterBtns = ['today','week','month','all'].map(f => {
+    const labels = { today:'Today', week:'Last 7 Days', month:'This Month', all:'All Time' };
+    const active = _soldFilter === f;
+    return `<button onclick="setSoldFilter('${f}')" style="
+      padding:5px 13px; border-radius:20px; font-size:.72rem; font-weight:700;
+      border:1px solid ${active ? 'var(--yellow)' : 'var(--border-md)'};
+      background:${active ? 'var(--yellow)' : 'var(--bg-hover)'};
+      color:${active ? '#1a1a2e' : 'var(--text-2)'};
+      cursor:pointer; transition:all .15s; font-family:'DM Sans',sans-serif;
+    ">${labels[f]}</button>`;
+  }).join('');
+
+  const tableRows = rows.length ? rows.map(r => {
+    const dateLbl = new Date(r.sess.date+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    const cells = NOODLES.map(n => {
+      const sold = r.c[n.id]?.sold || 0;
+      if (r.c[n.id]?.pending) {
+        return `<td style="padding:11px 14px;text-align:center">
+          <span style="font-size:.72rem;color:var(--text-3)">⏳ pending</span>
+        </td>`;
+      }
+      return `<td style="padding:11px 14px;text-align:center">
+        <span style="font-family:'Syne',sans-serif;font-weight:800;font-size:1rem;color:${n.hex}">${sold}</span>
+      </td>`;
+    }).join('');
+    const totalCell = r.isPending
+      ? `<td style="padding:11px 14px;text-align:center;font-size:.72rem;color:var(--text-3)">⏳</td>`
+      : `<td style="padding:11px 14px;text-align:center">
+          <span style="font-family:'Syne',sans-serif;font-weight:800;font-size:1rem;color:var(--text-1)">${r.totSold}</span>
+        </td>`;
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:11px 14px;white-space:nowrap;font-size:.82rem;color:var(--text-2);font-weight:600">${dateLbl}</td>
+      ${cells}
+      ${totalCell}
+    </tr>`;
+  }).join('') : `<tr><td colspan="6" style="text-align:center;color:var(--text-3);padding:32px;font-size:.85rem">No sessions in this period.</td></tr>`;
+
+  const totalsRow = confirmedRows.length ? `
+    <tr style="background:rgba(0,0,0,0.03);border-top:2px solid var(--border-md)">
+      <td style="padding:11px 14px;font-family:'Syne',sans-serif;font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3)">TOTAL</td>
+      ${grandTotals.map((t, i) => `<td style="padding:11px 14px;text-align:center">
+        <span style="font-family:'Syne',sans-serif;font-weight:800;color:${NOODLES[i].hex}">${t}</span>
+      </td>`).join('')}
+      <td style="padding:11px 14px;text-align:center">
+        <span style="font-family:'Syne',sans-serif;font-weight:800;color:var(--text-1)">${grandTotal}</span>
+      </td>
+    </tr>` : '';
+
+  return `
+    <div id="sold-dashboard-section" style="margin-top:28px">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+        <div>
+          <h2 style="font-family:'Syne',sans-serif;font-size:1.05rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin-bottom:2px">
+            📉 Sold History
+          </h2>
+          <p style="font-size:.75rem;color:var(--text-3);margin:0">
+            Sold = previous stock + produced − next session's opening stock &nbsp;·&nbsp;
+            <span style="color:var(--amber)">⏳ pending</span> = no next session yet
+          </p>
+        </div>
+        <div style="display:flex;gap:5px;flex-wrap:wrap">${filterBtns}</div>
+      </div>
+      <div style="overflow-x:auto;border-radius:var(--radius);border:1px solid var(--border);box-shadow:0 1px 4px rgba(0,0,0,0.06)">
+        <table style="width:100%;border-collapse:collapse;font-size:.85rem">
+          <thead>
+            <tr style="background:rgba(0,0,0,0.04);border-bottom:1px solid var(--border)">
+              <th style="padding:10px 14px;text-align:left;font-family:'Syne',sans-serif;font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-2);white-space:nowrap">Date</th>
+              ${NOODLES.map(n=>`<th style="padding:10px 14px;text-align:center;font-family:'Syne',sans-serif;font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:${n.hex}">${n.short}</th>`).join('')}
+              <th style="padding:10px 14px;text-align:center;font-family:'Syne',sans-serif;font-size:.7rem;letter-spacing:.08em;text-transform:uppercase;color:var(--text-2)">Total</th>
+            </tr>
+          </thead>
+          <tbody>${tableRows}</tbody>
+          <tfoot>${totalsRow}</tfoot>
+        </table>
+      </div>
+    </div>`;
+}
+
+/* ══════════════════════════════════════════════════════
    §7  DASHBOARD VIEW
 ══════════════════════════════════════════════════════ */
 function renderDash() {
@@ -1143,6 +1276,8 @@ function renderDash() {
       </div>
 
       <div class="noodle-grid">${cards}</div>
+
+      ${renderSoldSection()}
 
       <div class="action-row">
         <button class="cta primary" onclick="startSession()"><span class="ico">📦</span>Start Count</button>
