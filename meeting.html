@@ -44,7 +44,7 @@
     /* ── HEADER ─────────────────── */
     .app-header {
       background:var(--white); border-bottom:1px solid var(--border);
-      height:68px; padding:0 32px;
+      height:132px; padding:0 32px;
       display:flex; align-items:center; justify-content:space-between;
       position:sticky; top:0; z-index:300;
       box-shadow:0 2px 12px rgba(30,26,20,.07);
@@ -56,8 +56,8 @@
     }
     .header-brand { display:flex; align-items:center; gap:13px; }
     .header-logo {
-      width:42px; height:42px; border-radius:8px; object-fit:cover;
-      border:1.5px solid var(--gold-rule); box-shadow:0 2px 8px rgba(184,148,60,.18);
+      width:122px; height:122px; object-fit:contain;
+      border:none; border-radius:0; box-shadow:none; background:transparent;
     }
     .brand-name { font-family:'Playfair Display',serif; font-size:17px; font-weight:600; color:var(--navy); }
     .brand-sub  { font-size:10px; font-weight:700; letter-spacing:2.4px; text-transform:uppercase; color:var(--gold); margin-top:1px; }
@@ -464,24 +464,12 @@
             <label class="form-label">Meeting Date</label>
             <input class="form-input" id="f-date" type="date" oninput="markDirty()">
           </div>
-          <div class="form-group">
-            <label class="form-label">Location / Platform</label>
-            <input class="form-input" id="f-location" type="text"
-                   placeholder="e.g. Conference Room A · Zoom" oninput="markDirty()">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Start Time</label>
-            <input class="form-input" id="f-start" type="time" oninput="markDirty()">
-          </div>
-          <div class="form-group">
-            <label class="form-label">End Time <span style="font-weight:300;font-style:italic;letter-spacing:0;">(auto-stamped on save)</span></label>
-            <input class="form-input" id="f-end" type="time" oninput="markDirty()">
-          </div>
+
           <div class="form-group full">
             <label class="form-label">Meeting Notes · Minutes · Agenda</label>
             <textarea class="form-textarea" id="f-content"
                       placeholder="Write agenda items, discussion points, decisions made, disciplinary actions, action items, follow-ups…"
-                      oninput="markDirty(); updateCounter()"></textarea>
+                      oninput="debouncedSave(); updateCounter()"></textarea>
             <div class="char-counter"><span id="char-count">0</span> characters</div>
           </div>
         </div>
@@ -679,6 +667,7 @@ let attachFile  = null;
 let logoB64     = null;
 let allMeetings = [];
 let cdSeconds   = 60;
+let saveDebounceTimer = null;
 
 // ── REFERENCE ID  MJC-XXXXX-MMDDYYYY-XXXX ────────────────
 function generateRefId(dateStr) {
@@ -693,9 +682,6 @@ function generateRefId(dateStr) {
 document.addEventListener('DOMContentLoaded', async () => {
   const today = new Date().toISOString().slice(0,10);
   document.getElementById('f-date').value = today;
-  const now = new Date();
-  document.getElementById('f-start').value =
-    `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
   currentRef = generateRefId(today);
   updateRefDisplay();
   loadLogoB64();
@@ -755,6 +741,14 @@ async function autoSave() {
 }
 
 function markDirty() { isDirty = true; }
+function debouncedSave() {
+  isDirty = true;
+  clearTimeout(saveDebounceTimer);
+  saveDebounceTimer = setTimeout(async () => {
+    const title = document.getElementById('f-title').value.trim();
+    if (title) await autoSave();
+  }, 2000);
+}
 function setSaveDot(state,text) {
   document.getElementById('save-dot').className = 'save-dot' + (state!=='ok'?' '+state:'');
   document.getElementById('save-status-text').textContent = text;
@@ -768,9 +762,6 @@ function getFormData() {
     title:       (document.getElementById('f-title').value    || 'Untitled Meeting').trim(),
     content:      document.getElementById('f-content').value  || '',
     meeting_date: document.getElementById('f-date').value     || null,
-    location:     document.getElementById('f-location').value || '',
-    start_time:   document.getElementById('f-start').value    || null,
-    end_time:     document.getElementById('f-end').value      || null,
   };
 }
 function updateCounter() {
@@ -788,17 +779,8 @@ async function finalizeMeeting() {
   const set = (t) => { btn.innerHTML = '<span class="spinner"></span> ' + t; };
 
   try {
-    // Always stamp end time at the exact moment Save is clicked
-    const nowT = new Date();
-    const endTimeStamp =
-      String(nowT.getHours()).padStart(2,'0') + ':' + String(nowT.getMinutes()).padStart(2,'0');
-    document.getElementById('f-end').value = endTimeStamp;
-    console.log('[Meeting] End time stamped:', endTimeStamp);
-
     const data = getFormData();
-    data.end_time = endTimeStamp;   // force — guarantees DB & PDF both receive it
     if (!currentRef) currentRef = generateRefId(data.meeting_date);
-    console.log('[Meeting] Form data collected:', {title: data.title, meeting_date: data.meeting_date, start_time: data.start_time, end_time: data.end_time});
 
     // 1. SAVE RECORD
     set('Saving meeting record…');
@@ -1046,17 +1028,12 @@ async function buildPDF(meeting) {
     : '—';
 
   metaCol('DATE',         dateFmt,                   ML,  y);
-  metaCol('START',        fmt12(meeting.start_time), 130, y);
-  metaCol('END',          fmt12(meeting.end_time),   165, y);
-  y += 13;
-  metaCol('LOCATION',     meeting.location || '—',   ML,  y);
-  metaCol('STATUS',       'FINALIZED',               130, y);
 
   // Reference ID
   doc.setFont('helvetica','bold'); doc.setFontSize(4.9); doc.setTextColor(...GREY);
-  doc.text('REFERENCE ID', 165, y);
+  doc.text('REFERENCE ID', 130, y);
   doc.setFont('courier','bold'); doc.setFontSize(6.8); doc.setTextColor(...GOLD);
-  doc.text(meeting.reference_id || '—', 165, y + 4.5);
+  doc.text(meeting.reference_id || '—', 130, y + 4.5);
   y += 13;
 
   // rule → straight into notes (no Distributed To)
@@ -1278,9 +1255,6 @@ function editMeeting(id) {
   switchTab('editor', document.getElementById('tab-btn-editor'));
   document.getElementById('f-title').value    = m.title        || '';
   document.getElementById('f-date').value     = m.meeting_date || '';
-  document.getElementById('f-location').value = m.location     || '';
-  document.getElementById('f-start').value    = m.start_time   || '';
-  document.getElementById('f-end').value      = m.end_time     || '';
   document.getElementById('f-content').value  = m.content      || '';
   updateCounter();
   currentId = m.id; currentRef = m.reference_id; isDirty = false;
@@ -1304,12 +1278,9 @@ async function deleteMeeting(id) {
 // ── RESET ─────────────────────────────────────────────────
 function resetForm() {
   currentId = null; isDirty = false; attachFile = null;
-  ['f-title','f-content','f-location','f-end'].forEach(id => { document.getElementById(id).value=''; });
+  ['f-title','f-content'].forEach(id => { document.getElementById(id).value=''; });
   const today = new Date().toISOString().slice(0,10);
   document.getElementById('f-date').value = today;
-  const now = new Date();
-  document.getElementById('f-start').value =
-    String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
   currentRef = generateRefId(today);
   updateRefDisplay();
   document.getElementById('form-heading').textContent    = 'Create New Meeting';
