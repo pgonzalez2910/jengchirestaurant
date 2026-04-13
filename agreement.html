@@ -59,7 +59,7 @@ body{font-family:'Georgia','Times New Roman',serif;background:#E8E8E8;color:var(
 .doc-body{padding:36px 48px;}
 .sec-title{font-family:Arial,sans-serif;font-size:11px;font-weight:bold;letter-spacing:.18em;color:var(--navy);text-transform:uppercase;border-bottom:1.5px solid var(--navy);padding-bottom:5px;margin:32px 0 14px;}
 .sec-title:first-child{margin-top:0;}
-p{line-height:1.82;font-size:14px;margin-bottom:12px;color:#2A2A3A;}
+p{line-height:1.82;font-size:14px;margin-bottom:12px;color:#2A2A3A;text-align:justify;}
 .pt{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px;}
 .pt td{padding:10px 14px;border:1px solid var(--border);vertical-align:top;line-height:1.6;}
 .pt td:first-child{font-family:Arial,sans-serif;font-weight:bold;color:var(--navy);width:25%;font-size:11px;letter-spacing:.04em;}
@@ -79,7 +79,7 @@ p{line-height:1.82;font-size:14px;margin-bottom:12px;color:#2A2A3A;}
 .dl-box .dl-sub{font-size:12px;color:var(--muted);font-family:Arial,sans-serif;margin-top:3px;}
 .dl-box .dl-amt{font-size:20px;font-weight:bold;color:var(--navy);font-family:Arial,sans-serif;margin-top:7px;}
 .terms{margin:8px 0 12px;padding:0;list-style:none;counter-reset:terms;}
-.terms>li{counter-increment:terms;padding:9px 0 9px 42px;position:relative;border-bottom:1px solid #EEE;font-size:14px;line-height:1.78;}
+.terms>li{counter-increment:terms;padding:9px 0 9px 42px;position:relative;border-bottom:1px solid #EEE;font-size:14px;line-height:1.78;text-align:justify;}
 .terms>li:last-child{border-bottom:none;}
 .terms>li::before{content:counter(terms)'.';position:absolute;left:10px;font-family:Arial,sans-serif;font-weight:bold;color:var(--navy);font-size:13px;top:11px;}
 .t-bold{font-weight:bold;color:var(--navy);}
@@ -570,7 +570,7 @@ async function doLogin() {
       }
 
       sess.username = emp.username;
-      sess.role     = (emp.portal_role === 'superadmin' || emp.portal_role === 'admin') ? 'admin' : 'owner';
+      sess.role     = 'owner'; // employees2025 users always get 'owner' on this page — admin only via agreement_access_tokens
       matched = true;
     } catch(e2) {
       console.error('employees2025 lookup failed:', e2.message);
@@ -612,6 +612,11 @@ async function doLogin() {
 let allLogs = [];
 
 async function loadLogs() {
+  // Double-check: only admin can see logs
+  if (sess.role !== 'admin') {
+    document.getElementById('logs-body').innerHTML = '<div class="no-logs">Access denied.</div>';
+    return;
+  }
   document.getElementById('logs-body').innerHTML = '<div class="admin-loading">Loading...</div>';
   try {
     const { data, error } = await sb
@@ -766,9 +771,54 @@ function setStatus(n, cls, html) {
 
 async function fetchExistingRecord() {
   try {
-    const { data } = await sb.from('payment_agreements').select('id').eq('agreement_ref', REF).maybeSingle();
-    if (data?.id) recordId = data.id;
-  } catch(_) {}
+    const { data } = await sb.from('payment_agreements')
+      .select('id,employee_signature,employee_signed_at,witness1_signature,witness1_signed_at,witness2_signature,witness2_signed_at')
+      .eq('agreement_ref', REF).maybeSingle();
+    if (!data) return;
+    if (data.id) recordId = data.id;
+    // Preload any existing signatures
+    const map = [
+      [1, data.employee_signature, data.employee_signed_at],
+      [2, data.witness1_signature, data.witness1_signed_at],
+      [3, data.witness2_signature, data.witness2_signed_at],
+    ];
+    for (const [n, url, ts] of map) {
+      if (url) preloadSignature(n, url, ts);
+    }
+  } catch(e) { console.warn('fetchExistingRecord:', e); }
+}
+
+async function preloadSignature(n, url, ts) {
+  // Wait for pad to initialize
+  let waited = 0;
+  while (!pads[n] && waited < 3000) { await new Promise(r => setTimeout(r, 100)); waited += 100; }
+  if (!pads[n]) return;
+  try {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+    const canvas = document.getElementById('sc-' + n);
+    const ratio  = window.devicePixelRatio || 1;
+    const ctx    = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, canvas.offsetWidth * ratio, canvas.offsetHeight * ratio);
+    // Update state
+    sigUrls[n]  = url;
+    sigSaved[n] = true;
+    if (ts) {
+      sigTime[n] = new Date(ts);
+      document.getElementById('ts-' + n).textContent = fmtTs(sigTime[n]);
+      document.getElementById('ts-' + n).className   = 'v';
+    }
+    document.getElementById('cw-' + n).classList.remove('active');
+    document.getElementById('cw-' + n).classList.add('saved-ok');
+    document.getElementById('ch-' + n).classList.add('hide');
+    const btn = document.getElementById('btn-save-' + n);
+    btn.disabled    = false;
+    btn.className   = 'btn-save-sig saved';
+    btn.textContent = '✓ Saved';
+    setStatus(n, 'saved', '✓ Previously signed & saved');
+    updateSubmitState();
+  } catch(e) { console.warn('preloadSignature error', n, e); }
 }
 
 function initPad(n) {
@@ -976,7 +1026,7 @@ async function generateExecutedDocx() {
 
     const now=new Date().toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true,timeZoneName:'short'});
     function sp(n=1){return Array.from({length:n},()=>new Paragraph({spacing:{before:0,after:60},children:[new TextRun('')]}));}
-    function body(t,o={}){return new Paragraph({spacing:{before:60,after:60},children:[new TextRun({text:t,font:'Georgia',size:20,...o})]});}
+    function body(t,o={}){return new Paragraph({alignment:AlignmentType.BOTH,spacing:{before:60,after:60},children:[new TextRun({text:t,font:'Georgia',size:20,...o})]});}
     function secTitle(t){return new Paragraph({spacing:{before:280,after:100},border:{bottom:{style:BorderStyle.SINGLE,size:6,color:NAVY,space:4}},children:[new TextRun({text:t,bold:true,size:22,font:'Arial',color:NAVY,allCaps:true})]});}
     function subTitle(t){return new Paragraph({spacing:{before:180,after:80},border:{bottom:{style:BorderStyle.SINGLE,size:4,color:RED,space:4}},children:[new TextRun({text:t,bold:true,size:20,font:'Arial',color:RED})]});}
 
