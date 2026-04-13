@@ -521,7 +521,7 @@ document.getElementById('login-pin').addEventListener('keydown', e => { if (e.ke
 document.getElementById('login-user').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-pin').focus(); });
 
 async function doLogin() {
-  const username = document.getElementById('login-user').value.trim();
+  const username = document.getElementById('login-user').value.trim().toUpperCase();
   const pin      = document.getElementById('login-pin').value.trim();
   const errEl    = document.getElementById('login-error');
   const btn      = document.getElementById('btn-login');
@@ -531,8 +531,10 @@ async function doLogin() {
   btn.disabled    = true;
   btn.textContent = 'Verifying...';
 
+  let matched = false;
+
+  // ── Step 1: Try agreement_access_tokens (graceful — table may not exist yet)
   try {
-    // Validate against agreement_access_tokens table (no usernames hardcoded)
     const { data, error } = await sb
       .from('agreement_access_tokens')
       .select('username, role, is_active')
@@ -541,26 +543,45 @@ async function doLogin() {
       .eq('is_active', true)
       .maybeSingle();
 
-    if (error) throw error;
+    if (!error && data) {
+      sess.username = data.username;
+      sess.role     = data.role;
+      matched = true;
+    }
+  } catch(e1) {
+    console.warn('agreement_access_tokens lookup failed (table may not exist yet):', e1.message);
+  }
 
-    if (!data) {
-      // Try employees2025 as fallback
+  // ── Step 2: Try employees2025 if not matched yet
+  if (!matched) {
+    try {
       const { data: emp, error: empErr } = await sb
         .from('employees2025')
-        .select('username, portal_role')
+        .select('username, portal_role, pin')
         .eq('username', username)
-        .eq('pin', pin)
         .maybeSingle();
 
       if (empErr) throw empErr;
-      if (!emp) { errEl.textContent = 'Invalid username or PIN.'; btn.disabled=false; btn.textContent='Access Document'; return; }
+
+      if (!emp || emp.pin !== pin) {
+        errEl.textContent = 'Invalid username or PIN.';
+        btn.disabled = false; btn.textContent = 'Access Document'; return;
+      }
 
       sess.username = emp.username;
-      sess.role     = emp.portal_role === 'superadmin' || emp.portal_role === 'admin' ? 'admin' : 'owner';
-    } else {
-      sess.username = data.username;
-      sess.role     = data.role;
+      sess.role     = (emp.portal_role === 'superadmin' || emp.portal_role === 'admin') ? 'admin' : 'owner';
+      matched = true;
+    } catch(e2) {
+      console.error('employees2025 lookup failed:', e2.message);
+      errEl.textContent = 'Connection error: ' + e2.message;
+      btn.disabled = false; btn.textContent = 'Access Document'; return;
     }
+  }
+
+  if (!matched) {
+    errEl.textContent = 'Invalid username or PIN.';
+    btn.disabled = false; btn.textContent = 'Access Document'; return;
+  }
 
     // Silently fetch geo & start logging (no await — fire and forget)
     sess.loginAt = new Date().toISOString();
@@ -582,12 +603,6 @@ async function doLogin() {
       fetchExistingRecord();
     }
 
-  } catch(e) {
-    console.error(e);
-    errEl.textContent = 'Login error. Please try again.';
-    btn.disabled    = false;
-    btn.textContent = 'Access Document';
-  }
 }
 
 // ─────────────────────────────────────────────────
