@@ -525,6 +525,14 @@ async function uploadPng(n, dataUrl) {
   return u.publicUrl;
 }
 
+async function fetchExistingRecord() {
+  try {
+    const { data } = await sb.from('payment_agreements')
+      .select('id').eq('agreement_ref', REF).maybeSingle();
+    if (data?.id) { recordId = data.id; console.log('Existing record found, will update:', recordId); }
+  } catch(e) { /* no record yet — will be created on first upsert */ }
+}
+
 async function saveSig(n, isAuto) {
   if (!pads[n] || pads[n].isEmpty()) return;
   if (sigSaved[n]) return;
@@ -540,26 +548,27 @@ async function saveSig(n, isAuto) {
     const ts  = (sigTime[n] || new Date()).toISOString();
 
     const payload = {
-      agreement_ref:          REF,
-      employee_name:          NAMES[1],
-      witness1_name:          NAMES[2],
-      witness2_name:          NAMES[3],
-      payment_amount:         2118.25,
-      payment_deadline:       '2026-04-24',
-      payment_method:         "Cashier's Check - USPS Certified Mail with Tracking & Signature Confirmation",
-      [`${sk}_name`]:         NAMES[n],
-      [`${sk}_signature`]:    url,
-      [`${sk}_signed_at`]:    ts,
+      agreement_ref:       REF,
+      employee_name:       NAMES[1],
+      witness1_name:       NAMES[2],
+      witness2_name:       NAMES[3],
+      payment_amount:      2118.25,
+      payment_deadline:    '2026-04-24',
+      payment_method:      "Cashier's Check - USPS Certified Mail with Tracking & Signature Confirmation",
+      [`${sk}_name`]:      NAMES[n],
+      [`${sk}_signature`]: url,
+      [`${sk}_signed_at`]: ts,
     };
 
-    if (recordId) {
-      const { error } = await sb.from('payment_agreements').update(payload).eq('id', recordId);
-      if (error) throw error;
-    } else {
-      const { data, error } = await sb.from('payment_agreements').insert(payload).select('id').single();
-      if (error) throw error;
-      recordId = data.id;
-    }
+    // UPSERT on agreement_ref — always updates the SAME row, never creates duplicates
+    const { data, error } = await sb
+      .from('payment_agreements')
+      .upsert(payload, { onConflict: 'agreement_ref' })
+      .select('id')
+      .single();
+
+    if (error) throw error;
+    if (data?.id) recordId = data.id;
 
     sigSaved[n] = true;
     document.getElementById('cw-' + n).classList.remove('active');
@@ -615,7 +624,7 @@ async function finalSubmit() {
   }
 }
 
-window.addEventListener('load', () => { [1,2,3].forEach(initPad); });
+window.addEventListener('load', () => { [1,2,3].forEach(initPad); fetchExistingRecord(); });
 </script>
 </body>
 </html>
