@@ -545,6 +545,7 @@ function getDB(){
 ═══════════════════════════════════════ */
 let _suggs=[],_hi=-1,_timer=null;
 let _histAll=[];  // cached history rows
+  let _editModeId = null;  // Track if we're editing an existing record
 
 /* ═══════════════════════════════════════
    DOM READY
@@ -1015,65 +1016,161 @@ function buildPDF(rec){
 /* ═══════════════════════════════════════
    PDF — DOWNLOAD
 ═══════════════════════════════════════ */
+/* ═══════════════════════════════════════
+PDF — GENERATE & UPDATE (if editing)
+═══════════════════════════════════════ */
 async function doPDF(){
-  if(!isReady())return;
-  const btn=document.getElementById('pdfBtn');
-  btn.disabled=true;btn.textContent='⏳ Building PDF…';
-  try{
-    const rec=collectRec();
-    const doc=buildPDF(rec);
-    doc.save(rec.form_id+'.pdf');
-  }catch(e){alert('PDF error: '+e.message);}
-  finally{btn.disabled=false;btn.textContent='📄 Generate PDF';}
+    if(!isReady()) return;
+    const btn = document.getElementById('pdfBtn');
+    btn.disabled = true; btn.textContent = '⏳ Building PDF…';
+    
+    try{
+        const rec = collectRec();
+        const doc = buildPDF(rec);
+        
+        // If editing, also update the database with new PDF
+        if(_editModeId){
+            const db = getDB();
+            const blob = doc.output('blob');
+            const pdfName = rec.form_id + '.pdf';
+            
+            const { error: upErr } = await db.storage.from('deduction').upload(pdfName, blob, { contentType: 'application/pdf', upsert: true });
+            if(!upErr){
+                const { data: pub } = db.storage.from('deduction').getPublicUrl(pdfName);
+                const pdfUrl = pub?.publicUrl || null;
+                
+                // Update only the PDF URL in the database
+                await db.from('employee_deductions').update({ 
+                    generated_pdf_url: pdfUrl, 
+                    pdf_url: pdfUrl 
+                }).eq('id', _editModeId);
+                
+                // Update local cache
+                const idx = _histAll.findIndex(r => r.id === _editModeId);
+                if(idx >= 0) {
+                    _histAll[idx].generated_pdf_url = pdfUrl;
+                    _histAll[idx].pdf_url = pdfUrl;
+                }
+                
+                const msg = document.getElementById('submitMsg');
+                msg.className = 'alert alert-ok';
+                msg.innerHTML = '<strong>✓ PDF Regenerated & Updated!</strong> Database record updated with new PDF.';
+                msg.classList.remove('hidden');
+            }
+        }
+        
+        // Download the PDF
+        doc.save(rec.form_id + '.pdf');
+        
+    } catch(e){ 
+        alert('PDF error: ' + e.message); 
+    } finally { 
+        btn.disabled = false; btn.textContent = '📄 Generate PDF'; 
+    }
 }
-
 /* ═══════════════════════════════════════
    SAVE — DB + storage
 ═══════════════════════════════════════ */
+
+  
+  
+  /* ═══════════════════════════════════════
+SAVE — DB + storage (CREATE or UPDATE)
+═══════════════════════════════════════ */
 async function doSave(){
-  if(!isReady())return;
-  const btn=document.getElementById('saveBtn');
-  const msg=document.getElementById('submitMsg');
-  btn.disabled=true;btn.textContent='⏳ Saving…';msg.classList.add('hidden');
-  try{
-    const db=getDB(),rec=collectRec();
-    // build PDF blob
-    const doc=buildPDF(rec);
-    const blob=doc.output('blob');
-    const pdfName=rec.form_id+'.pdf';
-    let pdfUrl=null;
-    const{data:up,error:upErr}=await db.storage.from('deduction').upload(pdfName,blob,{contentType:'application/pdf',upsert:true});
-    if(!upErr){const{data:pub}=db.storage.from('deduction').getPublicUrl(pdfName);pdfUrl=pub?.publicUrl||null;}
-    else console.warn('Storage skip:',upErr.message);
-    const row={
-      form_id:rec.form_id,employee_id:rec.employee_id,employee_name:rec.employee_name,
-      employee_email:rec.employee_email,department:rec.department,job_title:rec.job_title,
-      issue_date:rec.issue_date,effective_date:rec.issue_date,deduction_frequency:'per_paycheck',
-      deduction_type:rec.deduction_type,deduction_reason:rec.deduction_reason,
-      deduction_amount:rec.deduction_amount,payroll_period_start:rec.payroll_period_start,
-      payroll_period_end:rec.payroll_period_end,pay_day:rec.pay_day,
-      notes:rec.additional_notes,additional_notes:rec.additional_notes,
-      employee_signature:rec.emp_sig,
-      employee_signed_at:rec.employee_signed_date?new Date(rec.employee_signed_date+'T12:00:00').toISOString():null,
-      employee_signed_date:rec.employee_signed_date,
-      hr_approver_name:rec.hr_approver_name,hr_signature:rec.hr_sig,
-      hr_signed_at:rec.hr_signed_date?new Date(rec.hr_signed_date+'T12:00:00').toISOString():null,
-      hr_signed_date:rec.hr_signed_date,
-      generated_pdf_url:pdfUrl,pdf_url:pdfUrl,status:'pending'
-    };
-    const{error:dbErr}=await db.from('employee_deductions').insert([row]);
-    if(dbErr)throw dbErr;
-    msg.className='alert alert-ok';
-    msg.innerHTML='<strong>✓ Saved!</strong> &nbsp; Form ID: <strong>'+rec.form_id+'</strong>'
-      +(pdfUrl?` &nbsp;|&nbsp; <a href="${pdfUrl}" target="_blank" style="color:var(--success);font-weight:600;">📄 View PDF ↗</a>`:'');
-    msg.classList.remove('hidden');
-  }catch(e){
-    msg.className='alert alert-err';
-    msg.innerHTML='<strong>✗ Save failed:</strong> '+e.message;
-    msg.classList.remove('hidden');
-  }finally{btn.disabled=false;btn.textContent='💾 Save';}
+    if(!isReady()) return;
+    const btn = document.getElementById('saveBtn');
+    const msg = document.getElementById('submitMsg');
+    btn.disabled = true; btn.textContent = '⏳ Saving…'; msg.classList.add('hidden');
+    
+    try{
+        const db = getDB(), rec = collectRec();
+        
+        // Build PDF blob
+        const doc = buildPDF(rec);
+        const blob = doc.output('blob');
+        const pdfName = rec.form_id + '.pdf';
+        let pdfUrl = null;
+        
+        // Upload PDF to storage
+        const { data: up, error: upErr } = await db.storage.from('deduction').upload(pdfName, blob, { contentType: 'application/pdf', upsert: true });
+        if(!upErr){ 
+            const { data: pub } = db.storage.from('deduction').getPublicUrl(pdfName); 
+            pdfUrl = pub?.publicUrl || null; 
+        } else { 
+            console.warn('Storage skip:', upErr.message); 
+        }
+        
+        const row = {
+            form_id: rec.form_id, 
+            employee_id: rec.employee_id, 
+            employee_name: rec.employee_name,
+            employee_email: rec.employee_email, 
+            department: rec.department, 
+            job_title: rec.job_title,
+            issue_date: rec.issue_date, 
+            effective_date: rec.issue_date, 
+            deduction_frequency: 'per_paycheck',
+            deduction_type: rec.deduction_type, 
+            deduction_reason: rec.deduction_reason,
+            deduction_amount: rec.deduction_amount, 
+            payroll_period_start: rec.payroll_period_start,
+            payroll_period_end: rec.payroll_period_end, 
+            pay_day: rec.pay_day,
+            notes: rec.additional_notes, 
+            additional_notes: rec.additional_notes,
+            employee_signature: rec.emp_sig,
+            employee_signed_at: rec.employee_signed_date ? new Date(rec.employee_signed_date + 'T12:00:00').toISOString() : null,
+            employee_signed_date: rec.employee_signed_date,
+            hr_approver_name: rec.hr_approver_name, 
+            hr_signature: rec.hr_sig,
+            hr_signed_at: rec.hr_signed_date ? new Date(rec.hr_signed_date + 'T12:00:00').toISOString() : null,
+            hr_signed_date: rec.hr_signed_date,
+            generated_pdf_url: pdfUrl, 
+            pdf_url: pdfUrl, 
+            status: 'pending'
+        };
+        
+        // CHECK IF EDITING OR CREATING
+        if(_editModeId){
+            // UPDATE existing record
+            const { error: dbErr } = await db.from('employee_deductions').update(row).eq('id', _editModeId);
+            if(dbErr) throw dbErr;
+            
+            msg.className = 'alert alert-ok';
+            msg.innerHTML = '<strong>✓ Updated!</strong> Form ID: <strong>' + rec.form_id + '</strong>' + (pdfUrl ? ` &nbsp;|&nbsp; <a href="${pdfUrl}" target="_blank" style="color:var(--success);font-weight:600;">📄 View PDF ↗</a>` : '');
+            msg.classList.remove('hidden');
+            
+            // Update local cache
+            const idx = _histAll.findIndex(r => r.id === _editModeId);
+            if(idx >= 0) {
+                _histAll[idx] = { ..._histAll[idx], ...row, id: _editModeId };
+            }
+            
+            // Reset edit mode after short delay
+            setTimeout(() => { _editModeId = null; }, 2000);
+        } else {
+            // INSERT new record
+            const { error: dbErr } = await db.from('employee_deductions').insert([row]);
+            if(dbErr) throw dbErr;
+            
+            msg.className = 'alert alert-ok';
+            msg.innerHTML = '<strong>✓ Saved!</strong> Form ID: <strong>' + rec.form_id + '</strong>' + (pdfUrl ? ` &nbsp;|&nbsp; <a href="${pdfUrl}" target="_blank" style="color:var(--success);font-weight:600;">📄 View PDF ↗</a>` : '');
+            msg.classList.remove('hidden');
+        }
+        
+    } catch(e){
+        msg.className = 'alert alert-err';
+        msg.innerHTML = '<strong>✗ Save failed:</strong> ' + e.message;
+        msg.classList.remove('hidden');
+    } finally {
+        btn.disabled = false; btn.textContent = '💾 Save';
+    }
 }
 
+
+
+  
 function isReady(){
   const ok=!!(document.getElementById('hidEmpId').value&&document.getElementById('dedType').value&&
     document.getElementById('dedReason').value.trim()&&document.getElementById('dedAmount').value&&
@@ -1095,17 +1192,25 @@ function doPrint(){window.print();}
    RESET
 ═══════════════════════════════════════ */
 function resetForm(){
-  if(!confirm('Reset all fields?'))return;
-  doClear();
-  document.getElementById('submitMsg').classList.add('hidden');
-  const today=new Date(),ts=today.toISOString().split('T')[0];
-  document.getElementById('issueDate').value=ts;document.getElementById('empSigDate').value=ts;document.getElementById('hrSigDate').value=ts;
-  document.getElementById('hrName').value='';document.getElementById('dedNotes').value='';
-  clearCv('cvEmp','ghostEmp');clearCv('cvHr','ghostHr');
-  calcPP(ts);
-  const fid='DED-'+Date.now().toString(36).toUpperCase()+Math.random().toString(36).substr(2,5).toUpperCase();
-  document.getElementById('formId').textContent=fid;
-  document.getElementById('formDateDisplay').textContent='Date: '+fmtD(new Date());
+    if(!confirm('Reset all fields?')) return;
+    
+    // Clear edit mode
+    _editModeId = null;
+    
+    doClear();
+    document.getElementById('submitMsg').classList.add('hidden');
+    const today = new Date(), ts = today.toISOString().split('T')[0];
+    document.getElementById('issueDate').value = ts; 
+    document.getElementById('empSigDate').value = ts; 
+    document.getElementById('hrSigDate').value = ts;
+    document.getElementById('hrName').value = ''; 
+    document.getElementById('dedNotes').value = '';
+    clearCv('cvEmp','ghostEmp'); 
+    clearCv('cvHr','ghostHr');
+    calcPP(ts);
+    const fid = 'DED-' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substr(2,5).toUpperCase();
+    document.getElementById('formId').textContent = fid;
+    document.getElementById('formDateDisplay').textContent = 'Date: ' + fmtD(new Date());
 }
 document.getElementById('empSearch').addEventListener('keypress',e=>{if(e.key==='Enter'){e.preventDefault();doSearch();}});
 
@@ -1240,19 +1345,102 @@ async function histDelete(id,formId){
   }catch(e){alert('Delete failed: '+e.message);}
 }
 
-/* ── History: Edit ── */
+
+  
+/* ── History: Edit - Navigate to form with pre-loaded data ── */
 function openEdit(id){
-  const row=_histAll.find(r=>r.id===id);
-  if(!row){alert('Record not found.');return;}
-  document.getElementById('editRecordId').value=id;
-  document.getElementById('editType').value=row.deduction_type||'';
-  document.getElementById('editAmount').value=row.deduction_amount||'';
-  document.getElementById('editReason').value=row.deduction_reason||'';
-  document.getElementById('editStatus').value=row.status||'pending';
-  document.getElementById('editHR').value=row.hr_approver_name||'';
-  document.getElementById('editNotes').value=row.notes||row.additional_notes||'';
-  document.getElementById('editMsg').classList.add('hidden');
-  document.getElementById('editModal').classList.add('open');
+    const row = _histAll.find(r => r.id === id);
+    if(!row){ alert('Record not found.'); return; }
+    
+    // Set edit mode
+    _editModeId = id;
+    
+    // Switch to form tab
+    switchTab('form');
+    
+    // Pre-load form ID
+    document.getElementById('formId').textContent = row.form_id || 'DED-…';
+    
+    // Load employee data
+    if(row.employee_id){
+        document.getElementById('hidEmpId').value = row.employee_id;
+        // Fetch full employee data
+        loadEmployeeForEdit(row.employee_id);
+    }
+    
+    // Populate deduction fields
+    document.getElementById('issueDate').value = row.issue_date || row.effective_date || '';
+    onDateChange(); // Recalculate payroll period
+    
+    document.getElementById('dedType').value = row.deduction_type || '';
+    document.getElementById('dedReason').value = row.deduction_reason || '';
+    document.getElementById('dedAmount').value = row.deduction_amount || '';
+    document.getElementById('dedNotes').value = row.notes || row.additional_notes || '';
+    
+    // Populate signature dates
+    document.getElementById('empSigDate').value = row.employee_signed_date || '';
+    document.getElementById('hrSigDate').value = row.hr_signed_date || '';
+    document.getElementById('hrName').value = row.hr_approver_name || '';
+    
+    // Unlock sections
+    document.getElementById('dedSection').classList.remove('locked');
+    document.getElementById('sigSection').classList.remove('locked');
+    
+    // Show success message
+    const msg = document.getElementById('submitMsg');
+    msg.className = 'alert alert-ok';
+    msg.innerHTML = '<strong>✓ Editing Mode</strong> Form ID: <strong>' + (row.form_id || '—') + '</strong> — Make changes and save to update.';
+    msg.classList.remove('hidden');
+    
+    checkForm();
+    
+    // Scroll to top
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// Helper to load employee data for editing
+async function loadEmployeeForEdit(empId){
+    try{
+        const db = getDB();
+        const { data, error } = await db.from('employees2025').select('*').eq('employee_id', empId).single();
+        if(error) throw error;
+        
+        fillCard(data);
+        document.getElementById('empCard').classList.add('show');
+        document.getElementById('hidEmpData').value = JSON.stringify(data);
+        
+        const fn = ((data.first_name || '') + ' ' + (data.last_name || '')).trim();
+        document.getElementById('sigEmpName').textContent = fn || '—';
+        
+        // Load signatures if they exist
+        const rec = _histAll.find(r => r.id === _editModeId);
+        if(rec){
+            if(rec.employee_signature && rec.employee_signature.length > 200){
+                // Load employee signature into canvas
+                loadSignatureToCanvas('cvEmp', rec.employee_signature);
+                document.getElementById('ghostEmp').style.display = 'none';
+            }
+            if(rec.hr_signature && rec.hr_signature.length > 200){
+                // Load HR signature into canvas
+                loadSignatureToCanvas('cvHr', rec.hr_signature);
+                document.getElementById('ghostHr').style.display = 'none';
+            }
+        }
+    }catch(e){
+        console.error('Error loading employee:', e);
+    }
+}
+
+// Helper to load signature image into canvas
+function loadSignatureToCanvas(canvasId, dataUrl){
+    const cv = document.getElementById(canvasId);
+    const ctx = cv.getContext('2d');
+    const img = new Image();
+    img.onload = () => {
+        ctx.clearRect(0, 0, cv.width, cv.height);
+        ctx.drawImage(img, 0, 0, cv.width, cv.height);
+    };
+    img.src = dataUrl;
 }
 function closeEditModal(){document.getElementById('editModal').classList.remove('open');}
 
