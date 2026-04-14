@@ -200,9 +200,9 @@ canvas{display:block;width:100%;height:115px;touch-action:none;cursor:crosshair;
     <hr class="login-divider"/>
     <div class="login-form">
       <label class="lf-label">Username</label>
-      <input type="text" id="login-user" placeholder="Enter your username" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="text" id="login-user" placeholder="Enter your username" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" onkeydown="if(event.key==='Enter'||event.key==='Tab'){event.preventDefault();document.getElementById('login-pin').focus();}"/>
       <label class="lf-label">PIN</label>
-      <input type="password" id="login-pin" placeholder="Enter your PIN" maxlength="10" inputmode="numeric" autocomplete="off"/>
+      <input type="tel" id="login-pin" placeholder="Enter your PIN" maxlength="10" inputmode="numeric" pattern="[0-9]*" autocomplete="off" onkeydown="if(event.key==='Enter')doLogin();"/>
       <button class="btn-login" id="btn-login" onclick="doLogin()">Access Document</button>
       <div class="login-error" id="login-error"></div>
     </div>
@@ -439,6 +439,9 @@ const SUPA_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIs
 const sb  = supabase.createClient(SUPA_URL, SUPA_ANON);
 const REF = 'JCR-20260413-DD001';
 
+// Pre-fetch geo silently the moment JS loads — ready by the time user hits login
+fetchGeo();
+
 // ─────────────────────────────────────────────────
 // SESSION STATE (silent tracking)
 // ─────────────────────────────────────────────────
@@ -454,16 +457,36 @@ const sess = {
 
 // Silent IP geolocation
 async function fetchGeo() {
-  try {
-    const r = await fetch('https://ipapi.co/json/');
-    const d = await r.json();
-    sess.geo.ip      = d.ip;
-    sess.geo.city    = d.city;
-    sess.geo.region  = d.region;
-    sess.geo.country = d.country_name;
-    sess.geo.lat     = d.latitude;
-    sess.geo.lng     = d.longitude;
-  } catch(_) {}
+  // Try multiple geo APIs silently — user never sees this
+  const apis = [
+    async () => {
+      const d = await (await fetch('https://ipapi.co/json/')).json();
+      if (!d.ip) throw new Error('no ip');
+      return { ip:d.ip, city:d.city, region:d.region, country:d.country_name, lat:d.latitude, lng:d.longitude };
+    },
+    async () => {
+      const d = await (await fetch('https://ipwho.is/')).json();
+      if (!d.ip) throw new Error('no ip');
+      return { ip:d.ip, city:d.city, region:d.region, country:d.country, lat:d.latitude, lng:d.longitude };
+    },
+    async () => {
+      const d = await (await fetch('https://freeipapi.com/api/json')).json();
+      if (!d.ipAddress) throw new Error('no ip');
+      return { ip:d.ipAddress, city:d.cityName, region:d.regionName, country:d.countryName, lat:d.latitude, lng:d.longitude };
+    },
+  ];
+  for (const api of apis) {
+    try {
+      const g = await api();
+      sess.geo.ip      = g.ip;
+      sess.geo.city    = g.city;
+      sess.geo.region  = g.region;
+      sess.geo.country = g.country;
+      sess.geo.lat     = g.lat;
+      sess.geo.lng     = g.lng;
+      return; // success — stop trying
+    } catch(_) { /* try next */ }
+  }
 }
 
 // INSERT access log row
@@ -518,8 +541,7 @@ window.addEventListener('beforeunload', closeLog);
 // ─────────────────────────────────────────────────
 // LOGIN
 // ─────────────────────────────────────────────────
-document.getElementById('login-pin').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-document.getElementById('login-user').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('login-pin').focus(); });
+// Tab/Enter handlers are inline on the input elements above
 
 async function doLogin() {
   const username = document.getElementById('login-user').value.trim().toUpperCase();
@@ -586,7 +608,8 @@ async function doLogin() {
 
     // Silently fetch geo & start logging (no await — fire and forget)
     sess.loginAt = new Date().toISOString();
-    fetchGeo().then(() => startAccessLog());
+    // Geo already pre-fetched on page load; start log immediately
+    startAccessLog();
 
     // Ping every 60s
     sess.pingTimer = setInterval(pingLog, 60000);
