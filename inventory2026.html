@@ -19194,15 +19194,8 @@ function rptRenderBody(tabName, cfg, d) {
 
     case 'rpt_autochlor': {
 
-        // ═══════════════════════════════════════════════════════════════
-        //  AUTOCHLOR TRACKING  —  Enterprise Dashboard Rebuild
-        //  Charts: vendor spend over time · spend per product ·
-        //          change frequency per product · per-product timeline
-        //  Features: product images · manual date entry · old vs new date
-        // ═══════════════════════════════════════════════════════════════
-
         // ── helpers ──────────────────────────────────────────────────────
-        const fmt$ = n => '$' + Math.round(n||0).toLocaleString('en-US');
+        const fmt$ = n => '$' + (n||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
         const fmtD = ymd => {
             if (!ymd) return '—';
             const [y,m,dd] = ymd.split('-');
@@ -19214,483 +19207,339 @@ function rptRenderBody(tabName, cfg, d) {
             return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;
         };
         const todayStr = chiToday();
+        const daysBetween = (a,b) => a&&b ? Math.round((new Date(b+'T12:00:00')-new Date(a+'T12:00:00'))/86400000) : null;
 
-        // ── 1. Build image map from mgmt ─────────────────────────────────
+        // ── 1. Image map ─────────────────────────────────────────────────
         const acImgMap = new Map();
-        (d.mgmt||[]).forEach(p => {
-            if (p.image_url) acImgMap.set((p.product_name||'').toLowerCase().trim(), p.image_url);
-        });
+        (d.mgmt||[]).forEach(p => { if(p.image_url) acImgMap.set((p.product_name||'').toLowerCase().trim(), p.image_url); });
         const getAcImg = name => {
-            const k = (name||'').toLowerCase().trim();
-            const raw = acImgMap.get(k) || null;
+            const raw = acImgMap.get((name||'').toLowerCase().trim()) || null;
             if (!raw) return null;
             if (raw.startsWith('http')) return raw;
             return `https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/${raw}`;
         };
 
-        // ── 2. Aggregate data by product ────────────────────────────────
+        // ── 2. Aggregate ─────────────────────────────────────────────────
         const acByProd = {};
+        // Normalize key: trim + collapse whitespace + lowercase — prevents duplicates from
+        // minor name differences across allAcTracking / allEnriched / mgmt tables.
+        // Kitchen vs Bar variants are kept separate because their names differ meaningfully.
+        const acKey  = name => (name||'').trim().replace(/\s+/g,' ').toLowerCase();
         const acBucket = (name, cat) => {
-            if (!acByProd[name]) acByProd[name] = {
-                name, cat: cat||'Janitorial & Chemicals',
-                trackDates: [], invoiceDates: [], totalSpend: 0,
-                spendByMonth: {}  // 'YYYY-MM' → amount
+            const key = acKey(name);
+            if (!acByProd[key]) acByProd[key] = {
+                name: (name||'').trim().replace(/\s+/g,' '), // clean display name
+                cat: cat||'Janitorial & Chemicals',
+                trackDates:[], invoiceDates:[], totalSpend:0, spendByMonth:{}
             };
-            return acByProd[name];
+            return acByProd[key];
         };
-
-        // tracking logs
         (d.allAcTracking||[]).forEach(row => {
             if (!row.date_changed) return;
-            const b = acBucket(row.product_name, 'Janitorial & Chemicals');
-            b.trackDates.push({ id: row.id||null, date: row.date_changed, qty: row.qty||null, unit: row.unit||null, notes: row.notes||null });
+            acBucket(row.product_name,'Janitorial & Chemicals').trackDates.push({ id:row.id||null, date:row.date_changed, qty:row.qty||null, unit:row.unit||null, notes:row.notes||null });
         });
-
-        // invoice spend
-        d.allEnriched.filter(it => (it.vendor||'').toLowerCase() === 'autochlor').forEach(it => {
-            const b = acBucket(it.product_name, it.category||'Janitorial & Chemicals');
-            b.invoiceDates.push(it.invoice_date);
-            b.totalSpend += it.total||0;
-            const mo = (it.invoice_date||'').slice(0,7);
-            if (mo) b.spendByMonth[mo] = (b.spendByMonth[mo]||0) + (it.total||0);
+        d.allEnriched.filter(it=>(it.vendor||'').toLowerCase()==='autochlor').forEach(it => {
+            const b=acBucket(it.product_name,it.category||'Janitorial & Chemicals');
+            b.invoiceDates.push(it.invoice_date); b.totalSpend+=it.total||0;
+            const mo=(it.invoice_date||'').slice(0,7); if(mo) b.spendByMonth[mo]=(b.spendByMonth[mo]||0)+(it.total||0);
         });
+        d.mgmt.filter(p=>(p.vendors||'').toLowerCase().includes('autochlor')).forEach(p=>acBucket(p.product_name,p.category));
 
-        // catalog (vendor = autochlor)
-        d.mgmt.filter(p => (p.vendors||'').toLowerCase().includes('autochlor'))
-              .forEach(p => acBucket(p.product_name, p.category));
-
-        // ── 3. Compute per-product stats ─────────────────────────────────
+        // ── 3. Stats ─────────────────────────────────────────────────────
         const acRows = Object.values(acByProd).map(p => {
-            p.trackDates.sort((a,b) => a.date.localeCompare(b.date));
-            const allDates = p.trackDates.map(x=>x.date);
-            const lastDate  = allDates[allDates.length-1]||null;
-            const firstDate = allDates[0]||null;
-            const daysActive = (lastDate&&firstDate&&lastDate!==firstDate)
-                ? Math.round((new Date(lastDate+'T12:00:00')-new Date(firstDate+'T12:00:00'))/86400000) : null;
-            const daysSinceLast = lastDate
-                ? Math.round((new Date(todayStr+'T12:00:00')-new Date(lastDate+'T12:00:00'))/86400000) : null;
-            let avgDaysBetween = null;
-            if (allDates.length >= 2) {
-                const gaps = [];
-                for (let i=1;i<allDates.length;i++)
-                    gaps.push(Math.round((new Date(allDates[i]+'T12:00:00')-new Date(allDates[i-1]+'T12:00:00'))/86400000));
-                const valid = gaps.filter(g => g>=0 && g<3650);
-                if (valid.length) avgDaysBetween = Math.round(valid.reduce((a,b)=>a+b,0)/valid.length);
-            }
-            return {...p, allDates, lastDate, firstDate, daysActive, daysSinceLast, avgDaysBetween,
-                    trackCount: p.trackDates.length, invoiceCount: p.invoiceDates.length};
-        }).sort((a,b) => b.totalSpend-a.totalSpend);
+            p.trackDates.sort((a,b)=>a.date.localeCompare(b.date));
+            const dates=p.trackDates.map(x=>x.date), last=dates[dates.length-1]||null, first=dates[0]||null;
+            const daysActive=daysBetween(first,last);
+            const daysSinceLast=last?daysBetween(last,todayStr):null;
+            let avgDaysBetween=null;
+            if(dates.length>=2){ const gaps=[]; for(let i=1;i<dates.length;i++){const g=daysBetween(dates[i-1],dates[i]);if(g>=0&&g<3650)gaps.push(g);} if(gaps.length)avgDaysBetween=Math.round(gaps.reduce((a,b)=>a+b,0)/gaps.length); }
+            const nextExpected = (last&&avgDaysBetween) ? (() => { const d=new Date(last+'T12:00:00'); d.setDate(d.getDate()+avgDaysBetween); return d.toISOString().slice(0,10); })() : null;
+            const cyclePercent = (daysSinceLast!==null&&avgDaysBetween) ? Math.min(100,Math.round((daysSinceLast/avgDaysBetween)*100)) : null;
+            return {...p, dates, last, first, daysActive, daysSinceLast, avgDaysBetween, nextExpected, cyclePercent, trackCount:p.trackDates.length};
+        }).sort((a,b)=>b.totalSpend-a.totalSpend)
+          .filter(r => !/machine\s*charge|service\s*charge|labor\s*charge/i.test(r.name));
 
         // ── 4. KPIs ──────────────────────────────────────────────────────
-        const totalProds   = acRows.length;
-        const trackedProds = acRows.filter(r=>r.trackCount>0).length;
-        const cycleProds   = acRows.filter(r=>r.avgDaysBetween>0);
-        const avgCycle     = cycleProds.length ? Math.round(cycleProds.reduce((s,r)=>s+r.avgDaysBetween,0)/cycleProds.length) : 0;
-        const totalSpendAll= acRows.reduce((s,r)=>s+r.totalSpend,0);
-        const overdueCnt   = acRows.filter(r=>r.daysSinceLast!==null&&r.avgDaysBetween&&r.daysSinceLast>r.avgDaysBetween*1.2).length;
+        const totalProds=acRows.length, trackedProds=acRows.filter(r=>r.trackCount>0).length;
+        const cycleProds=acRows.filter(r=>r.avgDaysBetween>0);
+        const avgCycle=cycleProds.length?Math.round(cycleProds.reduce((s,r)=>s+r.avgDaysBetween,0)/cycleProds.length):0;
+        const totalSpendAll=acRows.reduce((s,r)=>s+r.totalSpend,0);
+        const overdueCnt=acRows.filter(r=>r.cyclePercent!==null&&r.cyclePercent>=100).length;
+        const dueSoonCnt=acRows.filter(r=>r.cyclePercent!==null&&r.cyclePercent>=80&&r.cyclePercent<100).length;
+        const allMonths=[...new Set(acRows.flatMap(r=>Object.keys(r.spendByMonth)))].sort();
+        const vendorSpendByMonth={};
+        allMonths.forEach(mo=>{ vendorSpendByMonth[mo]=acRows.reduce((s,r)=>s+(r.spendByMonth[mo]||0),0); });
 
-        kpiEl.innerHTML =
-            kpi('🧪','Products Tracked',  `${trackedProds}/${totalProds}`, 'With change logs', colHex) +
-            kpi('📅','Avg Change Cycle',  avgCycle ? avgCycle+'d' : '—', 'Days between changes', colHex) +
-            kpi('⚠️','Overdue Changes',   overdueCnt, overdueCnt?'Need attention':'All on time', overdueCnt?'#dc2626':'#16a34a') +
-            kpi('💰','Total AC Spend',    fmt$(totalSpendAll), 'All invoices', '#0d9488');
+        // ── status helpers ───────────────────────────────────────────────
+        const getStatus = r => {
+            if (r.cyclePercent===null) return { label:'NO DATA', bg:'#475569', ring:'#94a3b8', glow:'' };
+            if (r.cyclePercent>=100)  return { label:'OVERDUE', bg:'#dc2626', ring:'#ef4444', glow:'0 0 14px rgba(239,68,68,.45)' };
+            if (r.cyclePercent>=80)   return { label:'DUE SOON', bg:'#d97706', ring:'#f59e0b', glow:'0 0 14px rgba(245,158,11,.4)' };
+            return { label:'ON TRACK', bg:'#059669', ring:'#10b981', glow:'0 0 14px rgba(16,185,129,.3)' };
+        };
 
-        // ── 5. TOP CHARTS ROW ────────────────────────────────────────────
-        // Build month list for vendor spend over time
-        const allMonths = [...new Set(
-            acRows.flatMap(r => Object.keys(r.spendByMonth))
-        )].sort();
+        // ── SVG donut ring (cycle gauge) ─────────────────────────────────
+        const cycleGauge = (pct, color, glow) => {
+            if (pct===null) return `<svg width="70" height="70" viewBox="0 0 70 70"><circle cx="35" cy="35" r="28" fill="none" stroke="#e2e8f0" stroke-width="7"/><text x="35" y="40" text-anchor="middle" font-size="10" fill="#94a3b8" font-family="monospace">—</text></svg>`;
+            const r=28, circ=2*Math.PI*r, offset=circ*(1-Math.min(pct,100)/100);
+            const textColor = pct>=100?'#dc2626':pct>=80?'#d97706':'#059669';
+            return `<svg width="70" height="70" viewBox="0 0 70 70">
+                <circle cx="35" cy="35" r="${r}" fill="none" stroke="#e2e8f0" stroke-width="7"/>
+                <circle cx="35" cy="35" r="${r}" fill="none" stroke="${color}" stroke-width="7"
+                    stroke-dasharray="${circ}" stroke-dashoffset="${offset}"
+                    stroke-linecap="round" transform="rotate(-90 35 35)"
+                    style="filter:drop-shadow(${glow||''})"/>
+                <text x="35" y="38" text-anchor="middle" font-size="12" font-weight="800" fill="${textColor}" font-family="monospace">${Math.min(pct,999)}%</text>
+            </svg>`;
+        };
 
-        const vendorSpendByMonth = {};
-        allMonths.forEach(mo => {
-            vendorSpendByMonth[mo] = acRows.reduce((s,r) => s+(r.spendByMonth[mo]||0), 0);
-        });
-
+        // ── clear containers ──────────────────────────────────────────────
+        kpiEl.innerHTML = '';
         chartEl.innerHTML = '';
+        if (extEl) extEl.innerHTML = '';
 
-        // Chart grid: 2 cols top row
-        const topGrid = document.createElement('div');
-        topGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;';
-
-        // Chart A: Vendor total spend by month (line)
-        const cA_id = 'acCA_'+(++window._rptChartSeq);
-        const cA = document.createElement('div');
-        cA.style.cssText = 'background:white;border-radius:14px;padding:1.25rem 1.25rem 1rem;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);';
-        cA.innerHTML = `<div style="font-size:.8rem;font-weight:800;color:#0f766e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.15rem;">💰 Vendor Total Spend Over Time</div>
-            <div style="font-size:.68rem;color:#6b7280;margin-bottom:.85rem;">Monthly invoice spend — Autochlor</div>
-            <canvas id="${cA_id}" height="140"></canvas>`;
-        topGrid.appendChild(cA);
-
-        // Chart B: Spend per product (horizontal bar)
-        const cB_id = 'acCB_'+(++window._rptChartSeq);
-        const cB = document.createElement('div');
-        cB.style.cssText = 'background:white;border-radius:14px;padding:1.25rem 1.25rem 1rem;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);';
-        cB.innerHTML = `<div style="font-size:.8rem;font-weight:800;color:#7c3aed;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.15rem;">📊 Spend Per Product</div>
-            <div style="font-size:.68rem;color:#6b7280;margin-bottom:.85rem;">All-time invoice spend by product</div>
-            <canvas id="${cB_id}" height="140"></canvas>`;
-        topGrid.appendChild(cB);
-        chartEl.appendChild(topGrid);
-
-        // Chart C: Change frequency per product (bar — full width)
-        const cC_id = 'acCC_'+(++window._rptChartSeq);
-        const cC = document.createElement('div');
-        cC.style.cssText = 'background:white;border-radius:14px;padding:1.25rem 1.25rem 1rem;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:1rem;';
-        cC.innerHTML = `<div style="font-size:.8rem;font-weight:800;color:#1d4ed8;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.15rem;">🔄 Change Frequency per Product</div>
-            <div style="font-size:.68rem;color:#6b7280;margin-bottom:.85rem;">Number of logged changes · avg days between changes</div>
-            <canvas id="${cC_id}" height="110"></canvas>`;
-        chartEl.appendChild(cC);
-
-        // Render charts
-        requestAnimationFrame(() => {
-            // Chart A — vendor spend over time
-            const ctxA = document.getElementById(cA_id);
-            if (ctxA && allMonths.length > 0) {
-                {const e=Chart.getChart(ctxA);if(e)e.destroy();}
-                new Chart(ctxA, {
-                    type: 'line',
-                    data: {
-                        labels: allMonths.map(m => {
-                            const [y,mo] = m.split('-');
-                            return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(mo)-1]+' '+y.slice(2);
-                        }),
-                        datasets: [{
-                            label: 'Monthly Spend',
-                            data: allMonths.map(m => vendorSpendByMonth[m]||0),
-                            borderColor: '#0d9488', backgroundColor: 'rgba(13,148,136,.12)',
-                            fill: true, tension: .35, borderWidth: 2.5,
-                            pointRadius: 5, pointBackgroundColor: '#0d9488',
-                            pointHoverRadius: 7
-                        }]
-                    },
-                    options: {
-                        responsive:true, plugins:{ legend:{display:false},
-                            tooltip:{ callbacks:{ label: c => ' '+fmt$(c.parsed.y) } } },
-                        scales:{ y:{ beginAtZero:true, ticks:{ callback:v=>'$'+v.toLocaleString() } },
-                                 x:{ ticks:{ font:{size:10} } } }
-                    }
-                });
-            } else if (ctxA) {
-                ctxA.parentElement.insertAdjacentHTML('beforeend','<div style="text-align:center;padding:2rem;color:#9ca3af;font-size:.8rem;">No invoice data yet</div>');
-            }
-
-            // Chart B — spend per product
-            const ctxB = document.getElementById(cB_id);
-            if (ctxB) {
-                const prodSpend = acRows.filter(r=>r.totalSpend>0).sort((a,b)=>b.totalSpend-a.totalSpend).slice(0,10);
-                {const e=Chart.getChart(ctxB);if(e)e.destroy();}
-                if (prodSpend.length) {
-                    new Chart(ctxB, {
-                        type: 'bar',
-                        data: {
-                            labels: prodSpend.map(r => r.name.length>20 ? r.name.slice(0,19)+'…' : r.name),
-                            datasets: [{
-                                label: 'Spend',
-                                data: prodSpend.map(r => r.totalSpend),
-                                backgroundColor: prodSpend.map((_,i) => `hsla(${260+i*15},70%,58%,.8)`),
-                                borderRadius: 5, borderWidth: 0
-                            }]
-                        },
-                        options: {
-                            indexAxis: 'y', responsive:true,
-                            plugins:{ legend:{display:false},
-                                tooltip:{ callbacks:{ label: c=>' '+fmt$(c.parsed.x) } } },
-                            scales:{ x:{ beginAtZero:true, ticks:{ callback:v=>'$'+v.toLocaleString() } },
-                                     y:{ ticks:{ font:{size:10} } } }
-                        }
-                    });
-                } else {
-                    ctxB.parentElement.insertAdjacentHTML('beforeend','<div style="text-align:center;padding:2rem;color:#9ca3af;font-size:.8rem;">No invoice data yet</div>');
-                }
-            }
-
-            // Chart C — frequency
-            const ctxC = document.getElementById(cC_id);
-            if (ctxC) {
-                const freqRows = acRows.filter(r=>r.trackCount>0).slice(0,14);
-                {const e=Chart.getChart(ctxC);if(e)e.destroy();}
-                if (freqRows.length) {
-                    new Chart(ctxC, {
-                        type: 'bar',
-                        data: {
-                            labels: freqRows.map(r => r.name.length>18 ? r.name.slice(0,17)+'…' : r.name),
-                            datasets: [
-                                { label:'# Changes', data: freqRows.map(r=>r.trackCount),
-                                  backgroundColor:'rgba(29,78,216,.75)', borderRadius:4, yAxisID:'y' },
-                                { label:'Avg Cycle (days)', data: freqRows.map(r=>r.avgDaysBetween||0),
-                                  type:'line', borderColor:'#f59e0b', backgroundColor:'rgba(245,158,11,.1)',
-                                  borderWidth:2.5, pointRadius:5, tension:.3, fill:false, yAxisID:'y2' }
-                            ]
-                        },
-                        options: {
-                            responsive:true,
-                            plugins:{ legend:{ display:true, labels:{font:{size:11}} },
-                                      tooltip:{ mode:'index', intersect:false } },
-                            scales:{
-                                x:{ ticks:{ font:{size:10} } },
-                                y:{ beginAtZero:true, position:'left',
-                                    title:{display:true,text:'# Changes',font:{size:10}} },
-                                y2:{ beginAtZero:true, position:'right', grid:{drawOnChartArea:false},
-                                     title:{display:true,text:'Avg Days',font:{size:10}} }
-                            }
-                        }
-                    });
-                }
-            }
-        });
-
-        // ── 6. Per-product cards ──────────────────────────────────────────
-        if (extEl) {
-            // Vendor header banner
-            extEl.innerHTML = `
-            <div style="display:flex;align-items:center;gap:1rem;background:linear-gradient(135deg,#0f766e,#0d9488);border-radius:14px;padding:1rem 1.5rem;margin-bottom:1.25rem;color:white;box-shadow:0 4px 16px rgba(13,148,136,.25);">
-                <img src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/autochlor.jpg"
-                     style="height:52px;border-radius:10px;object-fit:contain;background:white;padding:3px;box-shadow:0 2px 8px rgba(0,0,0,.2);"
-                     onerror="this.style.display='none'">
-                <div style="flex:1;">
-                    <div style="font-size:1.1rem;font-weight:800;letter-spacing:-.01em;">🧪 Autochlor — Product Change Tracking</div>
-                    <div style="font-size:.77rem;opacity:.85;margin-top:.2rem;">
-                        <strong>${totalProds}</strong> products · <strong>${trackedProds}</strong> with logs ·
-                        Total spend: <strong>${fmt$(totalSpendAll)}</strong> ·
-                        Avg change cycle: <strong>${avgCycle ? avgCycle+'d' : '—'}</strong>
+        // ════════════════════════════════════════════════════════════════
+        //  HEADER BAND
+        // ════════════════════════════════════════════════════════════════
+        const headerBand = document.createElement('div');
+        headerBand.style.cssText = 'background:linear-gradient(135deg,#0c1e35 0%,#0f3148 45%,#0c2a3f 100%);border-radius:16px;padding:1.75rem 2rem 1.5rem;margin-bottom:1.5rem;position:relative;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.25);';
+        headerBand.innerHTML = `
+            <!-- Background pattern -->
+            <div style="position:absolute;inset:0;opacity:.04;background:repeating-linear-gradient(45deg,#fff 0,#fff 1px,transparent 0,transparent 50%);background-size:20px 20px;pointer-events:none;"></div>
+            <div style="position:relative;display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap;">
+                <!-- Logo -->
+                <div style="background:rgba(255,255,255,.08);border-radius:12px;padding:.5rem;border:1px solid rgba(255,255,255,.12);flex-shrink:0;">
+                    <img src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/autochlor.jpg"
+                         style="height:52px;width:52px;object-fit:contain;border-radius:8px;display:block;"
+                         onerror="this.parentElement.innerHTML='<span style=\\'font-size:2rem;\\'>🧪</span>'">
+                </div>
+                <!-- Title block -->
+                <div style="flex:1;min-width:200px;">
+                    <div style="font-size:.62rem;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#14b8a6;margin-bottom:.3rem;">Chemical Operations · Jeng Chi Restaurant</div>
+                    <div style="font-size:1.55rem;font-weight:900;color:#ffffff;letter-spacing:-.02em;line-height:1.1;">AUTOCHLOR MANAGEMENT SYSTEM</div>
+                    <div style="font-size:.75rem;color:rgba(255,255,255,.5);margin-top:.35rem;font-family:monospace;">Product Change Tracking &nbsp;·&nbsp; Cycle Intelligence &nbsp;·&nbsp; Spend Analytics</div>
+                </div>
+                <!-- Live clock -->
+                <div style="text-align:right;flex-shrink:0;">
+                    <div style="font-size:.62rem;color:rgba(255,255,255,.4);letter-spacing:.08em;text-transform:uppercase;margin-bottom:.2rem;">System Date</div>
+                    <div style="font-size:.9rem;font-weight:700;color:#14b8a6;font-family:monospace;">${fmtD(todayStr)}</div>
+                    <div style="margin-top:.5rem;display:flex;gap:.4rem;align-items:center;justify-content:flex-end;">
+                        <span style="width:7px;height:7px;border-radius:50%;background:#10b981;animation:pulse 2s infinite;flex-shrink:0;"></span>
+                        <span style="font-size:.65rem;color:rgba(255,255,255,.5);">Live Tracking Active</span>
                     </div>
                 </div>
-                <div style="text-align:right;font-size:.72rem;opacity:.75;">All times Chicago (CST)</div>
             </div>
-            ${d.acTrackingError ? '<div style="padding:.75rem 1rem;background:#fef9c3;border:1px solid #fde047;border-radius:8px;font-size:.8rem;color:#713f12;margin-bottom:1rem;">⚠️ Could not load autochlor_date_tracking — check console.</div>' : ''}`;
+            <!-- KPI row -->
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.75rem;margin-top:1.5rem;position:relative;">
+                ${[
+                    { icon:'🧴', val:`${trackedProds}/${totalProds}`, sub:'Products Tracked', accent:'#14b8a6' },
+                    { icon:'🔄', val:avgCycle?avgCycle+'d':'—', sub:'Avg Change Cycle', accent:'#38bdf8' },
+                    { icon:'⚠️', val:overdueCnt, sub:'Overdue', accent:overdueCnt?'#ef4444':'#10b981', urgent:overdueCnt>0 },
+                    { icon:'🕐', val:dueSoonCnt, sub:'Due Soon', accent:dueSoonCnt?'#f59e0b':'#10b981', urgent:dueSoonCnt>0 },
+                    { icon:'💰', val:fmt$(totalSpendAll), sub:'Total AC Spend', accent:'#a78bfa' },
+                ].map(k=>`
+                <div style="background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.${k.urgent?'18':'1'});border-radius:10px;padding:.85rem 1rem;${k.urgent?'box-shadow:0 0 0 1px '+k.accent+';':''}">
+                    <div style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:rgba(255,255,255,.45);margin-bottom:.3rem;">${k.icon} ${k.sub}</div>
+                    <div style="font-size:1.4rem;font-weight:900;color:${k.accent};font-family:monospace;letter-spacing:-.02em;">${k.val}</div>
+                </div>`).join('')}
+            </div>`;
+        if(extEl) extEl.parentElement.insertBefore(headerBand, extEl);
+        else chartEl.appendChild(headerBand);
 
-            // Quick-status strip
-            const strip = document.createElement('div');
-            strip.style.cssText = 'display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:1.25rem;padding:.75rem;background:#f0fdfa;border-radius:10px;border:1px solid #99f6e4;';
-            strip.innerHTML = '<div style="width:100%;font-size:.68rem;font-weight:800;color:#0f766e;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem;">📊 Quick Status — Days Since Last Log</div>' +
-                acRows.filter(r=>r.trackCount>0).map(p => {
-                    const c = p.daysSinceLast>60?'#dc2626':p.daysSinceLast>30?'#d97706':'#16a34a';
-                    return `<span style="display:inline-flex;align-items:center;gap:.35rem;background:white;border:1px solid #e5e7eb;border-radius:8px;padding:.28rem .6rem;font-size:.7rem;">
-                        <strong style="color:#1e293b;">${p.name.length>20?p.name.slice(0,19)+'…':p.name}</strong>
-                        <span style="background:${c};color:white;border-radius:99px;padding:.05rem .4rem;font-weight:700;font-size:.67rem;">${p.daysSinceLast===0?'Today':p.daysSinceLast+'d ago'}</span>
-                    </span>`;
-                }).join('');
-            extEl.appendChild(strip);
+        // ════════════════════════════════════════════════════════════════
+        //  CHARTS ROW
+        // ════════════════════════════════════════════════════════════════
+        const chartsRow = document.createElement('div');
+        chartsRow.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem;';
 
-            // Per-product cards
-            acRows.forEach(prod => {
-                const isOverdue  = prod.avgDaysBetween && prod.daysSinceLast > prod.avgDaysBetween*1.2;
-                const daysColor  = prod.daysSinceLast===null?'#9ca3af':prod.daysSinceLast>60?'#dc2626':prod.daysSinceLast>30?'#d97706':'#16a34a';
-                const imgSrc     = getAcImg(prod.name);
-                const safeId     = prod.name.replace(/[^a-z0-9]/gi,'_');
-                const logDateId  = 'acLD_'+safeId;
-                const logNoteId  = 'acLN_'+safeId;
-                const chartId    = 'acLC_'+(++window._rptChartSeq);
-                const spendChId  = 'acSC_'+(++window._rptChartSeq);
-                const safeName   = (prod.name||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+        const cA_id='acCA_'+(++window._rptChartSeq), cB_id='acCB_'+(++window._rptChartSeq);
+        chartsRow.innerHTML = `
+        <div style="background:white;border-radius:14px;padding:1.25rem;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);">
+            <div style="font-size:.7rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:#0f766e;margin-bottom:.1rem;">💰 Monthly Spend — Autochlor</div>
+            <div style="font-size:.65rem;color:#94a3b8;margin-bottom:.85rem;">Invoice totals by month</div>
+            <canvas id="${cA_id}" height="130"></canvas>
+        </div>
+        <div style="background:white;border-radius:14px;padding:1.25rem;border:1px solid #e2e8f0;box-shadow:0 2px 8px rgba(0,0,0,.06);">
+            <div style="font-size:.7rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:#7c3aed;margin-bottom:.1rem;">📊 Spend by Product</div>
+            <div style="font-size:.65rem;color:#94a3b8;margin-bottom:.85rem;">All-time invoice spend (top 8)</div>
+            <canvas id="${cB_id}" height="130"></canvas>
+        </div>`;
+        chartEl.appendChild(chartsRow);
 
-                // ── Build change log table ──
-                const logTableId = 'acTbl_' + safeId;
-                const logRows = prod.trackDates.map((entry, i) => {
-                    const prev    = i>0 ? prod.trackDates[i-1] : null;
-                    const gapDays = prev ? Math.round((new Date(entry.date+'T12:00:00')-new Date(prev.date+'T12:00:00'))/86400000) : null;
-                    const gapBadge = gapDays===null
-                        ? '<span style="background:#ede9fe;color:#7c3aed;border-radius:99px;padding:.1rem .45rem;font-size:.67rem;font-weight:700;">1st</span>'
-                        : `<span style="background:${gapDays<=7?'#dcfce7':gapDays<=30?'#e0f2fe':'#fef9c3'};color:${gapDays<=7?'#15803d':gapDays<=30?'#0369a1':'#92400e'};border-radius:99px;padding:.1rem .45rem;font-size:.67rem;font-weight:700;">+${gapDays}d</span>`;
-                    const safeE  = (entry.date||'').replace(/'/g,"\\'");
-                    const safeN  = (entry.notes||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
-                    const safeND = (prod.name||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
-                    const editBtn = entry.id
-                        ? `<button onclick="acEditLog('${entry.id}','${safeE}','${safeN}',this)"
-                            style="background:#eff6ff;border:1px solid #bfdbfe;color:#2563eb;border-radius:5px;padding:.15rem .4rem;font-size:.68rem;cursor:pointer;font-weight:600;">✏️</button>` : '';
-                    const delBtn = entry.id
-                        ? `<button onclick="acDeleteLog('${entry.id}','${safeND}')"
-                            style="background:#fff1f2;border:1px solid #fecdd3;color:#dc2626;border-radius:5px;padding:.15rem .4rem;font-size:.68rem;cursor:pointer;font-weight:600;">🗑</button>` : '';
-                    return `<tr data-entry-id="${entry.id||''}" style="background:${i%2?'#fff':'#f8fafc'};">
-                        <td style="padding:.35rem .45rem;text-align:center;">
-                            <input type="checkbox" class="ac-row-chk" data-id="${entry.id||''}"
-                                style="width:14px;height:14px;cursor:pointer;accent-color:#dc2626;"
-                                onchange="acUpdateBulkBar('${safeId}')">
-                        </td>
-                        <td style="padding:.4rem .65rem;font-family:var(--font-mono);font-size:.78rem;font-weight:700;color:#1e293b;white-space:nowrap;">
-                            ${fmtD(entry.date)}
-                        </td>
-                        <td style="padding:.4rem .5rem;text-align:center;">${gapBadge}</td>
-                        <td style="padding:.4rem .65rem;font-size:.75rem;color:#374151;">${entry.notes||'<span style="color:#d1d5db;font-style:italic;">—</span>'}</td>
-                        <td style="padding:.4rem .5rem;text-align:right;white-space:nowrap;"><div style="display:flex;gap:.25rem;justify-content:flex-end;">${editBtn}${delBtn}</div></td>
-                    </tr>`;
-                }).join('');
+        requestAnimationFrame(() => {
+            const ctxA=document.getElementById(cA_id);
+            if(ctxA&&allMonths.length){
+                {const e=Chart.getChart(ctxA);if(e)e.destroy();}
+                new Chart(ctxA,{ type:'line', data:{ labels:allMonths.map(m=>{const[y,mo]=m.split('-');return['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(mo)-1]+' '+y.slice(2);}), datasets:[{label:'Spend',data:allMonths.map(m=>vendorSpendByMonth[m]||0),borderColor:'#0d9488',backgroundColor:'rgba(13,148,136,.1)',fill:true,tension:.35,borderWidth:2.5,pointRadius:4,pointBackgroundColor:'#0d9488'}]}, options:{responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>' '+fmt$(c.parsed.y)}}},scales:{y:{beginAtZero:true,ticks:{callback:v=>'$'+v.toLocaleString(),font:{size:9}}},x:{ticks:{font:{size:9}}}}}});
+            }
+            const ctxB=document.getElementById(cB_id);
+            if(ctxB){
+                {const e=Chart.getChart(ctxB);if(e)e.destroy();}
+                const pd=acRows.filter(r=>r.totalSpend>0).slice(0,8);
+                if(pd.length) new Chart(ctxB,{type:'bar',data:{labels:pd.map(r=>r.name.length>18?r.name.slice(0,17)+'…':r.name),datasets:[{data:pd.map(r=>r.totalSpend),backgroundColor:pd.map((_,i)=>`hsla(${260+i*18},68%,60%,.85)`),borderRadius:5,borderWidth:0}]},options:{indexAxis:'y',responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>' '+fmt$(c.parsed.x)}}},scales:{x:{beginAtZero:true,ticks:{callback:v=>'$'+v.toLocaleString(),font:{size:9}}},y:{ticks:{font:{size:9}}}}}});
+            }
+        });
 
-                const logTable = prod.trackDates.length ? `
-                    <!-- Bulk action bar (hidden until rows checked) -->
-                    <div id="acBulkBar_${safeId}" style="display:none;background:#fef2f2;border-bottom:1.5px solid #fecaca;padding:.4rem .75rem;display:none;align-items:center;gap:.65rem;">
-                        <span id="acBulkCount_${safeId}" style="font-size:.75rem;font-weight:700;color:#dc2626;">0 selected</span>
-                        <button onclick="acDeleteSelected('${safeId}','${safeName}')"
-                            style="background:#dc2626;color:white;border:none;border-radius:6px;padding:.22rem .7rem;font-size:.73rem;font-weight:700;cursor:pointer;">
-                            🗑 Delete Selected
-                        </button>
-                        <button onclick="acClearSelection('${safeId}')"
-                            style="background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;border-radius:6px;padding:.22rem .6rem;font-size:.73rem;cursor:pointer;">
-                            ✕ Clear
-                        </button>
+        // ════════════════════════════════════════════════════════════════
+        //  PRODUCT CARDS GRID
+        // ════════════════════════════════════════════════════════════════
+        if (!extEl) break;
+
+        // Section header
+        extEl.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem;">
+            <div>
+                <div style="font-size:1rem;font-weight:800;color:#0f172a;letter-spacing:-.01em;">Product Change Tracker</div>
+                <div style="font-size:.72rem;color:#64748b;margin-top:.1rem;">${totalProds} products · Log a change by entering the date and clicking <strong>+ Log Change</strong></div>
+            </div>
+            <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+                <span style="background:#dcfce7;color:#15803d;border-radius:8px;padding:.3rem .75rem;font-size:.72rem;font-weight:700;border:1px solid #bbf7d0;">🟢 On Track: ${acRows.filter(r=>r.cyclePercent!==null&&r.cyclePercent<80).length}</span>
+                <span style="background:#fef9c3;color:#92400e;border-radius:8px;padding:.3rem .75rem;font-size:.72rem;font-weight:700;border:1px solid #fde047;">🟡 Due Soon: ${dueSoonCnt}</span>
+                <span style="background:#fee2e2;color:#991b1b;border-radius:8px;padding:.3rem .75rem;font-size:.72rem;font-weight:700;border:1px solid #fecaca;">🔴 Overdue: ${overdueCnt}</span>
+            </div>
+        </div>
+        ${d.acTrackingError?'<div style="padding:.75rem 1rem;background:#fef9c3;border:1px solid #fde047;border-radius:8px;font-size:.8rem;color:#713f12;margin-bottom:1rem;">⚠️ autochlor_date_tracking unavailable — check console.</div>':''}`;
+
+        const grid = document.createElement('div');
+        grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:1rem;';
+        extEl.appendChild(grid);
+
+        acRows.forEach(prod => {
+            const st       = getStatus(prod);
+            const imgSrc   = getAcImg(prod.name);
+            const safeId   = prod.name.replace(/[^a-z0-9]/gi,'_');
+            const logDateId= 'acLD_'+safeId, logNoteId='acLN_'+safeId;
+            const safeName = (prod.name||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+            const chartId  = 'acLC_'+(++window._rptChartSeq);
+            const prodMonths = Object.keys(prod.spendByMonth).sort();
+
+            // Build log rows
+            const logRows = prod.trackDates.map((entry,i) => {
+                const prev=i>0?prod.trackDates[i-1]:null;
+                const gap=prev?daysBetween(prev.date,entry.date):null;
+                const gapBadge=gap===null
+                    ?'<span style="background:#ede9fe;color:#7c3aed;border-radius:99px;padding:.1rem .45rem;font-size:.67rem;font-weight:700;">1st</span>'
+                    :`<span style="background:${gap<=7?'#dcfce7':gap<=30?'#e0f2fe':'#fef9c3'};color:${gap<=7?'#15803d':gap<=30?'#0369a1':'#92400e'};border-radius:99px;padding:.1rem .45rem;font-size:.67rem;font-weight:700;">+${gap}d</span>`;
+                const safeE=(entry.date||'').replace(/'/g,"\\'");
+                const safeN=(entry.notes||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+                const safeND=(prod.name||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+                const editBtn=entry.id?`<button onclick="acEditLog('${entry.id}','${safeE}','${safeN}',this)" style="background:#eff6ff;border:1px solid #bfdbfe;color:#2563eb;border-radius:5px;padding:.15rem .4rem;font-size:.65rem;cursor:pointer;">✏️</button>`:'';
+                const delBtn=entry.id?`<button onclick="acDeleteLog('${entry.id}','${safeND}')" style="background:#fff1f2;border:1px solid #fecdd3;color:#dc2626;border-radius:5px;padding:.15rem .4rem;font-size:.65rem;cursor:pointer;">🗑</button>`:'';
+                return `<tr style="background:${i%2?'#fff':'#f8fafc'};">
+                    <td style="padding:.35rem .5rem;font-family:monospace;font-size:.78rem;font-weight:700;color:#0f172a;white-space:nowrap;">${fmtD(entry.date)}</td>
+                    <td style="padding:.35rem .4rem;text-align:center;">${gapBadge}</td>
+                    <td style="padding:.35rem .6rem;font-size:.72rem;color:#374151;">${entry.notes||'<span style="color:#cbd5e1;font-style:italic;">—</span>'}</td>
+                    <td style="padding:.35rem .4rem;text-align:right;white-space:nowrap;"><div style="display:flex;gap:.2rem;justify-content:flex-end;">${editBtn}${delBtn}</div></td>
+                </tr>`;
+            }).join('');
+
+            const card = document.createElement('div');
+            card.className = 'ac-product-card';
+            card.dataset.prodName = prod.name;
+            card.style.cssText = `background:white;border-radius:16px;border:2px solid ${st.ring}33;box-shadow:0 2px 12px rgba(0,0,0,.06)${st.glow?','+st.glow:''};overflow:hidden;display:flex;flex-direction:column;transition:box-shadow .2s;`;
+
+            card.innerHTML = `
+            <!-- ══ TOP: status stripe ══ -->
+            <div style="height:4px;background:${st.ring};"></div>
+
+            <!-- ══ HEADER ROW ══ -->
+            <div style="display:flex;align-items:center;gap:1rem;padding:1rem 1.1rem .85rem;border-bottom:1px solid #f1f5f9;">
+                <!-- Image -->
+                <div style="width:54px;height:54px;flex-shrink:0;border-radius:12px;overflow:hidden;background:#f8fafc;border:2px solid ${st.ring}55;display:flex;align-items:center;justify-content:center;">
+                    ${imgSrc?`<img src="${imgSrc}" style="width:100%;height:100%;object-fit:contain;" onerror="this.parentElement.innerHTML='<span style=\\'font-size:1.6rem;\\'>🧪</span>'">`:'<span style="font-size:1.6rem;">🧪</span>'}
+                </div>
+                <!-- Title + meta -->
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:.92rem;font-weight:800;color:#0f172a;line-height:1.25;margin-bottom:.25rem;">${prod.name}</div>
+                    <div style="display:flex;flex-wrap:wrap;gap:.3rem;align-items:center;">
+                        <span style="background:${st.bg};color:white;border-radius:99px;padding:.1rem .55rem;font-size:.62rem;font-weight:800;letter-spacing:.05em;">${st.label}</span>
+                        ${prod.trackCount>0?`<span style="background:#f0fdfa;color:#0f766e;border-radius:99px;padding:.1rem .45rem;font-size:.62rem;font-weight:700;border:1px solid #99f6e4;">${prod.trackCount} logs</span>`:''}
+                        ${prod.avgDaysBetween?`<span style="background:#eff6ff;color:#1d4ed8;border-radius:99px;padding:.1rem .45rem;font-size:.62rem;font-weight:700;border:1px solid #bfdbfe;">~${prod.avgDaysBetween}d cycle</span>`:''}
+                        ${prod.totalSpend>0?`<span style="background:#faf5ff;color:#7c3aed;border-radius:99px;padding:.1rem .45rem;font-size:.62rem;font-weight:700;border:1px solid #e9d5ff;">${fmt$(prod.totalSpend)}</span>`:''}
                     </div>
-                    <table id="${logTableId}" style="width:100%;border-collapse:collapse;font-size:.78rem;">
-                        <thead><tr style="background:#f1f5f9;border-bottom:2px solid #e2e8f0;">
-                            <th style="padding:.32rem .45rem;text-align:center;width:32px;">
-                                <input type="checkbox" title="Select all" class="ac-select-all"
-                                    data-safe-id="${safeId}"
-                                    style="width:14px;height:14px;cursor:pointer;accent-color:#dc2626;"
-                                    onchange="acToggleAll('${safeId}',this)">
-                            </th>
-                            <th style="padding:.32rem .65rem;text-align:left;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;">Date Logged</th>
-                            <th style="padding:.32rem .5rem;text-align:center;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;">Gap</th>
-                            <th style="padding:.32rem .65rem;text-align:left;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;">Notes</th>
-                            <th style="padding:.32rem .5rem;font-size:.63rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.04em;text-align:right;">Actions</th>
+                </div>
+                <!-- Cycle gauge -->
+                <div style="flex-shrink:0;text-align:center;">
+                    ${cycleGauge(prod.cyclePercent, st.ring, st.glow)}
+                    <div style="font-size:.58rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;margin-top:.1rem;">Cycle Used</div>
+                </div>
+            </div>
+
+            <!-- ══ STATS ROW ══ -->
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;border-bottom:1px solid #f1f5f9;">
+                ${[
+                    { label:'Last Change', val: prod.last ? fmtD(prod.last) : '—', mono:false },
+                    { label:'Days Elapsed', val: prod.daysSinceLast!==null ? prod.daysSinceLast+'d' : '—', mono:true },
+                    { label:'Next Expected', val: prod.nextExpected ? fmtD(prod.nextExpected) : '—', mono:false },
+                ].map(s=>`
+                <div style="padding:.6rem .85rem;${s!==undefined?'border-right:1px solid #f1f5f9;':''}" >
+                    <div style="font-size:.58rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#94a3b8;margin-bottom:.2rem;">${s.label}</div>
+                    <div style="font-size:.82rem;font-weight:700;color:#0f172a;${s.mono?'font-family:monospace;':''}">${s.val}</div>
+                </div>`).join('')}
+            </div>
+
+            <!-- ══ LOG ENTRY FORM ══ -->
+            <div style="padding:.75rem 1.1rem;background:#fafafa;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
+                <span style="font-size:.68rem;font-weight:800;color:#374151;white-space:nowrap;text-transform:uppercase;letter-spacing:.05em;">📅 Log Change</span>
+                <input type="date" id="${logDateId}" value="${todayStr}"
+                    style="border:1.5px solid #e2e8f0;border-radius:8px;padding:.28rem .5rem;font-size:.78rem;font-family:monospace;background:white;cursor:pointer;color:#0f172a;"
+                    onfocus="this.style.borderColor='${st.ring}'" onblur="this.style.borderColor='#e2e8f0'">
+                <input type="text" id="${logNoteId}" placeholder="Notes (optional) — Enter to save"
+                    style="border:1.5px solid #e2e8f0;border-radius:8px;padding:.28rem .55rem;font-size:.73rem;flex:1;min-width:100px;background:white;color:#374151;"
+                    onfocus="this.style.borderColor='${st.ring}'" onblur="this.style.borderColor='#e2e8f0'"
+                    onkeydown="if(event.key==='Enter'){ document.getElementById('acBtn_${safeId}').click(); }">
+                <button id="acBtn_${safeId}" onclick="acLogDate('${safeName}','${logDateId}','${logNoteId}',this)"
+                    style="background:linear-gradient(135deg,${st.ring},${st.bg});color:white;border:none;border-radius:8px;padding:.3rem .85rem;font-size:.75rem;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 2px 6px ${st.ring}55;flex-shrink:0;">
+                    + Log Change
+                </button>
+                <span id="acStatus_${safeId}" style="font-size:.68rem;font-weight:700;color:#16a34a;display:none;"></span>
+            </div>
+
+            <!-- ══ MINI CHART ══ -->
+            ${prod.trackDates.length>=2?`
+            <div style="padding:.65rem 1.1rem .5rem;border-bottom:1px solid #f1f5f9;">
+                <div style="font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#94a3b8;margin-bottom:.3rem;">🔄 Change Interval History (days)</div>
+                <canvas id="${chartId}" height="55"></canvas>
+            </div>`:''}
+
+            <!-- ══ CHANGE LOG ══ -->
+            ${prod.trackDates.length>0?`
+            <div style="padding:.65rem 1.1rem .85rem;">
+                <div style="font-size:.68rem;font-weight:700;color:#475569;margin-bottom:.4rem;display:flex;align-items:center;justify-content:space-between;">
+                    <span>📋 Change Log <span id="acLogCount_${safeId}" style="background:#f1f5f9;border-radius:99px;padding:.05rem .4rem;font-weight:800;">${prod.trackDates.length}</span></span>
+                </div>
+                <div id="acLogWrap_${safeId}" style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+                    <table style="width:100%;border-collapse:collapse;">
+                        <thead><tr style="background:#f8fafc;border-bottom:1.5px solid #e2e8f0;">
+                            <th style="padding:.3rem .5rem;text-align:left;font-size:.6rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.05em;">Date</th>
+                            <th style="padding:.3rem .4rem;text-align:center;font-size:.6rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.05em;">Gap</th>
+                            <th style="padding:.3rem .5rem;text-align:left;font-size:.6rem;text-transform:uppercase;color:#64748b;font-weight:700;letter-spacing:.05em;">Notes</th>
+                            <th style="padding:.3rem .4rem;font-size:.6rem;color:#64748b;font-weight:700;text-align:right;"></th>
                         </tr></thead>
                         <tbody>${logRows}</tbody>
-                    </table>` : '';
-
-                // ── Build spend-by-month sparkline data ──
-                const prodMonths = Object.keys(prod.spendByMonth).sort();
-
-                // ── Card HTML ──
-                const card = document.createElement('div');
-                card.style.cssText = `background:white;border-radius:14px;border:1.5px solid ${isOverdue?'#fca5a5':'#e2e8f0'};box-shadow:0 2px 10px rgba(0,0,0,.06);margin-bottom:1rem;overflow:hidden;`;
-                card.classList.add('ac-product-card');
-                card.dataset.prodName = prod.name;
-
-                card.innerHTML = `
-                <!-- ── Card Header ── -->
-                <div style="display:flex;align-items:center;gap:1rem;padding:.85rem 1.1rem;${isOverdue?'background:#fff7f7;':'background:linear-gradient(135deg,#f8fafc,#f0fdfa);'}border-bottom:1px solid ${isOverdue?'#fecaca':'#e5e7eb'};">
-                    <!-- Product image -->
-                    <div style="width:58px;height:58px;flex-shrink:0;border-radius:10px;overflow:hidden;background:#f1f5f9;border:1.5px solid #e2e8f0;display:flex;align-items:center;justify-content:center;">
-                        ${imgSrc
-                            ? `<img src="${imgSrc}" style="width:100%;height:100%;object-fit:contain;" onerror="this.parentElement.innerHTML='<span style=\\'font-size:1.6rem;\\'>🧪</span>'">`
-                            : '<span style="font-size:1.6rem;">🧪</span>'}
-                    </div>
-                    <!-- Title + meta -->
-                    <div style="flex:1;min-width:0;">
-                        <div style="font-size:.95rem;font-weight:800;color:#0f172a;line-height:1.2;">${isOverdue?'⚠️ ':''}${prod.name}</div>
-                        <div style="font-size:.7rem;color:#6b7280;margin-top:.2rem;display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;">
-                            <span>${prod.cat}</span>
-                            ${prod.trackCount>0?`<span style="background:#f0fdfa;color:#0f766e;border-radius:99px;padding:.05rem .45rem;font-weight:700;border:1px solid #99f6e4;">${prod.trackCount} logs</span>`:''}
-                            ${prod.avgDaysBetween?`<span style="background:#eff6ff;color:#1d4ed8;border-radius:99px;padding:.05rem .45rem;font-weight:700;border:1px solid #bfdbfe;">avg ${prod.avgDaysBetween}d cycle</span>`:''}
-                            ${prod.totalSpend>0?`<span style="background:#faf5ff;color:#7c3aed;border-radius:99px;padding:.05rem .45rem;font-weight:700;border:1px solid #e9d5ff;">${fmt$(prod.totalSpend)} spent</span>`:''}
-                        </div>
-                    </div>
-                    <!-- Days badge -->
-                    <div style="flex-shrink:0;text-align:center;">
-                        <div id="acDays_${safeId}" style="background:${daysColor};color:white;font-size:.82rem;font-weight:800;border-radius:10px;padding:.3rem .7rem;min-width:64px;">
-                            ${prod.daysSinceLast===null?'No logs':prod.daysSinceLast===0?'Today':prod.daysSinceLast+'d ago'}
-                        </div>
-                        <div id="acLastDate_${safeId}" style="font-size:.62rem;color:#9ca3af;margin-top:.2rem;">Last: ${fmtD(prod.lastDate)}</div>
-                    </div>
+                    </table>
                 </div>
+            </div>`
+            :`<div id="acLogWrap_${safeId}" style="padding:.65rem 1.1rem .85rem;font-size:.75rem;color:#94a3b8;font-style:italic;">No entries yet — use Log Change above.</div>`}`;
 
-                <!-- ── Log Date Row ── -->
-                <div style="padding:.55rem 1.1rem;background:#fafafa;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
-                    <span style="font-size:.7rem;font-weight:700;color:#374151;white-space:nowrap;">📅 Log Change Date:</span>
-                    <input type="date" id="${logDateId}" value="${todayStr}"
-                        style="border:1.5px solid #d1d5db;border-radius:7px;padding:.25rem .5rem;font-size:.8rem;font-family:var(--font-mono);cursor:pointer;"
-                        onfocus="this.style.borderColor='#0d9488'"
-                        onblur="this.style.borderColor='#d1d5db'">
-                    <input type="text" id="${logNoteId}" placeholder="Notes (optional) — press Enter to save"
-                        style="border:1.5px solid #d1d5db;border-radius:7px;padding:.25rem .55rem;font-size:.75rem;flex:1;min-width:110px;"
-                        onfocus="this.style.borderColor='#0d9488'" onblur="this.style.borderColor='#d1d5db'"
-                        onkeydown="if(event.key==='Enter'){ document.getElementById('acBtn_${safeId}').click(); }">
-                    <button id="acBtn_${safeId}" onclick="acLogDate('${safeName}','${logDateId}','${logNoteId}',this)"
-                        style="background:linear-gradient(135deg,#0d9488,#0f766e);color:white;border:none;border-radius:7px;padding:.27rem .8rem;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap;box-shadow:0 2px 6px rgba(13,148,136,.3);">
-                        + Log Change
-                    </button>
-                    <span id="acStatus_${safeId}" style="font-size:.68rem;font-weight:700;color:#16a34a;display:none;"></span>
-                </div>
+            grid.appendChild(card);
 
-                <!-- ── Charts Row (always shown) ── -->
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid #f0f0f0;">
-                    <div style="padding:.65rem 1.1rem .55rem;border-right:1px solid #f0f0f0;">
-                        <div style="font-size:.65rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.3rem;">🔄 Change Frequency (days between changes)</div>
-                        <canvas id="${chartId}" height="75"></canvas>
-                    </div>
-                    <div style="padding:.65rem 1.1rem .55rem;">
-                        <div style="font-size:.65rem;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.3rem;">💸 Spend Per Month</div>
-                        <canvas id="${spendChId}" height="75"></canvas>
-                    </div>
-                </div>
-
-                <!-- ── Change Log Table ── -->
-                ${prod.trackDates.length>0 ? `
-                <div style="padding:.65rem 1.1rem .85rem;">
-                    <div style="font-size:.7rem;font-weight:700;color:#475569;margin-bottom:.4rem;">📋 Change Log — <span id="acLogCount_${safeId}">${prod.trackDates.length}</span> entries</div>
-                    <div id="acLogWrap_${safeId}" style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">${logTable}</div>
-                </div>` :
-                `<div id="acLogWrap_${safeId}" style="padding:.55rem 1.1rem .75rem;font-size:.75rem;color:#9ca3af;">No entries yet — use the Log Change Date button above.</div>`}`;
-
-                extEl.appendChild(card);
-
-                // ── Render frequency chart (always) ──
+            // Render mini interval chart
+            if (prod.trackDates.length >= 2) {
                 requestAnimationFrame(() => {
-                    const cv = document.getElementById(chartId); if(!cv)return;
-                    {const ec=Chart.getChart(cv);if(ec)ec.destroy();}
-                    if (prod.trackDates.length >= 2) {
-                        const labels=[], gaps=[];
-                        prod.trackDates.forEach((e,i) => {
-                            if(i===0)return;
-                            const g = Math.round((new Date(e.date+'T12:00:00')-new Date(prod.trackDates[i-1].date+'T12:00:00'))/86400000);
-                            labels.push(e.date.slice(5)); gaps.push(g);
-                        });
-                        new Chart(cv, {
-                            type:'line',
-                            data:{ labels, datasets:[{
-                                label:'Days since prev',
-                                data: gaps,
-                                borderColor:'#0d9488', backgroundColor:'rgba(13,148,136,.1)',
-                                fill:true, tension:.35, borderWidth:2, pointRadius:4, pointHoverRadius:6
-                            }]},
-                            options:{ responsive:true,
-                                plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:c=>c.parsed.y+'d since prev change' } } },
-                                scales:{ y:{beginAtZero:true,ticks:{callback:v=>v+'d',font:{size:9}}}, x:{ticks:{font:{size:9}}} }
-                            }
-                        });
-                    } else {
-                        cv.style.display='none';
-                        cv.insertAdjacentHTML('afterend','<div style="text-align:center;padding:1.5rem 0;color:#d1d5db;font-size:.75rem;">Log 2+ changes to see frequency chart</div>');
-                    }
+                    const cv=document.getElementById(chartId); if(!cv)return;
+                    {const e=Chart.getChart(cv);if(e)e.destroy();}
+                    const labels=[], gaps=[];
+                    prod.trackDates.forEach((e,i)=>{if(i===0)return;const g=daysBetween(prod.trackDates[i-1].date,e.date);labels.push(e.date.slice(5));gaps.push(g);});
+                    new Chart(cv,{type:'line',data:{labels,datasets:[{label:'Days',data:gaps,borderColor:st.ring,backgroundColor:st.ring+'22',fill:true,tension:.35,borderWidth:2,pointRadius:3,pointBackgroundColor:st.ring}]},options:{responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y+'d since prev'}}},scales:{y:{beginAtZero:true,ticks:{callback:v=>v+'d',font:{size:8}}},x:{ticks:{font:{size:8}}}}}});
                 });
+            }
+        }); // end acRows.forEach
 
-                // ── Render spend-by-month chart (always) ──
-                requestAnimationFrame(() => {
-                    const cv = document.getElementById(spendChId); if(!cv)return;
-                    {const ec=Chart.getChart(cv);if(ec)ec.destroy();}
-                    if (prodMonths.length > 0) {
-                        new Chart(cv, {
-                            type:'bar',
-                            data:{ labels: prodMonths.map(m=>{
-                                    const [y,mo]=m.split('-');
-                                    return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(mo)-1]+' '+y.slice(2);
-                                }),
-                                datasets:[{ label:'Spend', data:prodMonths.map(m=>prod.spendByMonth[m]||0),
-                                    backgroundColor:'rgba(124,58,237,.7)', borderRadius:4, borderWidth:0 }]
-                            },
-                            options:{ responsive:true,
-                                plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:c=>' '+fmt$(c.parsed.y) } } },
-                                scales:{ y:{beginAtZero:true,ticks:{callback:v=>'$'+v.toLocaleString(),font:{size:9}}},
-                                         x:{ticks:{font:{size:9}}} }
-                            }
-                        });
-                    } else {
-                        cv.style.display='none';
-                        cv.insertAdjacentHTML('afterend','<div style="text-align:center;padding:1.5rem 0;color:#d1d5db;font-size:.75rem;">No invoice data yet</div>');
-                    }
-                });
-            }); // end acRows.forEach
-        } // end if(extEl)
-
-        // ── 7. Summary table ──────────────────────────────────────────────
+        // ── Summary table ────────────────────────────────────────────────
         rptSetTable('Autochlor Product Tracking',
-            ['Product','Category','First Change','Last Change','Days Active','Days Since Last','Avg Cycle','# Changes','Invoice Spend'],
-            acRows.map(r=>[
-                r.name, r.cat,
-                fmtD(r.firstDate), fmtD(r.lastDate),
-                r.daysActive!==null?r.daysActive+'d':'—',
-                r.daysSinceLast!==null?r.daysSinceLast+'d':'—',
-                r.avgDaysBetween!==null?r.avgDaysBetween+'d':'—',
-                r.trackCount,
-                fmt$(r.totalSpend)
-            ]));
+            ['Product','Category','First Change','Last Change','Days Active','Days Since Last','Avg Cycle','# Changes','Next Expected','Spend'],
+            acRows.map(r=>[r.name,r.cat,fmtD(r.first),fmtD(r.last),r.daysActive!==null?r.daysActive+'d':'—',r.daysSinceLast!==null?r.daysSinceLast+'d':'—',r.avgDaysBetween!==null?r.avgDaysBetween+'d':'—',r.trackCount,fmtD(r.nextExpected),fmt$(r.totalSpend)]));
 
         break;
     }
@@ -25730,15 +25579,13 @@ async function loadRonyOrders() {
 
             .from('inventory_management')
 
-            .select('product_name, image_url, position, assigned_to, vendors, category, is_hidden')
+            .select('id, product_name, image_url, position, assigned_to, vendors, category, is_hidden, rony_sort_order')
 
             .order('position', { ascending: true });
 
         
 
         if (prodError) throw prodError;
-
-        
 
         const uniqueProducts = new Map();
 
@@ -25754,31 +25601,19 @@ async function loadRonyOrders() {
             const isRony = assignedArr.some(x => x.includes('rony'));
             if (!name || !isRony) return;
 
-            
-
             if (!uniqueProducts.has(name)) {
-
                 uniqueProducts.set(name, {
-
                     product_name: name,
-
                     image_url: p.image_url,
-
                     position: p.position,
-
                     vendor: p.vendors || null,
-
                     category: p.category || null,
-
-                    current_stock: null
-
+                    current_stock: null,
+                    rony_sort_order: p.rony_sort_order || 0,
+                    _mgmt_id: p.id || null
                 });
-
             }
-
         });
-
-        
 
         // ✅ Load stock levels for the selected date
 
@@ -26026,9 +25861,12 @@ function renderRonyProducts() {
 
     container.innerHTML = positions.map(position => {
 
-        let products = [...ronyProductsByPosition.get(position)].sort((a, b) =>
-            (a.product_name || '').localeCompare(b.product_name || '')
-        );
+        let products = [...ronyProductsByPosition.get(position)].sort((a, b) => {
+            const sa = a.rony_sort_order || 0;
+            const sb = b.rony_sort_order || 0;
+            if (sa !== sb) return sa - sb;
+            return (a.product_name || '').localeCompare(b.product_name || '');
+        });
 
 
 
@@ -26096,7 +25934,11 @@ function renderRonyProducts() {
 
 
 
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem;">
+                <div class="rony-card-grid"
+                     data-position="${position}"
+                     ondragover="ronyGridDragOver(event)"
+                     ondrop="ronyGridDrop(event)"
+                     style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; min-height: 80px; transition: background 0.2s; border-radius: 8px; padding: 4px;">
 
                     ${products.map(product => renderRonyProductCard(product)).join('')}
 
@@ -26134,7 +25976,14 @@ function renderRonyProductCard(product) {
 
     return `
 
-        <div style="
+        <div draggable="true"
+             data-pname="${escAttr(product.product_name)}"
+             data-position="${escAttr(product.position || '')}"
+             ondragstart="ronyDragStart(event)"
+             ondragover="ronyCardDragOver(event)"
+             ondrop="ronyCardDrop(event)"
+             ondragend="ronyDragEnd(event)"
+             style="
 
             background: ${hasStock ? 'rgba(16,185,129,0.05)' : 'var(--neutral-50)'};
 
@@ -26146,9 +25995,11 @@ function renderRonyProductCard(product) {
 
             border: 2px solid ${hasStock ? 'var(--success-600)' : 'var(--neutral-300)'};
 
-            transition: all 0.3s;
+            transition: all 0.2s;
 
             position: relative;
+
+            cursor: grab;
 
         ">
 
@@ -26247,8 +26098,18 @@ function renderRonyProductCard(product) {
 
             </div>
 
-            <!-- ✅ AUTOCHLOR DATE TRACKING -->
-            ${(product.category || '').toLowerCase().includes('autochlor') || (product.vendor || '').toLowerCase().includes('autochlor') || (product.product_name || '').toLowerCase().includes('autochlor') || (product.position || '').toLowerCase().includes('autochlor') || (product.product_name || '').toLowerCase().includes('low temp detergent') ? `
+            <!-- ✅ AUTOCHLOR DATE TRACKING — ONLY for Autochlor vendor products -->
+            ${(() => {
+                const nm  = (product.product_name || '').toLowerCase();
+                const ven = (product.vendor || '').toLowerCase();
+                // ONLY show date for actual Autochlor vendor products
+                return ven.includes('autochlor')
+                    || nm.includes('low temp detergent')
+                    || nm.includes('solution cl')
+                    || nm.includes('rinse aid kitchen')
+                    || nm.includes('rinse aid bar')
+                    || nm.includes('ntrl multi prp');
+            })() ? `
             <div style="margin-top:0.75rem;padding:0.75rem;background:#fef3c7;border-radius:8px;border:2px solid #f59e0b;">
                 <div style="font-size:0.65rem;font-weight:800;color:#92400e;margin-bottom:0.4rem;text-transform:uppercase;">
                     📅 Date Used / Changed <span style="color:#dc2626;">*required</span>
@@ -26268,7 +26129,148 @@ function renderRonyProductCard(product) {
 
 
 
-// ── Debounce map: one timer per product ──────────────────────────────
+// ════════════════════════════════════════════════════════════════════
+//  RONY DRAG-AND-DROP — auto-saves rony_sort_order to Supabase
+// ════════════════════════════════════════════════════════════════════
+let _ronyDrag = null; // { productName, fromPosition }
+let _ronySaveTimer = null;
+
+function ronyDragStart(event) {
+    const card = event.currentTarget;
+    _ronyDrag = {
+        productName: card.dataset.pname,
+        fromPosition: card.dataset.position
+    };
+    card.style.opacity = '0.45';
+    card.style.transform = 'scale(0.97)';
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', card.dataset.pname);
+}
+
+function ronyDragEnd(event) {
+    event.currentTarget.style.opacity = '';
+    event.currentTarget.style.transform = '';
+    // Clear all drop highlights
+    document.querySelectorAll('.rony-card-grid').forEach(g => {
+        g.style.background = '';
+        g.style.boxShadow = '';
+    });
+    document.querySelectorAll('[data-pname]').forEach(c => {
+        c.style.borderTop = '';
+    });
+}
+
+function ronyCardDragOver(event) {
+    if (!_ronyDrag) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    // Show drop indicator above this card
+    document.querySelectorAll('[data-pname]').forEach(c => c.style.borderTop = '');
+    event.currentTarget.style.borderTop = '3px solid var(--accent-400)';
+}
+
+function ronyGridDragOver(event) {
+    if (!_ronyDrag) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    event.currentTarget.style.background = 'rgba(196,138,0,0.06)';
+    event.currentTarget.style.boxShadow = 'inset 0 0 0 2px var(--accent-300)';
+}
+
+function ronyCardDrop(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const targetCard = event.currentTarget;
+    const targetName = targetCard.dataset.pname;
+    const targetPos  = targetCard.dataset.position;
+    if (!_ronyDrag || _ronyDrag.productName === targetName) { _ronyDrag = null; return; }
+    _ronyReorder(_ronyDrag.productName, _ronyDrag.fromPosition, targetName, targetPos, 'before');
+    _ronyDrag = null;
+}
+
+function ronyGridDrop(event) {
+    event.preventDefault();
+    const grid    = event.currentTarget;
+    const gridPos = grid.dataset.position;
+    if (!_ronyDrag) return;
+    // Only act if dropped on empty space (not on a card)
+    if (event.target === grid || event.target.classList.contains('rony-card-grid')) {
+        _ronyReorder(_ronyDrag.productName, _ronyDrag.fromPosition, null, gridPos, 'end');
+    }
+    _ronyDrag = null;
+    grid.style.background = '';
+    grid.style.boxShadow  = '';
+}
+
+function _ronyReorder(dragName, fromPos, targetName, targetPos, placement) {
+    // ── 1. Remove from source group ──────────────────────────────────
+    const srcGroup = ronyProductsByPosition.get(fromPos) || [];
+    const dragIdx  = srcGroup.findIndex(p => p.product_name === dragName);
+    if (dragIdx === -1) return;
+    const [dragProduct] = srcGroup.splice(dragIdx, 1);
+
+    // ── 2. Update position if moving to different group ───────────────
+    dragProduct.position = targetPos;
+
+    // ── 3. Insert into target group ──────────────────────────────────
+    if (!ronyProductsByPosition.has(targetPos)) ronyProductsByPosition.set(targetPos, []);
+    const dstGroup = ronyProductsByPosition.get(targetPos);
+
+    if (placement === 'end' || !targetName) {
+        dstGroup.push(dragProduct);
+    } else {
+        const tgtIdx = dstGroup.findIndex(p => p.product_name === targetName);
+        dstGroup.splice(tgtIdx >= 0 ? tgtIdx : dstGroup.length, 0, dragProduct);
+    }
+
+    // ── 4. Renumber sort_order for both affected groups ───────────────
+    const affectedPositions = new Set([fromPos, targetPos]);
+    affectedPositions.forEach(pos => {
+        (ronyProductsByPosition.get(pos) || []).forEach((p, i) => {
+            p.rony_sort_order = i + 1;
+        });
+    });
+
+    // ── 5. Re-render immediately ──────────────────────────────────────
+    renderRonyProducts();
+
+    // ── 6. Debounced auto-save (500ms) ────────────────────────────────
+    clearTimeout(_ronySaveTimer);
+    _ronySaveTimer = setTimeout(() => _ronyPersistOrder(affectedPositions), 500);
+}
+
+async function _ronyPersistOrder(affectedPositions) {
+    // Show saving toast
+    const toast = document.createElement('div');
+    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:var(--primary-700);color:white;padding:0.5rem 1.1rem;border-radius:8px;font-size:0.78rem;font-weight:700;z-index:9999;display:flex;align-items:center;gap:0.5rem;box-shadow:0 4px 12px rgba(0,0,0,.2);';
+    toast.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving order…';
+    document.body.appendChild(toast);
+
+    try {
+        const updates = [];
+        affectedPositions.forEach(pos => {
+            (ronyProductsByPosition.get(pos) || []).forEach(p => {
+                updates.push(
+                    supabaseClient
+                        .from('inventory_management')
+                        .update({ rony_sort_order: p.rony_sort_order, position: p.position })
+                        .eq('product_name', p.product_name)
+                );
+            });
+        });
+        await Promise.all(updates);
+
+        // ✓ Saved toast
+        toast.style.background = '#16a34a';
+        toast.innerHTML = '✓ Order saved';
+        setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.5s'; setTimeout(() => toast.remove(), 500); }, 1500);
+    } catch(err) {
+        console.error('Rony sort save error:', err);
+        toast.style.background = '#dc2626';
+        toast.innerHTML = '❌ Save failed — try again';
+        setTimeout(() => toast.remove(), 3000);
+    }
+}
 const _ronyPosTimers = new Map();
 
 function debouncedSaveRonyPosition(inputEl) {
@@ -26535,12 +26537,15 @@ function setRonyStock(productName, value) {
 
 
 
-    // ✅ AUTOCHLOR: If qty entered, require date before proceeding
-    const isAutochlor = (product.category || '').toLowerCase().includes('autochlor')
-        || (product.vendor || '').toLowerCase().includes('autochlor')
-        || (product.product_name || '').toLowerCase().includes('autochlor')
-        || (product.position || '').toLowerCase().includes('autochlor')
-        || (product.product_name || '').toLowerCase().includes('low temp detergent');
+    // ✅ AUTOCHLOR: If qty entered, require date before proceeding — ONLY Autochlor vendor
+    const _nm3  = (product.product_name || '').toLowerCase();
+    const _ven3 = (product.vendor || '').toLowerCase();
+    const isAutochlor = _ven3.includes('autochlor')
+        || _nm3.includes('low temp detergent')
+        || _nm3.includes('solution cl')
+        || _nm3.includes('rinse aid kitchen')
+        || _nm3.includes('rinse aid bar')
+        || _nm3.includes('ntrl multi prp');
 
     if (isAutochlor && product.current_stock !== null) {
 
@@ -47274,7 +47279,7 @@ async function saveSameProductNewVendor() {
     </div>
   </div>
 </div>
-
+g
 </body>
 
 
