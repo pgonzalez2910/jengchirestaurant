@@ -516,11 +516,17 @@ table.hist-tbl .td-amt{font-weight:700;color:var(--primary);}
       </div>
       <div id="editMsg" class="hidden" style="margin-top:12px;"></div>
     </div>
-    <div class="modal-footer">
-      <button class="btn btn-line" onclick="closeEditModal()">Cancel</button>
-      <button class="btn btn-navy" onclick="saveEdit()">💾 Save Changes</button>
-    </div>
+
+    
+  <!-- REPLACE this entire modal-footer block -->
+<div class="modal-footer">
+    <button class="btn btn-line" onclick="closeEditModal()">Cancel</button>
+    <button class="btn btn-navy" id="editSaveBtn" onclick="saveEdit(true)">💾 Save & Regenerate PDF</button>
+</div>
+  
+  
   </div>
+  
 </div>
 
 <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
@@ -1249,37 +1255,96 @@ function openEdit(id){
   document.getElementById('editModal').classList.add('open');
 }
 function closeEditModal(){document.getElementById('editModal').classList.remove('open');}
-async function saveEdit(){
-  const id=parseInt(document.getElementById('editRecordId').value);
-  const msgEl=document.getElementById('editMsg');
-  msgEl.classList.add('hidden');
-  try{
-    const db=getDB();
-    const updates={
-      deduction_type:document.getElementById('editType').value,
-      deduction_amount:parseFloat(document.getElementById('editAmount').value),
-      deduction_reason:document.getElementById('editReason').value,
-      status:document.getElementById('editStatus').value,
-      hr_approver_name:document.getElementById('editHR').value||null,
-      notes:document.getElementById('editNotes').value||null,
-      additional_notes:document.getElementById('editNotes').value||null,
-    };
-    const{error}=await db.from('employee_deductions').update(updates).eq('id',id);
-    if(error)throw error;
-    // update local cache
-    const idx=_histAll.findIndex(r=>r.id===id);
-    if(idx>=0)_histAll[idx]={..._histAll[idx],...updates};
-    renderHistTable(_histAll);
-    closeEditModal();
-  }catch(e){
-    msgEl.className='alert alert-err';
-    msgEl.innerHTML='<strong>&#x2717; Save failed:</strong> '+e.message;
-    msgEl.classList.remove('hidden');
-  }
+
+  
+  
+ /* ═══════════════════════════════════════
+EDIT: SAVE & REGENERATE PDF
+═══════════════════════════════════════ */
+async function saveEdit(updatePdf = true) {
+    const id = parseInt(document.getElementById('editRecordId').value);
+    const msgEl = document.getElementById('editMsg');
+    const saveBtn = document.getElementById('editSaveBtn');
+    
+    msgEl.classList.add('hidden');
+    msgEl.style.display = 'none';
+    saveBtn.disabled = true;
+    saveBtn.textContent = '⏳ Processing...';
+
+    try {
+        const db = getDB();
+        const updates = {
+            deduction_type: document.getElementById('editType').value,
+            deduction_amount: parseFloat(document.getElementById('editAmount').value),
+            deduction_reason: document.getElementById('editReason').value,
+            status: document.getElementById('editStatus').value,
+            hr_approver_name: document.getElementById('editHR').value || null,
+            notes: document.getElementById('editNotes').value || null,
+            additional_notes: document.getElementById('editNotes').value || null,
+        };
+
+        // 1. Update DB record
+        const { error } = await db.from('employee_deductions').update(updates).eq('id', id);
+        if (error) throw error;
+
+        // 2. Update local cache
+        const idx = _histAll.findIndex(r => r.id === id);
+        if (idx >= 0) {
+            _histAll[idx] = { ..._histAll[idx], ...updates };
+        }
+
+        // 3. Regenerate & Upload PDF (if requested)
+        if (updatePdf && idx >= 0) {
+            const rec = _histAll[idx];
+            const doc = buildPDF(rec);
+            const blob = doc.output('blob');
+            const pdfName = (rec.form_id || 'deduction') + '.pdf';
+
+            // upsert: true overwrites the existing PDF in storage
+            const { error: upErr } = await db.storage.from('deduction').upload(pdfName, blob, {
+                contentType: 'application/pdf',
+                upsert: true
+            });
+            if (upErr) throw new Error('PDF upload failed: ' + upErr.message);
+
+            const { data: pub } = db.storage.from('deduction').getPublicUrl(pdfName);
+            const newUrl = pub?.publicUrl || null;
+
+            // Update DB with new PDF URL
+            const { error: urlErr } = await db.from('employee_deductions').update({
+                generated_pdf_url: newUrl,
+                pdf_url: newUrl
+            }).eq('id', id);
+            if (urlErr) throw urlErr;
+
+            _histAll[idx].generated_pdf_url = newUrl;
+            _histAll[idx].pdf_url = newUrl;
+        }
+
+        // Success feedback
+        msgEl.className = 'alert alert-ok';
+        msgEl.innerHTML = '<strong>✓ Success!</strong> ' + (updatePdf ? 'Record saved & PDF updated.' : 'Record saved.');
+        msgEl.style.display = 'block';
+        
+        renderHistTable(_histAll);
+
+        setTimeout(() => {
+            closeEditModal();
+        }, 1000);
+
+    } catch (e) {
+        msgEl.className = 'alert alert-err';
+        msgEl.innerHTML = '<strong>&#x2717; Save failed:</strong> ' + e.message;
+        msgEl.style.display = 'block';
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 Save & Regenerate PDF';
+    }
 }
-document.getElementById('editModal').addEventListener('click',e=>{
-  if(e.target===document.getElementById('editModal'))closeEditModal();
-});
+
+
+
+  
 </script>
 </body>
 </html>
