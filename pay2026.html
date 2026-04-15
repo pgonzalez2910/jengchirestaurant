@@ -1185,24 +1185,25 @@ function checkAmt(){
 
 function toggleOther(){$('other-f').style.display=$('inp-rsn').value==='Other'?'block':'none';}
 
+
+
 async function submitReq(){
   const used=yearCount(ME.username);
   if(used>=6){alert('You have reached the maximum of 6 advance requests per year.');return;}
-  const amt=parseFloat($('inp-amt').value)||0;
-  const rsn=$('inp-rsn').value;
+  const amt=parseFloat(\$('inp-amt').value)||0;
+  const rsn=\$('inp-rsn').value;
   if(!amt||amt<=0){alert('Please enter an advance amount.');return;}
   if(!rsn){alert('Please select a reason.');return;}
-  if(rsn==='Other'&&!$('inp-other').value.trim()){alert('Please describe your reason.');return;}
+  if(rsn==='Other'&&!\$('inp-other').value.trim()){alert('Please describe your reason.');return;}
   if(!empSigDrawn){alert('Please sign the advance agreement before submitting.');return;}
 
-  const btn=$('btn-sub'); btn.disabled=true; btn.innerHTML='<span class="sp-sm"></span> Submitting…';
-  $('sub-err').style.display='none';
+  const btn=\$('btn-sub'); btn.disabled=true; btn.innerHTML='<span class="sp-sm"></span> Submitting…';
+  \$('sub-err').style.display='none';
 
   try{
     const pp=getPayPeriod();
     const isSal=(ME.compensation_type||'').toLowerCase()==='salary';
 
-    // For salary employees, pre-calculate earnings
     let earnedAmt=0, max50=0, isOver=false;
     if(isSal && ME.annual_salary>0){
       const sc=calcSalaryProrated(ME, pp.daysElapsed);
@@ -1216,10 +1217,10 @@ async function submitReq(){
     const rec={
       employee_id:  ME.employee_id,
       username:     ME.username,
-      name:         `${ME.first_name} ${ME.last_name}`,
+      name:         `\${ME.first_name} \${ME.last_name}`,
       department:   ME.department||null,
       amount:       amt,
-      reason:       rsn==='Other'?$('inp-other').value.trim():rsn,
+      reason:       rsn==='Other'?\$('inp-other').value.trim():rsn,
       status:       'pending',
       doc_ref:      genDocId(),
       submitted_at: new Date().toISOString(),
@@ -1227,37 +1228,89 @@ async function submitReq(){
       payroll_period_end:   pp.end.toISOString().slice(0,10),
       next_payday:          pp.payday.toISOString().slice(0,10),
       days_elapsed:         pp.daysElapsed,
-      worked_hours:         0,       // HR fills in for hourly; salary pre-calc'd
+      worked_hours:         0,
       tips_amount:          0,
       earned_amount:        earnedAmt,
       max_advance_50pct:    max50,
       is_over_50pct:        isOver,
       employee_signature:   sigData,
-      note:                 $('inp-note').value.trim()||null,
+      note:                 \$('inp-note').value.trim()||null,
       emp_job_title:        ME.job_title||null,
       emp_wage:             ME.annual_salary||ME.hourly_rate||null,
       emp_comp_type:        ME.compensation_type||null,
       emp_employment_type:  ME.employment_type||null,
       emp_weekly_hours:     ME.weekly_hours||null,
       emp_has_tips:         ME.has_tips||false,
+      email_sent:           false,
+      email_sent_at:        null,
     };
 
-    await saveReq(rec);
-    $('succ-payday').textContent=fShort(pp.payday);
-    $('form-area').style.display='none';
-    $('succ-area').style.display='block';
+    const savedReq = await saveReq(rec);
+    
+    // ═══ SEND EMAIL TO ADMIN ═══
+    if(savedReq){
+      try{
+        const emailRes = await fetch(
+          'https://kpldzwlftkvjjntgsqxx.supabase.co/functions/v1/send-advance-email',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer \${SB_ANON}`,
+            },
+            body: JSON.stringify({
+              request: {
+                id: savedReq.id,
+                name: savedReq.name,
+                employee_email: 'admin@jengchirestaurant.com', // ADMIN EMAIL
+                amount: savedReq.amount,
+                reason: savedReq.reason,
+                submitted_at: savedReq.submitted_at,
+                doc_ref: savedReq.doc_ref,
+                next_payday: savedReq.next_payday,
+                username: savedReq.username,
+                employee_id: savedReq.employee_id,
+                department: savedReq.department,
+                isAdminNotification: true, // FLAG FOR ADMIN EMAIL
+              }
+            })
+          }
+        );
+
+        if(emailRes.ok){
+          const emailData = await emailRes.json();
+          console.log('✅ Admin notification email sent:', emailData.messageId);
+          await updReq(savedReq.id, {
+            email_sent: true,
+            email_sent_at: new Date().toISOString()
+          });
+        } else {
+          console.warn('⚠️ Email send failed but request saved');
+        }
+      } catch(emailErr){
+        console.warn('Email function error (request still saved):', emailErr.message);
+      }
+    }
+
+    \$('succ-payday').textContent=fShort(pp.payday);
+    \$('form-area').style.display='none';
+    \$('succ-area').style.display='block';
     renderMine();
     buildLimitBar();
   }catch(e){
     console.error('Submit failed:',e);
-    $('sub-err').textContent='Submission failed: '+e.message+'. Please try again or contact HR.';
-    $('sub-err').style.display='block';
+    \$('sub-err').textContent='Submission failed: '+e.message+'. Please try again or contact HR.';
+    \$('sub-err').style.display='block';
   }finally{
     btn.innerHTML='Submit Advance Request';
     btn.disabled=false;
   }
 }
 
+
+
+
+  
 function resetForm(){
   ['inp-amt','inp-rsn','inp-other','inp-note'].forEach(id=>{if($(id))$(id).value='';});
   $('other-f').style.display='none';
