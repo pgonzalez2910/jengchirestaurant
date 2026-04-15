@@ -44995,6 +44995,9 @@ async function rdReload(){
     rdRender();
 }
 
+
+
+
 async function rdLoadInvoices(){
     const sb=invSB();
     const month=document.getElementById('rd-month')?.value;
@@ -45009,13 +45012,26 @@ async function rdLoadInvoices(){
     const {data:invs}=await sb.from('invoices').select('id').gte('invoice_date',start).lte('invoice_date',end);
     if(!invs||!invs.length) return;
     const {data:items}=await sb.from('invoice_items').select('product_name,quantity,weight,has_weight').in('invoice_id',invs.map(i=>i.id));
+    
     (items||[]).forEach(it=>{
         const wv=parseFloat(it.weight||0);
         const isW=!!(it.has_weight||wv>0);
-        const qty=isW?wv:parseFloat(it.quantity||0);
+        let qty=isW?wv:parseFloat(it.quantity||0);
+        
+        // FIX: If the product is tracked by cases, convert the invoice quantity to units.
+        // We look up the "Units Per Case" from the settings and multiply.
+        // Example: 1 Case * 3 Units/Case = 3 Units added to stock.
+        const conv = RD.convMap[it.product_name];
+        if (conv && conv.utype === 'case') {
+            qty = qty * conv.upc;
+        }
+        
         RD.invTot[it.product_name]=(RD.invTot[it.product_name]||0)+qty;
     });
 }
+
+
+
 
 function rdRender(){
     console.log('[RD] rdRender: products='+RD.products.length+' stockMap='+Object.keys(RD.stockMap).length+' groups='+Object.keys(RD.groupMap).length);
@@ -47444,6 +47460,241 @@ async function saveSameProductNewVendor() {
         statusEl.innerHTML = `<span style="color:#dc2626;">❌ ${err.message}</span>`;
     }
 }
+
+
+
+
+// ═══════════════════════════════════════════════════════
+// STOCK-IN FORM FUNCTIONS
+// ═══════════════════════════════════════════════════════
+
+let currentQuantityType = 'units'; // 'units' or 'cases'
+
+// Open the Stock-In Modal
+function openStockInModal() {
+  const modal = document.getElementById('stockInModal');
+  if (modal) {
+    modal.style.display = 'flex';
+    populateProductDropdown();
+    resetStockInForm();
+  }
+}
+
+// Close the Stock-In Modal
+function closeStockInModal() {
+  const modal = document.getElementById('stockInModal');
+  if (modal) {
+    modal.style.display = 'none';
+  }
+}
+
+// Toggle between Units and Cases
+function toggleQuantityType(type) {
+  currentQuantityType = type;
+  
+  const btnUnits = document.getElementById('btnUnits');
+  const btnCases = document.getElementById('btnCases');
+  const unitsPerCaseDiv = document.getElementById('unitsPerCaseDiv');
+  const qtyLabel = document.getElementById('qtyLabel');
+  
+  if (type === 'units') {
+    // Style Units button as active
+    btnUnits.style.background = 'var(--primary-600)';
+    btnUnits.style.color = 'white';
+    btnUnits.style.borderColor = 'var(--primary-600)';
+    
+    // Style Cases button as inactive
+    btnCases.style.background = 'white';
+    btnCases.style.color = 'var(--neutral-700)';
+    btnCases.style.borderColor = 'var(--neutral-300)';
+    
+    // Hide units per case field
+    unitsPerCaseDiv.style.display = 'none';
+    qtyLabel.textContent = 'Quantity (Units) *';
+  } else {
+    // Style Cases button as active
+    btnCases.style.background = 'var(--primary-600)';
+    btnCases.style.color = 'white';
+    btnCases.style.borderColor = 'var(--primary-600)';
+    
+    // Style Units button as inactive
+    btnUnits.style.background = 'white';
+    btnUnits.style.color = 'var(--neutral-700)';
+    btnUnits.style.borderColor = 'var(--neutral-300)';
+    
+    // Show units per case field
+    unitsPerCaseDiv.style.display = 'block';
+    qtyLabel.textContent = 'Number of Cases *';
+  }
+  
+  // Recalculate total
+  calculateTotalUnits();
+}
+
+// Populate Product Dropdown
+async function populateProductDropdown() {
+  const select = document.getElementById('stockInProduct');
+  if (!select) return;
+  
+  try {
+    // Get products from inventory_management
+    const { data, error } = await supabaseClient
+      .from('inventory_management')
+      .select('product_name, category')
+      .order('product_name');
+    
+    if (error) throw error;
+    
+    // Clear existing options (keep first one)
+    select.innerHTML = '<option value="">-- Select Product --</option>';
+    
+    // Add products
+    if (data && data.length > 0) {
+      data.forEach(product => {
+        const option = document.createElement('option');
+        option.value = product.product_name;
+        option.textContent = `${product.product_name} (${product.category || 'No Category'})`;
+        select.appendChild(option);
+      });
+    }
+  } catch (error) {
+    console.error('Error loading products:', error);
+    showAlert('Error loading products: ' + error.message, 'error');
+  }
+}
+
+// Calculate Total Units
+function calculateTotalUnits() {
+  const qtyInput = document.getElementById('stockInQty');
+  const unitsPerCaseInput = document.getElementById('unitsPerCase');
+  const totalDisplay = document.getElementById('totalUnitsDisplay');
+  
+  if (!qtyInput || !totalDisplay) return;
+  
+  const qty = parseFloat(qtyInput.value) || 0;
+  let total = qty;
+  
+  if (currentQuantityType === 'cases') {
+    const unitsPerCase = parseFloat(unitsPerCaseInput?.value) || 1;
+    total = qty * unitsPerCase;
+  }
+  
+  totalDisplay.textContent = Math.round(total);
+}
+
+// Reset Form
+function resetStockInForm() {
+  const form = document.getElementById('stockInForm');
+  if (form) form.reset();
+  
+  currentQuantityType = 'units';
+  toggleQuantityType('units');
+}
+
+// Handle Form Submit
+async function handleStockInSubmit(event) {
+  event.preventDefault();
+  
+  const productName = document.getElementById('stockInProduct').value;
+  const qtyInput = document.getElementById('stockInQty');
+  const unitsPerCaseInput = document.getElementById('unitsPerCase');
+  
+  if (!productName) {
+    showAlert('Please select a product', 'error');
+    return;
+  }
+  
+  const qty = parseFloat(qtyInput.value) || 0;
+  if (qty <= 0) {
+    showAlert('Please enter a valid quantity', 'error');
+    return;
+  }
+  
+  // Calculate total units
+  let totalUnits = qty;
+  if (currentQuantityType === 'cases') {
+    const unitsPerCase = parseFloat(unitsPerCaseInput?.value) || 1;
+    totalUnits = qty * unitsPerCase;
+  }
+  
+  try {
+    // Get current date in Chicago timezone
+    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+    const stockDate = now.toISOString().slice(0, 10);
+    
+    // Insert into current_stock table
+    const { data, error } = await supabaseClient
+      .from('current_stock')
+      .insert({
+        product_name: productName,
+        quantity_in_stock: totalUnits,
+        stock_date: stockDate
+      });
+    
+    if (error) throw error;
+    
+    showAlert(`✅ Stock added: ${Math.round(totalUnits)} units of ${productName}`, 'success');
+    closeStockInModal();
+    
+    // Refresh relevant data if needed
+    if (typeof loadInventoryData === 'function') {
+      await loadInventoryData();
+    }
+    
+  } catch (error) {
+    console.error('Error saving stock:', error);
+    showAlert('Error saving stock: ' + error.message, 'error');
+  }
+}
+
+// Event Listeners
+document.addEventListener('DOMContentLoaded', function() {
+  // Add input listeners for real-time calculation
+  const qtyInput = document.getElementById('stockInQty');
+  const unitsPerCaseInput = document.getElementById('unitsPerCase');
+  
+  if (qtyInput) {
+    qtyInput.addEventListener('input', calculateTotalUnits);
+  }
+  
+  if (unitsPerCaseInput) {
+    unitsPerCaseInput.addEventListener('input', calculateTotalUnits);
+  }
+  
+  // Close modal when clicking outside
+  const modal = document.getElementById('stockInModal');
+  if (modal) {
+    modal.addEventListener('click', function(event) {
+      if (event.target === modal) {
+        closeStockInModal();
+      }
+    });
+  }
+});
+
+// Close modal on Escape key
+document.addEventListener('keydown', function(event) {
+  if (event.key === 'Escape') {
+    const modal = document.getElementById('stockInModal');
+    if (modal && modal.style.display === 'flex') {
+      closeStockInModal();
+    }
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 </script>
 
 <!-- ═══════════════════════════════════════════════════════
@@ -47529,6 +47780,85 @@ async function saveSameProductNewVendor() {
     </div>
   </div>
 </div>
+
+
+
+<!-- ═══════════════════════════════════════════════════════
+    STOCK-IN FORM MODAL
+═══════════════════════════════════════════════════════ -->
+<div id="stockInModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:99999;align-items:center;justify-content:center;">
+  <div style="background:white;border-radius:14px;width:min(500px,95vw);box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden;">
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,var(--primary-700),var(--primary-600));padding:1rem 1.25rem;display:flex;justify-content:space-between;align-items:center;">
+      <h3 style="color:white;font-size:1.1rem;font-weight:700;margin:0;">📥 Stock In - Add Inventory</h3>
+      <button onclick="closeStockInModal()" style="width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,0.2);color:white;border:none;font-size:1.2rem;cursor:pointer;">×</button>
+    </div>
+    
+    <!-- Form Body -->
+    <div style="padding:1.25rem;">
+      <form id="stockInForm" onsubmit="handleStockInSubmit(event)">
+        <!-- Product Selection -->
+        <div style="margin-bottom:1rem;">
+          <label style="display:block;font-size:0.8rem;font-weight:700;color:var(--neutral-700);margin-bottom:0.4rem;">Product *</label>
+          <select id="stockInProduct" required style="width:100%;padding:0.5rem;border:2px solid var(--neutral-300);border-radius:8px;font-size:0.9rem;">
+            <option value="">-- Select Product --</option>
+          </select>
+        </div>
+
+        <!-- Units/Cases Toggle -->
+        <div style="margin-bottom:1rem;">
+          <label style="display:block;font-size:0.8rem;font-weight:700;color:var(--neutral-700);margin-bottom:0.4rem;">Quantity Type</label>
+          <div style="display:flex;gap:0.5rem;">
+            <button type="button" id="btnUnits" onclick="toggleQuantityType('units')" 
+              style="flex:1;padding:0.6rem;border:2px solid var(--primary-600);background:var(--primary-600);color:white;border-radius:8px;font-weight:700;cursor:pointer;transition:all 0.2s;">
+              Units
+            </button>
+            <button type="button" id="btnCases" onclick="toggleQuantityType('cases')" 
+              style="flex:1;padding:0.6rem;border:2px solid var(--neutral-300);background:white;color:var(--neutral-700);border-radius:8px;font-weight:700;cursor:pointer;transition:all 0.2s;">
+              Cases
+            </button>
+          </div>
+        </div>
+
+        <!-- Quantity Input -->
+        <div style="margin-bottom:1rem;">
+          <label style="display:block;font-size:0.8rem;font-weight:700;color:var(--neutral-700);margin-bottom:0.4rem;">
+            <span id="qtyLabel">Quantity (Units) *</span>
+          </label>
+          <input type="number" id="stockInQty" min="1" required 
+            style="width:100%;padding:0.5rem;border:2px solid var(--neutral-300);border-radius:8px;font-size:0.9rem;">
+        </div>
+
+        <!-- Units Per Case (only shows when Cases selected) -->
+        <div id="unitsPerCaseDiv" style="margin-bottom:1rem;display:none;">
+          <label style="display:block;font-size:0.8rem;font-weight:700;color:var(--neutral-700);margin-bottom:0.4rem;">Units Per Case *</label>
+          <input type="number" id="unitsPerCase" min="1" value="1"
+            style="width:100%;padding:0.5rem;border:2px solid var(--neutral-300);border-radius:8px;font-size:0.9rem;">
+        </div>
+
+        <!-- Total Units Display -->
+        <div style="background:var(--neutral-50);padding:0.75rem;border-radius:8px;margin-bottom:1rem;">
+          <div style="font-size:0.8rem;color:var(--neutral-600);margin-bottom:0.25rem;">Total Units:</div>
+          <div id="totalUnitsDisplay" style="font-size:1.25rem;font-weight:700;color:var(--primary-700);font-family:var(--font-mono);">0</div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
+          <button type="button" onclick="closeStockInModal()" 
+            style="padding:0.6rem 1.2rem;background:var(--neutral-200);border:none;color:var(--neutral-700);border-radius:8px;font-weight:700;cursor:pointer;">
+            Cancel
+          </button>
+          <button type="submit" 
+            style="padding:0.6rem 1.5rem;background:var(--success-600);border:none;color:white;border-radius:8px;font-weight:700;cursor:pointer;">
+            <i class="fas fa-save"></i> Save Stock
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+
 
 </body>
 
