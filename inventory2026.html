@@ -44959,6 +44959,38 @@ async function rdLoadProducts(){
     RD.imgMap={};
     RD.products.forEach(r=>{ if(r.image_url) RD.imgMap[r.product_name]=r.image_url; });
     console.log('[RD] rdLoadProducts: rony products='+RD.products.length+' (deduplicated from '+rawRony.length+')');
+
+    // ── Fallback 1: fetch image_path from invoice_items for products with no image_url ──
+    const missingImgNames = RD.products.filter(r=>!RD.imgMap[r.product_name]).map(r=>r.product_name);
+    if(missingImgNames.length>0){
+        try{
+            const {data:imgRows}=await invSB()
+                .from('invoice_items')
+                .select('product_name,image_path')
+                .in('product_name',missingImgNames)
+                .not('image_path','is',null);
+            if(imgRows&&imgRows.length>0){
+                const fallbackMap=new Map();
+                imgRows.forEach(r=>{ if(!fallbackMap.has(r.product_name)&&r.image_path) fallbackMap.set(r.product_name,r.image_path); });
+                fallbackMap.forEach((imgPath,pname)=>{ RD.imgMap[pname]=imgPath; });
+                console.log('[RD] rdLoadProducts: image fallback filled '+fallbackMap.size+' missing images from invoice_items');
+            }
+        }catch(imgErr){ console.warn('[RD] rdLoadProducts: image fallback error:',imgErr); }
+    }
+
+    // ── Fallback 2: sibling image inheritance (same first 2 words) ──
+    // e.g. "Nitrile Gloves Black XL" gets image from "Nitrile Gloves Black LG"
+    RD.products.forEach(r=>{
+        if(RD.imgMap[r.product_name]) return;
+        const prefix=r.product_name.toLowerCase().split(/\s+/).slice(0,2).join(' ');
+        for(const other of RD.products){
+            if(other.product_name===r.product_name) continue;
+            if(RD.imgMap[other.product_name]&&other.product_name.toLowerCase().startsWith(prefix)){
+                RD.imgMap[r.product_name]=RD.imgMap[other.product_name];
+                break;
+            }
+        }
+    });
     // populate category dropdown
     const cats=[...new Set(RD.products.map(r=>r.category).filter(Boolean))].sort();
     const sel=document.getElementById('rd-cat');
