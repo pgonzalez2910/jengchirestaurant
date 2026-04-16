@@ -8692,7 +8692,7 @@ input[id^="par-input-"]:focus {
 
                 </div>
 
-                <button class="btn btn-primary" onclick="loadEditOrder()" style="white-space:nowrap;">
+                <button class="btn btn-primary" onclick="syncFromPlaceOrderThenLoad()" style="white-space:nowrap;background:#1d4ed8;">
 
                     <i class="fas fa-sync"></i> Reload
 
@@ -28508,7 +28508,7 @@ function renderEnhancedCard(row, userType) {
           <input type="number" id="qty-${productId}" value="${defaultQty}"
                  step="0.01" min="0"
                  data-row-id="${escapedItemId}"
-                 oninput="(function(el){clearTimeout(el._t);el._t=setTimeout(function(){updateTentative(el.dataset.rowId,el.value);},400);})(this)"
+                 oninput="(function(el){clearTimeout(el._t);el._t=setTimeout(function(){updateTentative(el.dataset.rowId,el.value);},100);})(this)"
                  onblur="updateTentative(this.dataset.rowId,this.value)"
                  placeholder="0.00" class="search-input"
                  style="font-size:1rem;font-weight:700;text-align:center;font-family:var(--font-mono);padding:0.3rem 0.5rem;">
@@ -29525,25 +29525,23 @@ async function updateTentative(rowId, value) {
 
         if (!rowId || rowId === 'undefined' || rowId === 'null') {
 
-            // Rony rows: no inventory_check id — find by product_name from card
+            // No rowId — find by product_name + date + user (works for any user)
 
             const productName = cardEl?.dataset?.product;
 
             if (!productName) { console.warn('updateTentative: no rowId or productName'); return; }
 
-            const dateISO = document.getElementById('createOrderDate')?.value || todayYMD();
+            const dateISO  = document.getElementById('createOrderDate')?.value || todayYMD();
+            const userType = cardEl?.dataset?.user || null;
 
-            const { error } = await supabaseClient
-
+            let qry = supabaseClient
                 .from('inventory_check')
-
                 .update({ tentative: qty })
-
                 .eq('order_date', dateISO)
+                .eq('product_name', productName);
+            if (userType) qry = qry.eq('user', userType);
 
-                .eq('product_name', productName)
-
-                .eq('user', 'Rony');
+            const { error } = await qry;
 
             if (error) throw error;
 
@@ -30319,9 +30317,16 @@ function switchOrderTab(tabName, evt) {
     // ✅ Auto-load Edit Order when tab is switched to
     if (tabName === 'editOrder') {
 
-        const editDateEl = document.getElementById('editOrderDate');
-        if (editDateEl && !editDateEl.value) editDateEl.value = todayYMD();
-        loadEditOrder();
+        const editDateEl    = document.getElementById('editOrderDate');
+        const createDateEl  = document.getElementById('createOrderDate');
+        // Always sync editOrderDate to match createOrderDate so you see the same order
+        if (editDateEl && createDateEl && createDateEl.value) {
+            editDateEl.value = createDateEl.value;
+        } else if (editDateEl && !editDateEl.value) {
+            editDateEl.value = todayYMD();
+        }
+        // Save all Place Order qty inputs, then load Edit Order from DB
+        syncFromPlaceOrderThenLoad();
 
     }
 
@@ -38889,7 +38894,7 @@ function renderEditOrderTable(tbodyId, rows) {
 
                            data-row-id="${row.id}"
 
-                           oninput="(function(el){clearTimeout(el._t);el._t=setTimeout(function(){updateTentative(el.dataset.rowId,el.value);},400);})(this)"
+                           oninput="(function(el){clearTimeout(el._t);el._t=setTimeout(function(){updateTentative(el.dataset.rowId,el.value);},100);})(this)"
 
                            onblur="updateTentative(this.dataset.rowId, this.value)"
 
@@ -40040,6 +40045,8 @@ function startPlaceOrderAutoRefresh() {
 
         try {
 
+            // Flush any pending qty saves before re-rendering Place Order
+            await flushPendingTentativeSaves();
             await loadEnhancedCreateOrder();
 
         } catch(e) {
@@ -48110,12 +48117,87 @@ function _updateLiveIndicator(tab) {
     if (el) el.textContent = 'Last refresh: ' + new Date().toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 
-// ── Hook into switchTab and corpNav to start/stop polling ─────────
+// ── Sync ALL Place Order inputs to DB then reload Edit Order ──────────
+async function syncFromPlaceOrderThenLoad() {
+    const btn = document.querySelector('[onclick="syncFromPlaceOrderThenLoad()"]');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing…'; }
+
+    try {
+        // 1. Find ALL qty inputs in the Place Order section
+        const poSection = document.getElementById('createOrder') || document.getElementById('placeOrderSection');
+        const qtyInputs = (poSection || document).querySelectorAll('input[id^="qty-"][data-row-id]');
+
+        const upsertRows = [];
+        const dateISO = document.getElementById('createOrderDate')?.value || todayYMD();
+
+        qtyInputs.forEach(inp => {
+            if (inp._t) { clearTimeout(inp._t); inp._t = null; }
+            const rowId = inp.dataset.rowId;
+            const val   = inp.value;
+            if (rowId && rowId !== 'undefined' && rowId !== 'null' && val !== '' && val !== null) {
+                upsertRows.push({ id: rowId, tentative: parseFloat(val) || 0 });
+            }
+        });
+
+        // 2. Batch-update all at once
+        if (upsertRows.length > 0) {
+            const updates = upsertRows.map(r =>
+                supabaseClient.from('inventory_check').update({ tentative: r.tentative }).eq('id', r.id)
+            );
+            await Promise.allSettled(updates);
+            console.log('[Sync] Saved', upsertRows.length, 'qty values from Place Order');
+        }
+
+        // 3. Sync editOrderDate with createOrderDate
+        const editDateEl   = document.getElementById('editOrderDate');
+        const createDateEl = document.getElementById('createOrderDate');
+        if (editDateEl && createDateEl?.value) editDateEl.value = createDateEl.value;
+
+        // 4. Now load Edit Order fresh from DB
+        await loadEditOrder();
+
+    } catch(e) {
+        console.error('Sync error:', e);
+        await loadEditOrder();
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync"></i> Reload'; }
+    }
+}
+
+// ── Save ALL Place Order qty inputs before tab switch ──────────────────
+async function flushPendingTentativeSaves() {
+    // Only target qty inputs inside the Place Order section
+    const section = document.getElementById('createOrder') || document.getElementById('placeOrderSection');
+    const scope = section || document;
+    const inputs = scope.querySelectorAll('input[data-row-id][id^="qty-"]');
+    const saves = [];
+    inputs.forEach(inp => {
+        if (inp._t) { clearTimeout(inp._t); inp._t = null; }
+        const val = inp.value;
+        if (val !== '' && val !== null && val !== undefined) {
+            const rowId = inp.dataset.rowId;
+            if (rowId && rowId !== 'undefined' && rowId !== 'null') {
+                saves.push(updateTentative(rowId, val));
+            }
+        }
+    });
+    if (saves.length > 0) {
+        console.log('[PlaceOrder Flush] Saving', saves.length, 'qty inputs');
+        await Promise.allSettled(saves);
+    }
+    return saves.length;
+}
+
+// ── Hook into switchTab and corpNav ────────────────────────────────────
 const _origSwitchTab = window.switchTab;
 window.switchTab = function(tabName, evt) {
+    // Only flush Place Order saves when LEAVING the placeOrder tab
+    const leavingPlaceOrder = document.getElementById('placeOrder')?.classList.contains('active');
+    if (leavingPlaceOrder && tabName !== 'placeOrder') {
+        flushPendingTentativeSaves();  // fire-and-forget — don't block tab switch
+    }
     if (typeof _origSwitchTab === 'function') _origSwitchTab(tabName, evt);
     if (tabName === 'ronyOrders' || tabName === 'julioOrders') {
-        // Only start polling if NOT kiosk mode (i.e. admin)
         if (!document.documentElement.classList.contains('kiosk-mode')) {
             setTimeout(() => startAdminLivePolling(tabName), 500);
         }
@@ -48126,6 +48208,10 @@ window.switchTab = function(tabName, evt) {
 
 const _origCorpNav = window.corpNav;
 window.corpNav = function(tabName) {
+    const leavingPlaceOrder = document.getElementById('placeOrder')?.classList.contains('active');
+    if (leavingPlaceOrder && tabName !== 'placeOrder') {
+        flushPendingTentativeSaves();
+    }
     if (typeof _origCorpNav === 'function') _origCorpNav(tabName);
     if (tabName === 'ronyOrders' || tabName === 'julioOrders') {
         if (!document.documentElement.classList.contains('kiosk-mode')) {
