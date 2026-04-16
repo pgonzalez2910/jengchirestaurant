@@ -1505,8 +1505,8 @@ async function saveCountNow() {
     await loadSessionsFromDB();
     S.sessions.forEach(s => { delete s._calcCache; });
     setAutosaveStatus('saved');
-    toast('💾 Count saved to database!', 'ok');
     if (btn) { btn.disabled = false; btn.textContent = '💾 Save Count'; }
+    showThankYouModal('count');
   } catch(e) {
     setAutosaveStatus('error', 'Save failed: ' + (e.message || 'unknown error'));
     toast('❌ Save failed — check connection', 'err');
@@ -1525,8 +1525,13 @@ function renderCount() {
       ? NOODLES.filter(n => n.id === 'yellow')
       : NOODLES;
 
+    const stationBg = [
+      'background:#EEF4FF;border-color:#B8D0FF;',   // lineCook → soft blue
+      'background:#F0FDF4;border-color:#86EFAC;',   // cooler   → soft green
+      'background:#FFF7ED;border-color:#FCD09A;',   // wokChef  → soft orange
+    ][STATIONS.findIndex(s => s.id === st.id)] || '';
     return `
-    <div class="station-block">
+    <div class="station-block" style="${stationBg}border-width:2px;">
       <div class="station-lbl">${st.icon} ${st.label}
         <span style="font-size:.65rem;font-weight:400;color:var(--text-3);margin-left:8px;text-transform:none;letter-spacing:0">
           ${st.id === 'lineCook' ? '— portions at the line cook station' :
@@ -1757,8 +1762,14 @@ function renderProd() {
     const soldLabel = estSold > 0 ? `Est. Sold: ${estSold}`
                     : estSold < 0 ? `Net Added: ${Math.abs(estSold)}`
                     : 'Est. Sold: 0';
+    const prodCardBg = {
+      white:    'background:#F4F4F8;border-color:#B8B8D0;',
+      yellow:   'background:#FFFBEA;border-color:#F5D06A;',
+      turmeric: 'background:#FFF3E8;border-color:#F5A85A;',
+      green:    'background:#EDFBF2;border-color:#6EDBA0;',
+    }[n.id] || '';
     return `
-      <div class="prod-card" style="--pc-accent:${n.hex};--pc-glow:${n.glow}">
+      <div class="prod-card" style="--pc-accent:${n.hex};--pc-glow:${n.glow};${prodCardBg}border-width:2px;">
         <div class="pc-lbl">${n.label}</div>
         <div class="pc-qty">
           <button class="qty-btn lg" onclick="adjProd('${n.id}',-5)">−5</button>
@@ -1848,6 +1859,10 @@ function renderProd() {
 
       ${noPrevWarning}
 
+      <div class="autosave-bar idle" id="prod-autosave-bar">
+        <span class="autosave-dot"></span>— changes will auto-save
+      </div>
+
       <div class="prod-grid">${cards}</div>
 
       <!-- Quick summary table -->
@@ -1909,6 +1924,21 @@ async function saveSession_silent() {
   } catch(e) { /* silent */ }
 }
 
+let _prodAutosaveTimer = null;
+function triggerAutosaveProd(nId) {
+  const bar = document.getElementById('prod-autosave-bar');
+  if (bar) { bar.className = 'autosave-bar saving'; bar.innerHTML = '<span class="autosave-dot"></span>Saving production…'; }
+  clearTimeout(_prodAutosaveTimer);
+  _prodAutosaveTimer = setTimeout(async () => {
+    try {
+      await saveSessionToDB(S.draft);
+      await loadSessionsFromDB();
+      if (bar) { bar.className = 'autosave-bar saved'; bar.innerHTML = '<span class="autosave-dot"></span>✓ Production auto-saved'; setTimeout(()=>{ if(bar){ bar.className='autosave-bar idle'; bar.innerHTML='<span class="autosave-dot"></span>— changes will auto-save'; }}, 2500); }
+    } catch(e) {
+      if (bar) { bar.className = 'autosave-bar error'; bar.innerHTML = '<span class="autosave-dot"></span>Save failed: ' + (e.message||'unknown error'); }
+    }
+  }, 800);
+}
 function adjProd(nId, d) {
   const next = Math.max(0, (S.draft.production[nId]||0) + d);
   S.draft.production[nId] = next;
@@ -1916,6 +1946,7 @@ function adjProd(nId, d) {
   const el = document.getElementById(`p-${nId}`);
   if (el) { el.value = next; el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'),300); }
   updateEstSold(nId);
+  triggerAutosaveProd(nId);
 }
 function setProd(nId, v) {
   const next = Math.max(0, parseInt(v)||0);
@@ -1924,6 +1955,7 @@ function setProd(nId, v) {
   if (el) el.value = next;
   saveDraftLS();
   updateEstSold(nId);
+  triggerAutosaveProd(nId);
 }
 function updateEstSold(nId) {
   if (!S.draft) return;
@@ -1974,13 +2006,12 @@ async function saveSession() {
     saveDraftLS();
     S.editId = null;
     await loadSessionsFromDB();
-    // Clear calc caches
     S.sessions.forEach(s => { delete s._calcCache; });
-    toast('✅ Session saved!', 'ok');
-    nav('dashboard');
+    if (btn) { btn.disabled = false; btn.textContent = '✅ Save Production'; }
+    showThankYouModal('production');
   } catch (e) {
     toast('❌ Save failed — check connection', 'err');
-    if (btn) { btn.disabled = false; btn.textContent = '✅ Save Record'; }
+    if (btn) { btn.disabled = false; btn.textContent = '✅ Save Production'; }
   }
 }
 
@@ -4332,6 +4363,144 @@ document.addEventListener('DOMContentLoaded', async () => {
     &copy; 2026 Jeng Chi Restaurant. All rights reserved.
   </p>
 </footer>
+
+
+<!-- ════════════════════════════════════════
+     THANK YOU MODAL — RONY CARRANZA
+════════════════════════════════════════ -->
+<div id="thankyou-modal" style="display:none;position:fixed;inset:0;z-index:99999;align-items:center;justify-content:center;background:rgba(10,20,40,0.72);backdrop-filter:blur(6px);">
+  <div id="thankyou-card" style="
+    background:#fff;
+    border-radius:24px;
+    box-shadow:0 32px 80px rgba(0,0,0,0.35), 0 0 0 1px rgba(255,255,255,0.15);
+    width:min(480px,92vw);
+    overflow:hidden;
+    transform:scale(0.88) translateY(30px);
+    opacity:0;
+    transition:transform 0.42s cubic-bezier(0.34,1.56,0.64,1), opacity 0.35s ease;
+  ">
+    <!-- Gold header bar -->
+    <div style="height:6px;background:linear-gradient(90deg,#C8962A,#F5D06A,#C8962A);"></div>
+
+    <!-- Top section with checkmark -->
+    <div style="background:linear-gradient(145deg,#0a3d1f,#0f5c2e);padding:36px 32px 28px;text-align:center;">
+      <div style="
+        width:72px;height:72px;border-radius:50%;
+        background:linear-gradient(135deg,#2ecc71,#27ae60);
+        display:flex;align-items:center;justify-content:center;
+        margin:0 auto 18px;
+        box-shadow:0 8px 24px rgba(46,204,113,0.45);
+      ">
+        <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+          <path d="M8 18l7 7 13-14" stroke="white" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div style="font-size:.72rem;letter-spacing:.22em;text-transform:uppercase;color:rgba(255,255,255,0.55);font-weight:600;margin-bottom:8px;">Jeng Chi Restaurant</div>
+      <div style="font-family:'Syne',sans-serif;font-size:1.55rem;font-weight:800;color:#fff;line-height:1.2;margin-bottom:4px;">Saved Successfully</div>
+      <div id="thankyou-subtitle" style="font-size:.82rem;color:rgba(255,255,255,0.6);margin-top:6px;"></div>
+    </div>
+
+    <!-- Thank you body -->
+    <div style="padding:32px 32px 24px;text-align:center;">
+      <div style="font-size:.68rem;letter-spacing:.18em;text-transform:uppercase;color:#999;font-weight:700;margin-bottom:10px;">On behalf of the team</div>
+      <div style="font-family:'Syne',sans-serif;font-size:1.85rem;font-weight:800;color:#0a3d1f;line-height:1.15;margin-bottom:6px;">
+        Thank You,
+      </div>
+      <div style="
+        font-family:'Syne',sans-serif;
+        font-size:1.95rem;
+        font-weight:800;
+        background:linear-gradient(135deg,#C8962A,#e8b840);
+        -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+        line-height:1.1;
+        margin-bottom:20px;
+        letter-spacing:.01em;
+      ">Rony Carranza</div>
+      <div style="font-size:.88rem;color:#555;line-height:1.65;max-width:340px;margin:0 auto 28px;">
+        Your submission has been recorded and the dashboard has been updated. Your work keeps the kitchen running.
+      </div>
+
+      <!-- OK Button -->
+      <button onclick="closeThankYouModal()" style="
+        padding:14px 52px;
+        background:linear-gradient(135deg,#0a3d1f,#0f5c2e);
+        color:#fff;
+        border:none;
+        border-radius:12px;
+        font-family:'Syne',sans-serif;
+        font-size:1rem;
+        font-weight:700;
+        cursor:pointer;
+        letter-spacing:.04em;
+        box-shadow:0 6px 20px rgba(10,61,31,0.35);
+        transition:transform .15s,box-shadow .15s;
+      " onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 10px 28px rgba(10,61,31,0.45)'"
+         onmouseout="this.style.transform='';this.style.boxShadow='0 6px 20px rgba(10,61,31,0.35)'">
+        OK
+      </button>
+
+      <!-- Auto-dismiss countdown -->
+      <div id="thankyou-countdown" style="font-size:.72rem;color:#bbb;margin-top:14px;"></div>
+    </div>
+
+    <!-- Gold footer bar -->
+    <div style="height:4px;background:linear-gradient(90deg,#C8962A,#F5D06A,#C8962A);"></div>
+  </div>
+</div>
+
+<script>
+let _tyCountdownTimer = null;
+let _tyAutoCloseTimer = null;
+
+function showThankYouModal(source) {
+  const modal = document.getElementById('thankyou-modal');
+  const card  = document.getElementById('thankyou-card');
+  const sub   = document.getElementById('thankyou-subtitle');
+  const cd    = document.getElementById('thankyou-countdown');
+
+  sub.textContent = source === 'count'
+    ? '📦 Inventory count has been recorded.'
+    : '🍜 Production numbers have been recorded.';
+
+  modal.style.display = 'flex';
+  // Trigger animation on next frame
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      card.style.transform = 'scale(1) translateY(0)';
+      card.style.opacity   = '1';
+    });
+  });
+
+  // Countdown auto-close in 5 seconds
+  let secs = 5;
+  cd.textContent = `Redirecting to Dashboard in ${secs}s…`;
+  clearInterval(_tyCountdownTimer);
+  clearTimeout(_tyAutoCloseTimer);
+  _tyCountdownTimer = setInterval(() => {
+    secs--;
+    if (secs > 0) {
+      cd.textContent = `Redirecting to Dashboard in ${secs}s…`;
+    } else {
+      clearInterval(_tyCountdownTimer);
+      closeThankYouModal();
+    }
+  }, 1000);
+}
+
+function closeThankYouModal() {
+  clearInterval(_tyCountdownTimer);
+  clearTimeout(_tyAutoCloseTimer);
+  const modal = document.getElementById('thankyou-modal');
+  const card  = document.getElementById('thankyou-card');
+  card.style.transform = 'scale(0.92) translateY(20px)';
+  card.style.opacity   = '0';
+  setTimeout(() => {
+    modal.style.display = 'none';
+    card.style.transform = 'scale(0.88) translateY(30px)';
+    nav('dashboard');
+  }, 320);
+}
+</script>
 
 </body>
 </html>
