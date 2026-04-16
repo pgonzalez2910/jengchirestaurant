@@ -25280,7 +25280,7 @@ function renderJulioProductCard(product, categoryColors) {
 
                    data-product-name="${escAttr(product.product_name)}"
 
-                   oninput="setJulioQuantity(this.dataset.productName, this.value)" onchange="setJulioQuantity(this.dataset.productName, this.value)"
+                   oninput="silentJulioUpdate(this.dataset.productName, this.value)" onchange="setJulioQuantity(this.dataset.productName, this.value)"
 
                    class="search-input"
 
@@ -26127,7 +26127,7 @@ function renderRonyProductCard(product) {
                        placeholder="0"
 
                        data-pname="${escAttr(product.product_name)}"
-                       oninput="setRonyStock(this.dataset.pname, this.value)" onchange="setRonyStock(this.dataset.pname, this.value)" 
+                       oninput="silentRonyUpdate(this.dataset.pname, this.value)" onchange="setRonyStock(this.dataset.pname, this.value)" 
 
                        style="width: 100px; text-align: center; padding: 0.6rem; border: 2px solid ${hasStock ? 'var(--success-600)' : 'var(--primary-400)'}; border-radius: 6px; font-size: 1.25rem; font-weight: 700; font-family: var(--font-mono); background: ${hasStock ? 'rgba(16,185,129,0.05)' : 'white'};">
 
@@ -26442,13 +26442,13 @@ function updateRonyStock(productName, delta) {
 
     
 
-    product.current_stock = parseFloat(newStock.toFixed(2));  // ✅ 0 is valid out-of-stock
+    product.current_stock = parseFloat(newStock.toFixed(2));  // 0 is valid — means out of stock
 
     
 
     const input = document.getElementById(`rony-stock-${productName.replace(/[^a-zA-Z0-9]/g, '_')}`);
 
-    if (input) input.value = newStock === 0 ? '' : newStock.toFixed(2);
+    if (input) input.value = newStock.toFixed(2);
 
     
 
@@ -26566,7 +26566,7 @@ function setRonyStock(productName, value) {
 
         const qty = parseFloat(value);
 
-        product.current_stock = isNaN(qty) ? null : qty;
+        product.current_stock = isNaN(qty) ? null : qty;  // 0 = out of stock, still valid
 
     }
 
@@ -47921,6 +47921,34 @@ let _ronyAutoSaveTimers = {};
 let _julioAutoSaveTimers = {};
 let _adminLivePollingTimer = null;
 
+// ── Silent update: update in-memory + auto-save, NO re-render (fixes jumping) ──
+function silentRonyUpdate(productName, value) {
+    let allProducts = [];
+    ronyProductsByPosition.forEach(products => { allProducts = allProducts.concat(products); });
+    const product = allProducts.find(p => p.product_name === productName);
+    if (!product) return;
+    if (value === '' || value === null || value === undefined) {
+        product.current_stock = null;
+    } else {
+        const qty = parseFloat(value);
+        product.current_stock = isNaN(qty) ? null : qty;
+    }
+    // Propagate to variant objects so re-render shows correct value
+    if (product._isColorVariant) {
+        if (product._whiteVariant) product._whiteVariant.current_stock = product.current_stock;
+        if (product._blackVariant) product._blackVariant.current_stock = product.current_stock;
+    }
+    scheduleRonyAutoSave(productName);
+}
+
+function silentJulioUpdate(productName, value) {
+    if (!julioTargetsMap.has(productName)) return;
+    const qty = value === '' ? null : (parseInt(value) || 0);
+    const product = julioTargetsMap.get(productName);
+    product.target_quantity = (qty === 0) ? null : qty;
+    scheduleJulioAutoSave(productName);
+}
+
 // ── Schedule auto-save for a single Rony product ─────────────────
 function scheduleRonyAutoSave(productName) {
     clearTimeout(_ronyAutoSaveTimers[productName]);
@@ -47936,14 +47964,30 @@ async function autoSaveRonyItem(productName) {
         if (!product || product.current_stock === null || product.current_stock === undefined) return;
 
         const stockDate = document.getElementById('ronyOrderDate')?.value || todayYMD();
+        const now = new Date().toISOString();
+
+        // Color variant (Fork/Spoon): save under EACH variant name so loadRonyOrders maps correctly
+        const namesToSave = [];
+        if (product._isColorVariant) {
+            if (product._whiteVariant) namesToSave.push(product._whiteVariant.product_name);
+            if (product._blackVariant) namesToSave.push(product._blackVariant.product_name);
+            // Also propagate current_stock to the variant objects
+            if (product._whiteVariant) product._whiteVariant.current_stock = product.current_stock;
+            if (product._blackVariant) product._blackVariant.current_stock = product.current_stock;
+        } else {
+            namesToSave.push(productName);
+        }
+
+        const upsertRows = namesToSave.map(name => ({
+            product_name: name,
+            quantity_in_stock: product.current_stock,
+            stock_date: stockDate,
+            last_updated: now
+        }));
+
         const { error } = await supabaseClient
             .from('current_stock')
-            .upsert({
-                product_name: productName,
-                quantity_in_stock: product.current_stock,
-                stock_date: stockDate,
-                last_updated: new Date().toISOString()
-            }, { onConflict: 'product_name,stock_date', ignoreDuplicates: false });
+            .upsert(upsertRows, { onConflict: 'product_name,stock_date', ignoreDuplicates: false });
 
         if (error) throw error;
         _showAutoSaveBadge('rony', 'saved');
