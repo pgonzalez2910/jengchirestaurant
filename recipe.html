@@ -1782,49 +1782,108 @@ function closeModal() {
 }
 
 async function saveRecipe(isAuto) {
-  var id    = document.getElementById('f-id').value;
-  var title = document.getElementById('f-title').value.trim();
-  var cat   = document.getElementById('f-cat').value;
-  if (!title || !cat) { if (!isAuto) toast('Title and Category are required.', 'error'); return; }
-  var payload = {
-    title: title, category: cat,
-    description:  document.getElementById('f-desc').value.trim(),
-    servings:     document.getElementById('f-srv').value.trim(),
-    difficulty:   document.getElementById('f-diff').value,
-    prep_time:    document.getElementById('f-prep').value.trim(),
-    cook_time:    document.getElementById('f-cook').value.trim(),
-    ingredients:  document.getElementById('f-ing').value.trim(),
-    preparation:  document.getElementById('f-steps').value.trim(),
-  };
-  var btn = document.getElementById('btn-save');
-  var ind = document.getElementById('autosave-indicator');
-  document.getElementById('save-lbl').textContent = 'Saving...';
-  btn.disabled = true;
-  try {
-    var res, data;
-    if (id) {
-      res = await db.from('recipes').update(payload).eq('id', id).select().single();
-      if (res.error) throw res.error;
-      data = res.data;
-      var idx = allRecipes.findIndex(function(r) { return r.id === id; });
-      if (idx !== -1) allRecipes[idx] = data;
-    } else {
-      res = await db.from('recipes').insert(payload).select().single();
-      if (res.error) throw res.error;
-      data = res.data;
-      allRecipes.push(data);
+    var id = document.getElementById('f-id').value;
+    var title = document.getElementById('f-title').value.trim();
+    var cat = document.getElementById('f-cat').value;
+
+    if (!title || !cat) {
+        if (!isAuto) toast('Title and Category are required.', 'error');
+        return;
     }
-    if (!isAuto) { closeModal(); render(); toast('Recipe saved to database.', 'success'); }
-    else {
-      render();
-      if (ind) { ind.textContent = 'Saved to database'; ind.style.color = '#22A855'; }
-      setTimeout(function() { if (ind) ind.textContent = ''; }, 2500);
+
+    var payload = {
+        title: title,
+        category: cat,
+        description: document.getElementById('f-desc').value.trim(),
+        servings: document.getElementById('f-srv').value.trim(),
+        difficulty: document.getElementById('f-diff').value,
+        prep_time: document.getElementById('f-prep').value.trim(),
+        cook_time: document.getElementById('f-cook').value.trim(),
+        ingredients: document.getElementById('f-ing').value.trim(),
+        preparation: document.getElementById('f-steps').value.trim(),
+    };
+
+    var btn = document.getElementById('btn-save');
+    var ind = document.getElementById('autosave-indicator');
+    
+    if(btn) {
+        document.getElementById('save-lbl').textContent = 'Saving...';
+        btn.disabled = true;
     }
-  } catch(e) { toast('Save error: ' + e.message, 'error'); }
-  finally {
-    document.getElementById('save-lbl').textContent = 'Save Recipe';
-    btn.disabled = false;
-  }
+    if(ind) { 
+        ind.textContent = 'Unsaved changes...'; 
+        ind.style.color = 'var(--txt3)'; 
+    }
+
+    try {
+        var res, data;
+
+        if (id) {
+            // 1. Try to Update
+            res = await db.from('recipes').update(payload).eq('id', id).select();
+            
+            if (res.error) throw res.error;
+
+            // Check if any rows were actually updated
+            if (res.data && res.data.length > 0) {
+                data = res.data[0];
+                var idx = allRecipes.findIndex(function(r) { return r.id === id; });
+                if (idx !== -1) allRecipes[idx] = data;
+            } else {
+                // 2. If no rows updated, the ID might be invalid or deleted. 
+                // Treat as new insert but keep the ID if you want, or generate new.
+                // For safety, let's insert as new (Supabase will generate new ID if we don't pass it, 
+                // or we can force the ID if your DB allows it).
+                
+                // Removing ID from payload to let DB generate a new one, 
+                // OR keep ID if you are sure it should exist. 
+                // Let's assume if update failed, we create a NEW entry.
+                delete payload.id; 
+                
+                res = await db.from('recipes').insert(payload).select().single();
+                if (res.error) throw res.error;
+                data = res.data;
+                allRecipes.push(data);
+                
+                // Update the hidden input ID to the new ID so subsequent saves work
+                document.getElementById('f-id').value = data.id;
+            }
+
+        } else {
+            // 3. New Recipe
+            res = await db.from('recipes').insert(payload).select().single();
+            if (res.error) throw res.error;
+            data = res.data;
+            allRecipes.push(data);
+            
+            // Update the hidden input ID
+            document.getElementById('f-id').value = data.id;
+        }
+
+        if (!isAuto) {
+            closeModal();
+            render();
+            toast('Recipe saved to database.', 'success');
+        } else {
+            render();
+            if (ind) {
+                ind.textContent = 'Saved to database';
+                ind.style.color = '#22A855';
+            }
+            setTimeout(function() {
+                if (ind) ind.textContent = '';
+            }, 2500);
+        }
+
+    } catch (e) {
+        console.error("Save Error:", e);
+        toast('Save error: ' + e.message, 'error');
+    } finally {
+        if(btn) {
+            document.getElementById('save-lbl').textContent = 'Save Recipe';
+            btn.disabled = false;
+        }
+    }
 }
 
 // ===================================================
