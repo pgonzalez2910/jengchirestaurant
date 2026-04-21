@@ -864,7 +864,7 @@
 
 <!-- HEADER -->
 <header id="hdr">
-  <img id="jc-logo" class="hdr-logo" src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg" alt="Jeng Chi" style="height:60px;width:auto;max-width:180px;object-fit:contain;background:transparent;border:none;border-radius:0;box-shadow:none;display:block;">
+  <img id="jc-logo" class="hdr-logo" src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg" alt="Jeng Chi" data-img-fixed="1" style="height:60px;width:auto;max-width:180px;object-fit:contain;background:transparent;border:none;border-radius:0;box-shadow:none;display:block;">
   <script>
     (function(){
       var img = document.getElementById('jc-logo');
@@ -1849,19 +1849,28 @@ window.kmRefreshPhoto = async function(recipeId) {
     try {
       if (typeof slugifyImageName === 'function') candidateNames.push(slugifyImageName(title));
     } catch(e) {}
-    // Slug A: drop & entirely (matches our repo convention: "Shrimp & Pork" → "shrimp-pork")
+    // Slug A: kebab-case (e.g. "Egg Tart" → "egg-tart")
     var manualSlug = String(title).toLowerCase()
       .replace(/[\u2018\u2019\u201C\u201D"'`]/g, '')
       .replace(/&/g, ' ')
       .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
     candidateNames.push(manualSlug);
     if (manualSlug.endsWith('s')) candidateNames.push(manualSlug.slice(0, -1));
-    // Slug B: & → "and" (legacy filenames already in repo)
+    // Slug B: underscore (e.g. "egg_tart")
+    candidateNames.push(manualSlug.replace(/-/g, '_'));
+    // Slug C: no separator (e.g. "eggtart")
+    candidateNames.push(manualSlug.replace(/-/g, ''));
+    // Slug D: & → "and" (legacy filenames already in repo)
     var withAndSlug = String(title).toLowerCase()
       .replace(/[\u2018\u2019\u201C\u201D"'`]/g, '')
       .replace(/&/g, ' and ')
       .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-    if (withAndSlug !== manualSlug) candidateNames.push(withAndSlug);
+    if (withAndSlug !== manualSlug) {
+      candidateNames.push(withAndSlug);
+      candidateNames.push(withAndSlug.replace(/-/g, '_'));
+    }
+    // Slug E: exact title as-is (browser will encode spaces → %20)
+    candidateNames.push(title);
     candidateNames = candidateNames.filter(function(v, i, a){ return v && a.indexOf(v) === i; });
   
     var found = null;
@@ -1946,7 +1955,7 @@ window.kmRefreshPhoto = async function(recipeId) {
   }
 
   // Build a list of candidate filenames so we match how files are actually named in the repo.
-  // GitHub repo uses kebab-case slugs (e.g. "pan-fried-dumpling.png"), not the dish title.
+  // GitHub repo may use kebab-case, underscore, no-separator, or exact title.
   var candidateNames = [];
   try {
     var ov = (typeof IMAGE_NAME_OVERRIDES !== 'undefined') ? IMAGE_NAME_OVERRIDES[title] : null;
@@ -1955,14 +1964,28 @@ window.kmRefreshPhoto = async function(recipeId) {
   try {
     if (typeof slugifyImageName === 'function') candidateNames.push(slugifyImageName(title));
   } catch(e) {}
-  // Manual slugs for robustness (with/without trailing s)
-  var manualSlug = String(title).toLowerCase()
+  // Slug A: kebab-case, & dropped (e.g. "egg-tart")
+  var manualSlugA = String(title).toLowerCase()
+    .replace(/[\u2018\u2019\u201C\u201D"'`]/g, '')
+    .replace(/&/g, ' ')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  candidateNames.push(manualSlugA);
+  if (manualSlugA.endsWith('s')) candidateNames.push(manualSlugA.slice(0, -1));
+  // Slug B: underscore (e.g. "egg_tart")
+  candidateNames.push(manualSlugA.replace(/-/g, '_'));
+  // Slug C: no separator (e.g. "eggtart")
+  candidateNames.push(manualSlugA.replace(/-/g, ''));
+  // Slug D: kebab-case, & → "and"
+  var manualSlugD = String(title).toLowerCase()
     .replace(/[\u2018\u2019\u201C\u201D"'`]/g, '')
     .replace(/&/g, ' and ')
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  candidateNames.push(manualSlug);
-  if (manualSlug.endsWith('s')) candidateNames.push(manualSlug.slice(0, -1)); // singular fallback
-  candidateNames.push(title); // last resort: exact title
+  if (manualSlugD !== manualSlugA) {
+    candidateNames.push(manualSlugD);
+    candidateNames.push(manualSlugD.replace(/-/g, '_'));
+  }
+  // Slug E: exact title (spaces become %20 via encodeURIComponent)
+  candidateNames.push(title);
   // Dedupe while preserving order
   candidateNames = candidateNames.filter(function(v, i, a){ return v && a.indexOf(v) === i; });
 
@@ -1984,8 +2007,7 @@ window.kmRefreshPhoto = async function(recipeId) {
   if (!found) {
     setKmCardUploadStatus(recipeId, 'Not found on GitHub', 'error');
     toast(
-      'No GitHub image found for "' + title + '". Tried: ' + candidateNames.slice(0,3).join('.png, ') + '.png. ' +
-      'Upload a file named exactly like one of those (with .png/.jpg) to your repo.',
+      'No GitHub image found for "' + title + '". Tried names: ' + candidateNames.slice(0,4).join(', ') + ' — with .png .jpg .jpeg extensions. Upload a matching file to your repo.',
       'error'
     );
     setTimeout(function() { setKmCardUploadStatus(recipeId, '', ''); }, 4000);
@@ -2102,6 +2124,8 @@ async function boot() {
       await repairRecipeCategories();
     }
     loadCategoryPhotos();
+    // Default landing view: open Bakery Side (Tarts & Pastries first)
+    showView('bakery');
   } catch(e) {
     document.getElementById('grid').innerHTML =
       '<div class="state-box"><div class="state-ic" style="color:#D9A;opacity:.6">!</div>' +
@@ -3333,6 +3357,58 @@ function showView(view) {
 }
 
 
+// ── Category rename from Plating Guide index ─────────────────────────────
+window._kmRenameCategory = async function(oldName) {
+  if (!oldName) return;
+  var newName = prompt('Rename category "' + oldName + '" to:', oldName);
+  if (!newName || !newName.trim() || newName.trim() === oldName) return;
+  newName = newName.trim();
+
+  // 1. Update recipe_categories table
+  try {
+    var catRes = await db.from('recipe_categories').update({ name: newName }).eq('name', oldName);
+    if (catRes.error) throw catRes.error;
+  } catch(e) {
+    toast('Category rename error: ' + (e.message || e), 'error'); return;
+  }
+
+  // 2. Update all recipes that had the old category
+  try {
+    var recRes = await db.from('recipes').update({ category: newName }).eq('category', oldName);
+    if (recRes.error) throw recRes.error;
+  } catch(e) {
+    toast('Recipe update error: ' + (e.message || e), 'error'); return;
+  }
+
+  // 3. Update local state
+  var sideArrays = [
+    typeof BAKERY_CATS !== 'undefined' ? BAKERY_CATS : [],
+    typeof KITCHEN_CATS !== 'undefined' ? KITCHEN_CATS : [],
+    typeof MAIN_CATS !== 'undefined' ? MAIN_CATS : [],
+    typeof NOODLE_CATS !== 'undefined' ? NOODLE_CATS : [],
+    typeof WOK_CATS !== 'undefined' ? WOK_CATS : []
+  ];
+  sideArrays.forEach(function(arr) {
+    var idx = arr.indexOf(oldName);
+    if (idx !== -1) arr[idx] = newName;
+  });
+  (allRecipes || []).forEach(function(r) {
+    if (r.category === oldName) r.category = newName;
+  });
+  if (typeof categoryData !== 'undefined') {
+    categoryData.forEach(function(c) { if (c.name === oldName) c.name = newName; });
+  }
+
+  toast('Category renamed to "' + newName + '"', 'success');
+  renderKmIndex(
+    (allRecipes || []).filter(function(r) {
+      var cats = (kmActiveSide === 'wok') ? WOK_CATS : (kmActiveSide === 'bakery') ? BAKERY_CATS : NOODLE_CATS;
+      return r && cats.indexOf(r.category) >= 0;
+    })
+  );
+  renderSB();
+};
+
 function renderKmIndex(recipes) {
   const el = document.getElementById('km-content');
   currentKmRecipe = null;
@@ -3410,9 +3486,11 @@ function renderKmIndex(recipes) {
     var _cat = rec.category || 'Other';
     if (_cat !== _kmCurrentCat) {
       if (_kmCurrentCat !== null) html += `</div>`; // close previous category grid
+      var _catEncoded = ea(_cat);
       html += `
         <div class="km-cat-header" style="display:flex;align-items:center;gap:14px;margin:32px 0 14px;">
-          <div style="flex:0 0 auto;font-family:'Playfair Display',serif;font-size:18px;font-weight:600;color:var(--gold);letter-spacing:.02em;">${ea(_cat)}</div>
+          <div style="flex:0 0 auto;font-family:'Playfair Display',serif;font-size:18px;font-weight:600;color:var(--gold);letter-spacing:.02em;">${_catEncoded}</div>
+          <button onclick="_kmRenameCategory('${_catEncoded}')" title="Rename this category" style="flex:0 0 auto;background:none;border:1px solid var(--gold-border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--gold);cursor:pointer;letter-spacing:.05em;transition:all .15s;" onmouseover="this.style.background='var(--gold-dim)'" onmouseout="this.style.background='none'">✎ Rename</button>
           <div style="flex:1 1 auto;height:1px;background:var(--bdr2);"></div>
           <div style="flex:0 0 auto;font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--txt3);">${_kmCatCounts[_cat]} dishes</div>
         </div>
@@ -3650,7 +3728,30 @@ function renderKmDetail(rec) {
     '<div class="km-hero" style="margin-bottom:10px;">' +
       heroHtml +
       '<div class="km-hero-body">' +
-        '<span class="km-cat-badge">' + esc(rec.category) + (num > 0 ? '  #' + num : '') + '</span>' +
+        // Build category select for editable category field
+        (function(){
+          var allCatsList = (typeof BAKERY_CATS !== 'undefined' ? BAKERY_CATS : [])
+            .concat(typeof NOODLE_CATS !== 'undefined' ? NOODLE_CATS : [])
+            .concat(typeof WOK_CATS !== 'undefined' ? WOK_CATS : [])
+            .concat(typeof MAIN_CATS !== 'undefined' ? MAIN_CATS : []);
+          var opts = allCatsList.map(function(c) {
+            return '<option value="' + esc(c) + '"' + (c === rec.category ? ' selected' : '') + '>' + esc(c) + '</option>';
+          }).join('');
+          html +=
+            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">' +
+              '<span class="km-cat-badge">' + esc(rec.category) + (num > 0 ? '  #' + num : '') + '</span>' +
+              '<div style="display:flex;align-items:center;gap:6px;">' +
+                '<label style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--txt3);">Category</label>' +
+                '<select id="kmf-category-' + rid + '" data-field="category" data-rid="' + rid + '" ' +
+                  'style="font:500 12px Inter,sans-serif;border:1px solid var(--gold-border);border-radius:6px;padding:4px 8px;background:var(--cream);color:var(--txt);cursor:pointer;outline:none;" ' +
+                  'onchange="kmScheduleSave(\'' + rid + '\',\'category\')">' +
+                  opts +
+                '</select>' +
+                '<div class="km-field-status" id="kms-category-' + rid + '" style="font-size:9px;"></div>' +
+              '</div>' +
+            '</div>';
+        })();
+        html +=
 
         '<div class="km-field-wrap" style="margin-top:10px;">' +
           '<span class="km-field-lbl">Dish Title</span>' +
@@ -3740,7 +3841,7 @@ function kmSetGlobalStatus(recId, msg, cls) {
 }
 
 async function kmSaveAll(recId) {
-  var fields = ['title','description','servings','prep_time','cook_time','difficulty','ingredients','preparation'];
+  var fields = ['title','category','description','servings','prep_time','cook_time','difficulty','ingredients','preparation'];
   var update = {};
   fields.forEach(function(f) {
     var el = document.getElementById('kmf-' + f + '-' + recId);
@@ -3761,14 +3862,17 @@ async function kmSaveAll(recId) {
 
     if (update.photo) DISH_IMAGES[update.title || oldTitle] = update.photo;
     if (oldTitle && update.title && oldTitle !== update.title) {
-      // ── FIX: keep KITCHEN_MANUAL_ORDER in sync so card doesn't disappear ──
+      // ── keep KITCHEN_MANUAL_ORDER in sync ──
       var saOrderIdx = KITCHEN_MANUAL_ORDER.indexOf(oldTitle);
       if (saOrderIdx !== -1) KITCHEN_MANUAL_ORDER[saOrderIdx] = update.title;
-      // Move DISH_IMAGES entry to new title key
-      if (DISH_IMAGES[oldTitle] && !DISH_IMAGES[update.title]) {
-        DISH_IMAGES[update.title] = DISH_IMAGES[oldTitle];
-        delete DISH_IMAGES[oldTitle];
+      // Always carry photo to new title key — use rec.photo as source of truth
+      var saPhoto = (local && local.photo) || update.photo || DISH_IMAGES[oldTitle] || null;
+      if (saPhoto) {
+        DISH_IMAGES[update.title] = saPhoto;
+        DISH_IMAGES[oldTitle]     = saPhoto; // keep old key as fallback
       }
+      if (typeof syncDishImageKey === 'function') syncDishImageKey(oldTitle, update.title);
+      if (window.kmAutoLinkAttempted) delete window.kmAutoLinkAttempted[recId];
     }
 
     fields.forEach(function(f) { if (document.getElementById('kms-' + f + '-' + recId)) kmSetFieldStatus(recId, f, 'Saved', 'saved'); });
@@ -3813,20 +3917,26 @@ async function kmSave(recId, field) {
     if (currentKmRecipe && currentKmRecipe.id === recId) currentKmRecipe[field] = value;
 
     if (field === 'title' && oldTitle && oldTitle !== value) {
-      // ── FIX: keep KITCHEN_MANUAL_ORDER in sync so card doesn't disappear ──
+      // ── keep KITCHEN_MANUAL_ORDER in sync so card doesn't disappear ──
       var orderIdx = KITCHEN_MANUAL_ORDER.indexOf(oldTitle);
       if (orderIdx !== -1) KITCHEN_MANUAL_ORDER[orderIdx] = value;
-      // Move DISH_IMAGES entry to new title key
-      if (DISH_IMAGES[oldTitle] && !DISH_IMAGES[value]) {
-        DISH_IMAGES[value] = DISH_IMAGES[oldTitle];
-        delete DISH_IMAGES[oldTitle];
+      // Always carry the photo to the new title key in DISH_IMAGES.
+      // Use rec.photo as the source of truth — it lives in Supabase independently of title.
+      var photoToKeep = (local && local.photo) || DISH_IMAGES[oldTitle] || null;
+      if (photoToKeep) {
+        DISH_IMAGES[value] = photoToKeep;         // register under new title
+        DISH_IMAGES[oldTitle] = photoToKeep;      // keep old key too (safe fallback)
       }
+      // Sync to normalized alias key as well
+      if (typeof syncDishImageKey === 'function') syncDishImageKey(oldTitle, value);
+      // Reset auto-link attempt flag so the new title can re-try GitHub if needed
+      if (window.kmAutoLinkAttempted) delete window.kmAutoLinkAttempted[recId];
     }
 
     kmSetFieldStatus(recId, field, 'Saved', 'saved');
     kmSetGlobalStatus(recId, 'Saved', 'saved');
 
-    if (field === 'title' || field === 'description' || field === 'servings' || field === 'prep_time' || field === 'cook_time' || field === 'difficulty') {
+    if (field === 'category' || field === 'title' || field === 'description' || field === 'servings' || field === 'prep_time' || field === 'cook_time' || field === 'difficulty') {
       if (currentKmRecipe && currentKmRecipe.id === recId) {
         renderKmDetail(allRecipes.find(function(r){ return r.id === recId; }) || currentKmRecipe);
         kmSetFieldStatus(recId, field, 'Saved', 'saved');
@@ -3855,7 +3965,7 @@ boot();
 
 /* ===== SINGLE FINAL IMAGE FIX BLOCK ===== */
 const GITHUB_IMAGE_BASE = "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/";
-const IMAGE_VERSION = "v=30";
+const IMAGE_VERSION = ""; // no query param — GitHub raw URLs work fine without it
 
 const IMAGE_NAME_OVERRIDES = {
   "Pan Fried Dumplings": "pan-fried-dumpling",
@@ -3900,38 +4010,51 @@ function buildGitHubImageUrl(title, ext = "png") {
   const cleanExt = String(ext || "png").replace(/^\./, "").toLowerCase();
   const override = IMAGE_NAME_OVERRIDES[title];
   const filename = override || slugifyImageName(title);
-  return `${GITHUB_IMAGE_BASE}${filename}.${cleanExt}?${IMAGE_VERSION}`;
+  return `${GITHUB_IMAGE_BASE}${filename}.${cleanExt}`;
 }
 
 function normalizeGitHubImageUrl(src, titleHint = "") {
   if (!src) return src;
   if (src.startsWith("data:image/")) return src;
 
-  if (titleHint && titleHint.trim()) {
-    return buildGitHubImageUrl(titleHint.trim(), "png");
-  }
-
+  // ── Step 1: Convert blob URLs to raw GitHub URLs ──
   src = src.replace(
     "https://github.com/pgonzalez2910/jengchi-product-images/blob/main/",
     GITHUB_IMAGE_BASE
   );
 
-  if (!src.includes("pgonzalez2910/jengchi-product-images")) return src;
+  // ── Step 2: If the URL already has a real image extension → leave it alone ──
+  // This is the critical fix: never override a valid stored URL just because we
+  // have a title hint. The stored URL may be .jpg while the hint would guess .png.
+  const srcWithoutQuery = src.split("?")[0];
+  const hasKnownExt = /\.(png|jpg|jpeg|webp)$/i.test(srcWithoutQuery);
+  if (hasKnownExt) return src;
 
-  const withoutQuery = src.split("?")[0];
-  const filePart = decodeURIComponent(withoutQuery.split("/").pop() || "");
-  if (!filePart) return src;
+  // ── Step 3: Raw GitHub URL but no recognisable extension ──
+  // (e.g., "-png" suffix typo or missing extension) — try to clean up
+  if (src.includes("pgonzalez2910/jengchi-product-images")) {
+    const filePart = decodeURIComponent(srcWithoutQuery.split("/").pop() || "");
+    if (!filePart) return src;
 
-  const match = filePart.match(/^(.*?)(?:\.([a-zA-Z0-9]+))?$/);
-  let baseName = match?.[1] || filePart;
-  let ext = (match?.[2] || "png").toLowerCase();
+    const match = filePart.match(/^(.*?)(?:\.([a-zA-Z0-9]+))?$/);
+    let baseName = match?.[1] || filePart;
+    let ext = (match?.[2] || "").toLowerCase();
 
-  if (!match?.[2] && /-png$/i.test(baseName)) {
-    baseName = baseName.replace(/-png$/i, "");
-    ext = "png";
+    // Fix "-png" suffix typo (e.g. "egg-tart-png" → "egg-tart.png")
+    if (!ext && /-png$/i.test(baseName)) {
+      baseName = baseName.replace(/-png$/i, "");
+      ext = "png";
+    }
+
+    if (ext) return `${GITHUB_IMAGE_BASE}${slugifyImageName(baseName)}.${ext}`;
   }
 
-  return `${GITHUB_IMAGE_BASE}${slugifyImageName(baseName)}.${ext}?${IMAGE_VERSION}`;
+  // ── Step 4: No extension at all and not a GitHub URL — use title hint as last resort ──
+  if (titleHint && titleHint.trim() && !src.includes("raw.githubusercontent.com")) {
+    return buildGitHubImageUrl(titleHint.trim(), "png");
+  }
+
+  return src;
 }
 
 function findNearbyRecipeTitle(img) {
@@ -3972,13 +4095,20 @@ function fixOneImage(img) {
     const fallbackTitle = findNearbyRecipeTitle(img);
     if (!fallbackTitle) return;
 
-    const fallback = buildGitHubImageUrl(fallbackTitle, "png");
-    if (img.src !== fallback) {
-      img.src = fallback;
-      return;
+    // Try extensions in order: jpg → jpeg → png → webp
+    const tryExts = ["jpg", "jpeg", "png", "webp"];
+    const attempt = parseInt(img.dataset.imgErrAttempt || "0");
+
+    if (attempt < tryExts.length) {
+      img.dataset.imgErrAttempt = String(attempt + 1);
+      const nextUrl = buildGitHubImageUrl(fallbackTitle, tryExts[attempt]);
+      if (img.src !== nextUrl) {
+        img.src = nextUrl;
+        return;
+      }
     }
 
-    console.warn(`No GitHub image found for "${fallbackTitle}". Upload a file named to match its mapped filename.`);
+    console.warn(`No GitHub image found for "${fallbackTitle}" after trying all extensions.`);
   };
 
   img.dataset.imgFixed = "1";
