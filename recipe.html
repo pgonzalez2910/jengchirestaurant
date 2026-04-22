@@ -1116,7 +1116,31 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const db = supabaseClient;
 
-const BAKERY_CATS  = ['Tarts & Pastries','Puffs','Cake Rolls','Chilled Desserts','Cookies'];
+const BAKERY_CATS  = ['Tarts & Pastries','Choux puffs','Cake Rolls','Chilled Desserts','Cookies','Macarons','Cakes']; // base defaults — extended live from Supabase on boot
+
+// ── Hoisted navigation helpers (declared early so always available) ──────────
+function _openBakery() { showView('bakery'); }
+
+function _openSideAt(side, category) {
+  showView(side);
+  if (!category) return;
+  requestAnimationFrame(function() {
+    var safeId = 'km-cat-hdr-' + category.trim().replace(/[^a-z0-9]/gi, '_');
+    var target = document.getElementById(safeId);
+    if (!target) {
+      var headers = document.querySelectorAll('#km-content .km-cat-header');
+      for (var i = 0; i < headers.length; i++) {
+        var el = headers[i].querySelector('div[style*="Playfair"]');
+        if (el && el.textContent.trim() === category.trim()) { target = headers[i]; break; }
+      }
+    }
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    target.style.transition = 'background .3s';
+    target.style.background = 'rgba(168,121,58,.10)';
+    setTimeout(function() { target.style.background = ''; }, 1000);
+  });
+}
 const KITCHEN_CATS = ['Hot Appetizers','Dumplings','Soups','Soup Noodles','Noodle Dishes','House-Made Noodles','Over Rice','Sauces & Condiments'];
 // Categories to hide from the Kitchen sidebar/pills. Edit this list to show/hide.
 // (These categories still exist in the database and are used by the Plating Guide.)
@@ -2211,8 +2235,11 @@ async function boot() {
     loadCategoryPhotos();
 
     // Diagnose category mismatches (e.g. why Puffs shows 0)
+    // Include all possible category names (including aliases/renamed ones)
     var knownCats = new Set(BAKERY_CATS.concat(KITCHEN_CATS).concat(MAIN_CATS)
-      .concat(WOK_CATS).concat(NOODLE_CATS).map(function(c){ return c.toLowerCase().trim(); }));
+      .concat(WOK_CATS).concat(NOODLE_CATS)
+      .concat(['Choux puffs','Cakes','Macarons','Macaron','Hot Appetizers','Dumplings','Soups'])
+      .map(function(c){ return c.toLowerCase().trim(); }));
     var unknownCats = {};
     (allRecipes || []).forEach(function(r) {
       if (!r || !r.category) return;
@@ -2329,7 +2356,7 @@ function _kmGroupCats(hardcoded, groupName) {
 }
 
 // Helper used by bakery sidebar rows — avoids quote-inside-quote in onclick strings
-window._openBakery = function() { showView('bakery'); };
+// _openBakery and _openSideAt are declared as hoisted functions below
 
 function renderSB() {
   var ct = counts();
@@ -2359,7 +2386,27 @@ function renderSB() {
     bEl.querySelectorAll('[data-bakery-cat]').forEach(function(el) {
       el.addEventListener('click', function(e) {
         if (e.target.classList.contains('cat-it-add') || e.target.classList.contains('cat-it-edit')) return;
-        _openSideAt('bakery', this.getAttribute('data-bakery-cat'));
+        var cat = this.getAttribute('data-bakery-cat');
+        // Inline navigation — no external function reference
+        showView('bakery');
+        if (cat) {
+          requestAnimationFrame(function() {
+            var safeId = 'km-cat-hdr-' + cat.trim().replace(/[^a-z0-9]/gi, '_');
+            var target = document.getElementById(safeId);
+            if (!target) {
+              var headers = document.querySelectorAll('#km-content .km-cat-header');
+              for (var i = 0; i < headers.length; i++) {
+                var titleEl = headers[i].querySelector('div[style*="Playfair"]');
+                if (titleEl && titleEl.textContent.trim() === cat.trim()) { target = headers[i]; break; }
+              }
+            }
+            if (!target) return;
+            target.scrollIntoView({ behavior:'smooth', block:'start' });
+            target.style.transition = 'background .3s';
+            target.style.background = 'rgba(168,121,58,.10)';
+            setTimeout(function(){ target.style.background = ''; }, 1000);
+          });
+        }
       });
     });
     bEl.querySelectorAll('.cat-it-add[data-addcat]').forEach(function(btn) {
@@ -2920,9 +2967,57 @@ async function loadCategories() {
     // NOTE: syncMissingCategories is intentionally NOT called here.
     // Auto-syncing was causing duplicate categories every time a rename happened.
     // Categories are managed ONLY through the Category Manager panel.
+
+    // ── REBUILD live CATS arrays from Supabase categoryData ──────────────────
+    // This means ANY rename or new category in Supabase is instantly reflected
+    // in BAKERY_CATS, KITCHEN_CATS, MAIN_CATS, WOK_CATS without touching code.
+    _rebuildCatsFromDB();
+
   } catch(e) {
     seedCategoriesLocal();
   }
+}
+
+function _rebuildCatsFromDB() {
+  if (!categoryData || !categoryData.length) return;
+
+  // Group names used in recipe_categories table:
+  //   'Bakery'      → BAKERY_CATS
+  //   'Kitchen'     → KITCHEN_CATS
+  //   'Main Dishes' → MAIN_CATS (also feeds WOK_CATS)
+  //   'Noodle'      → NOODLE_CATS (if stored; else keep default)
+  //   'Wok'         → WOK_CATS (if stored; else keep default)
+
+  var bakery = [], kitchen = [], main = [], wok = [], noodle = [];
+
+  categoryData.forEach(function(c) {
+    if (!c || !c.name) return;
+    var g = (c.group_name || '').toLowerCase().trim();
+    if (g === 'bakery')         bakery.push(c.name);
+    else if (g === 'kitchen')   kitchen.push(c.name);
+    else if (g === 'noodle')    noodle.push(c.name);
+    else if (g === 'wok')       wok.push(c.name);
+    else if (g === 'main dishes' || g === 'main') main.push(c.name);
+  });
+
+  // Merge: live DB entries take precedence; keep hardcoded defaults as fallbacks
+  function _merge(live, hardcoded) {
+    if (!live.length) return hardcoded;
+    // Add any hardcoded items not already in live (prevents losing defaults)
+    var liveSet = new Set(live.map(function(n){ return n.toLowerCase().trim(); }));
+    hardcoded.forEach(function(n){
+      if (!liveSet.has(n.toLowerCase().trim())) live.push(n);
+    });
+    return live;
+  }
+
+  if (bakery.length)  BAKERY_CATS.length  = 0, _merge(bakery,  ['Tarts & Pastries','Choux puffs','Cake Rolls','Chilled Desserts','Cookies']).forEach(function(n){ BAKERY_CATS.push(n);  });
+  if (kitchen.length) KITCHEN_CATS.length = 0, _merge(kitchen, ['Hot Appetizers','Dumplings','Soups','Soup Noodles','Noodle Dishes','House-Made Noodles','Over Rice','Sauces & Condiments']).forEach(function(n){ KITCHEN_CATS.push(n); });
+  if (main.length)    MAIN_CATS.length    = 0, _merge(main,    ['Beef Dishes','Tofu Dishes','Pork Dishes','Fried Rice','Stir Fried Noodle','Seafood','Poultry']).forEach(function(n){ MAIN_CATS.push(n);    });
+  if (wok.length)     WOK_CATS.length     = 0, _merge(wok,     ['Beef Dishes','Tofu Dishes','Pork Dishes','Fried Rice','Stir Fried Noodle','Seafood','Poultry']).forEach(function(n){ WOK_CATS.push(n);     });
+  if (noodle.length)  NOODLE_CATS.length  = 0, _merge(noodle,  ['Soup Noodles','Noodle Dishes']).forEach(function(n){ NOODLE_CATS.push(n); });
+
+  console.log('[Jeng Chi] CATS rebuilt from Supabase — Bakery:', BAKERY_CATS.length, '| Kitchen:', KITCHEN_CATS.length, '| Main:', MAIN_CATS.length);
 }
 
 async function seedCategoriesDB() {
@@ -3757,6 +3852,7 @@ window._kmRenameCategory = async function(oldName) {
     categoryData.forEach(function(c) { if (c.name === oldName) c.name = newName; });
   }
 
+  _rebuildCatsFromDB(); // keep CATS arrays in sync after rename
   toast('Category renamed to "' + newName + '"', 'success');
   renderKmIndex(
     (allRecipes || []).filter(function(r) {
