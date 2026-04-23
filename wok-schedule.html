@@ -962,6 +962,50 @@ currentSchedule[slotKey].editingShifts[key] = !currentSchedule[slotKey].editingS
 var shiftsEl = document.getElementById('shifts-' + slotKey + '-' + day);
 if (shiftsEl) shiftsEl.innerHTML = renderShifts(slotKey, day, viewMode === 'compact', isRequestedDayOff(slotKey, day));
 }
+
+function getCurrentWeekStartDate() {
+var now = new Date();
+var start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+start.setDate(start.getDate() - start.getDay());
+start.setHours(0, 0, 0, 0);
+return start;
+}
+function parseWeekStartDate(value) {
+if (!value) return null;
+var parsed = new Date(value + 'T00:00:00');
+parsed.setHours(0, 0, 0, 0);
+return parsed;
+}
+function isPastScheduleWeek(value) {
+var weekStart = parseWeekStartDate(value);
+if (!weekStart) return false;
+return weekStart.getTime() < getCurrentWeekStartDate().getTime();
+}
+function syncActiveChefsIntoLoadedSchedule(done) {
+var v = document.getElementById('weekStart').value;
+if (!dbConnected || isPastScheduleWeek(v)) {
+done();
+return;
+}
+supabase.from('wok_chefs').select('short_name, display_order').eq('active', true).order('display_order').then(function(chefResult) {
+if (chefResult.data) {
+for (var ci = 0; ci < chefResult.data.length; ci++) {
+var sn = chefResult.data[ci].short_name;
+if (employees.indexOf(sn) === -1) {
+employees.push(sn);
+var newKey = 'slot_x' + sn.replace(/\s+/g, '_');
+while (currentSchedule[newKey]) newKey = 'slot_x' + sn.replace(/\s+/g, '_') + '_' + Math.random().toString(36).slice(2, 6);
+currentSchedule[newKey] = {employee: sn, shifts: [], roles: {}};
+for (var d = 0; d < 7; d++) currentSchedule[newKey].shifts.push([{start: '', end: ''}]);
+}
+}
+}
+done();
+}).catch(function() {
+done();
+});
+}
+
 function loadEmployees() {
 return new Promise(function(resolve) {
 if (!dbConnected) { resolve(); return; }
@@ -982,15 +1026,17 @@ resolve();
 }
 function addEmployee() {
 var name = document.getElementById('newEmployeeName').value.trim().toUpperCase();
+var weekStartValue = document.getElementById('weekStart').value;
 if (!name) { toast('Enter name', 'error'); return; }
 if (employees.indexOf(name) >= 0) { toast('Already exists', 'error'); return; }
 employees.push(name);
 document.getElementById('newEmployeeName').value = '';
-// Inject into current schedule immediately
+if (!isPastScheduleWeek(weekStartValue)) {
 var newSlotKey = 'slot_' + (Object.keys(currentSchedule).length);
-while (currentSchedule[newSlotKey]) newSlotKey = 'slot_x' + Math.random().toString(36).slice(2,7);
+while (currentSchedule[newSlotKey]) newSlotKey = 'slot_x' + Math.random().toString(36).slice(2, 7);
 currentSchedule[newSlotKey] = {employee: name, shifts: [], roles: {}};
 for (var d = 0; d < 7; d++) currentSchedule[newSlotKey].shifts.push([{start: '', end: ''}]);
+}
 if (dbConnected) {
 supabase.from('wok_chefs').select('display_order').order('display_order', {ascending: false}).limit(1).then(function(r) {
 var nextOrder = (r.data && r.data.length) ? (r.data[0].display_order + 1) : 0;
@@ -998,7 +1044,6 @@ return supabase.from('wok_chefs').insert({short_name: name, full_name: name, dis
 }).then(function(res) {
 if (res && res.error) {
 if (res.error.code === '23505') {
-// Already in DB — just make sure active = true
 supabase.from('wok_chefs').update({active: true}).eq('short_name', name).then(function(){});
 } else {
 console.error('addEmployee error:', JSON.stringify(res.error));
@@ -1008,18 +1053,18 @@ toast('DB save failed: ' + (res.error.message || JSON.stringify(res.error)), 'er
 }).catch(function(e) { toast('DB save failed: ' + (e.message || e), 'error'); });
 }
 renderEmployeeList();
-generateSchedule(true);
-toast('"' + name + '" added', 'success');
+if (!isPastScheduleWeek(weekStartValue)) generateSchedule(true);
+toast('"' + name + '" added for current/future schedules', 'success');
 }
 function removeEmployee(name) {
-if (!confirm('Remove "' + name + '"?')) return;
+var weekStartValue = document.getElementById('weekStart').value;
+if (!confirm('Remove "' + name + '" from current/future schedules? Previous saved schedules will stay unchanged.')) return;
 var newEmp = [];
 for (var i = 0; i < employees.length; i++) {
 if (employees[i] !== name) newEmp.push(employees[i]);
 }
 employees = newEmp;
 if (dbConnected) {
-// Soft delete — set active = false rather than deleting the row
 supabase.from('wok_chefs').update({active: false}).eq('short_name', name).then(function(res) {
 if (res.error) {
 console.error('removeEmployee error:', JSON.stringify(res.error));
@@ -1028,8 +1073,8 @@ toast('DB remove failed: ' + (res.error.message || JSON.stringify(res.error)), '
 }).catch(function(e) { toast('DB remove failed: ' + (e.message || e), 'error'); });
 }
 renderEmployeeList();
-generateSchedule();
-toast('"' + name + '" removed', 'success');
+if (!isPastScheduleWeek(weekStartValue)) generateSchedule();
+toast('"' + name + '" removed from current/future schedules only', 'success');
 }
 function renderEmployeeList() {
 var html = '';
@@ -1059,29 +1104,11 @@ if (result.data) {
 currentScheduleId = result.data.id;
 currentSchedule = convertForLoad(result.data.schedule_data || {});
 if (result.data.employees) employees = result.data.employees;
-// Merge in any active wok_chefs not already in the saved employee list
-supabase.from('wok_chefs').select('short_name, display_order').eq('active', true).order('display_order').then(function(chefResult) {
-if (chefResult.data) {
-for (var ci = 0; ci < chefResult.data.length; ci++) {
-var sn = chefResult.data[ci].short_name;
-if (employees.indexOf(sn) === -1) {
-employees.push(sn);
-// Add empty slot to current schedule so they show in the grid
-var newKey = 'slot_x' + sn.replace(/\s+/g,'_');
-currentSchedule[newKey] = {employee: sn, shifts: [], roles: {}};
-for (var d = 0; d < 7; d++) currentSchedule[newKey].shifts.push([{start:'',end:''}]);
-}
-}
-}
+syncActiveChefsIntoLoadedSchedule(function() {
 renderEmployeeList();
 generateSchedule(true);
 updateSaveBtn(true);
-toast('Schedule loaded', 'success');
-}).catch(function() {
-renderEmployeeList();
-generateSchedule(true);
-updateSaveBtn(true);
-toast('Schedule loaded', 'success');
+toast(isPastScheduleWeek(v) ? 'Past schedule loaded unchanged' : 'Schedule loaded', 'success');
 });
 } else {
 currentScheduleId = null;
