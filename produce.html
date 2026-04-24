@@ -463,7 +463,7 @@
 
     .admin-grid {
       display: grid;
-      grid-template-columns: 1.3fr 1fr 1fr 1fr 1fr auto;
+      grid-template-columns: 1.3fr .8fr .7fr .7fr .7fr .7fr 1fr auto;
       gap: 12px;
       align-items: end;
       padding: 14px 18px;
@@ -492,7 +492,7 @@
 
     .quick-add-grid {
       display: grid;
-      grid-template-columns: 1.3fr 1fr 1fr 1fr 1fr auto;
+      grid-template-columns: 1.3fr .8fr .7fr .7fr .7fr .7fr 1fr auto;
       gap: 12px;
       align-items: end;
     }
@@ -528,6 +528,70 @@
     .admin-small-input {
       max-width: 120px;
       font-weight: 900;
+    }
+
+
+    .price-panel {
+      padding: 7px 8px;
+      border-top: 1px solid var(--line);
+      background: #fff;
+      display: grid;
+      gap: 5px;
+    }
+
+    .manager-only-badge {
+      color: var(--brand-dark);
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      border-radius: 999px;
+      padding: 3px 7px;
+      font-size: 9px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      width: fit-content;
+    }
+
+    .price-mini-grid {
+      display: grid;
+      grid-template-columns: 1fr 76px 76px;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .price-mini-grid input,
+    .price-mini-grid select {
+      min-height: 30px;
+      padding: 5px 7px;
+      font-size: 12px;
+      font-weight: 900;
+      border-radius: 8px;
+    }
+
+    .price-label {
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
+    .price-meta {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1.25;
+    }
+
+    .card-value {
+      color: var(--brand-dark);
+      font-size: 12px;
+      font-weight: 900;
+      text-align: center;
+      padding: 3px 6px;
+      background: #f8fbf6;
+      border-radius: 8px;
+      border: 1px solid var(--line);
     }
 
     .toast {
@@ -648,6 +712,11 @@
           </div>
 
           <div class="inventory-actions">
+            <button class="secondary small-btn" onclick="syncFreshPricesFromInventory2026()">
+              <i class="fa-solid fa-dollar-sign"></i>
+              Sync Last Prices
+            </button>
+
             <button class="secondary small-btn" onclick="toggleQuickAddItemPanel()">
               <i class="fa-solid fa-plus"></i>
               Add New Item
@@ -678,6 +747,19 @@
             <div>
               <label>Price</label>
               <input type="number" id="quickNewItemPrice" min="0" step="0.01" placeholder="0.00" />
+            </div>
+
+            <div>
+              <label>Price Unit</label>
+              <select id="quickNewItemPriceUnit">
+                <option value="lb">$/LB</option>
+                <option value="box">$/BOX</option>
+              </select>
+            </div>
+
+            <div>
+              <label>LB / BOX</label>
+              <input type="number" id="quickNewItemPoundsPerBox" min="0" step="0.01" placeholder="15" />
             </div>
 
             <div>
@@ -879,6 +961,19 @@
             </div>
 
             <div>
+              <label>Price Unit</label>
+              <select id="newItemPriceUnit">
+                <option value="lb">$/LB</option>
+                <option value="box">$/BOX</option>
+              </select>
+            </div>
+
+            <div>
+              <label>LB / BOX</label>
+              <input type="number" id="newItemPoundsPerBox" min="0" step="0.01" placeholder="15" />
+            </div>
+
+            <div>
               <label>Image URL / Filename</label>
               <input type="text" id="newItemImageUrl" placeholder="Optional GitHub URL or filename" />
             </div>
@@ -898,6 +993,11 @@
             </div>
 
             <div class="sheet-actions">
+              <button class="secondary small-btn" onclick="syncFreshPricesFromInventory2026()">
+                <i class="fa-solid fa-dollar-sign"></i>
+                Sync Last Prices
+              </button>
+
               <button class="secondary small-btn" onclick="syncFreshImagesFromJulio()">
                 <i class="fa-solid fa-image"></i>
                 Sync Julio Images
@@ -918,6 +1018,10 @@
                   <th>Category</th>
                   <th>Default Unit</th>
                   <th>Price</th>
+                  <th>Price Unit</th>
+                  <th>LB / BOX</th>
+                  <th>Last Vendor</th>
+                  <th>Last Price Date</th>
                   <th>Image URL / Filename</th>
                   <th>Active</th>
                   <th>Status</th>
@@ -1249,6 +1353,15 @@
       const unitType = count?.unit_type || item.default_unit || "lb";
       const categoryClass = getCategoryClass(item.category);
       const imageUrl = resolveImage(item.image_url || item.item_name);
+      const priceUnit = item.price_unit || item.default_unit || "lb";
+      const poundsPerBox = Number(item.pounds_per_box || 1);
+      const estimatedValue = count
+        ? calculateInventoryValue(Number(count.quantity) || 0, count.unit_type, item)
+        : 0;
+      const sourceMeta = [
+        item.last_price_vendor ? `Vendor: ${item.last_price_vendor}` : "",
+        item.last_price_date ? `Date: ${item.last_price_date}` : ""
+      ].filter(Boolean).join(" • ");
       const imageHtml = `
         <img
           class="product-image"
@@ -1288,6 +1401,50 @@
               </select>
             </div>
           </div>
+
+          ${adminUnlocked ? `
+          <div class="price-panel manager-only-panel">
+            <div class="manager-only-badge">
+              <i class="fa-solid fa-user-shield"></i>
+              Manager pricing
+            </div>
+
+            <div class="price-mini-grid">
+              <div>
+                <div class="price-label">Price</div>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value="${escapeAttr(Number(item.price || 0).toFixed(2))}"
+                  onchange="updateItemField('${escapeAttr(item.id)}', 'price', Number(this.value || 0), 'price-status-${escapeAttr(item.id)}')"
+                />
+              </div>
+
+              <div>
+                <div class="price-label">Unit</div>
+                <select onchange="updateItemField('${escapeAttr(item.id)}', 'price_unit', this.value, 'price-status-${escapeAttr(item.id)}')">
+                  <option value="lb" ${priceUnit === "lb" ? "selected" : ""}>$/LB</option>
+                  <option value="box" ${priceUnit === "box" ? "selected" : ""}>$/BOX</option>
+                </select>
+              </div>
+
+              <div>
+                <div class="price-label">LB/BOX</div>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value="${escapeAttr(poundsPerBox || "")}"
+                  onchange="updateItemField('${escapeAttr(item.id)}', 'pounds_per_box', Number(this.value || 1), 'price-status-${escapeAttr(item.id)}')"
+                />
+              </div>
+            </div>
+
+            <div class="card-value">Value: ${formatCurrency(estimatedValue)}</div>
+            <div class="price-meta" id="price-status-${escapeAttr(item.id)}">${sourceMeta || "Price editable"}</div>
+          </div>
+          ` : ""}
 
           <div class="card-status" id="status-${escapeAttr(item.id)}">
             ${count ? `<span class="status-saved">Saved</span>` : "Not counted"}
@@ -1464,7 +1621,8 @@
       document.getElementById("adminLoginBox").classList.add("hidden");
       document.getElementById("adminContent").classList.remove("hidden");
       renderAdminItems();
-      showToast("Admin unlocked.");
+      renderInventory();
+      showToast("Admin unlocked. Manager pricing controls are now available.");
     }
 
     async function verifyAdmin(username, pin) {
@@ -1544,7 +1702,7 @@
           const item = row.fresh_inventory_items || {};
           const quantity = Number(row.quantity) || 0;
           const price = Number(item.price) || 0;
-          const value = quantity * price;
+          const value = calculateInventoryValue(quantity, row.unit_type, item);
 
           if (row.unit_type === "box") {
             totalBox += quantity;
@@ -1565,7 +1723,7 @@
               <td>${escapeHtml(item.category || "")}</td>
               <td>${formatNumber(quantity)}</td>
               <td>${escapeHtml((row.unit_type || "").toUpperCase())}</td>
-              <td>${formatCurrency(price)}</td>
+              <td>${formatCurrency(price)} / ${escapeHtml((item.price_unit || "lb").toUpperCase())}</td>
               <td>${formatCurrency(value)}</td>
               <td>${escapeHtml(row.counted_by || "")}</td>
             </tr>
@@ -1591,7 +1749,7 @@
       }
 
       if (!inventoryItems.length) {
-        body.innerHTML = `<tr><td colspan="7">No inventory items found.</td></tr>`;
+        body.innerHTML = `<tr><td colspan="10">No inventory items found.</td></tr>`;
         return;
       }
 
@@ -1630,6 +1788,24 @@
             />
           </td>
           <td>
+            <select onchange="updateItemField('${escapeAttr(item.id)}', 'price_unit', this.value, 'item-status-${escapeAttr(item.id)}')">
+              <option value="lb" ${(item.price_unit || "lb") === "lb" ? "selected" : ""}>$/LB</option>
+              <option value="box" ${(item.price_unit || "lb") === "box" ? "selected" : ""}>$/BOX</option>
+            </select>
+          </td>
+          <td>
+            <input
+              class="admin-small-input"
+              type="number"
+              min="0"
+              step="0.01"
+              value="${escapeAttr(Number(item.pounds_per_box || 1).toFixed(2))}"
+              onchange="updateItemField('${escapeAttr(item.id)}', 'pounds_per_box', Number(this.value || 1), 'item-status-${escapeAttr(item.id)}')"
+            />
+          </td>
+          <td>${escapeHtml(item.last_price_vendor || "")}</td>
+          <td>${escapeHtml(item.last_price_date || "")}</td>
+          <td>
             <input
               type="text"
               value="${escapeAttr(item.image_url || "")}"
@@ -1645,6 +1821,44 @@
           <td id="item-status-${escapeAttr(item.id)}">Ready</td>
         </tr>
       `).join("");
+    }
+
+
+    async function syncFreshPricesFromInventory2026() {
+      const { data, error } = await client.rpc("sync_fresh_inventory_prices_from_inventory2026");
+
+      if (error) {
+        console.error(error);
+        showToast("Unable to sync prices. Run the updated SQL first.");
+        return;
+      }
+
+      await loadItems();
+      renderInventory();
+      renderAdminItems();
+      showToast(`Price sync complete. ${Number(data || 0)} item price(s) updated.`);
+    }
+
+    function calculateInventoryValue(quantity, countUnit, item) {
+      const qty = Number(quantity) || 0;
+      const price = Number(item?.price) || 0;
+      const priceUnit = item?.price_unit || item?.default_unit || "lb";
+      const unit = countUnit || item?.default_unit || "lb";
+      const poundsPerBox = Math.max(Number(item?.pounds_per_box) || 1, 0.0001);
+
+      if (unit === priceUnit) {
+        return qty * price;
+      }
+
+      if (unit === "box" && priceUnit === "lb") {
+        return qty * poundsPerBox * price;
+      }
+
+      if (unit === "lb" && priceUnit === "box") {
+        return (qty / poundsPerBox) * price;
+      }
+
+      return qty * price;
     }
 
     async function syncFreshImagesFromJulio() {
@@ -1672,6 +1886,8 @@
         categoryId: "newItemCategory",
         unitId: "newItemUnit",
         priceId: "newItemPrice",
+        priceUnitId: "newItemPriceUnit",
+        poundsPerBoxId: "newItemPoundsPerBox",
         imageId: "newItemImageUrl"
       });
     }
@@ -1682,6 +1898,8 @@
         categoryId: "quickNewItemCategory",
         unitId: "quickNewItemUnit",
         priceId: "quickNewItemPrice",
+        priceUnitId: "quickNewItemPriceUnit",
+        poundsPerBoxId: "quickNewItemPoundsPerBox",
         imageId: "quickNewItemImageUrl"
       });
     }
@@ -1691,6 +1909,8 @@
       const category = document.getElementById(fieldIds.categoryId).value;
       const defaultUnit = document.getElementById(fieldIds.unitId).value;
       const price = Number(document.getElementById(fieldIds.priceId).value || 0);
+      const priceUnit = document.getElementById(fieldIds.priceUnitId)?.value || defaultUnit;
+      const poundsPerBox = Number(document.getElementById(fieldIds.poundsPerBoxId)?.value || 1);
       const imageUrl = document.getElementById(fieldIds.imageId).value.trim();
 
       if (!itemName) {
@@ -1709,6 +1929,8 @@
           category,
           default_unit: defaultUnit,
           price,
+          price_unit: priceUnit,
+          pounds_per_box: Number.isFinite(poundsPerBox) && poundsPerBox > 0 ? poundsPerBox : 1,
           image_url: imageUrl || null,
           sort_order: sortOrder,
           active: true
@@ -1722,6 +1944,9 @@
 
       document.getElementById(fieldIds.nameId).value = "";
       document.getElementById(fieldIds.priceId).value = "";
+      if (fieldIds.poundsPerBoxId) {
+        document.getElementById(fieldIds.poundsPerBoxId).value = "";
+      }
       document.getElementById(fieldIds.imageId).value = "";
 
       await reloadAll();
