@@ -1399,6 +1399,8 @@
     let draggedItemId = null;
 
     document.addEventListener("DOMContentLoaded", async () => {
+      setupEnterAsTabNavigation();
+
       const today = new Date().toISOString().slice(0, 10);
 
       document.getElementById("entryDate").value = today;
@@ -1418,6 +1420,94 @@
 
       await reloadAll();
     });
+
+    function setupEnterAsTabNavigation() {
+      document.addEventListener("keydown", event => {
+        if (event.key !== "Enter" || event.ctrlKey || event.altKey || event.metaKey) {
+          return;
+        }
+
+        const target = event.target;
+
+        if (!isEnterNavigationField(target)) {
+          return;
+        }
+
+        event.preventDefault();
+
+        target.dispatchEvent(new Event("change", { bubbles: true }));
+
+        setTimeout(() => {
+          focusNextField(target, event.shiftKey ? -1 : 1);
+        }, 0);
+      });
+
+      document.addEventListener("focusin", event => {
+        const target = event.target;
+
+        if (target.matches("input[type='number'], input[type='text'], input[type='password']")) {
+          target.select();
+        }
+      });
+    }
+
+    function isEnterNavigationField(element) {
+      if (!element || element.disabled || element.readOnly) {
+        return false;
+      }
+
+      if (element.tagName === "TEXTAREA") {
+        return false;
+      }
+
+      return element.matches("input, select");
+    }
+
+    function focusNextField(currentElement, direction) {
+      const fields = Array.from(document.querySelectorAll("input, select, button"))
+        .filter(element => isVisibleFocusableElement(element));
+
+      const currentIndex = fields.indexOf(currentElement);
+
+      if (currentIndex === -1 || !fields.length) {
+        return;
+      }
+
+      const nextIndex = getWrappedIndex(currentIndex + direction, fields.length);
+      const nextField = fields[nextIndex];
+
+      nextField.focus();
+
+      if (nextField.matches("input[type='number'], input[type='text'], input[type='password']")) {
+        nextField.select();
+      }
+    }
+
+    function isVisibleFocusableElement(element) {
+      if (element.disabled || element.tabIndex < 0) {
+        return false;
+      }
+
+      const style = window.getComputedStyle(element);
+
+      if (style.display === "none" || style.visibility === "hidden") {
+        return false;
+      }
+
+      return element.offsetParent !== null;
+    }
+
+    function getWrappedIndex(index, length) {
+      if (index < 0) {
+        return length - 1;
+      }
+
+      if (index >= length) {
+        return 0;
+      }
+
+      return index;
+    }
 
     function switchTab(tabId) {
       if ((tabId === "production" || tabId === "waste") && !inventoryComplete) {
@@ -1652,7 +1742,6 @@
 
       inventoryComplete = isInventoryCompleteForDate();
       renderInventorySheet();
-      renderInventorySheet();
       updateProductionWasteAccess();
       renderEntrySheet("production");
       renderEntrySheet("waste");
@@ -1801,6 +1890,37 @@
       });
     }
 
+    function updateInventoryProgressStats() {
+      const countedCount = bakeryItems.filter(item => {
+        const inventoryRow = getMainInventoryRow(item.id);
+        return Boolean(inventoryRow && inventoryRow.counted_for_date);
+      }).length;
+      const remainingCount = Math.max(bakeryItems.length - countedCount, 0);
+
+      const totalElement = document.getElementById("inventoryTotalItems");
+      const countedElement = document.getElementById("inventoryCountedItems");
+      const remainingElement = document.getElementById("inventoryRemainingItems");
+      const noticeElement = document.getElementById("inventoryProgressNotice");
+
+      if (totalElement) {
+        totalElement.textContent = bakeryItems.length.toLocaleString();
+      }
+
+      if (countedElement) {
+        countedElement.textContent = countedCount.toLocaleString();
+      }
+
+      if (remainingElement) {
+        remainingElement.textContent = remainingCount.toLocaleString();
+      }
+
+      if (noticeElement) {
+        noticeElement.textContent = inventoryComplete
+          ? "Inventory is complete. Production and Waste are now unlocked."
+          : "Enter stock quantity for every item, including 0 when there is no stock.";
+      }
+    }
+
     function updateProductionWasteAccess() {
       const productionButton = document.getElementById("productionTabButton");
       const wasteButton = document.getElementById("wasteTabButton");
@@ -1870,19 +1990,19 @@
           <div class="inventory-progress">
             <div class="inventory-progress-card">
               <span>Total Items</span>
-              ${bakeryItems.length.toLocaleString()}
+              <strong id="inventoryTotalItems">${bakeryItems.length.toLocaleString()}</strong>
             </div>
             <div class="inventory-progress-card">
               <span>Counted</span>
-              ${countedCount.toLocaleString()}
+              <strong id="inventoryCountedItems">${countedCount.toLocaleString()}</strong>
             </div>
             <div class="inventory-progress-card">
               <span>Remaining</span>
-              ${remainingCount.toLocaleString()}
+              <strong id="inventoryRemainingItems">${remainingCount.toLocaleString()}</strong>
             </div>
           </div>
 
-          <div class="notice" style="margin:14px 18px;">
+          <div class="notice" style="margin:14px 18px;" id="inventoryProgressNotice">
             ${inventoryComplete
               ? "Inventory is complete. Production and Waste are now unlocked."
               : "Enter stock quantity for every item, including 0 when there is no stock."}
@@ -2054,6 +2174,7 @@
       status.className = "save-status status-saved";
       status.textContent = "Counted";
 
+      updateInventoryProgressStats();
       updateProductionWasteAccess();
 
       if (inventoryComplete) {
