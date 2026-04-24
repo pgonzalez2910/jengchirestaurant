@@ -499,12 +499,17 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 </div>
 </div>
 </div>
-<div class="copy-panel">
-<button class="mini-action green" onclick="ScheduleApp.applyDefaultWeekShifts()">Apply Default Week Shifts</button>
-<button class="mini-action" onclick="ScheduleApp.copySaturdayToSunday()">Copy Saturday → Sunday</button>
-<button class="mini-action" onclick="ScheduleApp.copySundayToSaturday()">Copy Sunday → Saturday</button>
-<button class="mini-action" onclick="ScheduleApp.randomizeWeekendShifts()">Randomize Sat/Sun Chefs</button>
-<button class="mini-action" onclick="ScheduleApp.randomizeDayShifts(5)">Randomize Friday Chefs</button>
+<div class="copy-panel" style="position:sticky;top:0;z-index:20;background:#fff;padding:8px;border-bottom:1px solid var(--bdr)">
+<button class="mini-action green" onclick="ScheduleApp.applyDefaultWeekShifts()">Apply Mon–Fri Defaults</button>
+<button class="mini-action green" onclick="ScheduleApp.applyWeekendDefaults(false)">Auto Assign Sat + Sun</button>
+<button class="mini-action green" onclick="ScheduleApp.applyWeekendDefaults(true)">Auto Assign Sat + Sun Random</button>
+<button class="mini-action" onclick="ScheduleApp.applyThursdayDefaults(false)">Thursday 3 Doubles</button>
+<button class="mini-action" onclick="ScheduleApp.applyThursdayDefaults(true)">Thursday 3 Doubles Random</button>
+<button class="mini-action" onclick="ScheduleApp.applyFridayDefaults(false)">Friday 4 Doubles + 1 Late</button>
+<button class="mini-action" onclick="ScheduleApp.applyFridayDefaults(true)">Friday Random</button>
+<button class="mini-action" onclick="ScheduleApp.copySaturdayToSunday()">Copy Same Chef Sat → Sun</button>
+<button class="mini-action" onclick="ScheduleApp.copySundayToSaturday()">Copy Same Chef Sun → Sat</button>
+<button class="mini-action" onclick="ScheduleApp.randomizeWeekendShifts()">Randomize Current Sat/Sun</button>
 </div>
 <div id="scheduleContainer"></div>
 <div class="sum-panel" id="sumPanel">
@@ -1767,6 +1772,51 @@ toast('Copied ' + copied + ' chef schedule(s)', 'success');
 }
 function copySaturdayToSunday() { copyDayBetweenAllChefs(6, 0); }
 function copySundayToSaturday() { copyDayBetweenAllChefs(0, 6); }
+
+function copyDayPatternRandom(srcDay, targetDay) {
+var sourcePool = [];
+var keys = Object.keys(currentSchedule);
+for (var i = 0; i < keys.length; i++) {
+var srcKey = keys[i];
+if (!currentSchedule[srcKey]) continue;
+var valid = cloneValidShifts(currentSchedule[srcKey].shifts[srcDay]);
+if (valid.length > 0) sourcePool.push(valid);
+}
+if (sourcePool.length === 0) {
+toast('No valid shifts on ' + DAYS[srcDay].en + ' to copy', 'error');
+return;
+}
+var targetKeys = [];
+for (var j = 0; j < keys.length; j++) {
+var targetKey = keys[j];
+if (!currentSchedule[targetKey]) continue;
+if (isRequestedDayOff(targetKey, targetDay)) continue;
+targetKeys.push(targetKey);
+}
+if (targetKeys.length === 0) {
+toast('No available chefs on ' + DAYS[targetDay].en, 'error');
+return;
+}
+if (!confirm('Copy ' + DAYS[srcDay].en + ' shift pattern to ' + DAYS[targetDay].en + ' and randomly assign chefs?')) return;
+for (var a = sourcePool.length - 1; a > 0; a--) {
+var b = Math.floor(Math.random() * (a + 1));
+var temp = sourcePool[a]; sourcePool[a] = sourcePool[b]; sourcePool[b] = temp;
+}
+_pushUndo();
+var assigned = 0;
+for (var t = 0; t < targetKeys.length; t++) {
+if (t >= sourcePool.length) {
+currentSchedule[targetKeys[t]].shifts[targetDay] = [{start:'', end:''}];
+continue;
+}
+currentSchedule[targetKeys[t]].shifts[targetDay] = JSON.parse(JSON.stringify(sourcePool[t]));
+if (currentSchedule[targetKeys[t]].roles) delete currentSchedule[targetKeys[t]].roles[targetDay];
+assigned++;
+}
+generateSchedule(true);
+scheduleAutoSave();
+toast('Assigned ' + DAYS[targetDay].en + ' like ' + DAYS[srcDay].en + ' for ' + assigned + ' chef(s)', 'success');
+}
 function randomizeDayShifts(day) {
 var keys = Object.keys(currentSchedule);
 var shiftPool = [];
@@ -1797,30 +1847,85 @@ function randomizeWeekendShifts() {
 randomizeDayShifts(6);
 randomizeDayShifts(0);
 }
-function applyDefaultWeekShifts() {
-if (!confirm('Apply default shifts for Monday-Friday? You can still edit every shift after.')) return;
-_pushUndo();
-var keys = Object.keys(currentSchedule);
-var patterns = {
-1: ['mwA','mwB','pmOnly'],
-2: ['mwA','mwB','pmOnly'],
-3: ['mwA','mwB','pmOnly'],
-4: ['thA','thB','thC'],
-5: ['wkndA','wkndB','wkndFull','wkndFull']
-};
-for (var day = 1; day <= 5; day++) {
-var dayKeys = [];
-for (var k = 0; k < keys.length; k++) {
-if (!isRequestedDayOff(keys[k], day)) dayKeys.push(keys[k]);
+
+function shuffleArray(items) {
+for (var i = items.length - 1; i > 0; i--) {
+var j = Math.floor(Math.random() * (i + 1));
+var temp = items[i]; items[i] = items[j]; items[j] = temp;
 }
-var dayPatterns = patterns[day];
-for (var i = 0; i < dayKeys.length; i++) {
-setPreset(dayKeys[i], day, dayPatterns[i % dayPatterns.length]);
+return items;
+}
+function getAvailableChefKeys(day) {
+var keys = Object.keys(currentSchedule);
+var available = [];
+for (var i = 0; i < keys.length; i++) {
+var key = keys[i];
+if (!currentSchedule[key]) continue;
+if (isRequestedDayOff(key, day)) continue;
+available.push(key);
+}
+return available;
+}
+function applyPresetListToDay(day, presetList, randomize, label) {
+var available = getAvailableChefKeys(day);
+if (randomize) shuffleArray(available);
+_pushUndo();
+var assigned = 0;
+for (var i = 0; i < available.length; i++) {
+var key = available[i];
+if (i < presetList.length) {
+setPresetNoUndo(key, day, presetList[i]);
+assigned++;
+} else {
+currentSchedule[key].shifts[day] = [{start:'', end:''}];
+if (currentSchedule[key].roles) delete currentSchedule[key].roles[day];
 }
 }
 generateSchedule(true);
 scheduleAutoSave();
-toast('Default week shifts applied', 'success');
+toast(label + ' applied to ' + assigned + ' chef(s)', 'success');
+}
+function setPresetNoUndo(slotKey, day, preset) {
+if (!currentSchedule[slotKey]) return;
+if (currentSchedule[slotKey].roles) delete currentSchedule[slotKey].roles[day];
+if (preset === 'wkndA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:00'},{start:'14:45',end:'21:00'}];
+else if (preset === 'wkndB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:45'},{start:'15:30',end:'21:00'}];
+else if (preset === 'wkndC') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:30'},{start:'16:15',end:'21:00'}];
+else if (preset === 'wkndFull') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:15'},{start:'17:00',end:'21:00'}];
+else if (preset === 'mwA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:00'},{start:'16:00',end:'21:00'}];
+else if (preset === 'mwB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:00'},{start:'17:00',end:'21:00'}];
+else if (preset === 'pmOnly') currentSchedule[slotKey].shifts[day] = [{start:'16:00',end:'21:00'}];
+else if (preset === 'thA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:45'},{start:'15:30',end:'21:00'}];
+else if (preset === 'thB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:30'},{start:'16:15',end:'21:00'}];
+else if (preset === 'thC') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:15'},{start:'17:00',end:'21:00'}];
+else if (preset === 'friLate') currentSchedule[slotKey].shifts[day] = [{start:'16:00',end:'21:00'}];
+else currentSchedule[slotKey].shifts[day] = [{start:'', end:''}];
+sortShiftsAMPM(slotKey, day);
+}
+function applyWeekendDefaults(randomize) {
+if (!confirm('Auto assign BOTH Saturday and Sunday with 5 wok-chef weekend shifts? You can edit every shift after.')) return;
+var saturdayPresets = ['wkndA','wkndB','wkndC','wkndFull','wkndA'];
+var sundayPresets = ['wkndA','wkndB','wkndC','wkndFull','wkndB'];
+applyPresetListToDay(6, saturdayPresets, randomize, 'Saturday default');
+applyPresetListToDay(0, sundayPresets, randomize, 'Sunday default');
+toast('Saturday and Sunday assigned automatically', 'success');
+}
+function applyThursdayDefaults(randomize) {
+if (!confirm('Apply Thursday schedule: 3 wok chefs working double shift all day?')) return;
+applyPresetListToDay(4, ['thA','thB','thC'], randomize, 'Thursday 3 double shifts');
+}
+function applyFridayDefaults(randomize) {
+if (!confirm('Apply Friday schedule: 4 wok chefs double shift and 1 wok chef late shift 4:00 PM-9:00 PM?')) return;
+applyPresetListToDay(5, ['wkndA','wkndB','wkndC','wkndFull','friLate'], randomize, 'Friday 4 doubles + 1 late');
+}
+function applyDefaultWeekShifts() {
+if (!confirm('Apply default shifts for Monday-Friday? You can still edit every shift after.')) return;
+applyPresetListToDay(1, ['mwA','mwB','pmOnly'], false, 'Monday default');
+applyPresetListToDay(2, ['mwA','mwB','pmOnly'], false, 'Tuesday default');
+applyPresetListToDay(3, ['mwA','mwB','pmOnly'], false, 'Wednesday default');
+applyPresetListToDay(4, ['thA','thB','thC'], false, 'Thursday default');
+applyPresetListToDay(5, ['wkndA','wkndB','wkndC','wkndFull','friLate'], false, 'Friday default');
+toast('Default Monday-Friday shifts applied', 'success');
 }
 
 function copyDayToWeek(sk, srcDay) {
@@ -3174,8 +3279,12 @@ cancelDayOffOverride: cancelDayOffOverride,
 copyShiftToChef: copyShiftToChef,
 copySaturdayToSunday: copySaturdayToSunday,
 copySundayToSaturday: copySundayToSaturday,
+copyDayPatternRandom: copyDayPatternRandom,
 randomizeDayShifts: randomizeDayShifts,
 randomizeWeekendShifts: randomizeWeekendShifts,
+applyWeekendDefaults: applyWeekendDefaults,
+applyThursdayDefaults: applyThursdayDefaults,
+applyFridayDefaults: applyFridayDefaults,
 applyDefaultWeekShifts: applyDefaultWeekShifts,
 copyDayToWeek: copyDayToWeek,
 onShiftDragStart: onShiftDragStart,
