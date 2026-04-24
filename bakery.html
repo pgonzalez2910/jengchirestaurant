@@ -94,7 +94,7 @@
       padding: 14px;
       box-shadow: var(--shadow);
       display: grid;
-      grid-template-columns: 1fr 1fr auto;
+      grid-template-columns: 1fr 1fr auto auto;
       gap: 12px;
       align-items: end;
       margin-bottom: 16px;
@@ -528,7 +528,7 @@
 
     .admin-bar {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr 1fr auto;
       gap: 12px;
       align-items: end;
     }
@@ -683,11 +683,14 @@
       <div>
         <label>Employee Name</label>
         <select id="employeeName">
-          <option value="">Select employee</option>
-          <option value="Hong Li">Hong Li</option>
-          <option value="Guadalupe Joaquin">Guadalupe Joaquin</option>
+          <option value="">Loading employees...</option>
         </select>
       </div>
+
+      <button onclick="addEmployeeFromPrompt()">
+        <i class="fa-solid fa-user-plus"></i>
+        Add Employee
+      </button>
 
       <button onclick="reloadAll()">
         <i class="fa-solid fa-rotate"></i>
@@ -732,7 +735,38 @@
     </section>
 
     <section id="reports" class="panel">
-      <div class="report-filters">
+      <div class="admin-login" id="reportLoginBox">
+        <div class="notice">
+          Reports are restricted to Francisco Teng, Pablo Gonzalez, and Janelle Teng. Enter employee name, username, and PIN. The PIN is verified securely through Supabase and is not loaded into this page.
+        </div>
+
+        <div class="admin-bar">
+          <div>
+            <label>Employee Name</label>
+            <select id="reportAdminEmployeeName">
+              <option value="">Loading authorized employees...</option>
+            </select>
+          </div>
+
+          <div>
+            <label>Username</label>
+            <input type="text" id="reportAdminUsername" placeholder="Enter username" autocomplete="username" />
+          </div>
+
+          <div>
+            <label>PIN</label>
+            <input type="password" id="reportAdminPin" placeholder="Enter PIN" autocomplete="current-password" />
+          </div>
+
+          <button onclick="unlockReports()">
+            <i class="fa-solid fa-lock-open"></i>
+            Unlock Reports
+          </button>
+        </div>
+      </div>
+
+      <div id="reportContent" class="hidden">
+        <div class="report-filters">
         <div>
           <label>From</label>
           <input type="date" id="reportFrom" />
@@ -814,14 +848,31 @@
           </table>
         </div>
       </div>
+      </div>
     </section>
 
     <section id="admin" class="panel">
       <div class="admin-login" id="adminLoginBox">
+        <div class="notice">
+          Admin Prices are restricted to Francisco Teng, Pablo Gonzalez, and Janelle Teng. Enter employee name, username, and PIN. The PIN is verified securely through Supabase and is not loaded into this page.
+        </div>
+
         <div class="admin-bar">
           <div>
-            <label>Admin PIN</label>
-            <input type="password" id="adminPin" placeholder="Enter admin PIN" />
+            <label>Employee Name</label>
+            <select id="adminEmployeeName">
+              <option value="">Loading authorized employees...</option>
+            </select>
+          </div>
+
+          <div>
+            <label>Username</label>
+            <input type="text" id="adminUsername" placeholder="Enter username" autocomplete="username" />
+          </div>
+
+          <div>
+            <label>PIN</label>
+            <input type="password" id="adminPin" placeholder="Enter PIN" autocomplete="current-password" />
           </div>
 
           <button onclick="unlockAdmin()">
@@ -870,7 +921,11 @@
 
     const client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-    const ADMIN_PIN = "2026";
+    const AUTHORIZED_REPORT_ADMINS = [
+      "Francisco Teng",
+      "Pablo Gonzalez",
+      "Janelle Teng"
+    ];
 
     const CATEGORY_OPTIONS = [
       "Cake Rolls",
@@ -888,6 +943,8 @@
 
     let bakeryItems = [];
     let dailyEntries = [];
+    let employees2025 = [];
+    let reportsUnlocked = false;
     let productionChart = null;
     let wasteChart = null;
     let draggedItemId = null;
@@ -898,6 +955,9 @@
       document.getElementById("entryDate").value = today;
       document.getElementById("reportFrom").value = today;
       document.getElementById("reportTo").value = today;
+
+      await loadEmployees2025();
+      populateEmployeeSelects();
 
       const savedEmployee = localStorage.getItem("bakeryEmployeeName") || "";
       document.getElementById("employeeName").value = savedEmployee;
@@ -921,13 +981,205 @@
       document.getElementById(tabId).classList.add("active");
       document.querySelector(`[data-tab="${tabId}"]`).classList.add("active");
 
-      if (tabId === "reports") {
+      if (tabId === "reports" && reportsUnlocked) {
         loadReports();
       }
 
       if (tabId === "admin" && !document.getElementById("adminContent").classList.contains("hidden")) {
         renderAdminPrices();
       }
+    }
+
+    async function loadEmployees2025() {
+      const { data, error } = await client
+        .from("bakery_employee_directory")
+        .select("id, first_name, last_name, username, employment_status, status, portal_role")
+        .order("username", { ascending: true });
+
+      if (error) {
+        console.error("Employee load error:", error);
+        employees2025 = [];
+        showToast("Unable to load employees2025. Check Supabase RLS policies.");
+        return;
+      }
+
+      employees2025 = data || [];
+    }
+
+    function populateEmployeeSelects() {
+      populateEmployeeDropdown();
+      populateAdminEmployeeDropdown("adminEmployeeName");
+      populateAdminEmployeeDropdown("reportAdminEmployeeName");
+    }
+
+    function populateEmployeeDropdown() {
+      const employeeSelect = document.getElementById("employeeName");
+      const selectedValue = employeeSelect.value || localStorage.getItem("bakeryEmployeeName") || "";
+
+      employeeSelect.innerHTML = `<option value="">Select employee</option>`;
+
+      employees2025
+        .map(employee => getEmployeeDisplayName(employee))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b))
+        .forEach(employeeName => {
+          employeeSelect.innerHTML += `<option value="${escapeAttr(employeeName)}">${escapeHtml(employeeName)}</option>`;
+        });
+
+      if (selectedValue && !Array.from(employeeSelect.options).some(option => option.value === selectedValue)) {
+        employeeSelect.innerHTML += `<option value="${escapeAttr(selectedValue)}">${escapeHtml(selectedValue)} (not saved)</option>`;
+      }
+
+      employeeSelect.value = selectedValue;
+    }
+
+    function populateAdminEmployeeDropdown(selectId) {
+      const select = document.getElementById(selectId);
+
+      if (!select) {
+        return;
+      }
+
+      const authorizedNames = employees2025
+        .filter(employee => isAuthorizedAdminEmployee(employee))
+        .map(employee => getEmployeeDisplayName(employee))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+
+      select.innerHTML = `<option value="">Select employee name</option>`;
+
+      authorizedNames.forEach(employeeName => {
+        select.innerHTML += `<option value="${escapeAttr(employeeName)}">${escapeHtml(employeeName)}</option>`;
+      });
+    }
+
+    function getEmployeeDisplayName(employee) {
+      const fullName = `${employee.first_name || ""} ${employee.last_name || ""}`.trim();
+
+      return String(fullName || employee.username || "").trim();
+    }
+
+    function normalizeName(value) {
+      return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+    }
+
+    function isAuthorizedAdminEmployee(employee) {
+      const displayName = normalizeName(getEmployeeDisplayName(employee));
+      const username = normalizeName(employee.username);
+      const fullName = normalizeName(`${employee.first_name || ""} ${employee.last_name || ""}`);
+
+      return AUTHORIZED_REPORT_ADMINS
+        .map(name => normalizeName(name))
+        .some(adminName => adminName === displayName || adminName === fullName || adminName === username);
+    }
+
+    function findEmployeeByName(employeeName) {
+      const normalizedEmployeeName = normalizeName(employeeName);
+
+      return employees2025.find(employee => {
+        const username = normalizeName(employee.username);
+        const fullName = normalizeName(`${employee.first_name || ""} ${employee.last_name || ""}`);
+
+        return username === normalizedEmployeeName || fullName === normalizedEmployeeName;
+      });
+    }
+
+    async function addEmployeeFromPrompt() {
+      const employeeName = prompt("Enter the employee name or username to add to employees2025:");
+
+      if (!employeeName || !employeeName.trim()) {
+        return;
+      }
+
+      const savedEmployee = await ensureEmployeeExists(employeeName.trim());
+
+      if (!savedEmployee) {
+        return;
+      }
+
+      await loadEmployees2025();
+      populateEmployeeSelects();
+
+      document.getElementById("employeeName").value = getEmployeeDisplayName(savedEmployee);
+      localStorage.setItem("bakeryEmployeeName", getEmployeeDisplayName(savedEmployee));
+
+      showToast("Employee is ready to use.");
+    }
+
+    async function ensureEmployeeExists(employeeName) {
+      const existingEmployee = findEmployeeByName(employeeName);
+
+      if (existingEmployee) {
+        return existingEmployee;
+      }
+
+      const nameParts = employeeName.trim().split(/\s+/);
+      const firstName = nameParts.shift() || employeeName.trim();
+      const lastName = nameParts.join(" ");
+
+      const payload = {
+        username: employeeName.trim(),
+        first_name: firstName,
+        last_name: lastName || null,
+        employment_status: "Active",
+        status: "Active",
+        portal_role: "employee"
+      };
+
+      const { data, error } = await client
+        .from("employees2025")
+        .insert(payload)
+        .select("id, first_name, last_name, username, employment_status, status, portal_role")
+        .single();
+
+      if (error) {
+        console.error("Employee create error:", error);
+        showToast("Employee was not found and could not be created: " + error.message);
+        return null;
+      }
+
+      employees2025.push(data);
+      return data;
+    }
+
+    async function validateAdminPin(employeeNameSelectId, usernameInputId, pinInputId) {
+      const employeeName = document.getElementById(employeeNameSelectId).value.trim();
+      const username = document.getElementById(usernameInputId).value.trim();
+      const pin = document.getElementById(pinInputId).value.trim();
+
+      if (!employeeName) {
+        showToast("Please select the employee name.");
+        return false;
+      }
+
+      if (!username) {
+        showToast("Please enter the username.");
+        return false;
+      }
+
+      if (!pin) {
+        showToast("Please enter the PIN.");
+        return false;
+      }
+
+      const { data, error } = await client.rpc("verify_bakery_admin_pin", {
+        p_employee_name: employeeName,
+        p_username: username,
+        p_pin: pin
+      });
+
+      if (error) {
+        console.error("Admin verification error:", error);
+        showToast("Admin verification is not ready. Run the Supabase SQL function first.");
+        return false;
+      }
+
+      if (!data) {
+        showToast("Invalid employee name, username, or PIN.");
+        return false;
+      }
+
+      return true;
     }
 
     async function reloadAll() {
@@ -1476,6 +1728,13 @@
         return;
       }
 
+      const savedEmployee = await ensureEmployeeExists(employeeName);
+
+      if (!savedEmployee) {
+        qtyInput.value = "";
+        return;
+      }
+
       const quantity = Number(qtyInput.value || 0);
 
       row.classList.remove("saved", "error");
@@ -1538,6 +1797,11 @@
     }
 
     async function loadReports() {
+      if (!reportsUnlocked) {
+        showToast("Unlock reports with an authorized admin username and PIN first.");
+        return;
+      }
+
       const from = document.getElementById("reportFrom").value;
       const to = document.getElementById("reportTo").value;
       const reportType = document.getElementById("reportType").value;
@@ -1696,11 +1960,21 @@
       }
     }
 
-    function unlockAdmin() {
-      const pin = document.getElementById("adminPin").value.trim();
+    async function unlockReports() {
+      if (!(await validateAdminPin("reportAdminEmployeeName", "reportAdminUsername", "reportAdminPin"))) {
+        return;
+      }
 
-      if (pin !== ADMIN_PIN) {
-        showToast("Invalid admin PIN.");
+      reportsUnlocked = true;
+
+      document.getElementById("reportLoginBox").classList.add("hidden");
+      document.getElementById("reportContent").classList.remove("hidden");
+
+      loadReports();
+    }
+
+    async function unlockAdmin() {
+      if (!(await validateAdminPin("adminEmployeeName", "adminUsername", "adminPin"))) {
         return;
       }
 
