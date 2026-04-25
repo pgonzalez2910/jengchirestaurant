@@ -897,7 +897,23 @@
       font-weight: 900;
     }
 
-  </style>
+  
+    .row-warning {
+      background: #fff7ed !important;
+    }
+
+    .warning-pill {
+      background: #fff3cd;
+      border: 1px solid #f0c36d;
+      border-radius: 10px;
+      color: #6b4f00;
+      font-size: 11px;
+      font-weight: 800;
+      line-height: 1.35;
+      padding: 8px 10px;
+      max-width: 240px;
+    }
+</style>
 </head>
 
 <body>
@@ -1013,7 +1029,7 @@
         <div class="section-head">
           <div>
             <h2>Preview Rony Stock Reference</h2>
-            <small>Reads food-only Rony stock from <code>v_rony_food_cogs_reference</code>. Rony is reference-only and is never imported into physical count.</small>
+            <small>Reads approved food-only Rony stock using <code>get_rony_cogs_stock_as_of(date)</code>. Any date uses the latest Rony count on or before that date. Rony is reference-only and is never imported into physical count.</small>
           </div>
         </div>
 
@@ -1029,17 +1045,48 @@
             <thead>
               <tr>
                 <th>Product</th>
-                <th>Stock Date</th>
+                <th>Used Stock Date</th>
                 <th>Qty In Stock</th>
                 <th>Count Unit</th>
+                <th>Price Unit</th>
                 <th>Pack / Case</th>
                 <th>Base Qty</th>
-                <th>Latest Price</th>
+                <th>Package Price</th>
+                <th>Unit Price</th>
                 <th>Est. Value</th>
                 <th>COGS Category</th>
+                <th>Alert</th>
               </tr>
             </thead>
             <tbody id="ronyPreviewBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="section-card" style="margin-top:18px;">
+        <div class="section-head">
+          <div>
+            <h2>Rony COGS Unit / Package Settings</h2>
+            <small>Edit approved Rony COGS items without importing them into physical count. Use Pack / Case for items such as 6 per box, 12 bottles per case, 50 lb bags, etc.</small>
+          </div>
+          <button class="secondary" onclick="loadRonyCogsSettings()"><i class="fa-solid fa-gear"></i> Load Settings</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Approved</th>
+                <th>Product</th>
+                <th>Category</th>
+                <th>Count Unit</th>
+                <th>Pack / Case</th>
+                <th>Price Unit</th>
+                <th>Save</th>
+              </tr>
+            </thead>
+            <tbody id="ronySettingsBody">
+              <tr><td colspan="7" class="muted">Click Load Settings to edit Rony approved COGS units.</td></tr>
+            </tbody>
           </table>
         </div>
       </div>
@@ -2266,29 +2313,76 @@
       `).join("");
     }
 
+    function isPackageUnit(unitValue) {
+      return ["case", "box", "bag", "package"].includes(String(unitValue || "").toLowerCase());
+    }
+
+    function calculateRonyBaseQuantity(quantity, countUnit, unitsPerPackage) {
+      const safeQuantity = Number(quantity || 0) || 0;
+      const safePack = Math.max(Number(unitsPerPackage || 1) || 1, 1);
+
+      return isPackageUnit(countUnit) ? safeQuantity * safePack : safeQuantity;
+    }
+
+    function calculateRonyUnitPrice(packagePrice, priceUnit, unitsPerPackage) {
+      const safePrice = Number(packagePrice || 0) || 0;
+      const safePack = Math.max(Number(unitsPerPackage || 1) || 1, 1);
+
+      return isPackageUnit(priceUnit) ? safePrice / safePack : safePrice;
+    }
+
+    function getRonyUnitWarning(row) {
+      const countUnit = String(row.count_unit || "unit").toLowerCase();
+      const priceUnit = String(row.price_unit || "unit").toLowerCase();
+      const quantity = Number(row.quantity_in_stock || 0) || 0;
+      const pack = Math.max(Number(row.units_per_package || 1) || 1, 1);
+      const warnings = [];
+
+      if (isPackageUnit(priceUnit) && pack <= 1) {
+        warnings.push("Price is by case/box/bag but Pack / Case is 1.");
+      }
+
+      if (isPackageUnit(countUnit) && pack > 1 && quantity >= pack) {
+        warnings.push("Count Unit is CASE/BOX/BAG. Qty looks like individual units. Review.");
+      }
+
+      if (isPackageUnit(countUnit) && !Number.isInteger(quantity)) {
+        warnings.push("Count Unit is CASE/BOX/BAG but stock quantity is decimal.");
+      }
+
+      return warnings;
+    }
+
     function normalizeRonyRow(row) {
       const cleanName = normalizeRonyCogsProductName(row.product_name);
       const countUnit = String(row.count_unit || row.unit_type || "unit").toLowerCase();
-      const unitsPerPackage = Number(row.units_per_package || row.units_per_case || 1) || 1;
+      const priceUnit = String(row.price_unit || "unit").toLowerCase();
+      const unitsPerPackage = Math.max(Number(row.units_per_package || row.units_per_case || 1) || 1, 1);
       const quantity = Number(row.quantity_in_stock || 0) || 0;
-      const baseQuantity = quantity * unitsPerPackage;
+      const packagePrice = Number(row.package_price ?? row.latest_price ?? 0) || 0;
+      const baseQuantity = Number(row.base_quantity ?? calculateRonyBaseQuantity(quantity, countUnit, unitsPerPackage)) || 0;
+      const unitPrice = Number(row.unit_price ?? calculateRonyUnitPrice(packagePrice, priceUnit, unitsPerPackage)) || 0;
+      const stockValue = Number(row.stock_value ?? (baseQuantity * unitPrice)) || 0;
 
       return {
         ...row,
         product_name: cleanName,
         cogs_category: row.cogs_category || row.category || "COGS",
         count_unit: countUnit,
-        price_unit: String(row.price_unit || countUnit || "unit").toLowerCase(),
+        price_unit: priceUnit,
         units_per_package: unitsPerPackage,
         quantity_in_stock: quantity,
         base_quantity: baseQuantity,
-        latest_price: Number(row.latest_price || 0) || 0,
+        package_price: packagePrice,
+        unit_price: unitPrice,
+        latest_price: unitPrice,
         latest_price_date: row.latest_price_date || "",
         latest_price_vendor: row.latest_price_vendor || row.vendor || "",
-        estimated_value: baseQuantity * (Number(row.latest_price || 0) || 0)
+        latest_price_source: row.latest_price_source || "",
+        stock_value: stockValue,
+        estimated_value: stockValue
       };
     }
-
     function dedupeRonyCogsRows(rows) {
       const approvedRows = (rows || []).filter(isRonyReferenceFoodAllowed);
       const byProduct = new Map();
@@ -2321,45 +2415,9 @@
     }
 
     async function queryRonyCogsRowsForDate(stockDate) {
-      const selectColumns = [
-        "product_name",
-        "stock_date",
-        "quantity_in_stock",
-        "cogs_category",
-        "count_unit",
-        "units_per_package",
-        "price_unit",
-        "vendor",
-        "item_code",
-        "image_url"
-      ].join(",");
-
-      const exact = await client
-        .from("v_rony_food_cogs_reference")
-        .select(selectColumns)
-        .eq("stock_date", stockDate)
-        .order("product_name", { ascending: true });
-
-      if (exact.error) {
-        const fallbackExact = await client
-          .from("v_rony_food_cogs_reference")
-          .select("product_name,stock_date,quantity_in_stock,cogs_category,vendor,item_code,image_url")
-          .eq("stock_date", stockDate)
-          .order("product_name", { ascending: true });
-
-        return fallbackExact;
-      }
-
-      if ((exact.data || []).length > 0) {
-        return exact;
-      }
-
-      return await client
-        .from("v_rony_food_cogs_reference")
-        .select(selectColumns)
-        .lte("stock_date", stockDate)
-        .order("stock_date", { ascending: false })
-        .order("product_name", { ascending: true });
+      return await client.rpc("get_rony_cogs_stock_as_of", {
+        p_as_of_date: stockDate
+      });
     }
 
     async function loadLatestRonyPrices(rows) {
@@ -2456,22 +2514,124 @@
 
     function applyRonyPrices(rows, priceMap) {
       return (rows || []).map(row => {
-        const priceInfo = priceMap.get(ronyCogsKey(row.product_name));
-        const latestPrice = Number(priceInfo?.price || row.latest_price || 0) || 0;
-        const baseQuantity = Number(row.base_quantity || 0) || 0;
+        const normalized = normalizeRonyRow(row);
+
+        if (Number(normalized.package_price || 0) > 0 || Number(normalized.unit_price || 0) > 0) {
+          return normalized;
+        }
+
+        const priceInfo = priceMap.get(ronyCogsKey(normalized.product_name));
+        const packagePrice = Number(priceInfo?.price || 0) || 0;
+        const unitPrice = calculateRonyUnitPrice(packagePrice, normalized.price_unit, normalized.units_per_package);
+        const baseQuantity = calculateRonyBaseQuantity(
+          normalized.quantity_in_stock,
+          normalized.count_unit,
+          normalized.units_per_package
+        );
 
         return {
-          ...row,
-          latest_price: latestPrice,
-          latest_price_date: priceInfo?.date || row.latest_price_date || "",
-          latest_price_vendor: priceInfo?.vendor || row.latest_price_vendor || "",
-          latest_price_source: priceInfo?.source || row.latest_price_source || "",
-          estimated_value: baseQuantity * latestPrice
+          ...normalized,
+          package_price: packagePrice,
+          unit_price: unitPrice,
+          latest_price: unitPrice,
+          latest_price_date: priceInfo?.date || normalized.latest_price_date || "",
+          latest_price_vendor: priceInfo?.vendor || normalized.latest_price_vendor || "",
+          latest_price_source: priceInfo?.source || normalized.latest_price_source || "",
+          base_quantity: baseQuantity,
+          stock_value: baseQuantity * unitPrice,
+          estimated_value: baseQuantity * unitPrice
         };
       });
     }
+    
+    async function loadRonyCogsSettings() {
+      const body = document.getElementById("ronySettingsBody");
 
-    async function previewRonyStock() {
+      if (!body) {
+        return;
+      }
+
+      body.innerHTML = `<tr><td colspan="7" class="muted">Loading Rony COGS settings...</td></tr>`;
+
+      const { data, error } = await client
+        .from("rony_cogs_allowed_items")
+        .select("product_name,include_in_cogs,category,count_unit,units_per_package,price_unit")
+        .order("product_name", { ascending: true });
+
+      if (error) {
+        console.error(error);
+        body.innerHTML = `<tr><td colspan="7" class="danger-text">Unable to load Rony COGS settings.</td></tr>`;
+        return;
+      }
+
+      const rows = data || [];
+
+      if (!rows.length) {
+        body.innerHTML = `<tr><td colspan="7" class="muted">No approved Rony COGS settings found.</td></tr>`;
+        return;
+      }
+
+      body.innerHTML = rows.map((row, index) => {
+        const checked = row.include_in_cogs !== false ? "checked" : "";
+        return `
+          <tr data-product="${escapeHtml(row.product_name)}">
+            <td style="text-align:center;">
+              <input type="checkbox" id="ronySettingInclude${index}" ${checked} />
+            </td>
+            <td><strong>${escapeHtml(row.product_name)}</strong></td>
+            <td>
+              <input class="mini-input" id="ronySettingCategory${index}" value="${escapeHtml(row.category || "Rony Food")}" />
+            </td>
+            <td>
+              <select class="mini-input" id="ronySettingCountUnit${index}">
+                ${getRonyUnitOptions(row.count_unit || "unit")}
+              </select>
+            </td>
+            <td>
+              <input class="mini-input" type="number" min="0.0001" step="0.0001" id="ronySettingPack${index}" value="${Number(row.units_per_package || 1)}" />
+            </td>
+            <td>
+              <select class="mini-input" id="ronySettingPriceUnit${index}">
+                ${getRonyUnitOptions(row.price_unit || "unit")}
+              </select>
+            </td>
+            <td>
+              <button class="secondary" onclick="saveRonyCogsSettingRow('${escapeHtml(row.product_name).replace(/'/g, "&#39;")}', ${index})">
+                <i class="fa-solid fa-floppy-disk"></i> Save
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    async function saveRonyCogsSettingRow(productName, index) {
+      const payload = {
+        include_in_cogs: document.getElementById(`ronySettingInclude${index}`)?.checked === true,
+        category: document.getElementById(`ronySettingCategory${index}`)?.value || "Rony Food",
+        count_unit: String(document.getElementById(`ronySettingCountUnit${index}`)?.value || "unit").toLowerCase(),
+        units_per_package: Number(document.getElementById(`ronySettingPack${index}`)?.value || 1) || 1,
+        price_unit: String(document.getElementById(`ronySettingPriceUnit${index}`)?.value || "unit").toLowerCase()
+      };
+
+      const { error } = await client
+        .from("rony_cogs_allowed_items")
+        .update(payload)
+        .eq("product_name", productName);
+
+      if (error) {
+        console.error(error);
+        showToast("Could not save Rony COGS setting.");
+        return;
+      }
+
+      showToast("Rony COGS setting saved.");
+      if (document.getElementById("ronyPreviewBody")?.children?.length) {
+        await previewRonyStock();
+      }
+    }
+
+async function previewRonyStock() {
       const stockDateInput = document.getElementById("ronyStockDate");
       const previewBody = document.getElementById("ronyPreviewBody");
       const stockDate = stockDateInput?.value || "";
@@ -2484,7 +2644,7 @@
       if (previewBody) {
         previewBody.innerHTML = `
           <tr>
-            <td colspan="9" class="muted">Loading approved Rony COGS reference items...</td>
+            <td colspan="12" class="muted">Loading approved Rony COGS reference items...</td>
           </tr>
         `;
       }
@@ -2493,9 +2653,9 @@
 
       if (error) {
         console.error(error);
-        showToast("Unable to load Rony COGS reference. Run the corrected SQL view first.");
+        showToast("Unable to load Rony COGS reference. Run the corrected SQL function first.");
         if (previewBody) {
-          previewBody.innerHTML = `<tr><td colspan="9" class="danger-text">Unable to load Rony COGS reference.</td></tr>`;
+          previewBody.innerHTML = `<tr><td colspan="12" class="danger-text">Unable to load Rony COGS reference.</td></tr>`;
         }
         return;
       }
@@ -2550,9 +2710,6 @@
         ...lastRonyRows[rowIndex],
         ...payload
       });
-      lastRonyRows[rowIndex].estimated_value =
-        (Number(lastRonyRows[rowIndex].base_quantity || 0) || 0) *
-        (Number(lastRonyRows[rowIndex].latest_price || 0) || 0);
 
       renderRonyPreview();
       showToast("Rony COGS setting saved.");
@@ -2566,20 +2723,33 @@
       }
 
       if (!lastRonyRows.length) {
-        body.innerHTML = `<tr><td colspan="9">No approved Rony COGS reference rows found for this date. Try a later date or run the approved COGS SQL view.</td></tr>`;
+        body.innerHTML = `<tr><td colspan="12">No approved Rony COGS rows found. Run the approved COGS SQL function and check the allowed-items table.</td></tr>`;
         return;
       }
 
-      body.innerHTML = lastRonyRows.map((row, index) => {
-        const priceText = row.latest_price > 0
-          ? `$${row.latest_price.toFixed(2)}${row.price_unit ? " / " + escapeHtml(row.price_unit.toUpperCase()) : ""}`
+      body.innerHTML = lastRonyRows.map((rawRow, index) => {
+        const row = normalizeRonyRow(rawRow);
+        lastRonyRows[index] = row;
+
+        const packagePriceText = row.package_price > 0
+          ? `$${Number(row.package_price || 0).toFixed(2)} / ${escapeHtml(row.price_unit.toUpperCase())}`
           : `<span class="danger-text">Missing price</span>`;
+
+        const unitPriceText = row.unit_price > 0
+          ? `$${Number(row.unit_price || 0).toFixed(4)} / BASE`
+          : `<span class="danger-text">$0.00</span>`;
+
         const priceSubtext = row.latest_price_date
           ? `<div class="muted" style="font-size:11px;">${escapeHtml(row.latest_price_vendor || "")} ${escapeHtml(row.latest_price_date || "")}</div>`
           : "";
 
+        const warnings = getRonyUnitWarning(row);
+        const warningHtml = warnings.length
+          ? `<div class="warning-pill">${warnings.map(escapeHtml).join("<br>")}</div>`
+          : `<span class="muted">OK</span>`;
+
         return `
-          <tr>
+          <tr class="${warnings.length ? "row-warning" : ""}">
             <td><strong>${escapeHtml(row.product_name)}</strong></td>
             <td>${escapeHtml(row.stock_date || "")}</td>
             <td>${formatNumber(row.quantity_in_stock)}</td>
@@ -2589,24 +2759,30 @@
               </select>
             </td>
             <td>
+              <select class="mini-input" onchange="saveRonyCogsSetting(${index}, 'price_unit', this.value)">
+                ${getRonyUnitOptions(row.price_unit)}
+              </select>
+            </td>
+            <td>
               <input
                 class="mini-input"
                 type="number"
-                min="0"
+                min="1"
                 step="0.01"
                 value="${Number(row.units_per_package || 1)}"
                 onchange="saveRonyCogsSetting(${index}, 'units_per_package', this.value)"
               />
             </td>
             <td>${formatNumber(row.base_quantity)}</td>
-            <td>${priceText}${priceSubtext}</td>
-            <td><strong>${row.latest_price > 0 ? "$" + Number(row.estimated_value || 0).toFixed(2) : "$0.00"}</strong></td>
+            <td>${packagePriceText}${priceSubtext}</td>
+            <td>${unitPriceText}</td>
+            <td><strong>${row.unit_price > 0 ? "$" + Number(row.stock_value || 0).toFixed(2) : "$0.00"}</strong></td>
             <td><span class="badge success">${escapeHtml(row.cogs_category || "COGS")}</span></td>
+            <td>${warningHtml}</td>
           </tr>
         `;
       }).join("");
     }
-
     async function importRonyStockToCounts() {
       showToast("Rony is reference-only. It is not imported into physical count.");
     }
@@ -2881,7 +3057,7 @@
       if (!body) return;
 
       if (!rows.length) {
-        body.innerHTML = `<tr><td colspan="9">No missing setup warnings found.</td></tr>`;
+        body.innerHTML = `<tr><td colspan="12">No missing setup warnings found.</td></tr>`;
         return;
       }
 
