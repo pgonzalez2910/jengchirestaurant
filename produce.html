@@ -991,14 +991,14 @@
 
     <section id="rony" class="panel">
       <div class="notice">
-        Rony submitted stock is used as a <strong>stock reference</strong>. This does not touch Julio order quantities. It copies Rony stock into the physical count table for the selected inventory date.
+        Rony submitted stock is used as a <strong>reference only</strong> for Admin Financial Reports. It is not imported into the physical count page, and Julio items are excluded from this preview.
       </div>
 
       <div class="section-card">
         <div class="section-head">
           <div>
-            <h2>Import Rony Stock Reference</h2>
-            <small>Reads from the existing main database view <code>v_rony_stock_reference</code>.</small>
+            <h2>Preview Rony Stock Reference</h2>
+            <small>Reads food-only Rony stock from <code>v_rony_food_cogs_reference</code>. Rony is reference-only and is never imported into physical count.</small>
           </div>
         </div>
 
@@ -1006,7 +1006,7 @@
           <div><label>Rony Stock Date</label><input type="date" id="ronyStockDate" /></div>
           <div><label>Counted By</label><input type="text" id="ronyCountedBy" placeholder="Rony / Manager" /></div>
           <button onclick="previewRonyStock()"><i class="fa-solid fa-eye"></i> Preview Rony Stock</button>
-          <button class="secondary" onclick="importRonyStockToCounts()"><i class="fa-solid fa-file-import"></i> Import To Count Date</button>
+          <button class="secondary" disabled title="Rony stock is reference-only and should not be imported into physical count."><i class="fa-solid fa-ban"></i> Reference Only - Not Imported</button>
         </div>
 
         <div class="table-wrap">
@@ -1016,7 +1016,7 @@
                 <th>Product</th>
                 <th>Stock Date</th>
                 <th>Quantity In Stock</th>
-                <th>Matched Item</th>
+                <th>COGS Category</th>
               </tr>
             </thead>
             <tbody id="ronyPreviewBody"></tbody>
@@ -1849,7 +1849,13 @@
         return;
       }
 
-      inventoryItems = await applyLatestPricesFromMainDatabase(data || []);
+      const activePhysicalItems = (data || []).filter(item =>
+        item.active !== false &&
+        String(item.source_area || "").toUpperCase() !== "RONY" &&
+        String(item.category || "").toLowerCase() !== "rony reference only"
+      );
+
+      inventoryItems = await applyLatestPricesFromMainDatabase(activePhysicalItems);
     }
 
     async function loadCounts() {
@@ -2164,76 +2170,161 @@
       showToast("Item added.");
     }
 
+    const JULIO_ONLY_RONY_EXCLUDE_NAMES = new Set([
+      "beef flank steak (sukarne) fresh",
+      "corn starch stanley",
+      "korean wheat flour"
+    ]);
+
+    function isJulioPhysicalItemName(productName) {
+      const normalizedName = String(productName || "").trim().toLowerCase();
+
+      if (!normalizedName) {
+        return false;
+      }
+
+      if (JULIO_ONLY_RONY_EXCLUDE_NAMES.has(normalizedName)) {
+        return true;
+      }
+
+      return inventoryItems.some(item =>
+        item.active !== false &&
+        String(item.source_area || "").toUpperCase() === "JULIO" &&
+        String(item.item_name || "").trim().toLowerCase() === normalizedName
+      );
+    }
+
+    function isRonyReferenceFoodAllowed(row) {
+      const name = String(row?.product_name || "").toLowerCase();
+
+      if (!name || isJulioPhysicalItemName(row.product_name)) {
+        return false;
+      }
+
+      const blockedTerms = [
+        "battery", "batteries", "heavy duty", "takeout", "folded",
+        "box white", "lid", "cup", "container", "foam", "cutlery",
+        "fork", "spoon", "knife", "glove", "napkin", "straw", "film",
+        "pan", "full size medium deep", "half size medium deep", "duro",
+        "tray", "deli wrap", "norpak", "norpark", "paper bag", "plastic",
+        "trash", "hardwound", "tissue", "towel", "restroom", "chopstick",
+        "seat cover", "coffee stir", "wood coffe", "to go rice", "soap",
+        "fabuloso", "aerosol", "aersol", "thermometer", "bleach",
+        "detergent", "cleaner", "rinse aid", "scrubbing", "scrubber",
+        "eraser", "multi prp", "hand pad", "softener salt", "solution cl",
+        "polish", "urinal", "tea light", "tealight"
+      ];
+
+      return !blockedTerms.some(term => name.includes(term));
+    }
+
+    function normalizeRonyCogsProductName(value) {
+      return String(value || "")
+        .replace(/\*/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function ronyCogsKey(value) {
+      return normalizeRonyCogsProductName(value).toLowerCase();
+    }
+
+    function dedupeRonyCogsRows(rows) {
+      const approvedRows = (rows || []).filter(isRonyReferenceFoodAllowed);
+      const byProduct = new Map();
+
+      approvedRows.forEach(row => {
+        const cleanName = normalizeRonyCogsProductName(row.product_name);
+        const key = ronyCogsKey(cleanName);
+
+        if (!key) {
+          return;
+        }
+
+        const normalizedRow = {
+          ...row,
+          product_name: cleanName,
+          cogs_category: row.cogs_category || "COGS"
+        };
+
+        const existing = byProduct.get(key);
+
+        if (!existing) {
+          byProduct.set(key, normalizedRow);
+          return;
+        }
+
+        const existingDate = String(existing.stock_date || "");
+        const rowDate = String(normalizedRow.stock_date || "");
+
+        if (rowDate > existingDate) {
+          byProduct.set(key, normalizedRow);
+        }
+      });
+
+      return Array.from(byProduct.values())
+        .sort((a, b) => String(a.product_name || "").localeCompare(String(b.product_name || "")));
+    }
+
     async function previewRonyStock() {
-      const stockDate = document.getElementById("ronyStockDate").value;
+      const stockDateInput = document.getElementById("ronyStockDate");
+      const previewBody = document.getElementById("ronyPreviewBody");
+      const stockDate = stockDateInput?.value || "";
+
       if (!stockDate) {
         showToast("Choose a Rony stock date.");
         return;
       }
 
+      if (previewBody) {
+        previewBody.innerHTML = `
+          <tr>
+            <td colspan="4" class="muted">Loading approved Rony COGS reference items...</td>
+          </tr>
+        `;
+      }
+
       const { data, error } = await client
-        .from("v_rony_stock_reference")
-        .select("*")
+        .from("v_rony_food_cogs_reference")
+        .select("product_name,stock_date,quantity_in_stock,cogs_category,vendor,item_code,image_url")
         .eq("stock_date", stockDate)
         .order("product_name", { ascending: true });
 
       if (error) {
         console.error(error);
-        showToast("Unable to load Rony stock. Run the SQL view first.");
+        showToast("Unable to load Rony COGS reference. Run the corrected SQL view first.");
         return;
       }
 
-      lastRonyRows = data || [];
+      lastRonyRows = dedupeRonyCogsRows(data || []);
       renderRonyPreview();
+      showToast(`Loaded ${lastRonyRows.length} approved Rony COGS item(s).`);
     }
 
     function renderRonyPreview() {
       const body = document.getElementById("ronyPreviewBody");
 
-      if (!lastRonyRows.length) {
-        body.innerHTML = `<tr><td colspan="4">No Rony stock rows found for this date.</td></tr>`;
+      if (!body) {
         return;
       }
 
-      body.innerHTML = lastRonyRows.map(row => {
-        const match = findItemByName(row.product_name);
-        return `
-          <tr>
-            <td>${escapeHtml(row.product_name)}</td>
-            <td>${escapeHtml(row.stock_date)}</td>
-            <td>${formatNumber(row.quantity_in_stock)}</td>
-            <td>${match ? escapeHtml(match.item_name) : "<strong>Will create new Rony item</strong>"}</td>
-          </tr>
-        `;
-      }).join("");
+      if (!lastRonyRows.length) {
+        body.innerHTML = `<tr><td colspan="4">No approved Rony COGS reference rows found for this date.</td></tr>`;
+        return;
+      }
+
+      body.innerHTML = lastRonyRows.map(row => `
+        <tr>
+          <td>${escapeHtml(row.product_name)}</td>
+          <td>${escapeHtml(row.stock_date || "")}</td>
+          <td>${formatNumber(row.quantity_in_stock)}</td>
+          <td><span class="badge success">${escapeHtml(row.cogs_category || "COGS")}</span></td>
+        </tr>
+      `).join("");
     }
 
     async function importRonyStockToCounts() {
-      const stockDate = document.getElementById("ronyStockDate").value;
-      const countDate = document.getElementById("entryDate").value;
-      const countedBy = document.getElementById("ronyCountedBy").value.trim() || document.getElementById("employeeName").value.trim() || "Rony";
-
-      if (!stockDate || !countDate) {
-        showToast("Choose both stock date and inventory count date.");
-        return;
-      }
-
-      const { data, error } = await client.rpc("import_rony_stock_reference", {
-        p_stock_date: stockDate,
-        p_count_date: countDate,
-        p_counted_by: countedBy
-      });
-
-      if (error) {
-        console.error(error);
-        showToast("Unable to import Rony stock. Run Phase 2 SQL first.");
-        return;
-      }
-
-      await reloadAll();
-      await previewRonyStock();
-      setSourceFilter("RONY");
-      showToast(`Imported ${Number(data || 0)} Rony stock row(s) into ${countDate}.`);
+      showToast("Rony is reference-only. It is not imported into physical count.");
     }
 
 
