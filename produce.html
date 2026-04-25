@@ -1,6 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+
+    <script>
+      const JC_FRESH_APP_VERSION = "2026.04.23.rony-rpc-math-v6";
+      const JC_FRESH_VERSION_KEY = "jc_fresh_inventory_version";
+      const previousFreshVersion = localStorage.getItem(JC_FRESH_VERSION_KEY);
+
+      if (previousFreshVersion && previousFreshVersion !== JC_FRESH_APP_VERSION) {
+        localStorage.setItem(JC_FRESH_VERSION_KEY, JC_FRESH_APP_VERSION);
+        window.location.reload(true);
+      } else {
+        localStorage.setItem(JC_FRESH_VERSION_KEY, JC_FRESH_APP_VERSION);
+      }
+    </script>
+
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Jeng Chi Physical Inventory + COGS Phase 8</title>
@@ -495,6 +509,24 @@
       position: sticky;
       top: 0;
       z-index: 5;
+    }
+
+    .rony-preview-table {
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+    }
+
+    .rony-preview-table th,
+    .rony-preview-table td {
+      border: 1px solid var(--line);
+    }
+
+    .rony-preview-table th {
+      border-bottom: 2px solid var(--brand);
+    }
+
+    .rony-preview-table tbody tr:hover {
+      background: #fffaf5;
     }
 
     tr.negative-row {
@@ -1035,22 +1067,19 @@
 
         <div class="grid-4" style="padding:14px 18px; background:#fffaf5; border-bottom:1px solid var(--line);">
           <div><label>Rony Stock Date</label><input type="date" id="ronyStockDate" /></div>
-          <div><label>Counted By</label><input type="text" id="ronyCountedBy" placeholder="Rony / Manager" /></div>
-          <button onclick="previewRonyStock()"><i class="fa-solid fa-eye"></i> Preview Rony Stock</button>
+          <div><label>Counted By</label><input type="text" id="ronyCountedBy" /></div>
+          <button id="ronyPreviewButton" onclick="previewRonyStock()"><i class="fa-solid fa-eye"></i> Preview Rony Stock</button>
           <button class="secondary" disabled title="Rony stock is reference-only and should not be imported into physical count."><i class="fa-solid fa-ban"></i> Reference Only - Not Imported</button>
         </div>
 
         <div class="table-wrap">
-          <table>
+          <table class="rony-preview-table">
             <thead>
               <tr>
                 <th>Product</th>
                 <th>Used Stock Date</th>
                 <th>Qty In Stock</th>
-                <th>Count Unit</th>
-                <th>Price Unit</th>
                 <th>Pack / Case</th>
-                <th>Base Qty</th>
                 <th>Package Price</th>
                 <th>Unit Price</th>
                 <th>Est. Value</th>
@@ -2332,40 +2361,39 @@
     }
 
     function getRonyUnitWarning(row) {
-      const countUnit = String(row.count_unit || "unit").toLowerCase();
-      const priceUnit = String(row.price_unit || "unit").toLowerCase();
-      const quantity = Number(row.quantity_in_stock || 0) || 0;
       const pack = Math.max(Number(row.units_per_package || 1) || 1, 1);
+      const packagePrice = Number(row.package_price || 0) || 0;
       const warnings = [];
 
-      if (isPackageUnit(priceUnit) && pack <= 1) {
-        warnings.push("Price is by case/box/bag but Pack / Case is 1.");
-      }
-
-      if (isPackageUnit(countUnit) && pack > 1 && quantity >= pack) {
-        warnings.push("Count Unit is CASE/BOX/BAG. Qty looks like individual units. Review.");
-      }
-
-      if (isPackageUnit(countUnit) && !Number.isInteger(quantity)) {
-        warnings.push("Count Unit is CASE/BOX/BAG but stock quantity is decimal.");
+      if (packagePrice > 0 && pack <= 0) {
+        warnings.push("Pack / Case must be greater than 0.");
       }
 
       return warnings;
     }
 
     function normalizeRonyRow(row) {
-      const cleanName = normalizeRonyCogsProductName(row.product_name);
-      const countUnit = String(row.count_unit || row.unit_type || "unit").toLowerCase();
-      const priceUnit = String(row.price_unit || "unit").toLowerCase();
+      const sourceProductName = String(
+        row.settings_product_name ||
+        row.allowed_product_name ||
+        row.product_name ||
+        ""
+      ).replace(/\s+/g, " ").trim();
+
+      const cleanName = normalizeRonyCogsProductName(sourceProductName);
+      const countUnit = "unit";
+      const priceUnit = "package";
       const unitsPerPackage = Math.max(Number(row.units_per_package || row.units_per_case || 1) || 1, 1);
       const quantity = Number(row.quantity_in_stock || 0) || 0;
       const packagePrice = Number(row.package_price ?? row.latest_price ?? 0) || 0;
-      const baseQuantity = Number(row.base_quantity ?? calculateRonyBaseQuantity(quantity, countUnit, unitsPerPackage)) || 0;
-      const unitPrice = Number(row.unit_price ?? calculateRonyUnitPrice(packagePrice, priceUnit, unitsPerPackage)) || 0;
-      const stockValue = Number(row.stock_value ?? (baseQuantity * unitPrice)) || 0;
+
+      const baseQuantity = quantity;
+      const unitPrice = Number((packagePrice / unitsPerPackage).toFixed(4));
+      const stockValue = Number((quantity * unitPrice).toFixed(2));
 
       return {
         ...row,
+        settings_product_name: sourceProductName,
         product_name: cleanName,
         cogs_category: row.cogs_category || row.category || "COGS",
         count_unit: countUnit,
@@ -2383,6 +2411,7 @@
         estimated_value: stockValue
       };
     }
+
     function dedupeRonyCogsRows(rows) {
       const approvedRows = (rows || []).filter(isRonyReferenceFoodAllowed);
       const byProduct = new Map();
@@ -2484,13 +2513,13 @@
         try {
           const { data: history } = await client
             .from("price_history")
-            .select("product_name,vendor,item_code,unit_price,purchase_date")
+            .select("product_name,vendor,item_number,price,new_price,invoice_date,effective_date")
             .in("product_name", missingNames)
-            .order("purchase_date", { ascending: false });
+            .order("effective_date", { ascending: false });
 
           (history || []).forEach(row => {
             const key = ronyCogsKey(row.product_name);
-            const price = Number(row.unit_price || 0) || 0;
+            const price = Number(row.new_price || row.price || 0) || 0;
 
             if (price <= 0 || priceMap.has(key)) {
               return;
@@ -2498,9 +2527,9 @@
 
             priceMap.set(key, {
               price,
-              date: row.purchase_date || "",
+              date: row.effective_date || row.invoice_date || "",
               vendor: row.vendor || "",
-              item_code: row.item_code || "",
+              item_code: row.item_number || "",
               source: "price history"
             });
           });
@@ -2634,6 +2663,7 @@
 async function previewRonyStock() {
       const stockDateInput = document.getElementById("ronyStockDate");
       const previewBody = document.getElementById("ronyPreviewBody");
+      const previewButton = document.getElementById("ronyPreviewButton");
       const stockDate = stockDateInput?.value || "";
 
       if (!stockDate) {
@@ -2641,29 +2671,53 @@ async function previewRonyStock() {
         return;
       }
 
+      if (previewButton) {
+        previewButton.disabled = true;
+        previewButton.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Loading Rony Stock`;
+      }
+
       if (previewBody) {
         previewBody.innerHTML = `
           <tr>
-            <td colspan="12" class="muted">Loading approved Rony COGS reference items...</td>
+            <td colspan="9" class="muted">Loading approved Rony COGS reference items...</td>
           </tr>
         `;
       }
 
       const { data, error } = await queryRonyCogsRowsForDate(stockDate);
 
+      if (previewButton) {
+        previewButton.disabled = false;
+        previewButton.innerHTML = `<i class="fa-solid fa-eye"></i> Preview Rony Stock`;
+      }
+
       if (error) {
-        console.error(error);
-        showToast("Unable to load Rony COGS reference. Run the corrected SQL function first.");
-        if (previewBody) {
-          previewBody.innerHTML = `<tr><td colspan="12" class="danger-text">Unable to load Rony COGS reference.</td></tr>`;
+        const isStatementTimeout = error.code === "57014";
+
+        if (!isStatementTimeout) {
+          console.error(error);
         }
+
+        const message = isStatementTimeout
+          ? "Rony stock query timed out in Supabase. The SQL function get_rony_cogs_stock_as_of needs an index or query optimization."
+          : "Unable to load Rony COGS reference. Run the corrected SQL function first.";
+
+        showToast(message);
+
+        if (previewBody) {
+          previewBody.innerHTML = `
+            <tr>
+              <td colspan="9" class="danger-text">${escapeHtml(message)}</td>
+            </tr>
+          `;
+        }
+
         return;
       }
 
       const rows = dedupeRonyCogsRows(data || []);
-      const priceMap = await loadLatestRonyPrices(rows);
 
-      lastRonyRows = applyRonyPrices(rows, priceMap);
+      lastRonyRows = rows.map(normalizeRonyRow);
       renderRonyPreview();
 
       const exactRows = lastRonyRows.filter(row => String(row.stock_date || "") === stockDate).length;
@@ -2688,21 +2742,30 @@ async function previewRonyStock() {
       }
 
       if (field === "units_per_package") {
-        payload[field] = Number(value || 1) || 1;
+        payload[field] = Math.max(Number(value || 1) || 1, 1);
       }
 
       if (!Object.keys(payload).length) {
         return;
       }
 
+      const productNameForSave = row.settings_product_name || row.product_name;
+
+      lastRonyRows[rowIndex] = normalizeRonyRow({
+        ...lastRonyRows[rowIndex],
+        ...payload
+      });
+      renderRonyPreview();
+
       const { error } = await client
         .from("rony_cogs_allowed_items")
         .update(payload)
-        .ilike("product_name", row.product_name);
+        .eq("product_name", productNameForSave);
 
       if (error) {
         console.error(error);
-        showToast("Could not save Rony COGS setting.");
+        showToast("Could not auto-save Rony COGS setting.");
+        await loadRonyCogsSettings();
         return;
       }
 
@@ -2712,7 +2775,7 @@ async function previewRonyStock() {
       });
 
       renderRonyPreview();
-      showToast("Rony COGS setting saved.");
+      showToast("Auto-saved Rony COGS setting.");
     }
 
     function renderRonyPreview() {
@@ -2723,7 +2786,7 @@ async function previewRonyStock() {
       }
 
       if (!lastRonyRows.length) {
-        body.innerHTML = `<tr><td colspan="12">No approved Rony COGS rows found. Run the approved COGS SQL function and check the allowed-items table.</td></tr>`;
+        body.innerHTML = `<tr><td colspan="9">No approved Rony COGS rows found. Run the approved COGS SQL function and check the allowed-items table.</td></tr>`;
         return;
       }
 
@@ -2732,11 +2795,11 @@ async function previewRonyStock() {
         lastRonyRows[index] = row;
 
         const packagePriceText = row.package_price > 0
-          ? `$${Number(row.package_price || 0).toFixed(2)} / ${escapeHtml(row.price_unit.toUpperCase())}`
+          ? `$${Number(row.package_price || 0).toFixed(2)} / PACKAGE`
           : `<span class="danger-text">Missing price</span>`;
 
         const unitPriceText = row.unit_price > 0
-          ? `$${Number(row.unit_price || 0).toFixed(4)} / BASE`
+          ? `$${Number(row.unit_price || 0).toFixed(4)} / UNIT`
           : `<span class="danger-text">$0.00</span>`;
 
         const priceSubtext = row.latest_price_date
@@ -2754,16 +2817,6 @@ async function previewRonyStock() {
             <td>${escapeHtml(row.stock_date || "")}</td>
             <td>${formatNumber(row.quantity_in_stock)}</td>
             <td>
-              <select class="mini-input" onchange="saveRonyCogsSetting(${index}, 'count_unit', this.value)">
-                ${getRonyUnitOptions(row.count_unit)}
-              </select>
-            </td>
-            <td>
-              <select class="mini-input" onchange="saveRonyCogsSetting(${index}, 'price_unit', this.value)">
-                ${getRonyUnitOptions(row.price_unit)}
-              </select>
-            </td>
-            <td>
               <input
                 class="mini-input"
                 type="number"
@@ -2773,7 +2826,6 @@ async function previewRonyStock() {
                 onchange="saveRonyCogsSetting(${index}, 'units_per_package', this.value)"
               />
             </td>
-            <td>${formatNumber(row.base_quantity)}</td>
             <td>${packagePriceText}${priceSubtext}</td>
             <td>${unitPriceText}</td>
             <td><strong>${row.unit_price > 0 ? "$" + Number(row.stock_value || 0).toFixed(2) : "$0.00"}</strong></td>
@@ -3252,7 +3304,7 @@ async function previewRonyStock() {
 
       const { error } = await client.rpc("upsert_fresh_invoice_product_match", {
         p_vendor: row.vendor || "",
-        p_item_code: row.item_code || "",
+        p_item_code: row.item_number || "",
         p_product_name: row.product_name || "",
         p_item_id: itemId,
         p_created_by: adminName,
@@ -3287,7 +3339,7 @@ async function previewRonyStock() {
 
       const { error } = await client.rpc("create_fresh_item_from_invoice_product", {
         p_vendor: row.vendor || "",
-        p_item_code: row.item_code || "",
+        p_item_code: row.item_number || "",
         p_product_name: row.product_name || "",
         p_category: category,
         p_source_area: sourceArea,
