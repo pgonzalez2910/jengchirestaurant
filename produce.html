@@ -1047,6 +1047,7 @@
             </div>
             <div class="inventory-actions">
               <button onclick="syncItemsFromInvoices()"><i class="fa-solid fa-link"></i> Sync Items From Invoices</button>
+              <button class="secondary" onclick="syncGitHubImagesToInventory()"><i class="fa-solid fa-image"></i> Sync GitHub Images</button>
               <button class="secondary" onclick="loadSetupReview()"><i class="fa-solid fa-rotate"></i> Refresh Review</button>
             </div>
           </div>
@@ -1601,7 +1602,11 @@
 
     const PLACEHOLDER_IMAGE = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgMTIwIDEyMCI+PHJlY3Qgd2lkdGg9IjEyMCIgaGVpZ2h0PSIxMjAiIGZpbGw9IiNlNWU3ZWIiLz48dGV4dCB4PSI2MCIgeT0iNjAiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzljYTNhZiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9IjAuM2VtIj5ObyBJbWFnZTwvdGV4dD48L3N2Zz4=";
     const GITHUB_IMAGE_BASE = "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/";
-    const SYSCO_IMAGE_BASE = `${GITHUB_IMAGE_BASE}sysco/`;
+    const SYSCO_IMAGE_BASE = GITHUB_IMAGE_BASE;
+    const GITHUB_OWNER = "pgonzalez2910";
+    const GITHUB_REPO = "jengchi-product-images";
+    const GITHUB_BRANCH = "main";
+    const GITHUB_IMAGE_FOLDER = "";
     const UNIT_OPTIONS = ["lb", "case", "box", "bag", "each"];
     const SOURCE_LABELS = {
       JULIO: "Julio Weigh Count",
@@ -1632,6 +1637,7 @@
     let phase8CategoryChart = null;
     let lastWeeklyHistoryRows = [];
     let lastPriceAlertRows = [];
+    let githubImageAutoSyncCompleted = false;
 
     document.addEventListener("DOMContentLoaded", async () => {
       setupEnterAsTabNavigation();
@@ -1644,6 +1650,7 @@
       document.getElementById("reportEndDate").value = today;
 
       await reloadAll();
+      await autoSyncGitHubImagesIfNeeded();
     });
 
     async function reloadAll() {
@@ -1771,7 +1778,8 @@
       const unitType = count?.unit_type || item.default_unit || "lb";
       const source = normalizeSource(item.source_area || "MANUAL");
       const sourceClass = getSourceClass(source);
-      const imageUrl = resolveImage(item.image_url || item.item_name, item.vendor || item.source_area);
+      const imageCandidates = buildImageCandidates(item.image_url, item.item_name, item.vendor || item.source_area);
+      const imageUrl = imageCandidates[0] || PLACEHOLDER_IMAGE;
       const poundsPerPackage = getPoundsPerPackage(item);
       const baseQty = convertQuantityToBaseLb(Number(quantity || 0), unitType, item);
       const value = baseQty * getPricePerBaseUnit(item);
@@ -1779,7 +1787,14 @@
       return `
         <div class="inventory-card ${sourceClass}" data-item-id="${escapeAttr(item.id)}">
           <div class="product-main">
-            <img class="product-image" src="${escapeAttr(imageUrl)}" alt="${escapeAttr(item.item_name)}" onerror="this.onerror=null;this.src=PLACEHOLDER_IMAGE" />
+            <img
+              class="product-image"
+              src="${escapeAttr(imageUrl)}"
+              alt="${escapeAttr(item.item_name)}"
+              data-image-candidates="${escapeAttr(JSON.stringify(imageCandidates))}"
+              data-image-index="0"
+              onerror="loadNextProductImage(this)"
+            />
             <div class="product-name">${escapeHtml(item.item_name)}</div>
             <div class="product-meta">${escapeHtml(sourceDisplay(item.source_area))} • ${escapeHtml(item.category || "Other")}</div>
           </div>
@@ -4013,20 +4028,338 @@
     }
 
     function resolveImage(imageName, vendor = "") {
-      let value = String(imageName || "").trim();
-      if (!value) return PLACEHOLDER_IMAGE;
+      const candidates = buildImageCandidates(imageName, imageName, vendor);
+      return candidates[0] || PLACEHOLDER_IMAGE;
+    }
 
-      if (/^https?:\/\//i.test(value)) return value;
+    function buildImageCandidates(imageName, itemName = "", vendor = "") {
+      const candidates = [];
+      const directValue = String(imageName || "").trim();
 
-      value = value.split("/").pop().split("?")[0];
+      function addCandidate(url) {
+        if (!url || candidates.includes(url)) {
+          return;
+        }
 
-      if (!/\.(png|jpe?g|webp|gif)$/i.test(value)) value += ".jpg";
+        candidates.push(url);
+      }
 
-      value = value.replace(/\s+/g, "");
+      if (directValue) {
+        addCandidate(resolveImageValueToUrl(directValue));
+      }
 
-      if (/sysco/i.test(vendor)) return SYSCO_IMAGE_BASE + encodeURIComponent(value);
+      buildLikelyImageFilenames(itemName || directValue).forEach(filename => {
+        addCandidate(GITHUB_IMAGE_BASE + encodeGitHubPath(filename));
+      });
 
-      return GITHUB_IMAGE_BASE + encodeURIComponent(value);
+      return candidates.length ? candidates : [PLACEHOLDER_IMAGE];
+    }
+
+    function resolveImageValueToUrl(value) {
+      let cleanValue = String(value || "").trim();
+
+      if (!cleanValue) {
+        return PLACEHOLDER_IMAGE;
+      }
+
+      if (/github\.com\/.+\/blob\//i.test(cleanValue)) {
+        return cleanValue
+          .replace("https://github.com/", "https://raw.githubusercontent.com/")
+          .replace("/blob/", "/");
+      }
+
+      if (/^https?:\/\//i.test(cleanValue)) {
+        return cleanValue;
+      }
+
+      cleanValue = cleanValue.split("?")[0].replace(/^\/+/, "");
+
+      if (!/\.(png|jpe?g|webp|gif)$/i.test(cleanValue)) {
+        cleanValue += ".jpg";
+      }
+
+      return GITHUB_IMAGE_BASE + encodeGitHubPath(cleanValue);
+    }
+
+    function encodeGitHubPath(pathValue) {
+      return String(pathValue || "")
+        .split("/")
+        .map(part => encodeURIComponent(part))
+        .join("/");
+    }
+
+    function buildLikelyImageFilenames(itemName) {
+      const rawName = String(itemName || "").trim();
+
+      if (!rawName) {
+        return [];
+      }
+
+      const withoutExtension = rawName.replace(/\.(png|jpe?g|webp|gif)$/i, "");
+      const words = withoutExtension
+        .replace(/&/g, " and ")
+        .replace(/[^a-zA-Z0-9]+/g, " ")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+
+      if (!words.length) {
+        return [];
+      }
+
+      const titleWords = words.map(word => {
+        if (/^[A-Z0-9]+$/.test(word)) {
+          return word;
+        }
+
+        return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      });
+
+      const lowercaseHyphen = words.map(word => word.toLowerCase()).join("-");
+      const titleHyphen = titleWords.join("-");
+      const originalHyphen = words.join("-");
+      const compactTitle = titleWords.join("");
+      const bases = Array.from(new Set([
+        titleHyphen,
+        originalHyphen,
+        lowercaseHyphen,
+        compactTitle
+      ]));
+
+      const extensions = [".jpeg", ".jpg", ".png", ".webp", ".gif"];
+      return bases.flatMap(base => extensions.map(ext => `${base}${ext}`));
+    }
+
+    function loadNextProductImage(imageElement) {
+      const candidates = JSON.parse(imageElement.dataset.imageCandidates || "[]");
+      const currentIndex = Number(imageElement.dataset.imageIndex || 0);
+      const nextIndex = currentIndex + 1;
+
+      if (nextIndex < candidates.length) {
+        imageElement.dataset.imageIndex = String(nextIndex);
+        imageElement.src = candidates[nextIndex];
+        return;
+      }
+
+      imageElement.onerror = null;
+      imageElement.src = PLACEHOLDER_IMAGE;
+    }
+
+    function normalizeImageMatchText(value) {
+      return String(value || "")
+        .toLowerCase()
+        .replace(/\.(png|jpe?g|webp|gif)$/i, "")
+        .replace(/&/g, " and ")
+        .replace(/\biqf\b/g, "")
+        .replace(/\busda\b/g, "")
+        .replace(/\busa\b/g, "")
+        .replace(/\blb\b/g, "")
+        .replace(/\bcase\b/g, "")
+        .replace(/\bbox\b/g, "")
+        .replace(/\bbag\b/g, "")
+        .replace(/\bmanual\b/g, "")
+        .replace(/\bsysco\b/g, "")
+        .replace(/\bdry\b/g, "")
+        .replace(/\bgoods\b/g, "")
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim()
+        .replace(/\s+/g, " ");
+    }
+
+    function compactImageMatchText(value) {
+      return normalizeImageMatchText(value).replace(/\s+/g, "");
+    }
+
+    function getGitHubContentsUrl(folderPath = "") {
+      const encodedPath = String(folderPath || "")
+        .split("/")
+        .filter(Boolean)
+        .map(part => encodeURIComponent(part))
+        .join("/");
+      const pathPart = encodedPath ? `/${encodedPath}` : "";
+
+      return `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents${pathPart}?ref=${GITHUB_BRANCH}`;
+    }
+
+    async function fetchGitHubImageFiles(folderPath = "") {
+      const response = await fetch(getGitHubContentsUrl(folderPath), {
+        headers: { Accept: "application/vnd.github+json" }
+      });
+
+      if (!response.ok) {
+        throw new Error(`GitHub image list failed: ${response.status}`);
+      }
+
+      const entries = await response.json();
+
+      if (!Array.isArray(entries)) {
+        return [];
+      }
+
+      return entries.filter(entry =>
+        entry.type === "file" &&
+        /\.(png|jpe?g|webp|gif)$/i.test(entry.name)
+      );
+    }
+
+    function scoreImageMatch(item, file) {
+      const itemName = compactImageMatchText(item.item_name);
+      const fileBase = compactImageMatchText(file.name);
+      const vendorCode = compactImageMatchText(item.vendor_item_code || "");
+      const currentImage = compactImageMatchText(item.image_url || "");
+      const itemWords = normalizeImageMatchText(item.item_name)
+        .split(" ")
+        .filter(word => word.length > 2);
+      const fileWords = normalizeImageMatchText(file.name).split(" ");
+      const matchedWords = itemWords.filter(word => fileWords.includes(word)).length;
+
+      let score = 0;
+
+      if (currentImage && fileBase === currentImage) {
+        score += 100;
+      }
+
+      if (vendorCode && fileBase.includes(vendorCode)) {
+        score += 95;
+      }
+
+      if (fileBase === itemName) {
+        score += 90;
+      }
+
+      if (fileBase.includes(itemName) || itemName.includes(fileBase)) {
+        score += 70;
+      }
+
+      if (itemWords.length) {
+        score += Math.round((matchedWords / itemWords.length) * 55);
+      }
+
+      return score;
+    }
+
+    function findBestImageForItem(item, imageFiles) {
+      let bestMatch = null;
+      let bestScore = 0;
+
+      imageFiles.forEach(file => {
+        const score = scoreImageMatch(item, file);
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = file;
+        }
+      });
+
+      if (!bestMatch || bestScore < 45) {
+        return null;
+      }
+
+      return {
+        file: bestMatch,
+        score: bestScore
+      };
+    }
+
+    async function autoSyncGitHubImagesIfNeeded() {
+      if (githubImageAutoSyncCompleted) {
+        return;
+      }
+
+      githubImageAutoSyncCompleted = true;
+
+      const needsImages = inventoryItems.some(item =>
+        item.active !== false &&
+        !String(item.image_url || "").trim()
+      );
+
+      if (!needsImages) {
+        return;
+      }
+
+      try {
+        await syncGitHubImagesToInventory({ silent: true, onlyMissing: true });
+      } catch (error) {
+        console.warn("Automatic GitHub image sync skipped:", error);
+      }
+    }
+
+    async function syncGitHubImagesToInventory(options = {}) {
+      const silent = options.silent === true;
+      const onlyMissing = options.onlyMissing === true;
+
+      try {
+        if (!silent) showToast("Scanning GitHub product images...");
+
+        const imageFiles = await fetchGitHubImageFiles(GITHUB_IMAGE_FOLDER);
+
+        if (!imageFiles.length) {
+          if (!silent) showToast("No GitHub images found.");
+          return;
+        }
+
+        const { data: items, error: itemError } = await client
+          .from("fresh_inventory_items")
+          .select("id,item_name,image_url,vendor,vendor_item_code,source_area,active")
+          .eq("active", true);
+
+        if (itemError) {
+          console.error(itemError);
+          showToast("Unable to load inventory items for image sync.");
+          return;
+        }
+
+        let updatedCount = 0;
+        const skipped = [];
+
+        for (const item of items || []) {
+          if (onlyMissing && String(item.image_url || "").trim()) {
+            continue;
+          }
+
+          const match = findBestImageForItem(item, imageFiles);
+
+          if (!match) {
+            skipped.push(item.item_name);
+            continue;
+          }
+
+          const { error: updateError } = await client
+            .from("fresh_inventory_items")
+            .update({ image_url: match.file.name })
+            .eq("id", item.id);
+
+          if (updateError) {
+            console.error(updateError);
+            skipped.push(item.item_name);
+            continue;
+          }
+
+          updatedCount += 1;
+        }
+
+        await loadItems();
+        await loadCounts();
+        populateReportCategoryDropdown();
+        renderInventory();
+        updateSummary();
+
+        if (typeof loadSetupReview === "function" && reportsUnlocked) {
+          await loadSetupReview();
+        }
+
+        if (!silent || updatedCount > 0) {
+          showToast(`GitHub image sync complete. Updated ${updatedCount}. Missing ${skipped.length}.`);
+        }
+
+        if (skipped.length) {
+          console.warn("Items without image match:", skipped);
+        }
+      } catch (error) {
+        console.error(error);
+        if (!silent) showToast("GitHub image sync failed. Check console.");
+        throw error;
+      }
     }
 
     function findItemByName(productName) {
