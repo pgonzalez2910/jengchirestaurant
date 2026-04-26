@@ -963,7 +963,7 @@
     <div class="toolbar compact-toolbar">
       <div>
         <label>Inventory Date</label>
-        <input type="date" id="entryDate" onchange="syncReferenceDateFromInventoryDate(); reloadAll()" />
+        <input type="date" id="entryDate" onchange="handleInventoryDateChange()" />
       </div>
 
       <input type="hidden" id="employeeName" value="Physical Inventory User" />
@@ -1065,9 +1065,8 @@
           </div>
         </div>
 
-        <div class="grid-5" style="padding:14px 18px; background:#fffaf5; border-bottom:1px solid var(--line);">
+        <div class="grid-4" style="padding:14px 18px; background:#fffaf5; border-bottom:1px solid var(--line);">
           <input type="hidden" id="ronyStockDate" />
-          <div><label>Using Date</label><input type="text" value="Same as Inventory Date" disabled /></div>
           <div><label>Counted By</label><input type="text" id="ronyCountedBy" /></div>
           <button id="ronyPreviewButton" onclick="previewRonyStock()"><i class="fa-solid fa-eye"></i> Preview Stock Reference</button>
           <button class="secondary" disabled title="Reference stock is reference-only and should not be imported into physical count."><i class="fa-solid fa-ban"></i> Reference Only - Not Imported</button>
@@ -1392,10 +1391,14 @@
             Phase 8 uses <strong>Supabase only</strong>: physical inventory counts from this website, invoice purchases from the main inventory website, and POS food sales entered by admin.
           </div>
 
+          <div class="report-note" id="weeklyDateHelp" style="margin-top:0;">
+            Inventory day controls the weekly report dates.
+          </div>
+
           <div class="grid-5" style="padding:14px 18px; background:#fffaf5; border-bottom:1px solid var(--line);">
-            <div><label>Start Date</label><input type="date" id="reportStartDate" onchange="loadSavedFinancialPeriodInput()" /></div>
-            <div><label>End Date</label><input type="date" id="reportEndDate" onchange="loadSavedFinancialPeriodInput()" /></div>
-            <div><label>Total Food Sales</label><input type="number" id="reportSales" min="0" step="0.01" placeholder="From POS" /></div>
+            <div><label>Invoice Week Start</label><input type="date" id="reportStartDate" onchange="updateReportDateHelp(); loadSavedFinancialPeriodInput()" /></div>
+            <div><label>Invoice Week End</label><input type="date" id="reportEndDate" onchange="updateReportDateHelp(); loadSavedFinancialPeriodInput()" /></div>
+            <div><label>Total Food Sales</label><input type="number" id="reportSales" min="0" step="0.01" placeholder="Sunday-Saturday sales" /></div>
             <div><label>Manual Purchase Adjustment</label><input type="number" id="reportPurchaseAdjustment" step="0.01" value="0" /></div>
             <div>
               <label>Category</label>
@@ -1751,9 +1754,7 @@
 
       const today = new Date().toISOString().slice(0, 10);
       document.getElementById("entryDate").value = today;
-      syncReferenceDateFromInventoryDate();
-      document.getElementById("reportStartDate").value = today;
-      document.getElementById("reportEndDate").value = today;
+      syncDatesFromInventoryDate();
 
       await reloadAll();
       await autoSyncGitHubImagesIfNeeded();
@@ -1767,13 +1768,66 @@
       updateSummary();
     }
 
-    function syncReferenceDateFromInventoryDate() {
+    function formatDateInputValue(date) {
+      return date.toISOString().slice(0, 10);
+    }
+
+    function addDaysToDate(dateValue, days) {
+      const date = new Date(`${dateValue}T00:00:00`);
+      date.setDate(date.getDate() + days);
+      return formatDateInputValue(date);
+    }
+
+    function weeklyReportDatesFromInventoryDate(inventoryDate) {
+      if (!inventoryDate) {
+        return {
+          invoiceStartDate: "",
+          invoiceEndDate: "",
+          beginningCountDate: "",
+          endingCountDate: ""
+        };
+      }
+
+      return {
+        invoiceStartDate: addDaysToDate(inventoryDate, -8),
+        invoiceEndDate: addDaysToDate(inventoryDate, -2),
+        beginningCountDate: addDaysToDate(inventoryDate, -7),
+        endingCountDate: inventoryDate
+      };
+    }
+
+    function syncDatesFromInventoryDate() {
       const inventoryDate = document.getElementById("entryDate")?.value || "";
       const referenceDateInput = document.getElementById("ronyStockDate");
+      const reportStartInput = document.getElementById("reportStartDate");
+      const reportEndInput = document.getElementById("reportEndDate");
+      const weeklyDates = weeklyReportDatesFromInventoryDate(inventoryDate);
 
       if (referenceDateInput) {
         referenceDateInput.value = inventoryDate;
       }
+
+      if (reportStartInput && reportEndInput && weeklyDates.invoiceStartDate && weeklyDates.invoiceEndDate) {
+        reportStartInput.value = weeklyDates.invoiceStartDate;
+        reportEndInput.value = weeklyDates.invoiceEndDate;
+      }
+
+      updateReportDateHelp();
+    }
+
+    function updateReportDateHelp() {
+      const help = document.getElementById("weeklyDateHelp");
+      const inventoryDate = document.getElementById("entryDate")?.value || "";
+      const weeklyDates = weeklyReportDatesFromInventoryDate(inventoryDate);
+
+      if (!help || !inventoryDate) return;
+
+      help.textContent = `Inventory day ${weeklyDates.endingCountDate}: invoices/sales ${weeklyDates.invoiceStartDate} through ${weeklyDates.invoiceEndDate}. Beginning count ${weeklyDates.beginningCountDate}, ending count ${weeklyDates.endingCountDate}.`;
+    }
+
+    async function handleInventoryDateChange() {
+      syncDatesFromInventoryDate();
+      await reloadAll();
     }
 
 
@@ -4253,23 +4307,27 @@ async function previewRonyStock() {
 
       const startDate = document.getElementById("reportStartDate").value;
       const endDate = document.getElementById("reportEndDate").value;
+      const inventoryDate = document.getElementById("entryDate").value;
+      const weeklyDates = weeklyReportDatesFromInventoryDate(inventoryDate);
+      const beginningCountDate = weeklyDates.beginningCountDate || startDate;
+      const endingCountDate = weeklyDates.endingCountDate || endDate;
       const sales = Number(document.getElementById("reportSales").value || 0);
       const purchaseAdjustment = Number(document.getElementById("reportPurchaseAdjustment").value || 0);
       const selectedCategory = document.getElementById("reportCategory").value;
 
-      if (!startDate || !endDate) {
-        showToast("Choose start and end dates.");
+      if (!startDate || !endDate || !endingCountDate) {
+        showToast("Choose the inventory date first.");
         return;
       }
 
       if (new Date(startDate) > new Date(endDate)) {
-        showToast("Start date must be before end date.");
+        showToast("Invoice week start must be before invoice week end.");
         return;
       }
 
       const [startCountsResult, endCountsResult, purchasesResult] = await Promise.all([
-        client.from("fresh_inventory_counts").select("*, fresh_inventory_items(*)").eq("count_date", startDate),
-        client.from("fresh_inventory_counts").select("*, fresh_inventory_items(*)").eq("count_date", endDate),
+        client.from("fresh_inventory_counts").select("*, fresh_inventory_items(*)").eq("count_date", beginningCountDate),
+        client.from("fresh_inventory_counts").select("*, fresh_inventory_items(*)").eq("count_date", endingCountDate),
         client.from("v_jc_invoice_purchases_matched_for_cogs").select("*").gte("invoice_date", startDate).lte("invoice_date", endDate)
       ]);
 
@@ -4282,6 +4340,9 @@ async function previewRonyStock() {
       const startMap = new Map((startCountsResult.data || []).map(row => [row.item_id, row]));
       const endMap = new Map((endCountsResult.data || []).map(row => [row.item_id, row]));
       const purchaseRows = purchasesResult.data || [];
+      if (!purchaseRows.length) {
+        showToast(`No invoice rows found for ${startDate} through ${endDate}. Check invoice dates and invoice item mapping.`);
+      }
       lastInvoiceDrilldownRows = purchaseRows;
       const purchaseByItem = buildPurchaseMap(purchaseRows);
 
@@ -4366,6 +4427,8 @@ async function previewRonyStock() {
       lastFinancialSummary = {
         startDate,
         endDate,
+        beginningCountDate,
+        endingCountDate,
         sales,
         purchaseAdjustment,
         selectedCategory,
