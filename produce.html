@@ -1451,8 +1451,8 @@
           </div>
 
           <div class="grid-5" style="padding:14px 18px; background:#fffaf5; border-bottom:1px solid var(--line);">
-            <div><label>Invoice Week Start</label><input type="date" id="reportStartDate" onchange="handleReportWeekChange()" title="Choose the Sunday start date for the invoice/sales week" /></div>
-            <div><label>Invoice Week End</label><input type="date" id="reportEndDate" onchange="handleReportWeekChange()" title="Choose the Saturday end date for the invoice/sales week" /></div>
+            <div><label>Invoice Week Start</label><input type="date" id="reportStartDate" onchange="handleReportWeekChange()" oninput="handleReportWeekChange()" title="Choose the Sunday start date for the invoice/sales week" /></div>
+            <div><label>Invoice Week End</label><input type="date" id="reportEndDate" onchange="handleReportWeekChange()" oninput="handleReportWeekChange()" title="Choose the Saturday end date for the invoice/sales week" /></div>
             <div><label>Food Sales Used for COGS</label><input type="number" id="reportSales" min="0" step="0.01" placeholder="Auto total" readonly /></div>
             <div><label>Manual Purchase Adjustment</label><input type="number" id="reportPurchaseAdjustment" step="0.01" value="0" /></div>
             <div>
@@ -1988,15 +1988,36 @@
       }
     }
 
-    async function handleReportWeekChange() {
+    let reportWeekChangeTimer = null;
+
+    function handleReportWeekChange() {
       updateReportDateHelp();
 
-      if (!reportsUnlocked) {
-        return;
+      if (reportWeekChangeTimer) {
+        clearTimeout(reportWeekChangeTimer);
       }
 
-      await loadSavedFinancialPeriodInput();
-      await calculateFinancialReports();
+      reportWeekChangeTimer = setTimeout(async () => {
+        if (!reportsUnlocked) {
+          return;
+        }
+
+        const startDate = document.getElementById("reportStartDate")?.value || "";
+        const endDate = document.getElementById("reportEndDate")?.value || "";
+
+        if (!startDate || !endDate) {
+          return;
+        }
+
+        if (new Date(startDate) > new Date(endDate)) {
+          showToast("Invoice week start must be before invoice week end.");
+          return;
+        }
+
+        showToast("Loading selected invoice week...");
+        await loadSavedFinancialPeriodInput();
+        await calculateFinancialReports();
+      }, 250);
     }
 
 
@@ -4012,6 +4033,10 @@ async function previewRonyStock() {
       const nonFoodKeywords = [
         "hand towel",
         "paper towel",
+        "hardwound",
+        "hardwound roll",
+        "nova hardwound roll",
+        "paper roll",
         "napkin",
         "toilet tissue",
         "toilet paper",
@@ -4024,6 +4049,10 @@ async function previewRonyStock() {
         "lid",
         "dome lid",
         "plastic bag",
+        "plastic t bag",
+        "[ m ] plastic t bag",
+        "t bag",
+        "poly bag",
         "glove",
         "gloves",
         "nitrile",
@@ -4805,6 +4834,188 @@ async function previewRonyStock() {
       return fallback.data === true;
     }
 
+
+    function normalizedInvoiceKey(vendor, itemCode, productName) {
+      return [
+        normalizeName(vendor || ""),
+        normalizeName(itemCode || ""),
+        normalizeName(productName || "")
+      ].join("||");
+    }
+
+    function getInvoiceLineQuantity(row) {
+      return Number(
+        row?.purchase_quantity ??
+        row?.quantity ??
+        row?.qty ??
+        row?.invoice_quantity ??
+        row?.order_quantity ??
+        1
+      ) || 0;
+    }
+
+    function getInvoiceLineWeight(row) {
+      return Number(
+        row?.purchase_weight ??
+        row?.weight ??
+        row?.base_quantity ??
+        row?.base_quantity_lb ??
+        row?.total_weight ??
+        0
+      ) || 0;
+    }
+
+    function getInvoiceLineTotal(row) {
+      const directTotal = Number(
+        row?.line_total ??
+        row?.total_price ??
+        row?.total ??
+        row?.amount ??
+        row?.extended_price ??
+        row?.invoice_price ??
+        0
+      );
+
+      if (directTotal > 0) {
+        return directTotal;
+      }
+
+      const quantity = getInvoiceLineQuantity(row) || 1;
+      const unitPrice = Number(row?.unit_price ?? row?.price ?? 0) || 0;
+      const weightPrice = Number(row?.price_per_unit ?? 0) || 0;
+      const weight = getInvoiceLineWeight(row);
+
+      if (weight > 0 && weightPrice > 0) {
+        return weight * weightPrice;
+      }
+
+      return quantity * unitPrice;
+    }
+
+    function getInvoiceBaseQuantity(row, matchedItem) {
+      const weight = getInvoiceLineWeight(row);
+
+      if (weight > 0) {
+        return weight;
+      }
+
+      const quantity = getInvoiceLineQuantity(row);
+      const poundsPerBox = Number(matchedItem?.pounds_per_box || matchedItem?.units_per_package || 1) || 1;
+
+      return quantity * Math.max(poundsPerBox, 1);
+    }
+
+    async function getFastInvoicePurchasesForCogs(startDate, endDate) {
+      const invoicesResult = await client
+        .from("invoices")
+        .select("id,invoice_date,vendor,invoice_number")
+        .gte("invoice_date", startDate)
+        .lte("invoice_date", endDate)
+        .order("invoice_date", { ascending: true });
+
+      if (invoicesResult.error) {
+        return { data: [], error: invoicesResult.error };
+      }
+
+      const invoices = invoicesResult.data || [];
+      const invoiceIds = invoices.map(invoice => invoice.id).filter(Boolean);
+
+      if (!invoiceIds.length) {
+        return { data: [], error: null };
+      }
+
+      const invoiceMap = new Map(invoices.map(invoice => [invoice.id, invoice]));
+      const invoiceItems = [];
+
+      for (let index = 0; index < invoiceIds.length; index += 100) {
+        const chunk = invoiceIds.slice(index, index + 100);
+        const itemsResult = await client
+          .from("invoice_items")
+          .select("*")
+          .in("invoice_id", chunk);
+
+        if (itemsResult.error) {
+          return { data: [], error: itemsResult.error };
+        }
+
+        invoiceItems.push(...(itemsResult.data || []));
+      }
+
+      const matchesResult = await client
+        .from("fresh_invoice_product_matches")
+        .select("vendor,item_code,product_name,matched_item_id");
+
+      const savedMatches = matchesResult.error ? [] : (matchesResult.data || []);
+      const savedMatchMap = new Map();
+
+      savedMatches.forEach(match => {
+        savedMatchMap.set(
+          normalizedInvoiceKey(match.vendor, match.item_code, match.product_name),
+          String(match.matched_item_id)
+        );
+      });
+
+      const itemById = new Map(inventoryItems.map(item => [String(item.id), item]));
+      const itemByName = new Map();
+      const itemByCode = new Map();
+
+      inventoryItems
+        .filter(item => item.active !== false)
+        .forEach(item => {
+          const normalizedItemName = normalizeName(item.item_name || "");
+          const normalizedItemCode = normalizeName(item.vendor_item_code || item.item_code || "");
+
+          if (normalizedItemName) {
+            itemByName.set(normalizedItemName, item);
+          }
+
+          if (normalizedItemCode) {
+            itemByCode.set(normalizedItemCode, item);
+          }
+        });
+
+      const rows = invoiceItems.map(item => {
+        const invoice = invoiceMap.get(item.invoice_id) || {};
+        const vendor = item.vendor || invoice.vendor || "";
+        const productName = item.product_name || item.description || item.item_name || "";
+        const itemCode = item.item_code || item.item_number || item.code || "";
+        const savedItemId = savedMatchMap.get(normalizedInvoiceKey(vendor, itemCode, productName));
+        const matchedBySaved = savedItemId ? itemById.get(String(savedItemId)) : null;
+        const matchedByCode = itemCode ? itemByCode.get(normalizeName(itemCode)) : null;
+        const matchedByName = itemByName.get(normalizeName(productName));
+        const matchedItem = matchedBySaved || matchedByCode || matchedByName || null;
+        const quantity = getInvoiceLineQuantity(item);
+        const weight = getInvoiceLineWeight(item);
+        const lineTotal = getInvoiceLineTotal(item);
+        const baseQuantity = matchedItem ? getInvoiceBaseQuantity(item, matchedItem) : (weight > 0 ? weight : quantity);
+
+        return {
+          invoice_id: item.invoice_id,
+          invoice_date: invoice.invoice_date || item.invoice_date || "",
+          invoice_number: invoice.invoice_number || item.invoice_number || "",
+          vendor,
+          product_name: productName,
+          item_code: itemCode,
+          purchase_unit: item.unit || item.purchase_unit || "",
+          unit: item.unit || "",
+          purchase_quantity: quantity,
+          quantity,
+          purchase_weight: weight,
+          has_weight: Boolean(item.has_weight) || weight > 0,
+          line_total: lineTotal,
+          base_quantity: baseQuantity,
+          matched_base_quantity: matchedItem ? baseQuantity : 0,
+          matched_item_id: matchedItem ? String(matchedItem.id) : null,
+          matched_item_name: matchedItem ? matchedItem.item_name : null,
+          matched_category: matchedItem ? matchedItem.category : null,
+          match_method: matchedBySaved ? "SAVED_MATCH" : matchedByCode ? "ITEM_CODE" : matchedByName ? "EXACT_NAME" : "UNMATCHED"
+        };
+      });
+
+      return { data: rows, error: null };
+    }
+
+
     async function calculateFinancialReports() {
       if (!reportsUnlocked) return;
 
@@ -4832,15 +5043,24 @@ async function previewRonyStock() {
         showToast("This Monday is the first inventory baseline. Beginning inventory uses the same baseline count.");
       }
 
+      showToast("Loading selected invoice week...");
+
       const [startCountsResult, endCountsResult, purchasesResult] = await Promise.all([
         client.from("fresh_inventory_counts").select("*, fresh_inventory_items(*)").eq("count_date", beginningCountDate),
         client.from("fresh_inventory_counts").select("*, fresh_inventory_items(*)").eq("count_date", endingCountDate),
-        client.from("v_jc_invoice_purchases_matched_for_cogs").select("*").gte("invoice_date", startDate).lte("invoice_date", endDate)
+        getFastInvoicePurchasesForCogs(startDate, endDate)
       ]);
 
       if (startCountsResult.error || endCountsResult.error || purchasesResult.error) {
-        console.error(startCountsResult.error || endCountsResult.error || purchasesResult.error);
-        showToast("Unable to calculate Phase 3 report. Run the Phase 3 SQL first.");
+        const reportError = startCountsResult.error || endCountsResult.error || purchasesResult.error;
+        console.error(reportError);
+
+        if (reportError.code === "57014") {
+          showToast("Invoice report timed out. Run the COGS speed index SQL, then calculate again.");
+        } else {
+          showToast("Unable to calculate Phase 3 report. Run the Phase 3 SQL first.");
+        }
+
         return;
       }
 
