@@ -945,6 +945,60 @@
       padding: 8px 10px;
       max-width: 240px;
     }
+
+    .sales-entry-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(140px, 1fr));
+      gap: 10px;
+      padding: 14px 18px;
+      background: #fffaf5;
+      border-bottom: 1px solid var(--line);
+      align-items: end;
+    }
+
+    .sales-total-box {
+      background: #fff;
+      border: 2px solid var(--brand);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-weight: 900;
+      min-height: 50px;
+    }
+
+    .sales-total-box span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      margin-bottom: 4px;
+    }
+
+    .sales-total-box strong {
+      color: var(--brand-dark);
+      font-size: 16px;
+    }
+
+    @media (max-width: 1200px) {
+      .sales-entry-grid {
+        grid-template-columns: repeat(2, minmax(140px, 1fr));
+      }
+    }
+
+    @media (max-width: 700px) {
+      .sales-entry-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+
+    #reportStartDate,
+    #reportEndDate {
+      background: #fff;
+      color: var(--ink);
+      cursor: pointer;
+    }
+
 </style>
 </head>
 
@@ -970,7 +1024,7 @@
       <input type="hidden" id="sourceFilter" value="" />
       <input type="hidden" id="itemSearch" value="" />
 
-      <button onclick="reloadAll()"><i class="fa-solid fa-rotate"></i> Load Date</button>
+      <button onclick="handleInventoryDateChange()"><i class="fa-solid fa-rotate"></i> Load Date</button>
       <button class="secondary" onclick="saveAllVisible()"><i class="fa-solid fa-floppy-disk"></i> Save All</button>
     </div>
 
@@ -1147,12 +1201,13 @@
             <div class="inventory-actions">
               <button onclick="syncItemsFromInvoices()"><i class="fa-solid fa-link"></i> Sync Items From Invoices</button>
               <button class="secondary" onclick="syncJulioOrderItemsIntoPhysicalInventory(true)"><i class="fa-solid fa-scale-balanced"></i> Sync Physical Count Items</button>
+              <button class="secondary" onclick="syncStockReferenceItemsForMatching(true)"><i class="fa-solid fa-warehouse"></i> Sync Stock Reference Items</button>
               <button class="secondary" onclick="syncGitHubImagesToInventory()"><i class="fa-solid fa-image"></i> Sync GitHub Images</button>
               <button class="secondary" onclick="loadSetupReview()"><i class="fa-solid fa-rotate"></i> Refresh Review</button>
             </div>
           </div>
           <div class="notice" style="margin:14px 18px;">
-            This does not change invoices or vendor orders. It only creates or updates items in <strong>fresh_inventory_items</strong> so they can be counted. The physical-count sync only imports items explicitly assigned to physical inventory in the main database. It does not use reference stock/check records and it does not auto-run on page load.
+            This does not change invoices or submitted orders. Physical Count sync only updates physical-count items. Stock Reference sync only adds reference items with source <strong>Stock Reference</strong> so invoice lines can be matched for COGS without touching physical-count items.
           </div>
         </div>
 
@@ -1396,15 +1451,25 @@
           </div>
 
           <div class="grid-5" style="padding:14px 18px; background:#fffaf5; border-bottom:1px solid var(--line);">
-            <div><label>Invoice Week Start</label><input type="date" id="reportStartDate" onchange="updateReportDateHelp(); loadSavedFinancialPeriodInput()" /></div>
-            <div><label>Invoice Week End</label><input type="date" id="reportEndDate" onchange="updateReportDateHelp(); loadSavedFinancialPeriodInput()" /></div>
-            <div><label>Total Food Sales</label><input type="number" id="reportSales" min="0" step="0.01" placeholder="Sunday-Saturday sales" /></div>
+            <div><label>Invoice Week Start</label><input type="date" id="reportStartDate" onchange="handleReportWeekChange()" title="Choose the Sunday start date for the invoice/sales week" /></div>
+            <div><label>Invoice Week End</label><input type="date" id="reportEndDate" onchange="handleReportWeekChange()" title="Choose the Saturday end date for the invoice/sales week" /></div>
+            <div><label>Food Sales Used for COGS</label><input type="number" id="reportSales" min="0" step="0.01" placeholder="Auto total" readonly /></div>
             <div><label>Manual Purchase Adjustment</label><input type="number" id="reportPurchaseAdjustment" step="0.01" value="0" /></div>
             <div>
               <label>Category</label>
               <select id="reportCategory" onchange="calculateFinancialReports()">
                 <option value="">All Categories</option>
               </select>
+            </div>
+          </div>
+
+          <div class="sales-entry-grid">
+            <div><label>Chef Food Sale</label><input type="number" id="reportChefFoodSales" min="0" step="0.01" placeholder="Chef Food Sale" oninput="syncSalesTotalFromCategoryInputs()" /></div>
+            <div><label>Dough Food Sale</label><input type="number" id="reportDoughFoodSales" min="0" step="0.01" placeholder="Dough Food Sale" oninput="syncSalesTotalFromCategoryInputs()" /></div>
+            <div><label>Bakery Sale</label><input type="number" id="reportBakerySales" min="0" step="0.01" placeholder="Bakery Sale" oninput="syncSalesTotalFromCategoryInputs()" /></div>
+            <div class="sales-total-box">
+              <span>Sales Used For COGS</span>
+              <strong id="reportAllSalesDisplay">$0.00</strong>
             </div>
           </div>
 
@@ -1537,7 +1602,7 @@
                   <th>Invoice Date</th>
                   <th>Vendor</th>
                   <th>Invoice Product</th>
-                  <th>Matched Inventory Item</th>
+                  <th>Match / Inventory Item</th>
                   <th>Category</th>
                   <th>Qty</th>
                   <th>Base LB</th>
@@ -1728,6 +1793,7 @@
     };
 
     let inventoryItems = [];
+    let matchInventoryItems = [];
     let inventoryCounts = [];
     let reportsUnlocked = false;
     let saveTimers = {};
@@ -1768,6 +1834,78 @@
       updateSummary();
     }
 
+    const FIRST_INVENTORY_BASELINE_DATE = "2026-04-27";
+    const FOOD_COST_SALES_INPUT_IDS = ["reportChefFoodSales", "reportDoughFoodSales", "reportBakerySales"];
+    const ALL_SALES_INPUT_IDS = [...FOOD_COST_SALES_INPUT_IDS];
+
+    function readMoneyInput(inputId) {
+      return Number(document.getElementById(inputId)?.value || 0) || 0;
+    }
+
+    function setMoneyInput(inputId, value) {
+      const input = document.getElementById(inputId);
+
+      if (input) {
+        input.value = Number(value || 0).toFixed(2);
+      }
+    }
+
+    function syncSalesTotalFromCategoryInputs() {
+      const foodCostSales = FOOD_COST_SALES_INPUT_IDS
+        .reduce((total, inputId) => total + readMoneyInput(inputId), 0);
+      const allSales = ALL_SALES_INPUT_IDS
+        .reduce((total, inputId) => total + readMoneyInput(inputId), 0);
+      const reportSalesInput = document.getElementById("reportSales");
+      const allSalesDisplay = document.getElementById("reportAllSalesDisplay");
+
+      if (reportSalesInput) {
+        reportSalesInput.value = foodCostSales.toFixed(2);
+      }
+
+      if (allSalesDisplay) {
+        allSalesDisplay.textContent = formatCurrency(allSales);
+      }
+
+      return { foodCostSales, allSales };
+    }
+
+    function getSalesBreakdownFromInputs() {
+      const totals = syncSalesTotalFromCategoryInputs();
+
+      return {
+        chef_food: readMoneyInput("reportChefFoodSales"),
+        dough_food: readMoneyInput("reportDoughFoodSales"),
+        bakery: readMoneyInput("reportBakerySales"),
+        food_cost_sales: totals.foodCostSales,
+        total_sales_entered: totals.allSales
+      };
+    }
+
+    function applySalesBreakdownToInputs(breakdown) {
+      if (!breakdown) {
+        syncSalesTotalFromCategoryInputs();
+        return;
+      }
+
+      setMoneyInput("reportChefFoodSales", breakdown.chef_food ?? breakdown.food);
+      setMoneyInput("reportDoughFoodSales", breakdown.dough_food ?? 0);
+      setMoneyInput("reportBakerySales", breakdown.bakery);
+      syncSalesTotalFromCategoryInputs();
+    }
+
+    function parseSavedSalesBreakdown(notes) {
+      if (!notes) {
+        return null;
+      }
+
+      try {
+        const parsed = JSON.parse(notes);
+        return parsed.sales_breakdown || null;
+      } catch (error) {
+        return null;
+      }
+    }
+
     function formatDateInputValue(date) {
       return date.toISOString().slice(0, 10);
     }
@@ -1784,15 +1922,19 @@
           invoiceStartDate: "",
           invoiceEndDate: "",
           beginningCountDate: "",
-          endingCountDate: ""
+          endingCountDate: "",
+          isBaselineWeek: false
         };
       }
+
+      const isBaselineWeek = inventoryDate <= FIRST_INVENTORY_BASELINE_DATE;
 
       return {
         invoiceStartDate: addDaysToDate(inventoryDate, -8),
         invoiceEndDate: addDaysToDate(inventoryDate, -2),
-        beginningCountDate: addDaysToDate(inventoryDate, -7),
-        endingCountDate: inventoryDate
+        beginningCountDate: isBaselineWeek ? inventoryDate : addDaysToDate(inventoryDate, -7),
+        endingCountDate: inventoryDate,
+        isBaselineWeek
       };
     }
 
@@ -1815,19 +1957,46 @@
       updateReportDateHelp();
     }
 
+    function syncReferenceDateFromInventoryDate() {
+      syncDatesFromInventoryDate();
+    }
+
     function updateReportDateHelp() {
       const help = document.getElementById("weeklyDateHelp");
       const inventoryDate = document.getElementById("entryDate")?.value || "";
+      const startDate = document.getElementById("reportStartDate")?.value || "";
+      const endDate = document.getElementById("reportEndDate")?.value || "";
       const weeklyDates = weeklyReportDatesFromInventoryDate(inventoryDate);
 
       if (!help || !inventoryDate) return;
 
-      help.textContent = `Inventory day ${weeklyDates.endingCountDate}: invoices/sales ${weeklyDates.invoiceStartDate} through ${weeklyDates.invoiceEndDate}. Beginning count ${weeklyDates.beginningCountDate}, ending count ${weeklyDates.endingCountDate}.`;
+      if (weeklyDates.isBaselineWeek) {
+        help.innerHTML = `<strong>First inventory baseline:</strong> ${weeklyDates.endingCountDate}. Selected invoice/sales week: ${startDate || weeklyDates.invoiceStartDate} through ${endDate || weeklyDates.invoiceEndDate}. Because this is the first inventory, beginning inventory uses the same baseline count. The first complete weekly COGS cycle will use the next Monday inventory.`;
+        return;
+      }
+
+      help.textContent = `Monday inventory ${weeklyDates.endingCountDate}: selected invoice/sales week ${startDate || weeklyDates.invoiceStartDate} through ${endDate || weeklyDates.invoiceEndDate}. Beginning count ${weeklyDates.beginningCountDate}, ending count ${weeklyDates.endingCountDate}.`;
     }
 
     async function handleInventoryDateChange() {
       syncDatesFromInventoryDate();
       await reloadAll();
+
+      if (reportsUnlocked) {
+        await loadSavedFinancialPeriodInput();
+        await calculateFinancialReports();
+      }
+    }
+
+    async function handleReportWeekChange() {
+      updateReportDateHelp();
+
+      if (!reportsUnlocked) {
+        return;
+      }
+
+      await loadSavedFinancialPeriodInput();
+      await calculateFinancialReports();
     }
 
 
@@ -2011,13 +2180,16 @@
         return;
       }
 
-      const activePhysicalItems = (data || []).filter(item =>
+      const activeItemsForMatching = (data || []).filter(item => item.active !== false);
+      matchInventoryItems = await applyLatestPricesFromMainDatabase(activeItemsForMatching);
+
+      const activePhysicalItems = matchInventoryItems.filter(item =>
         item.active !== false &&
         String(item.source_area || "").toUpperCase() !== "RONY" &&
         String(item.category || "").toLowerCase() !== "rony reference only"
       );
 
-      inventoryItems = await applyLatestPricesFromMainDatabase(activePhysicalItems);
+      inventoryItems = activePhysicalItems;
     }
 
     async function loadCounts() {
@@ -3402,7 +3574,7 @@ async function previewRonyStock() {
         return;
       }
 
-      lastUnmatchedInvoiceRows = data || [];
+      lastUnmatchedInvoiceRows = filterCogsInvoiceRows(data || []);
       renderPhase4MatchRows(lastUnmatchedInvoiceRows);
     }
 
@@ -3450,13 +3622,11 @@ async function previewRonyStock() {
               <strong>${formatCurrency(row.line_total || 0)}</strong>
             </td>
             <td>
-              <select id="phase4ItemSelect-${rowIndex}">
-                <option value="">Choose inventory item...</option>
-                ${buildInventoryItemOptions()}
+              <select id="phase4ItemSelect-${rowIndex}" onchange="mapPhase4InvoiceLine(${rowIndex})">
+                <option value="">Choose inventory item to auto-save...</option>
+                ${buildInventoryItemOptions("", row.product_name)}
               </select>
-              <button class="secondary small-btn" style="margin-top:6px;" onclick="mapPhase4InvoiceLine(${rowIndex})">
-                <i class="fa-solid fa-link"></i> Map
-              </button>
+              <div class="invoice-line-detail">Choosing an item saves the match automatically.</div>
             </td>
             <td>
               <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; min-width:260px;">
@@ -3484,12 +3654,206 @@ async function previewRonyStock() {
       }).join("");
     }
 
-    function buildInventoryItemOptions() {
-      return inventoryItems
+    function getMatchScore(item, searchTerm = "") {
+      const itemName = normalizeName(item?.item_name || "");
+      const itemCategory = normalizeName(item?.category || "");
+      const query = normalizeName(searchTerm || "");
+
+      if (!query) return 0;
+      if (itemName === query) return 1000;
+      if (itemName.includes(query) || query.includes(itemName)) return 800;
+
+      const queryTokens = new Set(query.split(" ").filter(token => token.length > 2));
+      let score = 0;
+
+      queryTokens.forEach(token => {
+        if (itemName.includes(token)) score += 20;
+        if (itemCategory.includes(token)) score += 5;
+      });
+
+      return score;
+    }
+
+
+    function normalizeAssignmentArray(value) {
+      if (Array.isArray(value)) {
+        return value.map(item => String(item || "").trim().toLowerCase()).filter(Boolean);
+      }
+
+      if (typeof value === "string") {
+        try {
+          const parsed = JSON.parse(value);
+          if (Array.isArray(parsed)) {
+            return parsed.map(item => String(item || "").trim().toLowerCase()).filter(Boolean);
+          }
+        } catch (_) {}
+
+        return value
+          .replace(/[{}[\]"]/g, "")
+          .split(",")
+          .map(item => item.trim().toLowerCase())
+          .filter(Boolean);
+      }
+
+      return [];
+    }
+
+    async function syncStockReferenceItemsForMatching(showMessage = false) {
+      const existingByName = new Map(
+        (matchInventoryItems.length ? matchInventoryItems : inventoryItems).map(item => [
+          normalizeName(item.item_name),
+          item
+        ])
+      );
+
+      const referenceByName = new Map();
+
+      try {
+        const { data: allowedRows, error: allowedError } = await client
+          .from("rony_cogs_allowed_items")
+          .select("product_name, category, units_per_package, include_in_cogs")
+          .eq("include_in_cogs", true);
+
+        if (allowedError) {
+          console.warn("Stock reference allowed item load warning:", allowedError);
+        }
+
+        (allowedRows || []).forEach(row => {
+          const name = String(row.product_name || "").trim();
+
+          if (!name || !isRonyReferenceFoodAllowed({ product_name: name })) {
+            return;
+          }
+
+          referenceByName.set(normalizeName(name), {
+            item_name: name,
+            category: row.category || "Stock Reference Food",
+            source_area: "RONY",
+            vendor: "Stock Reference",
+            default_unit: "unit",
+            price: 0,
+            price_unit: "package",
+            pounds_per_box: Math.max(Number(row.units_per_package || 1) || 1, 1),
+            image_url: null,
+            active: true,
+            sort_order: 900
+          });
+        });
+      } catch (error) {
+        console.warn("Stock reference allowed item sync warning:", error);
+      }
+
+      try {
+        const { data: stockRows, error: stockError } = await client
+          .from("inventory_check")
+          .select("product_name, item_code, vendor, image_url, category, user")
+          .ilike("user", "Rony")
+          .not("product_name", "is", null)
+          .limit(5000);
+
+        if (stockError) {
+          throw stockError;
+        }
+
+        (stockRows || []).forEach(row => {
+          const name = String(row.product_name || "").trim();
+
+          if (!name || !isRonyReferenceFoodAllowed(row)) {
+            return;
+          }
+
+          const key = normalizeName(name);
+          const previous = referenceByName.get(key) || {};
+
+          referenceByName.set(key, {
+            item_name: name,
+            category: previous.category || row.category || "Stock Reference Food",
+            source_area: "RONY",
+            vendor: row.vendor || previous.vendor || "Stock Reference",
+            default_unit: "unit",
+            price: previous.price || 0,
+            price_unit: previous.price_unit || "package",
+            pounds_per_box: previous.pounds_per_box || 1,
+            image_url: row.image_url || previous.image_url || null,
+            active: true,
+            sort_order: 900,
+            item_code: row.item_code || previous.item_code || null
+          });
+        });
+      } catch (error) {
+        console.error(error);
+        showToast("Could not load Stock Reference rows from inventory_check.");
+        return;
+      }
+
+      const rowsToInsert = Array.from(referenceByName.values()).filter(row =>
+        !existingByName.has(normalizeName(row.item_name))
+      );
+
+      if (!rowsToInsert.length) {
+        await loadItems();
+        if (showMessage) {
+          showToast("Stock Reference matching list is already up to date.");
+        }
+        return;
+      }
+
+      let insertedCount = 0;
+      let failedCount = 0;
+
+      for (const row of rowsToInsert) {
+        const insertPayload = {
+          item_name: row.item_name,
+          category: row.category,
+          source_area: "RONY",
+          vendor: row.vendor,
+          default_unit: row.default_unit,
+          price: row.price,
+          price_unit: row.price_unit,
+          pounds_per_box: row.pounds_per_box,
+          image_url: row.image_url,
+          active: true,
+          sort_order: row.sort_order
+        };
+
+        if (row.item_code) {
+          insertPayload.vendor_item_code = row.item_code;
+        }
+
+        const { error } = await client
+          .from("fresh_inventory_items")
+          .insert(insertPayload);
+
+        if (error) {
+          failedCount += 1;
+          console.warn("Stock Reference item insert skipped:", row.item_name, error);
+        } else {
+          insertedCount += 1;
+        }
+      }
+
+      await loadItems();
+      populateReportCategoryDropdown();
+
+      if (showMessage) {
+        showToast(`Stock Reference sync complete. Added ${insertedCount} matching item(s)${failedCount ? `, skipped ${failedCount}` : ""}.`);
+      }
+    }
+
+
+    function buildInventoryItemOptions(selectedItemId = "", searchTerm = "") {
+      const sourceList = matchInventoryItems.length ? matchInventoryItems : inventoryItems;
+      const sortedItems = sourceList
         .filter(item => item.active !== false)
-        .map(item => `
-          <option value="${escapeAttr(item.id)}">
-            ${escapeHtml(item.item_name)} — ${escapeHtml(item.category || "Other")} — ${escapeHtml(sourceDisplay(item.source_area || "MANUAL"))}
+        .map(item => ({ item, score: getMatchScore(item, searchTerm) }))
+        .sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          return String(a.item.item_name || "").localeCompare(String(b.item.item_name || ""));
+        });
+
+      return sortedItems.map(({ item, score }) => `
+          <option value="${escapeAttr(item.id)}" ${String(item.id) === String(selectedItemId) ? "selected" : ""}>
+            ${score > 0 ? "★ " : ""}${escapeHtml(item.item_name)} — ${escapeHtml(item.category || "Other")} — ${escapeHtml(sourceDisplay(item.source_area || "MANUAL"))}
           </option>
         `).join("");
     }
@@ -3527,7 +3891,7 @@ async function previewRonyStock() {
 
       const { error } = await client.rpc("upsert_fresh_invoice_product_match", {
         p_vendor: row.vendor || "",
-        p_item_code: row.item_number || "",
+        p_item_code: row.item_code || row.item_number || "",
         p_product_name: row.product_name || "",
         p_item_id: itemId,
         p_created_by: adminName,
@@ -3562,7 +3926,7 @@ async function previewRonyStock() {
 
       const { error } = await client.rpc("create_fresh_item_from_invoice_product", {
         p_vendor: row.vendor || "",
-        p_item_code: row.item_number || "",
+        p_item_code: row.item_code || row.item_number || "",
         p_product_name: row.product_name || "",
         p_category: category,
         p_source_area: sourceArea,
@@ -3622,12 +3986,70 @@ async function previewRonyStock() {
       if (/(chicken|poultry|duck|hen)/.test(value)) return "Poultry";
       if (/(pork|bacon|ham)/.test(value)) return "Pork";
       if (/(shrimp|salmon|fish|seafood|tuna|cod|crab|scallop)/.test(value)) return "Seafood";
-      if (/(lettuce|tomato|pepper|onion|garlic|cabbage|produce|cilantro|ginger|mushroom)/.test(value)) return "Produce";
-      if (/(flour|sugar|salt|oil|soy|sauce|rice|starch)/.test(value)) return "Dry Goods";
+      if (/(lettuce|tomato|pepper|onion|garlic|cabbage|produce|cilantro|ginger|mushroom|mint|herb)/.test(value)) return "Produce";
+      if (/(rice wine|cooking wine|michu)/.test(value)) return "Cooking Wine";
+      if (/(mustard|sauce|chili)/.test(value)) return "Sauce";
+      if (/(flour|sugar|salt|oil|soy|rice|starch)/.test(value)) return "Dry Goods";
       if (/(milk|cream|cheese|butter|egg)/.test(value)) return "Dairy";
       if (/(frozen|iqf)/.test(value)) return "Frozen Foods";
 
       return "Other";
+    }
+
+    function isNonFoodInvoiceRow(row) {
+      const vendor = normalizeName(row?.vendor || "");
+      const product = normalizeName(row?.product_name || "");
+      const category = normalizeName(row?.matched_category || row?.category || "");
+      const sourceText = `${vendor} ${product} ${category}`;
+
+      const nonFoodVendors = [
+        "delta office products",
+        "office depot",
+        "staples",
+        "uline"
+      ];
+
+      const nonFoodKeywords = [
+        "hand towel",
+        "paper towel",
+        "napkin",
+        "toilet tissue",
+        "toilet paper",
+        "trash bag",
+        "can liner",
+        "takeout box",
+        "togo",
+        "to go",
+        "tray",
+        "lid",
+        "dome lid",
+        "plastic bag",
+        "glove",
+        "gloves",
+        "nitrile",
+        "vinyl",
+        "soap",
+        "sanitizer",
+        "fabuloso",
+        "cleaner",
+        "degreaser",
+        "urinal",
+        "cutter box film",
+        "plastic wrap",
+        "straw",
+        "cup",
+        "pet clear cup",
+        "container",
+        "office",
+        "receipt paper"
+      ];
+
+      return nonFoodVendors.some(name => vendor.includes(name)) ||
+        nonFoodKeywords.some(keyword => sourceText.includes(keyword));
+    }
+
+    function filterCogsInvoiceRows(rows) {
+      return (rows || []).filter(row => !isNonFoodInvoiceRow(row));
     }
 
 
@@ -3711,7 +4133,20 @@ async function previewRonyStock() {
                 Unit: ${escapeHtml(row.purchase_unit || row.unit || "")}
               </div>
             </td>
-            <td>${row.matched_item_name ? escapeHtml(row.matched_item_name) : "<strong>Needs mapping</strong>"}</td>
+            <td>
+              ${row.matched_item_name ? escapeHtml(row.matched_item_name) : `
+                <div style="display:grid; gap:6px; min-width:280px;">
+                  <select onchange="mapInvoiceDrilldownLine(${lastInvoiceDrilldownRows.indexOf(row)}, this.value)">
+                    <option value="">Choose inventory item to auto-save...</option>
+                    ${buildInventoryItemOptions("", row.product_name)}
+                  </select>
+                  <button class="secondary small-btn" onclick="createDrilldownItemAndMap(${lastInvoiceDrilldownRows.indexOf(row)})">
+                    <i class="fa-solid fa-plus"></i> Not in list? Add Stock Item + Map
+                  </button>
+                  <div class="invoice-line-detail">Starred options are closest suggestions.</div>
+                </div>
+              `}
+            </td>
             <td>${escapeHtml(row.matched_category || "Unmatched")}</td>
             <td>${formatNumber(row.purchase_quantity || row.quantity || 0)}</td>
             <td class="number-strong">${formatNumber(baseLb)} LB</td>
@@ -3721,6 +4156,70 @@ async function previewRonyStock() {
           </tr>
         `;
       }).join("");
+    }
+
+    async function mapInvoiceDrilldownLine(rowIndex, itemId) {
+      const row = lastInvoiceDrilldownRows[rowIndex];
+      const adminName = document.getElementById("reportAdminUsername").value.trim().toUpperCase() || "ADMIN";
+
+      if (!row || !itemId) {
+        return;
+      }
+
+      const { error } = await client.rpc("upsert_fresh_invoice_product_match", {
+        p_vendor: row.vendor || "",
+        p_item_code: row.item_code || row.item_number || "",
+        p_product_name: row.product_name || "",
+        p_item_id: itemId,
+        p_created_by: adminName,
+        p_notes: "Manual map from invoice drill-down"
+      });
+
+      if (error) {
+        console.error(error);
+        showToast("Unable to save invoice match. Check the match SQL function.");
+        return;
+      }
+
+      showToast("Invoice product matched and saved.");
+      await calculateFinancialReports();
+    }
+
+    async function createDrilldownItemAndMap(rowIndex) {
+      const row = lastInvoiceDrilldownRows[rowIndex];
+      const adminName = document.getElementById("reportAdminUsername").value.trim().toUpperCase() || "ADMIN";
+
+      if (!row) {
+        return;
+      }
+
+      const suggestedPrice = getSuggestedInvoicePrice(row);
+      const hasWeight = Boolean(row.has_weight) && Number(row.purchase_weight || 0) > 0;
+      const unit = hasWeight ? "lb" : "each";
+
+      const { error } = await client.rpc("create_fresh_item_from_invoice_product", {
+        p_vendor: row.vendor || "",
+        p_item_code: row.item_code || row.item_number || "",
+        p_product_name: row.product_name || "",
+        p_category: inferCategoryFromProduct(row.product_name),
+        p_source_area: inferSourceFromVendor(row.vendor),
+        p_default_unit: unit,
+        p_price: Number.isFinite(suggestedPrice) && suggestedPrice > 0 ? suggestedPrice : 0,
+        p_price_unit: unit,
+        p_pounds_per_package: 1,
+        p_created_by: adminName
+      });
+
+      if (error) {
+        console.error(error);
+        showToast("Unable to create and map item. Use Admin Setup Review > Phase 4 Match Center for full setup values.");
+        return;
+      }
+
+      await loadItems();
+      populateReportCategoryDropdown();
+      showToast("New inventory item created and invoice product mapped.");
+      await calculateFinancialReports();
     }
 
     function downloadInvoiceDrilldownCsv() {
@@ -4202,7 +4701,8 @@ async function previewRonyStock() {
 
       const startDate = document.getElementById("reportStartDate").value;
       const endDate = document.getElementById("reportEndDate").value;
-      const sales = Number(document.getElementById("reportSales").value || 0);
+      const salesBreakdown = getSalesBreakdownFromInputs();
+      const sales = salesBreakdown.food_cost_sales;
       const purchaseAdjustment = Number(document.getElementById("reportPurchaseAdjustment").value || 0);
       const savedBy = document.getElementById("reportAdminUsername").value.trim().toUpperCase() || "ADMIN";
 
@@ -4217,7 +4717,10 @@ async function previewRonyStock() {
         p_total_food_sales: sales,
         p_purchase_adjustment: purchaseAdjustment,
         p_saved_by: savedBy,
-        p_notes: "Saved from Phase 6 physical inventory COGS dashboard"
+        p_notes: JSON.stringify({
+          source: "Jeng Chi Inventory & COGS Dashboard",
+          sales_breakdown: salesBreakdown
+        })
       });
 
       if (error) {
@@ -4226,7 +4729,7 @@ async function previewRonyStock() {
         return;
       }
 
-      showToast("POS sales and purchase adjustment saved.");
+      showToast("Sales breakdown and purchase adjustment saved.");
     }
 
     async function unlockReports() {
@@ -4311,7 +4814,7 @@ async function previewRonyStock() {
       const weeklyDates = weeklyReportDatesFromInventoryDate(inventoryDate);
       const beginningCountDate = weeklyDates.beginningCountDate || startDate;
       const endingCountDate = weeklyDates.endingCountDate || endDate;
-      const sales = Number(document.getElementById("reportSales").value || 0);
+      const sales = syncSalesTotalFromCategoryInputs().foodCostSales;
       const purchaseAdjustment = Number(document.getElementById("reportPurchaseAdjustment").value || 0);
       const selectedCategory = document.getElementById("reportCategory").value;
 
@@ -4323,6 +4826,10 @@ async function previewRonyStock() {
       if (new Date(startDate) > new Date(endDate)) {
         showToast("Invoice week start must be before invoice week end.");
         return;
+      }
+
+      if (weeklyDates.isBaselineWeek) {
+        showToast("This Monday is the first inventory baseline. Beginning inventory uses the same baseline count.");
       }
 
       const [startCountsResult, endCountsResult, purchasesResult] = await Promise.all([
@@ -4339,10 +4846,16 @@ async function previewRonyStock() {
 
       const startMap = new Map((startCountsResult.data || []).map(row => [row.item_id, row]));
       const endMap = new Map((endCountsResult.data || []).map(row => [row.item_id, row]));
-      const purchaseRows = purchasesResult.data || [];
-      if (!purchaseRows.length) {
+      const rawPurchaseRows = purchasesResult.data || [];
+      const purchaseRows = filterCogsInvoiceRows(rawPurchaseRows);
+      const excludedPurchaseRows = rawPurchaseRows.length - purchaseRows.length;
+
+      if (!rawPurchaseRows.length) {
         showToast(`No invoice rows found for ${startDate} through ${endDate}. Check invoice dates and invoice item mapping.`);
+      } else if (excludedPurchaseRows > 0) {
+        showToast(`${excludedPurchaseRows} non-food / supply invoice lines were excluded from COGS.`);
       }
+
       lastInvoiceDrilldownRows = purchaseRows;
       const purchaseByItem = buildPurchaseMap(purchaseRows);
 
@@ -4704,9 +5217,20 @@ async function previewRonyStock() {
         return;
       }
 
-      document.getElementById("reportSales").value = Number(data.total_food_sales || 0).toFixed(2);
+      const savedBreakdown = parseSavedSalesBreakdown(data.notes);
+
+      if (savedBreakdown) {
+        applySalesBreakdownToInputs(savedBreakdown);
+      } else {
+        applySalesBreakdownToInputs({
+          chef_food: Number(data.total_food_sales || 0),
+          dough_food: 0,
+          bakery: 0
+        });
+      }
+
       document.getElementById("reportPurchaseAdjustment").value = Number(data.purchase_adjustment || 0).toFixed(2);
-      showToast("Saved POS sales loaded for this period.");
+      showToast("Saved sales breakdown loaded for this period.");
     }
 
 
@@ -4742,6 +5266,7 @@ async function previewRonyStock() {
         category_summary: lastCategorySummaryRows,
         vendor_summary: lastVendorPurchaseRows,
         top_items: topItems,
+        sales_breakdown: getSalesBreakdownFromInputs(),
         warnings: {
           missing_prices: lastReportWarnings.missingPrices.map(item => ({
             id: item.id,
@@ -5499,18 +6024,9 @@ async function previewRonyStock() {
         return;
       }
 
-      const usernameMap = {
-        "JANELLE TENG": "JANELLE TENG",
-        "FRANCISCO TENG": "FRANCISCO TENG",
-        "PABLO GONZALEZ": "PABLO GONZALEZ",
-        "RYAN": "RYAN",
-        "CHELSIE": "CHELSIE"
-      };
-
-      const normalizedName = String(employeeName || "").trim().toUpperCase();
-      usernameInput.value = usernameMap[normalizedName] || "";
+      usernameInput.value = "";
+      usernameInput.placeholder = employeeName ? "ENTER USERNAME" : "ENTER USERNAME";
       usernameInput.focus();
-      usernameInput.select();
     }
 
     function syncSelectedEmployeeName(employeeName) {
