@@ -963,7 +963,7 @@
     <div class="toolbar compact-toolbar">
       <div>
         <label>Inventory Date</label>
-        <input type="date" id="entryDate" onchange="reloadAll()" />
+        <input type="date" id="entryDate" onchange="syncReferenceDateFromInventoryDate(); reloadAll()" />
       </div>
 
       <input type="hidden" id="employeeName" value="Physical Inventory User" />
@@ -1065,8 +1065,9 @@
           </div>
         </div>
 
-        <div class="grid-4" style="padding:14px 18px; background:#fffaf5; border-bottom:1px solid var(--line);">
-          <div><label>Stock Reference Date</label><input type="date" id="ronyStockDate" /></div>
+        <div class="grid-5" style="padding:14px 18px; background:#fffaf5; border-bottom:1px solid var(--line);">
+          <input type="hidden" id="ronyStockDate" />
+          <div><label>Using Date</label><input type="text" value="Same as Inventory Date" disabled /></div>
           <div><label>Counted By</label><input type="text" id="ronyCountedBy" /></div>
           <button id="ronyPreviewButton" onclick="previewRonyStock()"><i class="fa-solid fa-eye"></i> Preview Stock Reference</button>
           <button class="secondary" disabled title="Reference stock is reference-only and should not be imported into physical count."><i class="fa-solid fa-ban"></i> Reference Only - Not Imported</button>
@@ -1727,6 +1728,7 @@
     let inventoryCounts = [];
     let reportsUnlocked = false;
     let saveTimers = {};
+    let ronySettingSaveTimers = {};
     let lastCogsRows = [];
     let lastRonyRows = [];
     let lastUnmatchedInvoiceRows = [];
@@ -1749,7 +1751,7 @@
 
       const today = new Date().toISOString().slice(0, 10);
       document.getElementById("entryDate").value = today;
-      document.getElementById("ronyStockDate").value = today;
+      syncReferenceDateFromInventoryDate();
       document.getElementById("reportStartDate").value = today;
       document.getElementById("reportEndDate").value = today;
 
@@ -1764,6 +1766,16 @@
       renderInventory();
       updateSummary();
     }
+
+    function syncReferenceDateFromInventoryDate() {
+      const inventoryDate = document.getElementById("entryDate")?.value || "";
+      const referenceDateInput = document.getElementById("ronyStockDate");
+
+      if (referenceDateInput) {
+        referenceDateInput.value = inventoryDate;
+      }
+    }
+
 
 
     function normalizePriceMatch(value) {
@@ -2322,7 +2334,17 @@
     }
 
     function ronyCogsKey(value) {
-      return normalizeRonyCogsProductName(value).toLowerCase();
+      return normalizeRonyCogsProductName(value)
+        .toLowerCase()
+        .replace(/\[(.*?)\]/g, " $1 ")
+        .replace(/[^a-z0-9]+/g, " ")
+        .replace(/\bsliced\b/g, "slice")
+        .replace(/\bstrips\b/g, "strip")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .sort()
+        .join(" ");
     }
 
     function getRonyUnitOptions(selectedValue) {
@@ -2661,10 +2683,12 @@
     }
 
 async function previewRonyStock() {
-      const stockDateInput = document.getElementById("ronyStockDate");
+      syncReferenceDateFromInventoryDate();
+
+      const stockDateInput = document.getElementById("entryDate");
       const previewBody = document.getElementById("ronyPreviewBody");
       const previewButton = document.getElementById("ronyPreviewButton");
-      const stockDate = stockDateInput?.value || "";
+      const stockDate = stockDateInput?.value || document.getElementById("ronyStockDate")?.value || "";
 
       if (!stockDate) {
         showToast("Choose a stock reference date.");
@@ -2728,6 +2752,130 @@ async function previewRonyStock() {
       showToast(`Loaded ${lastRonyRows.length} approved stock reference item(s).${fallbackText}`);
     }
 
+    function queueRonyCogsSettingSave(rowIndex, field, value) {
+      const timerKey = `${rowIndex}:${field}`;
+
+      clearTimeout(ronySettingSaveTimers[timerKey]);
+
+      ronySettingSaveTimers[timerKey] = setTimeout(() => {
+        saveRonyCogsSetting(rowIndex, field, value);
+      }, 600);
+    }
+
+    async function updateRonyAllowedItemSetting(productName, payload) {
+      const cleanProductName = String(productName || "").replace(/\s+/g, " ").trim();
+
+      if (!cleanProductName || !Object.keys(payload).length) {
+        return { error: new Error("Missing product name or update payload."), savedRow: null };
+      }
+
+      const safePack = Math.max(Number(payload.units_per_package || 1) || 1, 1);
+      const cleanPayload = {
+        ...payload,
+        units_per_package: safePack
+      };
+
+      const rpcResult = await client.rpc("save_rony_allowed_pack_case", {
+        p_product_name: cleanProductName,
+        p_units_per_package: safePack
+      });
+
+      if (!rpcResult.error) {
+        const savedRow = Array.isArray(rpcResult.data) ? rpcResult.data[0] : rpcResult.data;
+        return {
+          error: null,
+          savedRow: savedRow || {
+            product_name: cleanProductName,
+            units_per_package: safePack
+          }
+        };
+      }
+
+      const rpcMissing = ["PGRST202", "PGRST204", "42883"].includes(String(rpcResult.error?.code || ""));
+
+      if (!rpcMissing) {
+        return { error: rpcResult.error, savedRow: null };
+      }
+
+      async function updateByProductName(name) {
+        const { error } = await client
+          .from("rony_cogs_allowed_items")
+          .update(cleanPayload)
+          .eq("product_name", name);
+
+        if (error) {
+          return { error, savedRow: null };
+        }
+
+        return {
+          error: null,
+          savedRow: {
+            product_name: name,
+            units_per_package: safePack
+          }
+        };
+      }
+
+      const exactResult = await updateByProductName(cleanProductName);
+
+      if (!exactResult.error) {
+        return exactResult;
+      }
+
+      const { data: allowedItems, error: lookupError } = await client
+        .from("rony_cogs_allowed_items")
+        .select("product_name, units_per_package");
+
+      if (lookupError) {
+        return { error: lookupError, savedRow: null };
+      }
+
+      const productKey = ronyCogsKey(cleanProductName);
+      const normalizedProductName = normalizeRonyCogsProductName(cleanProductName).toLowerCase();
+
+      const matchedItem = (allowedItems || []).find(item => {
+        const itemName = String(item.product_name || "");
+        const itemKey = ronyCogsKey(itemName);
+        const normalizedItemName = normalizeRonyCogsProductName(itemName).toLowerCase();
+
+        return itemKey === productKey ||
+          itemKey.includes(productKey) ||
+          productKey.includes(itemKey) ||
+          normalizedItemName === normalizedProductName ||
+          normalizedItemName.includes(normalizedProductName) ||
+          normalizedProductName.includes(normalizedItemName);
+      });
+
+      if (matchedItem?.product_name) {
+        return updateByProductName(matchedItem.product_name);
+      }
+
+      const insertPayload = {
+        product_name: cleanProductName,
+        category: "Reference Stock Food",
+        include_in_cogs: true,
+        count_unit: "unit",
+        price_unit: "package",
+        units_per_package: safePack
+      };
+
+      const { error: insertError } = await client
+        .from("rony_cogs_allowed_items")
+        .insert(insertPayload);
+
+      if (insertError) {
+        return { error: insertError, savedRow: null };
+      }
+
+      return {
+        error: null,
+        savedRow: {
+          product_name: cleanProductName,
+          units_per_package: safePack
+        }
+      };
+    }
+
     async function saveRonyCogsSetting(rowIndex, field, value) {
       const row = lastRonyRows[rowIndex];
 
@@ -2757,25 +2905,43 @@ async function previewRonyStock() {
       });
       renderRonyPreview();
 
-      const { error } = await client
-        .from("rony_cogs_allowed_items")
-        .update(payload)
-        .eq("product_name", productNameForSave);
+      const statusEl = document.getElementById(`ronyPackSaveStatus${rowIndex}`);
+
+      if (statusEl) {
+        statusEl.textContent = "Saving...";
+        statusEl.className = "muted";
+      }
+
+      const { error, savedRow } = await updateRonyAllowedItemSetting(productNameForSave, payload);
 
       if (error) {
         console.error(error);
-        showToast("Could not auto-save reference stock setting.");
-        await loadRonyCogsSettings();
+
+        if (statusEl) {
+          statusEl.textContent = "Not saved";
+          statusEl.className = "danger-text";
+        }
+
+        showToast("Could not save Pack / Case to database. Check rony_cogs_allowed_items update permission and product name match.");
         return;
       }
 
       lastRonyRows[rowIndex] = normalizeRonyRow({
         ...lastRonyRows[rowIndex],
-        ...payload
+        ...payload,
+        settings_product_name: savedRow?.product_name || productNameForSave
       });
 
       renderRonyPreview();
-      showToast("Auto-saved reference stock setting.");
+
+      const savedStatusEl = document.getElementById(`ronyPackSaveStatus${rowIndex}`);
+
+      if (savedStatusEl) {
+        savedStatusEl.textContent = "Saved";
+        savedStatusEl.className = "setup-fix-ready";
+      }
+
+      showToast("Saved Pack / Case to database.");
     }
 
     function renderRonyPreview() {
@@ -2823,8 +2989,11 @@ async function previewRonyStock() {
                 min="1"
                 step="0.01"
                 value="${Number(row.units_per_package || 1)}"
+                oninput="queueRonyCogsSettingSave(${index}, 'units_per_package', this.value)"
                 onchange="saveRonyCogsSetting(${index}, 'units_per_package', this.value)"
+                onkeydown="if (event.key === 'Enter') { event.preventDefault(); saveRonyCogsSetting(${index}, 'units_per_package', this.value); this.blur(); }"
               />
+              <div id="ronyPackSaveStatus${index}" class="muted" style="font-size:10px; font-weight:900; margin-top:4px;">Auto-save</div>
             </td>
             <td>${packagePriceText}${priceSubtext}</td>
             <td>${unitPriceText}</td>
