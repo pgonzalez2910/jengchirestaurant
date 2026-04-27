@@ -559,6 +559,61 @@ canvas.sig-canvas {
 }
 .disc-stat-lbl { font-size:10px;font-weight:600;color:var(--gray-400);margin-top:4px;text-transform:uppercase;letter-spacing:.5px; }
 
+
+/* ───── SUPER ADMIN QUESTION EDITOR ───── */
+.superadmin-only { display: none; }
+body.superadmin-active .superadmin-only { display: inline-flex; }
+.admin-panel-card {
+  background:#fff;border:1px solid var(--gray-200);border-radius:var(--radius);
+  box-shadow:var(--shadow-sm);overflow:hidden;margin-bottom:18px;
+}
+.admin-panel-head {
+  padding:18px 22px;background:linear-gradient(135deg,#1a2744 0%,#2f3d63 100%);
+  color:#fff;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+}
+.admin-panel-head h3 { margin:0;font-family:var(--font-display);font-size:18px;font-weight:700; }
+.admin-panel-head p { margin:3px 0 0;font-size:12px;color:rgba(255,255,255,.72); }
+.admin-template-row {
+  display:grid;grid-template-columns:minmax(180px,280px) 1fr;gap:16px;padding:18px 22px;
+}
+.admin-template-select {
+  width:100%;border:1.5px solid var(--gray-200);border-radius:10px;padding:11px 12px;
+  font-family:var(--font-body);font-size:13px;color:var(--navy);background:#fff;
+}
+.admin-question-section {
+  border:1px solid var(--gray-200);border-radius:12px;margin-bottom:14px;overflow:hidden;background:#fff;
+}
+.admin-question-section-title {
+  background:var(--gray-50);padding:12px 14px;border-bottom:1px solid var(--gray-200);
+  font-weight:700;color:var(--navy);font-size:13px;display:flex;justify-content:space-between;gap:12px;
+}
+.admin-question-row {
+  display:grid;grid-template-columns:42px 1fr auto;gap:10px;align-items:start;
+  padding:12px 14px;border-bottom:1px solid var(--gray-100);
+}
+.admin-question-row:last-child { border-bottom:none; }
+.admin-question-num {
+  width:30px;height:30px;border-radius:50%;background:#f0f4ff;color:var(--navy);
+  display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;
+}
+.admin-question-input {
+  width:100%;min-height:58px;border:1.5px solid var(--gray-200);border-radius:9px;
+  padding:9px 10px;font-family:var(--font-body);font-size:12px;line-height:1.45;resize:vertical;
+}
+.admin-question-input:focus { outline:none;border-color:var(--navy);box-shadow:0 0 0 3px rgba(26,39,68,.08); }
+.admin-question-type { font-size:10px;color:var(--gray-400);font-weight:700;text-transform:uppercase;margin-top:4px; }
+.admin-delete-btn,.admin-restore-btn {
+  border:none;border-radius:8px;font-size:12px;font-weight:700;padding:8px 12px;cursor:pointer;white-space:nowrap;
+}
+.admin-delete-btn { background:#fef2f2;color:#dc2626;border:1px solid #fecaca; }
+.admin-restore-btn { background:#ecfdf5;color:#059669;border:1px solid #bbf7d0; }
+.admin-muted { color:var(--gray-400);font-size:12px;line-height:1.6; }
+@media (max-width:800px) {
+  .admin-template-row { grid-template-columns:1fr; }
+  .admin-question-row { grid-template-columns:34px 1fr; }
+  .admin-question-row > button { grid-column:2;justify-self:start; }
+}
+
 </style>
 </head>
 <body>
@@ -679,6 +734,9 @@ canvas.sig-canvas {
   </button>
   <button class="tab-btn" onclick="switchTab('qsheet')" id="tab-qsheet">
     <span class="tab-icon">🖨️</span> Question Sheets
+  </button>
+  <button class="tab-btn superadmin-only" onclick="switchTab('superadmin')" id="tab-superadmin" style="display:none">
+    <span class="tab-icon">👑</span> Super Admin
   </button>
 </div>
 
@@ -1465,6 +1523,281 @@ const USERNAME_ACCESS = {
   'pg9367':  'all',
   'jt2316':  'all',
 };
+
+const SUPER_ADMIN_USERNAMES = ['pg9367', 'jt2316'];
+const QUESTION_OVERRIDE_STORAGE_KEY = 'jengchi_review_question_overrides_v1';
+
+let _questionOverrides = loadQuestionOverrides();
+
+function isSuperAdminUser(user) {
+  const username = (user?.username || '').toLowerCase().trim();
+  return SUPER_ADMIN_USERNAMES.includes(username);
+}
+
+function loadQuestionOverrides() {
+  try {
+    return JSON.parse(localStorage.getItem(QUESTION_OVERRIDE_STORAGE_KEY) || '{}') || {};
+  } catch (e) {
+    console.warn('Question override load failed:', e.message);
+    return {};
+  }
+}
+
+async function loadQuestionOverridesFromDatabase() {
+  if (!sb) return;
+
+  try {
+    const { data, error } = await sb
+      .from('review_question_overrides')
+      .select('overrides')
+      .eq('config_key', 'active')
+      .maybeSingle();
+
+    if (error) throw error;
+    if (data?.overrides) {
+      _questionOverrides = data.overrides;
+      localStorage.setItem(QUESTION_OVERRIDE_STORAGE_KEY, JSON.stringify(_questionOverrides));
+    }
+  } catch (e) {
+    console.warn('Question override database load skipped:', e.message);
+  }
+}
+
+function saveQuestionOverrides() {
+  localStorage.setItem(QUESTION_OVERRIDE_STORAGE_KEY, JSON.stringify(_questionOverrides));
+  const el = document.getElementById('adminSaveStatus');
+  if (el) {
+    el.textContent = 'Saved automatically ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    el.style.color = '#86efac';
+  }
+
+  if (sb) {
+    sb.from('review_question_overrides').upsert({
+      config_key: 'active',
+      overrides: _questionOverrides,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'config_key' }).then(({ error }) => {
+      if (error) console.warn('Question override database save skipped:', error.message);
+    });
+  }
+}
+
+function ensureTemplateOverride(templateKey) {
+  if (!_questionOverrides[templateKey]) {
+    _questionOverrides[templateKey] = { labels: {}, deleted: {} };
+  }
+  if (!_questionOverrides[templateKey].labels) _questionOverrides[templateKey].labels = {};
+  if (!_questionOverrides[templateKey].deleted) _questionOverrides[templateKey].deleted = {};
+  return _questionOverrides[templateKey];
+}
+
+function cloneTemplate(template) {
+  return template.map(section => ({
+    ...section,
+    questions: (section.questions || []).map(question => ({ ...question }))
+  }));
+}
+
+function applyQuestionOverrides(templateKey, template) {
+  const overrides = _questionOverrides[templateKey] || {};
+  const labels = overrides.labels || {};
+  const deleted = overrides.deleted || {};
+
+  return cloneTemplate(template).map(section => ({
+    ...section,
+    questions: (section.questions || [])
+      .filter(question => !deleted[question.id])
+      .map(question => labels[question.id] ? { ...question, label: labels[question.id] } : question)
+  }));
+}
+
+function getAdminTemplateRegistry() {
+  return [
+    { key: 'SERVER_ANNUAL', label: 'Server — Annual Review', template: SERVER_ANNUAL },
+    { key: 'SERVER_COACHING', label: 'Server — Coaching / Probation', template: SERVER_COACHING },
+    { key: 'BARTENDER_ANNUAL', label: 'Bartender — Annual Review', template: BARTENDER_ANNUAL },
+    { key: 'BARTENDER_COACHING', label: 'Bartender — Coaching / Probation', template: BARTENDER_COACHING },
+    { key: 'FOH_ANNUAL', label: 'FOH / Host / Cashier — Annual Review', template: FOH_ANNUAL },
+    { key: 'FOH_COACHING', label: 'FOH / Host / Cashier — Coaching / Probation', template: FOH_COACHING },
+    { key: 'LINE_COOK_TEMPLATE', label: 'Line Cook / Wok Chef — Annual Review', template: LINE_COOK_TEMPLATE },
+    { key: 'LINE_COOK_COACHING', label: 'Line Cook / Wok Chef — Coaching / Probation', template: LINE_COOK_COACHING },
+    { key: 'KITCHEN_PROD_TEMPLATE', label: 'Kitchen Prep / Production — Annual Review', template: KITCHEN_PROD_TEMPLATE },
+    { key: 'KITCHEN_PROD_COACHING', label: 'Kitchen Prep / Production — Coaching / Probation', template: KITCHEN_PROD_COACHING },
+    { key: 'DISHWASHER_TEMPLATE', label: 'Dishwasher — Annual Review', template: DISHWASHER_TEMPLATE },
+    { key: 'DISHWASHER_COACHING', label: 'Dishwasher — Coaching / Probation', template: DISHWASHER_COACHING },
+    { key: 'MGMT_ANNUAL', label: 'Management — Annual Review', template: MGMT_ANNUAL },
+    { key: 'MGMT_COACHING', label: 'Management — Coaching / Probation', template: MGMT_COACHING },
+  ];
+}
+
+function getRawAdminTemplate(templateKey) {
+  return getAdminTemplateRegistry().find(item => item.key === templateKey);
+}
+
+function showSuperAdminControls() {
+  const active = isSuperAdminUser(_loggedInUser);
+  document.body.classList.toggle('superadmin-active', active);
+  const tab = document.getElementById('tab-superadmin');
+  if (tab) tab.style.display = active ? 'inline-flex' : 'none';
+  if (active) adminInitQuestionEditor();
+}
+
+function adminInitQuestionEditor() {
+  const select = document.getElementById('adminTemplateSelect');
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = getAdminTemplateRegistry()
+    .map(item => `<option value="${item.key}">${item.label}</option>`)
+    .join('');
+  if (current) select.value = current;
+  adminRenderQuestionEditor();
+}
+
+function adminRenderQuestionEditor() {
+  if (!isSuperAdminUser(_loggedInUser)) return;
+
+  const select = document.getElementById('adminTemplateSelect');
+  const editor = document.getElementById('adminQuestionEditor');
+  if (!select || !editor) return;
+
+  const item = getRawAdminTemplate(select.value);
+  if (!item) {
+    editor.innerHTML = '<div class="admin-muted" style="padding:24px;text-align:center">Template not found.</div>';
+    return;
+  }
+
+  const overrides = ensureTemplateOverride(item.key);
+  let activeRatingCount = 0;
+  let deletedCount = 0;
+
+  const html = item.template.map((section, sIdx) => {
+    const rows = (section.questions || []).map((question, qIdx) => {
+      const isDeleted = !!overrides.deleted[question.id];
+      const label = overrides.labels[question.id] || question.label || '';
+      const qType = question.type || 'rating';
+      if (isDeleted) deletedCount++;
+      if (!isDeleted && qType === 'rating') activeRatingCount++;
+
+      if (isDeleted) {
+        return `
+          <div class="admin-question-row" style="background:#f9fafb;opacity:.72">
+            <div class="admin-question-num">${qIdx + 1}</div>
+            <div>
+              <div style="font-size:12px;color:var(--gray-400);text-decoration:line-through">${escapeHtml(label)}</div>
+              <div class="admin-question-type">${escapeHtml(qType)} — deleted</div>
+            </div>
+            <button class="admin-restore-btn" onclick="adminRestoreQuestion('${item.key}','${question.id}')">Restore</button>
+          </div>`;
+      }
+
+      return `
+        <div class="admin-question-row">
+          <div class="admin-question-num">${qIdx + 1}</div>
+          <div>
+            <textarea class="admin-question-input" oninput="adminUpdateQuestionLabel('${item.key}','${question.id}',this.value)">${escapeHtml(label)}</textarea>
+            <div class="admin-question-type">${escapeHtml(qType)}</div>
+          </div>
+          <button class="admin-delete-btn" onclick="adminDeleteQuestion('${item.key}','${question.id}')">Delete</button>
+        </div>`;
+    }).join('');
+
+    return `
+      <div class="admin-question-section">
+        <div class="admin-question-section-title">
+          <span>${sIdx + 1}. ${escapeHtml(section.title || 'Section')}</span>
+          <span>${(section.questions || []).length} total</span>
+        </div>
+        ${rows}
+      </div>`;
+  }).join('');
+
+  editor.innerHTML = `
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:800;color:var(--navy);font-size:15px">${escapeHtml(item.label)}</div>
+        <div class="admin-muted">${activeRatingCount} active rating questions · ${deletedCount} deleted questions</div>
+      </div>
+      <button class="admin-restore-btn" onclick="adminRestoreSelectedTemplate()">Restore All</button>
+    </div>
+    ${html}`;
+}
+
+let _adminSaveTimer = null;
+function adminUpdateQuestionLabel(templateKey, questionId, value) {
+  const overrides = ensureTemplateOverride(templateKey);
+  const item = getRawAdminTemplate(templateKey);
+  const original = item?.template
+    ?.flatMap(section => section.questions || [])
+    ?.find(question => question.id === questionId)
+    ?.label || '';
+
+  if (value.trim() === original.trim()) {
+    delete overrides.labels[questionId];
+  } else {
+    overrides.labels[questionId] = value;
+  }
+
+  const status = document.getElementById('adminSaveStatus');
+  if (status) {
+    status.textContent = 'Saving…';
+    status.style.color = '#fbbf24';
+  }
+
+  clearTimeout(_adminSaveTimer);
+  _adminSaveTimer = setTimeout(() => {
+    saveQuestionOverrides();
+    refreshOpenReviewAfterQuestionChange();
+  }, 450);
+}
+
+function adminDeleteQuestion(templateKey, questionId) {
+  if (!confirm('Delete this question from this template? Scoring will automatically recalculate from the remaining active rating questions.')) return;
+  const overrides = ensureTemplateOverride(templateKey);
+  overrides.deleted[questionId] = true;
+  saveQuestionOverrides();
+  adminRenderQuestionEditor();
+  refreshOpenReviewAfterQuestionChange();
+}
+
+function adminRestoreQuestion(templateKey, questionId) {
+  const overrides = ensureTemplateOverride(templateKey);
+  delete overrides.deleted[questionId];
+  saveQuestionOverrides();
+  adminRenderQuestionEditor();
+  refreshOpenReviewAfterQuestionChange();
+}
+
+function adminRestoreSelectedTemplate() {
+  const select = document.getElementById('adminTemplateSelect');
+  const templateKey = select?.value;
+  if (!templateKey) return;
+  if (!confirm('Restore this entire template to the original questions?')) return;
+  delete _questionOverrides[templateKey];
+  saveQuestionOverrides();
+  adminRenderQuestionEditor();
+  refreshOpenReviewAfterQuestionChange();
+}
+
+async function refreshOpenReviewAfterQuestionChange() {
+  if (!state.employee || !state.reviewType) return;
+  await buildReviewForm();
+  Object.entries(state.responses || {}).forEach(([key, val]) => {
+    if (typeof val === 'number' && val > 0) setRating(key, val);
+  });
+  updateCharts();
+  updateProgress();
+  autoSave();
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 
 // Fallback: management/HR usernames always get 'all'
 // Other usernames get access only to their own job title
@@ -3307,34 +3640,34 @@ function getTemplate(dept, reviewType) {
 
   // ── Coaching / Improvement Plan + Probation (same template) ─────
   if (reviewType === 'coaching' || reviewType === 'progress') {
-    if (dept === 'MANAGEMENT') return MGMT_COACHING;
+    if (dept === 'MANAGEMENT') return applyQuestionOverrides('MGMT_COACHING', MGMT_COACHING);
     if (dept === 'FOH') {
-      if (isServer)    return SERVER_COACHING;
-      if (isBartender) return BARTENDER_COACHING;
-      return FOH_COACHING;   // Host, Cashier, Runner, Busser
+      if (isServer)    return applyQuestionOverrides('SERVER_COACHING', SERVER_COACHING);
+      if (isBartender) return applyQuestionOverrides('BARTENDER_COACHING', BARTENDER_COACHING);
+      return applyQuestionOverrides('FOH_COACHING', FOH_COACHING);   // Host, Cashier, Runner, Busser
     }
     if (dept === 'BOH') {
-      if (/dishwasher|dish\s*washer|\bdish\b/.test(pos)) return DISHWASHER_COACHING;
-      if (/prep\s*cook|kitchen\s*prep|food\s*prep|\bprep\b|dumpling|pastry|production\s*manager|production/.test(pos)) return KITCHEN_PROD_COACHING;
-      return LINE_COOK_COACHING;
+      if (/dishwasher|dish\s*washer|\bdish\b/.test(pos)) return applyQuestionOverrides('DISHWASHER_COACHING', DISHWASHER_COACHING);
+      if (/prep\s*cook|kitchen\s*prep|food\s*prep|\bprep\b|dumpling|pastry|production\s*manager|production/.test(pos)) return applyQuestionOverrides('KITCHEN_PROD_COACHING', KITCHEN_PROD_COACHING);
+      return applyQuestionOverrides('LINE_COOK_COACHING', LINE_COOK_COACHING);
     }
-    return FOH_COACHING;
+    return applyQuestionOverrides('FOH_COACHING', FOH_COACHING);
   }
 
   // ── Annual Review ────────────────────────────────────────────────
   if (dept === 'FOH') {
-    if (isServer)    return SERVER_ANNUAL;
-    if (isBartender) return BARTENDER_ANNUAL;
-    return FOH_ANNUAL;        // Host, Cashier, Runner, Busser
+    if (isServer)    return applyQuestionOverrides('SERVER_ANNUAL', SERVER_ANNUAL);
+    if (isBartender) return applyQuestionOverrides('BARTENDER_ANNUAL', BARTENDER_ANNUAL);
+    return applyQuestionOverrides('FOH_ANNUAL', FOH_ANNUAL);        // Host, Cashier, Runner, Busser
   }
-  if (dept === 'MANAGEMENT') return MGMT_ANNUAL;
+  if (dept === 'MANAGEMENT') return applyQuestionOverrides('MGMT_ANNUAL', MGMT_ANNUAL);
   if (dept === 'BOH') {
-    if (/dishwasher|dish\s*washer|\bdish\b/.test(pos)) return DISHWASHER_TEMPLATE;
-    if (/line\s*cook|wok\s*chef|wok/.test(pos)) return LINE_COOK_TEMPLATE;
-    if (/prep\s*cook|kitchen\s*prep|food\s*prep|\bprep\b|dumpling|pastry|production\s*manager|production/.test(pos)) return KITCHEN_PROD_TEMPLATE;
-    return LINE_COOK_TEMPLATE;
+    if (/dishwasher|dish\s*washer|\bdish\b/.test(pos)) return applyQuestionOverrides('DISHWASHER_TEMPLATE', DISHWASHER_TEMPLATE);
+    if (/line\s*cook|wok\s*chef|wok/.test(pos)) return applyQuestionOverrides('LINE_COOK_TEMPLATE', LINE_COOK_TEMPLATE);
+    if (/prep\s*cook|kitchen\s*prep|food\s*prep|\bprep\b|dumpling|pastry|production\s*manager|production/.test(pos)) return applyQuestionOverrides('KITCHEN_PROD_TEMPLATE', KITCHEN_PROD_TEMPLATE);
+    return applyQuestionOverrides('LINE_COOK_TEMPLATE', LINE_COOK_TEMPLATE);
   }
-  return FOH_ANNUAL;
+  return applyQuestionOverrides('FOH_ANNUAL', FOH_ANNUAL);
 }
 
 async function loadEmployees() {
@@ -5081,6 +5414,11 @@ function resetForm() {
 }
 
 function switchTab(tab) {
+  if (tab === 'superadmin' && !isSuperAdminUser(_loggedInUser)) {
+    showToast('Super Admin access required.', 'error');
+    return;
+  }
+  if (tab === 'superadmin') adminInitQuestionEditor();
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
   if (tab === 'history') {
@@ -5124,6 +5462,7 @@ function showToast(msg, type='success') {
 
 document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('headerDate').textContent = new Date().toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
+  await loadQuestionOverridesFromDatabase();
   document.addEventListener('mousedown', e => {
     // Use mousedown (not click) so item onclick fires before dropdown closes
     if (!e.target.closest('.search-wrapper') && !e.target.closest('.search-dropdown')) {
@@ -8766,6 +9105,9 @@ function appSignOut() {
   _allowedJobTitles    = 'all';
   _historyData         = [];
   _hrManagerUsername   = null;
+  document.body.classList.remove('superadmin-active');
+  const superTab = document.getElementById('tab-superadmin');
+  if (superTab) superTab.style.display = 'none';
 
   // Reset form if in progress
   if (typeof resetForm === 'function') {
@@ -8911,6 +9253,7 @@ async function appLogin() {
 
     // ── Success ──────────────────────────────────────────────────
     _loggedInUser = data;
+    _loggedInUser.is_super_admin = isSuperAdminUser(data);
     const fullName = (data.first_name||'') + ' ' + (data.last_name||'');
     const dept     = data.department || '';
     const isMgmt   = !!(data.is_management);
@@ -8918,7 +9261,7 @@ async function appLogin() {
 
     // ── Determine job title access from USERNAME_ACCESS map ──────
     const uKey = (data.username||'').toLowerCase().trim();
-    const access = USERNAME_ACCESS[uKey];
+    const access = _loggedInUser.is_super_admin ? 'all' : USERNAME_ACCESS[uKey];
 
     // If not in the map: management gets all, others see only their own job title
     if (access === undefined) {
@@ -8954,11 +9297,12 @@ async function appLogin() {
     const hInitials = fullName.trim().split(' ').map(n=>n[0]).join('').substring(0,2).toUpperCase();
     if (badge)   { badge.style.display = 'flex'; }
     if (hName)   hName.textContent   = fullName.trim();
-    if (hRole)   hRole.textContent   = data.job_title || 'Employee';
+    if (hRole)   hRole.textContent   = _loggedInUser.is_super_admin ? 'SUPER ADMIN' : (data.job_title || 'Employee');
     if (hAva)    hAva.textContent    = hInitials;
     if (hPortal) hPortal.style.display = 'none';  // hide generic badge when signed in
 
-    showToast('Welcome back, ' + (data.first_name||fullName.trim()||'') + '! ✅', 'success');
+    showSuperAdminControls();
+    showToast('Welcome back, ' + (data.first_name||fullName.trim()||'') + (_loggedInUser.is_super_admin ? ' — Super Admin access enabled' : '') + '! ✅', 'success');
 
   } catch(e) {
     flashLoginError('Connection error. Please try again.');
@@ -9023,6 +9367,38 @@ document.addEventListener('DOMContentLoaded', () => {
         <button id="rdmDeleteBtn" onclick="confirmDeleteReview()" style="display:none;background:#fef2f2;border:1px solid #fca5a5;color:#dc2626;font-weight:600;font-size:12px;padding:7px 16px;border-radius:8px;cursor:pointer">🗑 Delete Review</button>
       </div>
       <button onclick="closeReviewModal()" style="background:var(--navy);border:none;color:#fff;font-weight:600;font-size:13px;padding:8px 20px;border-radius:8px;cursor:pointer">Close</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══ SUPER ADMIN QUESTION EDITOR TAB ══ -->
+<div class="tab-panel" id="panel-superadmin">
+  <div style="max-width:1180px;margin:0 auto;padding:32px 20px">
+    <div class="admin-panel-card">
+      <div class="admin-panel-head">
+        <div>
+          <h3>👑 Super Admin — Question Editor</h3>
+          <p>Pablo Gonzalez and Janelle Teng can edit or delete any review question. Changes auto-save in this browser and scoring recalculates from active rating questions only.</p>
+        </div>
+        <div id="adminSaveStatus" style="font-size:12px;font-weight:700;color:#fbbf24">Ready</div>
+      </div>
+      <div class="admin-template-row">
+        <div>
+          <label style="display:block;font-size:11px;font-weight:800;color:var(--gray-500);text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px">Position / Template</label>
+          <select id="adminTemplateSelect" class="admin-template-select" onchange="adminRenderQuestionEditor()"></select>
+          <div class="admin-muted" style="margin-top:10px">
+            Deleting questions removes them from the review form and score calculation.
+            Example: 10 rating questions minus 6 deleted = score calculated from 4.
+          </div>
+          <button class="admin-restore-btn" style="margin-top:14px" onclick="adminRestoreSelectedTemplate()">↩ Restore Selected Template</button>
+        </div>
+        <div>
+          <div id="adminQuestionEditor">
+            <div class="admin-muted" style="padding:24px;text-align:center">Select a template to edit questions.</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -9108,9 +9484,21 @@ function qsSelectRole(role) {
 }
 
 function qsGetTemplate(role, type) {
-  if (role === 'server')    return type === 'annual' ? SERVER_ANNUAL    : SERVER_COACHING;
-  if (role === 'bartender') return type === 'annual' ? BARTENDER_ANNUAL : BARTENDER_COACHING;
-  if (role === 'host')      return type === 'annual' ? FOH_ANNUAL       : FOH_COACHING;
+  if (role === 'server') {
+    return type === 'annual'
+      ? applyQuestionOverrides('SERVER_ANNUAL', SERVER_ANNUAL)
+      : applyQuestionOverrides('SERVER_COACHING', SERVER_COACHING);
+  }
+  if (role === 'bartender') {
+    return type === 'annual'
+      ? applyQuestionOverrides('BARTENDER_ANNUAL', BARTENDER_ANNUAL)
+      : applyQuestionOverrides('BARTENDER_COACHING', BARTENDER_COACHING);
+  }
+  if (role === 'host') {
+    return type === 'annual'
+      ? applyQuestionOverrides('FOH_ANNUAL', FOH_ANNUAL)
+      : applyQuestionOverrides('FOH_COACHING', FOH_COACHING);
+  }
   return [];
 }
 
