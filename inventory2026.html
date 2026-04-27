@@ -15521,56 +15521,62 @@ function _dashFmtMoney(n) {
 }
 
 async function initExecDashboard() {
-    const loader = document.getElementById('dashLoader');
-    if (loader) loader.style.display = 'inline-block';
+    const loader  = document.getElementById('dashLoader');
+    const kpiGrid = document.getElementById('dashKpiGrid');
+
+    if (loader)  loader.style.display  = 'inline-block';
+    if (kpiGrid) kpiGrid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:2rem;color:#6b7280;font-size:0.85rem;"><i class="fas fa-circle-notch fa-spin" style="font-size:1.5rem;color:#2563c8;display:block;margin-bottom:0.75rem;"></i>Loading dashboard data...</div>';
 
     try {
-        // ── Fetch invoices ────────────────────────────────
+        // ── 1. Build date range ────────────────────────────────
         const { from, to } = _getDashDateRange();
+        const toStr   = to.toISOString().slice(0,10);
+        const fromStr = from ? from.toISOString().slice(0,10) : null;
 
-        let query = supabaseClient
+        // ── 2. Fetch invoices (with date filter) ───────────────
+        let q = supabaseClient
             .from('invoices')
             .select('id, vendor, invoice_date, total, amount')
-            .order('invoice_date', { ascending: true });
+            .order('invoice_date', { ascending: true })
+            .lte('invoice_date', toStr);
+        if (fromStr) q = q.gte('invoice_date', fromStr);
 
-        if (from) query = query.gte('invoice_date', from.toISOString().slice(0,10));
-        query = query.lte('invoice_date', to.toISOString().slice(0,10));
+        const { data: invs, error: invErr } = await q;
+        if (invErr) throw new Error('Invoices: ' + invErr.message);
 
-        const { data: invs, error: invErr } = await query;
-        if (invErr) throw invErr;
+        const safeInvs = invs || [];
+        console.log('[Dashboard] Invoices loaded:', safeInvs.length);
 
-        // ── Fetch invoice items for category breakdown ──
-        let itemQuery = supabaseClient
-            .from('invoice_items')
-            .select('invoice_id, category, line_total, quantity, unit_price, weight, price_per_unit, has_weight');
-        // No date filter here — we join by invoice_id below
+        // ── 3. Fetch invoice_items (filtered by invoice IDs) ───
+        // Only fetch IDs in period — avoids full-table scan
+        let periodItems = [];
+        if (safeInvs.length > 0) {
+            const ids = safeInvs.map(i => i.id).slice(0, 400); // cap at 400 invoices
+            const { data: items, error: itemErr } = await supabaseClient
+                .from('invoice_items')
+                .select('invoice_id, category, line_total, has_weight, quantity, unit_price, weight, price_per_unit')
+                .in('invoice_id', ids);
+            if (!itemErr) periodItems = items || [];
+            console.log('[Dashboard] Items loaded:', periodItems.length);
+        }
 
-        const { data: items } = await itemQuery;
-
-        // ── Filter items to match invoices in period ───
-        const invIdSet = new Set((invs||[]).map(i => i.id));
-        const periodItems = (items||[]).filter(it => invIdSet.has(it.invoice_id));
-
-        // ── Derive metrics ─────────────────────────────
-        const totalSpend   = (invs||[]).reduce((s, i) => s + parseFloat(i.total || i.amount || 0), 0);
-        const activeVendors= new Set((invs||[]).map(i => i.vendor).filter(Boolean)).size;
-        const invoiceCount = (invs||[]).length;
+        // ── 4. Derive metrics ──────────────────────────────────
+        const totalSpend    = safeInvs.reduce((s, i) => s + parseFloat(i.total || i.amount || 0), 0);
+        const activeVendors = new Set(safeInvs.map(i => i.vendor).filter(Boolean)).size;
+        const invoiceCount  = safeInvs.length;
 
         // Vendor totals
         const vendorTotals = {};
-        (invs||[]).forEach(inv => {
+        safeInvs.forEach(inv => {
             const v = inv.vendor || 'Unknown';
             vendorTotals[v] = (vendorTotals[v] || 0) + parseFloat(inv.total || inv.amount || 0);
         });
 
-        // Top vendor for budget "health" reference
-        const maxVendorSpend = Math.max(...Object.values(vendorTotals), 1);
-
-        // Monthly totals (for trend chart)
+        // Monthly totals
         const monthlyMap = {};
-        (invs||[]).forEach(inv => {
+        safeInvs.forEach(inv => {
             if (!inv.invoice_date) return;
-            const key = inv.invoice_date.slice(0,7); // YYYY-MM
+            const key = inv.invoice_date.slice(0,7);
             monthlyMap[key] = (monthlyMap[key] || 0) + parseFloat(inv.total || inv.amount || 0);
         });
         const sortedMonths = Object.keys(monthlyMap).sort();
@@ -15578,100 +15584,88 @@ async function initExecDashboard() {
             const [y, mo] = k.split('-');
             return new Date(+y, +mo-1, 1).toLocaleString('en-US', { month:'short', year:'2-digit' });
         });
-        const monthValues = sortedMonths.map(k => monthlyMap[k]);
+        const monthValues  = sortedMonths.map(k => monthlyMap[k]);
 
-        // Category totals (from items)
+        // Category totals from items
         const catTotals = {};
         periodItems.forEach(it => {
-            const cat = (it.category || 'Uncategorized').split(' ')[0]; // first word
-            const hw = !!(it.has_weight || parseFloat(it.weight||0) > 0);
-            const total = hw
+            const cat  = (it.category || 'Uncategorized').split(/[\s/]/)[0];
+            const hw   = !!(it.has_weight || parseFloat(it.weight||0) > 0);
+            const line = parseFloat(it.line_total) || (hw
                 ? (parseFloat(it.weight||0) * parseFloat(it.price_per_unit||0))
-                : (parseInt(it.quantity||1) * parseFloat(it.unit_price||0));
-            catTotals[cat] = (catTotals[cat] || 0) + (parseFloat(it.line_total || total || 0));
+                : (parseInt(it.quantity||1) * parseFloat(it.unit_price||0)));
+            if (line > 0) catTotals[cat] = (catTotals[cat] || 0) + line;
         });
-        const sortedCats = Object.entries(catTotals).sort((a,b) => b[1]-a[1]).slice(0, 10);
+        const sortedCats = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]).slice(0,10);
 
-        // Period label
+        // ── 5. Update period label ─────────────────────────────
         const labelEl = document.getElementById('dashPeriodLabel');
         if (labelEl) {
-            const { from: f, to: t } = _getDashDateRange();
-            labelEl.textContent = f
-                ? f.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' – ' + t.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
-                : 'All time through ' + t.toLocaleDateString('en-US',{month:'short',year:'numeric'});
+            labelEl.textContent = fromStr
+                ? new Date(fromStr).toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' – ' + to.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
+                : 'All time through ' + to.toLocaleDateString('en-US',{month:'short',year:'numeric'});
         }
 
-        // ── Render KPI Cards ──────────────────────────
-        _renderDashKpis(totalSpend, activeVendors, invoiceCount, vendorTotals, totalSpend);
-
-        // ── Render Vendor Grid ────────────────────────
+        // ── 6. Render everything ───────────────────────────────
+        _renderDashKpis(totalSpend, activeVendors, invoiceCount, vendorTotals);
         _renderDashVendorGrid(vendorTotals, totalSpend);
-
-        // ── Render Charts ─────────────────────────────
         _renderDashTrendChart(monthLabels, monthValues);
         _renderDashDonutChart(vendorTotals);
         _renderDashCategoryChart(sortedCats);
 
+        console.log('[Dashboard] ✅ Rendered. Total spend:', totalSpend);
+
     } catch(err) {
-        console.error('[Dashboard] Error:', err);
-        const grid = document.getElementById('dashKpiGrid');
-        if (grid) grid.innerHTML = `
+        console.error('[Dashboard] ERROR:', err);
+        if (kpiGrid) kpiGrid.innerHTML = `
           <div style="grid-column:1/-1;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:1.25rem 1.5rem;">
-            <div style="font-weight:700;color:#dc2626;margin-bottom:0.35rem;">\u26a0\ufe0f Could not load dashboard data</div>
-            <div style="font-size:0.8rem;color:#6b7280;">Make sure the app is connected to Supabase. Error: ${err.message}</div>
+            <div style="font-weight:700;color:#dc2626;margin-bottom:0.35rem;">&#9888; Could not load dashboard data</div>
+            <div style="font-size:0.8rem;color:#6b7280;font-family:monospace;">${err.message}</div>
           </div>`;
     } finally {
         if (loader) loader.style.display = 'none';
     }
 }
 
-function _renderDashKpis(total, vendors, invoices, vendorMap, refSpend) {
+function setDashPeriod(period) {
+    _dashPeriod = period;
+    document.querySelectorAll('.dash-period-btn').forEach(b => {
+        b.classList.toggle('dash-period-active', b.dataset.period === period);
+    });
+    initExecDashboard();
+}
+
+function _getDashDateRange() {
+    const now = new Date();
+    const y = now.getFullYear(), m = now.getMonth();
+    if (_dashPeriod === 'thisMonth') return { from: new Date(y, m, 1), to: now };
+    if (_dashPeriod === 'last3')     return { from: new Date(y, m-2, 1), to: now };
+    if (_dashPeriod === 'last6')     return { from: new Date(y, m-5, 1), to: now };
+    if (_dashPeriod === 'ytd')       return { from: new Date(y, 0, 1), to: now };
+    return { from: null, to: now };
+}
+
+function _dashFmtMoney(n) {
+    if (n >= 1000000) return '$' + (n/1000000).toFixed(1) + 'M';
+    if (n >= 1000)    return '$' + (n/1000).toFixed(1) + 'K';
+    return '$' + n.toFixed(2);
+}
+
+function _renderDashKpis(total, vendors, invoices, vendorMap) {
     const grid = document.getElementById('dashKpiGrid');
     if (!grid) return;
-
-    const topVendorEntry = Object.entries(vendorMap).sort((a,b)=>b[1]-a[1])[0];
-    const topVendorName  = topVendorEntry ? topVendorEntry[0] : '—';
-    const topVendorAmt   = topVendorEntry ? topVendorEntry[1] : 0;
-    const topVendorPct   = total > 0 ? (topVendorAmt / total * 100).toFixed(0) : 0;
-
-    const avgInvoice     = invoices > 0 ? total / invoices : 0;
-
+    const topEntry   = Object.entries(vendorMap).sort((a,b)=>b[1]-a[1])[0];
+    const topName    = topEntry ? topEntry[0] : '—';
+    const topAmt     = topEntry ? topEntry[1] : 0;
+    const topPct     = total > 0 ? (topAmt/total*100).toFixed(0) : 0;
+    const avgInvoice = invoices > 0 ? total/invoices : 0;
     const kpis = [
-        {
-            label: 'Total Spend',
-            value: '$' + total.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}),
-            sub:   `${invoices} invoice${invoices!==1?'s':''}`,
-            icon:  'fa-dollar-sign',
-            color: '#2563c8',
-            bar:   null
-        },
-        {
-            label: 'Active Vendors',
-            value: vendors,
-            sub:   'suppliers this period',
-            icon:  'fa-building',
-            color: '#14b8a6',
-            bar:   null
-        },
-        {
-            label: 'Avg Invoice',
-            value: _dashFmtMoney(avgInvoice),
-            sub:   'per invoice',
-            icon:  'fa-receipt',
-            color: '#8b5cf6',
-            bar:   null
-        },
-        {
-            label: 'Top Vendor',
-            value: topVendorName,
-            sub:   _dashFmtMoney(topVendorAmt) + ' · ' + topVendorPct + '% of spend',
-            icon:  'fa-trophy',
-            color: '#f59e0b',
-            bar:   { pct: topVendorPct, color: '#f59e0b' }
-        }
+        { label:'Total Spend',    value:'$'+total.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}), sub:invoices+' invoice'+(invoices!==1?'s':''), icon:'fa-dollar-sign', color:'#2563c8', bar:null },
+        { label:'Active Vendors', value:vendors, sub:'suppliers this period', icon:'fa-building', color:'#14b8a6', bar:null },
+        { label:'Avg Invoice',    value:_dashFmtMoney(avgInvoice), sub:'per invoice', icon:'fa-receipt', color:'#8b5cf6', bar:null },
+        { label:'Top Vendor',     value:topName, sub:_dashFmtMoney(topAmt)+' · '+topPct+'% of spend', icon:'fa-trophy', color:'#f59e0b', bar:{pct:topPct,color:'#f59e0b'} }
     ];
-
-    grid.innerHTML = kpis.map(k => `
+    grid.innerHTML = kpis.map(k=>`
     <div class="dash-kpi-card" style="border-top:3px solid ${k.color};">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:0.6rem;">
         <div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#6b7280;">${k.label}</div>
@@ -15681,34 +15675,27 @@ function _renderDashKpis(total, vendors, invoices, vendorMap, refSpend) {
       </div>
       <div style="font-size:1.45rem;font-weight:800;color:#111827;letter-spacing:-0.02em;line-height:1.1;margin-bottom:0.25rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${k.value}">${k.value}</div>
       <div style="font-size:0.68rem;color:#6b7280;">${k.sub}</div>
-      ${k.bar ? `<div style="margin-top:0.6rem;height:4px;background:#f3f4f6;border-radius:99px;overflow:hidden;"><div style="width:${k.bar.pct}%;height:100%;background:${k.bar.color};border-radius:99px;transition:width 0.6s;"></div></div>` : ''}
+      ${k.bar?`<div style="margin-top:0.6rem;height:4px;background:#f3f4f6;border-radius:99px;overflow:hidden;"><div style="width:${k.bar.pct}%;height:100%;background:${k.bar.color};border-radius:99px;transition:width 0.6s;"></div></div>`:''}
     </div>`).join('');
 }
 
 function _renderDashVendorGrid(vendorTotals, totalSpend) {
     const grid = document.getElementById('dashVendorGrid');
     if (!grid) return;
-
-    const sorted = Object.entries(vendorTotals)
-        .sort((a,b) => b[1]-a[1]);
-
+    const sorted = Object.entries(vendorTotals).sort((a,b)=>b[1]-a[1]);
     if (sorted.length === 0) {
         grid.innerHTML = '<div style="text-align:center;padding:2rem;color:#9ca3af;font-size:0.8rem;">No vendor data for this period</div>';
         return;
     }
-
     const maxSpend = sorted[0][1];
-
-    grid.innerHTML = sorted.map(([vendor, spend], i) => {
-        const pct     = totalSpend > 0 ? (spend / totalSpend * 100) : 0;
-        const barPct  = maxSpend  > 0 ? (spend / maxSpend  * 100) : 0;
-        const color   = DASH_VENDOR_COLORS[i % DASH_VENDOR_COLORS.length];
-        const logo    = _getDashVendorLogo(vendor);
-        const rank    = i + 1;
-
+    grid.innerHTML = sorted.map(([vendor,spend],i) => {
+        const pct    = totalSpend > 0 ? (spend/totalSpend*100) : 0;
+        const barPct = maxSpend   > 0 ? (spend/maxSpend*100)   : 0;
+        const color  = DASH_VENDOR_COLORS[i % DASH_VENDOR_COLORS.length];
+        const logo   = _getDashVendorLogo(vendor);
         return `
     <div class="dash-vendor-row">
-      <div style="width:22px;text-align:center;font-size:0.68rem;font-weight:700;color:#9ca3af;">#${rank}</div>
+      <div style="width:22px;text-align:center;font-size:0.68rem;font-weight:700;color:#9ca3af;">#${i+1}</div>
       ${logo
         ? `<img src="${logo}" onerror="this.style.display='none'" style="width:30px;height:30px;border-radius:6px;object-fit:contain;background:white;border:1px solid #e5e7eb;padding:2px;flex-shrink:0;">`
         : `<div style="width:30px;height:30px;border-radius:6px;background:${color}22;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.7rem;color:${color};flex-shrink:0;">${vendor.charAt(0).toUpperCase()}</div>`}
@@ -15722,7 +15709,7 @@ function _renderDashVendorGrid(vendorTotals, totalSpend) {
         <div style="font-size:0.82rem;font-weight:700;color:#111827;font-variant-numeric:tabular-nums;">$${spend.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
         <div style="font-size:0.65rem;color:#6b7280;">${pct.toFixed(1)}% of total</div>
       </div>
-      <button onclick="corpNav('invoices');setTimeout(()=>_dashFilterVendorInvoices('${vendor.replace(/'/g,"\\'")}'),400)"
+      <button onclick="corpNav('invoices');setTimeout(()=>_dashFilterVendorInvoices('${vendor.replace(/'/g,"\\'").replace(/"/g,'&quot;')}'),400)"
               style="padding:0.25rem 0.55rem;background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;border-radius:5px;font-size:0.65rem;font-weight:700;cursor:pointer;white-space:nowrap;transition:all 0.15s;"
               onmouseover="this.style.background='#dbeafe'" onmouseout="this.style.background='#eff6ff'">
         View →
@@ -15734,81 +15721,41 @@ function _renderDashVendorGrid(vendorTotals, totalSpend) {
 function _getDashVendorLogo(vendorName) {
     if (!vendorName) return null;
     const logos = {
-        'formosafoods':'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/formosa.jpg',
-        'formosa foods':'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/formosa.jpg',
-        'northfoodgroup':'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/northfoodgroup.jpg',
-        'north food group':'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/northfoodgroup.jpg',
-        'pacificplus':'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/pacific.jpg',
-        'pacific plus':'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/pacific.jpg',
+        'formosafoods':         'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/formosa.jpg',
+        'formosa foods':        'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/formosa.jpg',
+        'northfoodgroup':       'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/northfoodgroup.jpg',
+        'north food group':     'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/northfoodgroup.jpg',
+        'pacificplus':          'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/pacific.jpg',
+        'pacific plus':         'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/pacific.jpg',
         'delta office products':'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/delta.jpg',
-        'delta':'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/delta.jpg',
-        'bakemark':'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/bakemark.jpg',
-        'autochlor':'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/autochlor.jpg',
-        'supermarket':'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/fortune.jpg',
+        'delta':                'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/delta.jpg',
+        'bakemark':             'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/bakemark.jpg',
+        'autochlor':            'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/autochlor.jpg',
+        'supermarket':          'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/fortune.jpg',
     };
     const key = vendorName.toLowerCase().trim();
     return logos[key.replace(/\s+/g,'')] || logos[key] || null;
 }
 
 function _dashFilterVendorInvoices(vendor) {
-    // Attempt to set vendor filter in invoice tracking view
     const sel = document.getElementById('invoiceVendorFilter');
-    if (sel) {
-        sel.value = vendor;
-        if (typeof filterInvoicesByVendor === 'function') filterInvoicesByVendor();
-    }
+    if (sel) { sel.value = vendor; if (typeof filterInvoicesByVendor === 'function') filterInvoicesByVendor(); }
 }
 
 function _dashDestroyChart(id) {
-    if (_dashCharts[id]) {
-        try { _dashCharts[id].destroy(); } catch(e) {}
-        delete _dashCharts[id];
-    }
+    if (_dashCharts[id]) { try { _dashCharts[id].destroy(); } catch(e){} delete _dashCharts[id]; }
 }
 
 function _renderDashTrendChart(labels, values) {
     _dashDestroyChart('trend');
     const ctx = document.getElementById('dashTrendChart');
     if (!ctx || typeof Chart === 'undefined') return;
-
     _dashCharts['trend'] = new Chart(ctx, {
         type: 'line',
-        data: {
-            labels,
-            datasets: [{
-                label: 'Monthly Spend',
-                data: values,
-                borderColor: '#2563c8',
-                backgroundColor: 'rgba(37,99,200,0.08)',
-                borderWidth: 2.5,
-                pointBackgroundColor: '#2563c8',
-                pointRadius: 4,
-                pointHoverRadius: 6,
-                fill: true,
-                tension: 0.35,
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    callbacks: {
-                        label: ctx => ' $' + ctx.parsed.y.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
-                    }
-                }
-            },
-            scales: {
-                x: { grid: { display: false }, ticks: { font: { size: 10 } } },
-                y: {
-                    grid: { color: 'rgba(0,0,0,0.04)' },
-                    ticks: {
-                        font: { size: 10 },
-                        callback: v => '$' + (v >= 1000 ? (v/1000).toFixed(0)+'K' : v)
-                    }
-                }
-            }
+        data: { labels, datasets: [{ label:'Monthly Spend', data:values, borderColor:'#2563c8', backgroundColor:'rgba(37,99,200,0.08)', borderWidth:2.5, pointBackgroundColor:'#2563c8', pointRadius:4, pointHoverRadius:6, fill:true, tension:0.35 }] },
+        options: { responsive:true, maintainAspectRatio:false,
+            plugins: { legend:{display:false}, tooltip:{ callbacks:{ label:ctx=>' $'+ctx.parsed.y.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) } } },
+            scales: { x:{ grid:{display:false}, ticks:{font:{size:10}} }, y:{ grid:{color:'rgba(0,0,0,0.04)'}, ticks:{ font:{size:10}, callback:v=>'$'+(v>=1000?(v/1000).toFixed(0)+'K':v) } } }
         }
     });
 }
@@ -15817,30 +15764,12 @@ function _renderDashDonutChart(vendorTotals) {
     _dashDestroyChart('donut');
     const ctx = document.getElementById('dashDonutChart');
     if (!ctx || typeof Chart === 'undefined') return;
-
-    const sorted = Object.entries(vendorTotals).sort((a,b)=>b[1]-a[1]).slice(0, 8);
-    const labels = sorted.map(([v]) => v);
-    const data   = sorted.map(([,s]) => s);
-    const colors = DASH_VENDOR_COLORS.slice(0, sorted.length);
-
+    const sorted = Object.entries(vendorTotals).sort((a,b)=>b[1]-a[1]).slice(0,8);
     _dashCharts['donut'] = new Chart(ctx, {
         type: 'doughnut',
-        data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 2, borderColor: '#fff', hoverOffset: 6 }] },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            cutout: '62%',
-            plugins: {
-                legend: {
-                    position: 'right',
-                    labels: { font: { size: 10 }, padding: 10, boxWidth: 10, boxHeight: 10 }
-                },
-                tooltip: {
-                    callbacks: {
-                        label: ctx => ' $' + ctx.parsed.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
-                    }
-                }
-            }
+        data: { labels:sorted.map(([v])=>v), datasets:[{ data:sorted.map(([,s])=>s), backgroundColor:DASH_VENDOR_COLORS.slice(0,sorted.length), borderWidth:2, borderColor:'#fff', hoverOffset:6 }] },
+        options: { responsive:true, maintainAspectRatio:false, cutout:'62%',
+            plugins: { legend:{ position:'right', labels:{font:{size:10},padding:10,boxWidth:10,boxHeight:10} }, tooltip:{ callbacks:{ label:ctx=>' $'+ctx.parsed.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) } } }
         }
     });
 }
@@ -15849,48 +15778,19 @@ function _renderDashCategoryChart(sortedCats) {
     _dashDestroyChart('category');
     const ctx = document.getElementById('dashCategoryChart');
     if (!ctx || typeof Chart === 'undefined') return;
-
-    const labels = sortedCats.map(([c]) => c);
-    const data   = sortedCats.map(([,v]) => v);
-
+    const labels = sortedCats.map(([c])=>c);
+    const data   = sortedCats.map(([,v])=>v);
     _dashCharts['category'] = new Chart(ctx, {
         type: 'bar',
-        data: {
-            labels,
-            datasets: [{
-                label: 'Spend',
-                data,
-                backgroundColor: DASH_VENDOR_COLORS.slice(0, labels.length),
-                borderRadius: 5,
-                borderSkipped: false,
-            }]
-        },
-        options: {
-            indexAxis: 'y',
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    callbacks: {
-                        label: ctx => ' $' + ctx.parsed.x.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})
-                    }
-                }
-            },
-            scales: {
-                x: {
-                    grid: { color: 'rgba(0,0,0,0.04)' },
-                    ticks: {
-                        font: { size: 9 },
-                        callback: v => '$' + (v>=1000?(v/1000).toFixed(0)+'K':v)
-                    }
-                },
-                y: { grid: { display: false }, ticks: { font: { size: 10 } } }
-            }
+        data: { labels, datasets:[{ label:'Spend', data, backgroundColor:DASH_VENDOR_COLORS.slice(0,labels.length), borderRadius:5, borderSkipped:false }] },
+        options: { indexAxis:'y', responsive:true, maintainAspectRatio:false,
+            plugins: { legend:{display:false}, tooltip:{ callbacks:{ label:ctx=>' $'+ctx.parsed.x.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) } } },
+            scales: { x:{ grid:{color:'rgba(0,0,0,0.04)'}, ticks:{ font:{size:9}, callback:v=>'$'+(v>=1000?(v/1000).toFixed(0)+'K':v) } }, y:{ grid:{display:false}, ticks:{font:{size:10}} } }
         }
     });
 }
-// ═══════════════════════════════════════════════════════════════════
+
+
 // END EXECUTIVE DASHBOARD
 // ═══════════════════════════════════════════════════════════════════
 
