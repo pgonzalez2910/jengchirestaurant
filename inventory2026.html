@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.04.16.v2';
+        var VERSION = '2026.04.27.tax-position-fix-v1';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -11267,7 +11267,22 @@ const GITHUB_IMAGE_BASE = 'https://raw.githubusercontent.com/pgonzalez2910/jengc
 document.addEventListener('DOMContentLoaded', () => {
     document.body.addEventListener('error', function(e) {
         const t = e.target;
-        if (t && t.tagName === 'IMG' && !t.dataset.fallbackApplied) {
+        if (!t || t.tagName !== 'IMG') return;
+
+        const original = t.dataset.originalImage || '';
+        const attempts = Number(t.dataset.imageFallbackAttempt || 0);
+
+        if (original && attempts === 0 && /^https:\/\/raw\.githubusercontent\.com\//i.test(t.src)) {
+            t.dataset.imageFallbackAttempt = '1';
+            const filename = decodeURIComponent(t.src.split('/').pop() || '');
+            const noSpaces = filename.replace(/\s+/g, '');
+            if (noSpaces && noSpaces !== filename) {
+                t.src = GITHUB_IMAGE_BASE + encodeURIComponent(noSpaces);
+                return;
+            }
+        }
+
+        if (!t.dataset.fallbackApplied) {
             t.dataset.fallbackApplied = 'true';
             t.src = PLACEHOLDER_IMAGE;
             t.style.opacity = '0.4';
@@ -11347,11 +11362,8 @@ function resolveImage(imageName) {
 
 
 
-  // Optional: remove spaces
-
-  s = s.replace(/\s+/g, '');
-
-
+  // Keep spaces because several GitHub image filenames include spaces.
+  // The global image fallback will retry a no-space filename if this exact name 404s.
 
   return GITHUB_IMAGE_BASE + encodeURIComponent(s);
 
@@ -11908,6 +11920,70 @@ function parseAssignedTo(raw) {
         let selectedInvoiceProducts = [];
 
         const TAX_RATE = 0.0825; // 8.25%
+
+
+// ============================================================
+// TAX AUTO-CALC FIX: Delta + Autochlor tax all items.
+// Pacific Plus taxes only item code 752GO.
+// This is used by invoice screen, saved invoices, and PDFs.
+// ============================================================
+function normalizeVendorForTax(vendor) {
+    return String(vendor || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeItemCodeForTax(itemCode) {
+    return String(itemCode || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function getVendorTaxMode(vendor) {
+    const normalizedVendor = normalizeVendorForTax(vendor);
+
+    if (normalizedVendor.includes('deltaofficeproducts') || normalizedVendor.includes('delta')) {
+        return { taxable: true, taxAll: true, label: 'DELTA - ALL ITEMS' };
+    }
+
+    if (normalizedVendor.includes('autochlor') || normalizedVendor.includes('auto') && normalizedVendor.includes('chlor')) {
+        return { taxable: true, taxAll: true, label: 'AUTOCHLOR - ALL ITEMS' };
+    }
+
+    if (normalizedVendor.includes('pacificplus') || normalizedVendor.includes('pacific')) {
+        return { taxable: true, taxAll: false, taxableItemCodes: ['752GO'], label: 'PACIFIC PLUS - ITEM 752GO ONLY' };
+    }
+
+    return { taxable: false, taxAll: false, taxableItemCodes: [], label: 'NO AUTO TAX' };
+}
+
+function isTaxableInvoiceItem(vendor, item) {
+    const rule = getVendorTaxMode(vendor);
+
+    if (!rule.taxable) return false;
+    if (rule.taxAll) return true;
+
+    const normalizedCode = normalizeItemCodeForTax(item?.item_code || item?.itemCode || '');
+    const normalizedName = String(item?.product_name || item?.productName || '').toUpperCase();
+
+    return (rule.taxableItemCodes || []).some(code => {
+        const normalizedRuleCode = normalizeItemCodeForTax(code);
+        return normalizedCode === normalizedRuleCode || normalizedName.includes(normalizedRuleCode);
+    });
+}
+
+function calculateAutoTaxForLine(vendor, item, lineSubtotal) {
+    const subtotal = Number(lineSubtotal || 0) || 0;
+    return isTaxableInvoiceItem(vendor, item) ? subtotal * TAX_RATE : 0;
+}
+
+function syncInvoiceTaxCheckboxForVendor(vendor) {
+    const checkbox = document.getElementById('invoiceTaxEnabled');
+    if (!checkbox) return;
+
+    const rule = getVendorTaxMode(vendor);
+
+    if (rule.taxable) {
+        checkbox.checked = true;
+    }
+}
+
 
 
 
@@ -13130,21 +13206,7 @@ function renderVendorsTable(vendorStats) {
 
 
 function calcLineTax(vendor, itemCode, lineTotal) {
-
-    const rule = VENDOR_TAX_RULES[vendor];
-
-    if (!rule) return 0;
-
-    if (rule.taxAll) return lineTotal * TAX_RATE_PDF;
-
-    if (rule.taxableItemCodes && rule.taxableItemCodes.includes((itemCode || '').trim().toUpperCase())) {
-
-        return lineTotal * TAX_RATE_PDF;
-
-    }
-
-    return 0;
-
+    return calculateAutoTaxForLine(vendor, { item_code: itemCode }, lineTotal);
 }
 
 // ── IMAGE HELPER ─────────────────────────────────────────────
@@ -21988,150 +22050,61 @@ function openAddInvoiceModal() {
 // Recalculate and update invoice totals after adding/editing items
 
 async function updateInvoiceTotals(invoiceId) {
-
     try {
-
-        // Get all items for this invoice with item_code
-
         const { data: items, error: itemsError } = await supabaseClient
-
             .from('invoice_items')
-
-            .select('line_total, item_code')
-
+            .select('line_total, item_code, product_name')
             .eq('invoice_id', invoiceId);
-
-        
 
         if (itemsError) throw itemsError;
 
-        
-
-        // Get the invoice to check tax settings
-
         const { data: invoice, error: invoiceError } = await supabaseClient
-
             .from('invoices')
-
-            .select('vendor, tax_enabled')
-
+            .select('vendor, tax_enabled, credit_applied')
             .eq('id', invoiceId)
-
             .single();
-
-        
 
         if (invoiceError) throw invoiceError;
 
-        
-
-        // Calculate subtotal and tax PER ITEM
-
-        // Tax rules: Delta = ALL items, Pacific Plus = only 752GO
-
-        const TAX_RATE = 0.0825;
-
-        const itemCount = items.length;
-
-        const vendorLower = (invoice.vendor || '').toLowerCase();
-
-        const isDelta = vendorLower.includes('delta');
-        const isAutochlor = vendorLower.includes('autochlor');
-        const isPacificPlus = vendorLower.includes('pacific');
+        const vendor = invoice?.vendor || '';
+        const taxRule = getVendorTaxMode(vendor);
         let subtotal = 0;
-
         let totalTax = 0;
 
-        
-
-        items.forEach(item => {
-
-            const itemSubtotal = parseFloat(item.line_total) || 0;
-
+        (items || []).forEach(item => {
+            const itemSubtotal = Number(item.line_total || 0) || 0;
             subtotal += itemSubtotal;
-
-            
-
-            // Apply tax based on vendor and item
-
-            if (invoice.tax_enabled) {
-
-                const is752GO = item.item_code === '752GO';
-
-                if (isDelta || isAutochlor) {
-                    // Delta / Autochlor: tax ALL items
-                    totalTax += itemSubtotal * TAX_RATE;
-                } else if (isPacificPlus && is752GO) {
-
-                    // Pacific Plus: tax ONLY 752GO
-
-                    totalTax += itemSubtotal * TAX_RATE;
-
-                }
-
-            }
-
+            totalTax += calculateAutoTaxForLine(vendor, item, itemSubtotal);
         });
 
-        
+        const creditApplied = Number(invoice?.credit_applied || 0) || 0;
+        const totalBeforeCredit = subtotal + totalTax;
+        const total = Math.max(0, totalBeforeCredit - creditApplied);
 
-        const total = subtotal + totalTax;
-
-        
-
-        let taxStatus = '❌ NO TAX';
-
-        if (isDelta) taxStatus = '✅ DELTA - ALL ITEMS TAXED';
-        else if (isAutochlor) taxStatus = '✅ AUTOCHLOR - ALL ITEMS TAXED';
-        else if (isPacificPlus) taxStatus = '✅ PACIFIC PLUS - 752GO TAXED';
-
-        
-
-        console.log(`📊 TAX CALC: ${itemCount} items, Vendor: ${invoice.vendor} ${taxStatus}, Subtotal=$${subtotal.toFixed(2)}, Tax=$${totalTax.toFixed(2)}, Total=$${total.toFixed(2)}`);
-
-        
-
-        // Update the invoice with correct column names
+        console.log(
+            `[TAX AUTO] ${vendor} | ${taxRule.label} | ` +
+            `Subtotal=$${subtotal.toFixed(2)} Tax=$${totalTax.toFixed(2)} Total=$${total.toFixed(2)}`
+        );
 
         const { error: updateError } = await supabaseClient
-
             .from('invoices')
-
             .update({
-
                 subtotal: subtotal,
-
+                tax_rate: totalTax > 0 ? TAX_RATE : 0,
                 tax_amount: totalTax,
-
+                tax_enabled: taxRule.taxable || totalTax > 0,
                 total: total,
-
                 amount: total
-
             })
-
             .eq('id', invoiceId);
-
-        
 
         if (updateError) throw updateError;
 
-        
-
-        console.log(`✅ Invoice updated in database: Subtotal=$${subtotal.toFixed(2)}, Tax=$${totalTax.toFixed(2)}, Total=$${total.toFixed(2)}`);
-
-        
-
+        console.log(`✅ Invoice updated: Subtotal=$${subtotal.toFixed(2)}, Tax=$${totalTax.toFixed(2)}, Total=$${total.toFixed(2)}`);
     } catch (error) {
-
         console.error('Error updating invoice totals:', error);
-
-        // Don't throw - item was added successfully, just log the error
-
     }
-
 }
-
-
 
 // Manual recalculate function for the sync button
 
@@ -22580,171 +22553,73 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
 
 
         function calculateInvoiceTotals() {
-
-            const TAX_RATE = 0.0825;
-
             let subtotal = 0;
-
             let totalTax = 0;
 
-            
-
-            // Get current vendor
-
             const currentVendor = document.getElementById('invoiceVendorDropdown')?.value || '';
-
-            const vendorLower = currentVendor.toLowerCase();
-
-            const isDelta = vendorLower.includes('delta');
-
-            const isAutochlor = vendorLower.includes('autochlor');
-
-            const isPacificPlus = vendorLower.includes('pacific');
-
-            
-
-            // Calculate per-item totals with tax
+            const taxRule = getVendorTaxMode(currentVendor);
+            syncInvoiceTaxCheckboxForVendor(currentVendor);
 
             selectedInvoiceProducts.forEach(p => {
-
-                const hasWeight = p.has_weight && p.weight && p.weight > 0;
-
+                const hasWeight = !!(p.has_weight && Number(p.weight || 0) > 0);
                 let itemSubtotal = 0;
 
-                
-
                 if (hasWeight) {
-
-                    itemSubtotal = parseFloat(p.weight || 0) * parseFloat(p.price_per_unit || 0);
-
+                    itemSubtotal = (Number(p.weight || 0) || 0) * (Number(p.price_per_unit || 0) || 0);
                 } else {
-
-                    itemSubtotal = parseFloat(p.quantity || 0) * parseFloat(p.invoice_price || 0);
-
+                    itemSubtotal = (Number(p.quantity || 0) || 0) * (Number(p.invoice_price || 0) || 0);
                 }
-
-                
-
-                // Tax logic:
-
-                // 1. Delta vendor → tax ALL items
-
-                // 2. Pacific Plus vendor → tax ONLY item 752GO
-
-                // 3. All others → no tax
-
-                const taxEnabled = document.getElementById('invoiceTaxEnabled')?.checked ?? false;
-                const is752GO = p.item_code === '752GO';
-
-                let itemTax = 0;
-
-                
-
-                if (taxEnabled) {
-
-                    if (isDelta || isAutochlor) {
-                        // Delta / Autochlor: tax ALL items
-                        itemTax = itemSubtotal * TAX_RATE;
-                    } else if (isPacificPlus && is752GO) {
-
-                        // Pacific Plus: tax ONLY 752GO
-
-                        itemTax = itemSubtotal * TAX_RATE;
-
-                    }
-
-                    // All other vendors: no tax
-
-                }
-
-                
 
                 subtotal += itemSubtotal;
-
-                totalTax += itemTax;
-
+                totalTax += calculateAutoTaxForLine(currentVendor, p, itemSubtotal);
             });
 
-            
-
-            const creditApplied = parseFloat(document.getElementById('invoiceCreditApplied')?.value || 0) || 0;
-
+            const creditApplied = Number(document.getElementById('invoiceCreditApplied')?.value || 0) || 0;
             const totalBeforeCredit = subtotal + totalTax;
-
             const total = Math.max(0, totalBeforeCredit - creditApplied);
 
-            
+            const subtotalEl = document.getElementById('invoiceSubtotal');
+            const taxEl = document.getElementById('invoiceTax');
+            const totalEl = document.getElementById('invoiceTotal');
 
-            document.getElementById('invoiceSubtotal').textContent = '$' + subtotal.toFixed(2);
-
-            document.getElementById('invoiceTax').textContent = '$' + totalTax.toFixed(2);
-
-            document.getElementById('invoiceTotal').textContent = '$' + total.toFixed(2);
-
-            if (creditApplied > 0) {
-
-                document.getElementById('invoiceTotal').style.color = '#059669';
-
-            } else {
-
-                document.getElementById('invoiceTotal').style.color = '';
-
+            if (subtotalEl) subtotalEl.textContent = '$' + subtotal.toFixed(2);
+            if (taxEl) taxEl.textContent = '$' + totalTax.toFixed(2);
+            if (totalEl) {
+                totalEl.textContent = '$' + total.toFixed(2);
+                totalEl.style.color = creditApplied > 0 ? '#059669' : '';
             }
-
-            
-
-            // Update tax label
 
             const taxLabel = document.getElementById('taxLabel');
 
-            const taxEnabled = document.getElementById('invoiceTaxEnabled')?.checked ?? false;
-            const has752GO = selectedInvoiceProducts.some(p => p.item_code === '752GO');
-
-            
-
-            if (taxEnabled && (isDelta || isAutochlor)) {
-                taxLabel.textContent = isDelta ? '💰 Tax (8.25% - DELTA - ALL ITEMS):' : '💰 Tax (8.25% - AUTOCHLOR - ALL ITEMS):';
-
-                taxLabel.style.color = 'var(--success-700)';
-
-                taxLabel.style.fontWeight = '700';
-
-            } else if (taxEnabled && isPacificPlus && has752GO) {
-
-                taxLabel.textContent = '💰 Tax (8.25% - PACIFIC PLUS - ITEM 752GO):';
-
-                taxLabel.style.color = 'var(--primary-700)';
-
-                taxLabel.style.fontWeight = '700';
-
-            } else if (taxEnabled) {
-
-                taxLabel.textContent = 'Tax (Not applicable):';
-
-                taxLabel.style.color = 'var(--neutral-500)';
-
-                taxLabel.style.fontWeight = '400';
-
-            } else {
-
-                taxLabel.textContent = 'Tax (Disabled):';
-
-                taxLabel.style.color = 'var(--neutral-400)';
-
-                taxLabel.style.fontWeight = '400';
-
+            if (taxLabel) {
+                if (taxRule.taxAll) {
+                    taxLabel.textContent = `💰 Tax (8.25% - ${taxRule.label}):`;
+                    taxLabel.style.color = 'var(--success-700)';
+                    taxLabel.style.fontWeight = '700';
+                } else if (taxRule.taxable) {
+                    const hasTaxablePacificItem = selectedInvoiceProducts.some(p => isTaxableInvoiceItem(currentVendor, p));
+                    taxLabel.textContent = hasTaxablePacificItem
+                        ? '💰 Tax (8.25% - PACIFIC PLUS - ITEM 752GO):'
+                        : 'Tax (Pacific Plus: only item 752GO is taxable)';
+                    taxLabel.style.color = hasTaxablePacificItem ? 'var(--primary-700)' : 'var(--neutral-500)';
+                    taxLabel.style.fontWeight = hasTaxablePacificItem ? '700' : '400';
+                } else {
+                    taxLabel.textContent = 'Tax (Not applicable):';
+                    taxLabel.style.color = 'var(--neutral-500)';
+                    taxLabel.style.fontWeight = '400';
+                }
             }
-
-            
-
-            // Keep floating tracker in sync
 
             if (typeof updateFloatTracker === 'function') updateFloatTracker();
 
-            return { subtotal, taxAmount: totalTax, total, taxEnabled };
-
+            return {
+                subtotal,
+                taxAmount: totalTax,
+                total,
+                taxEnabled: taxRule.taxable || totalTax > 0,
+                taxRule: taxRule.label
+            };
         }
-
 
 
         function updateInvoiceVendorField() {
@@ -22752,21 +22627,10 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
             const vendor = document.getElementById('invoiceVendorDropdown').value;
 
             if (vendor) {
-
                 searchInvoiceProducts();
-
-                // ✅ Load credit balance for selected vendor
-
                 loadCreditBalanceForVendor(vendor);
-
-                // Auto-set tax checkbox based on vendor rules
-                const vl = vendor.toLowerCase();
-                document.getElementById('invoiceTaxEnabled').checked =
-                    vl.includes('delta') || vl.includes('autochlor') || vl.includes('pacific');
-
+                syncInvoiceTaxCheckboxForVendor(vendor);
             }
-
-            // ✅ FIX: Recalculate tax when vendor changes (Delta = all taxed, Pacific 752GO = taxed)
 
             calculateInvoiceTotals();
 
@@ -27201,6 +27065,46 @@ async function loadRonyOrders() {
 
 
 
+
+function normalizeRonyGroupOrder(products) {
+    const ordered = [...products].sort((a, b) => {
+        const sa = Number(a.rony_sort_order || 0);
+        const sb = Number(b.rony_sort_order || 0);
+
+        if (sa > 0 && sb > 0 && sa !== sb) return sa - sb;
+        if (sa > 0 && sb <= 0) return -1;
+        if (sa <= 0 && sb > 0) return 1;
+
+        return (a.product_name || '').localeCompare(b.product_name || '');
+    });
+
+    ordered.forEach((product, index) => {
+        product.rony_sort_order = index + 1;
+        product._display_order = index + 1;
+    });
+
+    return ordered;
+}
+
+function rebuildRonyPositionGroupsFromProducts(products) {
+    ronyProductsByPosition.clear();
+
+    products.forEach(product => {
+        const pos = product.position || 'Uncategorized';
+
+        if (!ronyProductsByPosition.has(pos)) {
+            ronyProductsByPosition.set(pos, []);
+        }
+
+        ronyProductsByPosition.get(pos).push(product);
+    });
+
+    ronyProductsByPosition.forEach((group, position) => {
+        ronyProductsByPosition.set(position, normalizeRonyGroupOrder(group));
+    });
+}
+
+
 function renderRonyProducts() {
 
     const container = document.getElementById('ronyProductContainer');
@@ -27249,12 +27153,8 @@ function renderRonyProducts() {
 
     container.innerHTML = positions.map(position => {
 
-        let products = [...ronyProductsByPosition.get(position)].sort((a, b) => {
-            const sa = a.rony_sort_order || 0;
-            const sb = b.rony_sort_order || 0;
-            if (sa !== sb) return sa - sb;
-            return (a.product_name || '').localeCompare(b.product_name || '');
-        });
+        let products = normalizeRonyGroupOrder(ronyProductsByPosition.get(position) || []);
+        ronyProductsByPosition.set(position, products);
 
 
 
@@ -27352,7 +27252,7 @@ function renderRonyProducts() {
 
 function renderRonyProductCard(product) {
 
-    const imageUrl = resolveImage(product.image_url);
+    const imageUrl = resolveImage(product.image_url || product.product_name);
 
     // ✅ 0 is a valid stock count (means "out of stock") — only null means "not entered yet"
 
@@ -27409,17 +27309,26 @@ function renderRonyProductCard(product) {
 
 
 
-            <!-- ✅ SAVED BADGE -->
-
-            ${hasStock ? `<div style="position:absolute;top:8px;left:8px;background:var(--success-600);color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.75rem;">✓</div>` : ''}
+            <!-- EDITABLE CARD ORDER NUMBER -->
+            <div style="position:absolute;top:8px;left:8px;display:flex;align-items:center;gap:0.25rem;background:white;border:1.5px solid var(--neutral-300);border-radius:8px;padding:3px 5px;box-shadow:var(--shadow-sm);z-index:2;"
+                 title="Card order inside this POS group. Change this number to sort cards.">
+                <span style="font-size:0.55rem;font-weight:800;color:var(--neutral-500);text-transform:uppercase;">#</span>
+                <input type="number" min="1" max="999" step="1"
+                       value="${Number(product._display_order || product.rony_sort_order || 1)}"
+                       data-pname="${escAttr(product.product_name)}"
+                       data-position="${escAttr(product.position || '')}"
+                       onchange="saveRonySortOrderFromInput(this)"
+                       onkeydown="if(event.key === 'Enter'){ event.preventDefault(); this.blur(); }"
+                       style="width:38px;border:0;background:transparent;text-align:center;font-size:0.75rem;font-weight:800;font-family:var(--font-mono);outline:none;color:var(--neutral-900);">
+            </div>
 
 
 
             <img src="${imageUrl}"
 
-                 onerror="this.src='${PLACEHOLDER_IMAGE}'"
+                 data-original-image="${escAttr(product.image_url || product.product_name || '')}"
 
-                 style="width: 100%; max-width: 100px; height: 100px; object-fit: contain; border-radius: 8px; margin-bottom: 0.75rem;">
+                 style="width: 100%; max-width: 100px; height: 100px; object-fit: contain; border-radius: 8px; margin: 0.4rem 0 0.75rem;">
 
 
 
@@ -27433,7 +27342,7 @@ function renderRonyProductCard(product) {
             <div style="display:flex;align-items:center;justify-content:center;gap:0.4rem;margin-bottom:0.5rem;">
                 <span style="font-size:0.65rem;font-weight:700;color:var(--neutral-500);text-transform:uppercase;letter-spacing:.04em;">📍 Pos</span>
                 <input type="number" min="1" max="99" step="1"
-                       value="${product.position || ''}" placeholder="#"
+                       value="${/^\d+$/.test(String(product.position || '').trim()) ? String(product.position).trim() : ''}" placeholder="#"
                        data-pname="${escAttr(product.product_name)}"
                        oninput="debouncedSaveRonyPosition(this)"
                        onchange="debouncedSaveRonyPosition(this)"
@@ -27611,12 +27520,11 @@ function _ronyReorder(dragName, fromPos, targetName, targetPos, placement) {
         dstGroup.splice(tgtIdx >= 0 ? tgtIdx : dstGroup.length, 0, dragProduct);
     }
 
-    // ── 4. Renumber sort_order for both affected groups ───────────────
+    // ── 4. Renumber exact visible order for both affected groups ───────
     const affectedPositions = new Set([fromPos, targetPos]);
     affectedPositions.forEach(pos => {
-        (ronyProductsByPosition.get(pos) || []).forEach((p, i) => {
-            p.rony_sort_order = i + 1;
-        });
+        const normalizedGroup = normalizeRonyGroupOrder(ronyProductsByPosition.get(pos) || []);
+        ronyProductsByPosition.set(pos, normalizedGroup);
     });
 
     // ── 5. Re-render immediately ──────────────────────────────────────
@@ -27659,6 +27567,73 @@ async function _ronyPersistOrder(affectedPositions) {
         setTimeout(() => toast.remove(), 3000);
     }
 }
+
+function saveRonySortOrderFromInput(inputEl) {
+    const productName = inputEl.dataset.pname;
+    const value = Number(inputEl.value || 0);
+
+    if (!productName || !Number.isFinite(value) || value < 1) {
+        inputEl.value = '1';
+        return;
+    }
+
+    saveRonySortOrder(productName, Math.round(value), inputEl);
+}
+
+async function saveRonySortOrder(productName, requestedOrder, inputEl) {
+    const allProducts = [];
+    ronyProductsByPosition.forEach(products => allProducts.push(...products));
+
+    const product = allProducts.find(p => p.product_name === productName);
+    if (!product) return;
+
+    const position = product.position || 'Uncategorized';
+    const group = normalizeRonyGroupOrder(ronyProductsByPosition.get(position) || []);
+    const currentIndex = group.findIndex(p => p.product_name === productName);
+    if (currentIndex === -1) return;
+
+    const [moved] = group.splice(currentIndex, 1);
+    const targetIndex = Math.max(0, Math.min(Number(requestedOrder) - 1, group.length));
+    group.splice(targetIndex, 0, moved);
+
+    group.forEach((item, index) => {
+        item.rony_sort_order = index + 1;
+        item._display_order = index + 1;
+    });
+
+    ronyProductsByPosition.set(position, group);
+    renderRonyProducts();
+
+    const toast = document.createElement('div');
+    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:var(--primary-700);color:white;padding:0.5rem 1.1rem;border-radius:8px;font-size:0.78rem;font-weight:700;z-index:9999;display:flex;align-items:center;gap:0.5rem;box-shadow:0 4px 12px rgba(0,0,0,.2);';
+    toast.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving exact order…';
+    document.body.appendChild(toast);
+
+    try {
+        const updates = group.map(item =>
+            supabaseClient
+                .from('inventory_management')
+                .update({ rony_sort_order: item.rony_sort_order, position: item.position })
+                .eq('product_name', item.product_name)
+        );
+
+        await Promise.all(updates);
+
+        toast.style.background = '#16a34a';
+        toast.innerHTML = `✓ ${productName} moved to #${targetIndex + 1}`;
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transition = 'opacity 0.5s';
+            setTimeout(() => toast.remove(), 500);
+        }, 1400);
+    } catch (err) {
+        console.error('saveRonySortOrder error:', err);
+        toast.style.background = '#dc2626';
+        toast.innerHTML = '❌ Order save failed';
+        setTimeout(() => toast.remove(), 3000);
+    }
+}
+
 const _ronyPosTimers = new Map();
 
 function debouncedSaveRonyPosition(inputEl) {
@@ -49998,6 +49973,49 @@ window.corpNav = function(tabName) {
         setTimeout(() => {
             if (!jcIsKioskMode()) window.jcLoadDashboardHome();
         }, 650);
+    });
+})();
+</script>
+
+
+<script>
+document.addEventListener('input', function(event) {
+    if (event.target && event.target.closest && event.target.closest('#invoiceModal')) {
+        if (typeof calculateInvoiceTotals === 'function') calculateInvoiceTotals();
+    }
+}, true);
+
+document.addEventListener('change', function(event) {
+    if (event.target && event.target.closest && event.target.closest('#invoiceModal')) {
+        if (event.target.id === 'invoiceVendorDropdown') {
+            syncInvoiceTaxCheckboxForVendor(event.target.value);
+        }
+        if (typeof calculateInvoiceTotals === 'function') calculateInvoiceTotals();
+    }
+}, true);
+</script>
+
+
+<script>
+(function(){
+    function cleanInvalidNumberInputValues() {
+        document.querySelectorAll('input[type="number"]').forEach(input => {
+            const raw = String(input.getAttribute('value') || input.value || '').trim();
+            if (raw && Number.isNaN(Number(raw))) {
+                input.value = '';
+                input.setAttribute('value', '');
+            }
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', cleanInvalidNumberInputValues);
+    window.addEventListener('load', cleanInvalidNumberInputValues);
+
+    const observer = new MutationObserver(() => cleanInvalidNumberInputValues());
+    document.addEventListener('DOMContentLoaded', () => {
+        if (document.body) {
+            observer.observe(document.body, { childList: true, subtree: true });
+        }
     });
 })();
 </script>
