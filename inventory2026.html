@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.04.27.dashboard-width-trend-v2';
+        var VERSION = '2026.04.27.general-categories-v1';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -5125,50 +5125,7 @@ input[id^="par-input-"]:focus {
         color: rgba(255,255,255,0.7);
     }
 
-    
-        /* ── 2026-04-27 Dashboard layout fix: use full width and larger logo ── */
-        .container {
-            max-width: none !important;
-            width: 100% !important;
-            padding-left: 0.35rem !important;
-            padding-right: 0.35rem !important;
-        }
-
-        .header-content {
-            max-width: none !important;
-            width: 100% !important;
-        }
-
-        .header-logo-band {
-            min-width: 216px !important;
-            padding-left: 0.7rem !important;
-            padding-right: 1rem !important;
-        }
-
-        .header-logo-band img {
-            height: 60px !important;
-            max-width: 190px !important;
-        }
-
-        #execDashboard {
-            width: 100% !important;
-        }
-
-        #execDashboard > div {
-            max-width: none !important;
-        }
-
-        @media (max-width: 900px) {
-            .header-logo-band {
-                min-width: 160px !important;
-            }
-
-            .header-logo-band img {
-                height: 50px !important;
-            }
-        }
-
-</style>
+    </style>
 
 <body>
 
@@ -11873,20 +11830,29 @@ function isForceQty(itemCode, productName) {
 
 // Shared category builder used in invoice product rows
 const CATEGORY_OPTIONS = [
-    ['🥬 PRODUCE', ['Fresh Vegetables','Fresh Fruits','Fresh Herbs','Mushrooms','Vegetable Powders','Sprouts & Microgreens','Exotic Produce']],
-    ['🥩 BEEF',    ['Beef','Ground Beef','Beef Steaks','Beef Roasts']],
-    ['🐖 PORK',    ['Pork','Pork Belly','Pork Chops','Ground Pork','Pork Ribs','Pork Sausage']],
-    ['🐔 POULTRY', ['Poultry','Chicken Breast','Chicken Thighs','Whole Chicken','Chicken Wings','Duck','Turkey']],
-    ['🐑 LAMB',    ['Lamb','Lamb Chops','Ground Lamb','Leg of Lamb']],
-    ['🐟 SEAFOOD', ['Seafood','Fresh Fish','Salmon','White Fish','Shellfish','Shrimp','Frozen Seafood','Squid & Octopus']],
-    ['🥛 DAIRY & EGGS', ['Milk & Cream','Cheese - Hard','Cheese - Soft','Butter','Eggs','Yogurt']],
-    ['🌾 GRAINS',  ['Rice','Noodles','Pasta','Flour','Bread & Buns']],
-    ['🫙 SAUCES',  ['Soy Sauce','Oyster Sauce','Sesame Oil','Vinegar','Hot Sauce','Cooking Wine','Marinades & Glazes']],
-    ['🧂 DRY GOODS',['Spices','Salt & Sugar','Starches','Baking','Canned Goods','Dry Beans & Legumes']],
-    ['🧴 CHEMICALS',['Cleaning Supplies','Sanitizers','Degreasers','Chemicals']],
-    ['📦 PACKAGING',['Containers','Bags','Wraps','Disposables','Labels']],
-    ['🖊 OFFICE',  ['Office Supplies','Paper & Printing','Misc Office']],
-    ['❓ OTHER',   ['Uncategorized','Other']],
+    ['GENERAL CATEGORIES', [
+        'Produce',
+        'Poultry',
+        'Beef',
+        'Pork',
+        'Seafood',
+        'Rice / Grains',
+        'Noodles',
+        'Flour / Baking',
+        'Dairy / Eggs',
+        'Oils',
+        'Condiments / Sauces',
+        'Spices / Seasoning',
+        'Paper / Disposables',
+        'Cleaning / Chemicals',
+        'Office / Supplies',
+        'AutoChlor',
+        'Beverage',
+        'Bakery / Dessert',
+        'Frozen Foods',
+        'Snacks / Candy',
+        'Other'
+    ]]
 ];
 function buildCategorySelect(id, currentVal, onchangeExpr, style) {
     const opts = CATEGORY_OPTIONS.map(([grp, items]) =>
@@ -16038,28 +16004,26 @@ async function initExecDashboard() {
             priorVendorTotals[v] = (priorVendorTotals[v]||0) + parseFloat(inv.total||inv.amount||0);
         });
 
-        // ── Monthly totals for the trend chart ──
-        // Use a separate yearly query so the selected-period invoices are not counted twice.
+        // ── Monthly totals (last 12 months always for trend chart) ──
         const monthlyMap = {};
-        const trendYear = from ? from.getFullYear() : Number(document.getElementById('dashYearPicker')?.value || new Date().getFullYear());
-        const trendFromStr = `${trendYear}-01-01`;
-        const trendToStr = toStr;
-        const { data: trendInvs, error: trendErr } = await supabaseClient
-            .from('invoices')
-            .select('invoice_date, total, amount')
-            .gte('invoice_date', trendFromStr)
-            .lte('invoice_date', trendToStr);
-
-        if (trendErr) {
-            console.warn('[Dashboard] Trend load error:', trendErr);
-        }
-
-        (trendInvs || []).forEach(inv => {
-            const key = (inv.invoice_date || '').slice(0, 7);
-            if (!key) return;
-            monthlyMap[key] = (monthlyMap[key] || 0) + parseFloat(inv.total || inv.amount || 0);
+        safeInvs.forEach(inv => {
+            if (!inv.invoice_date) return;
+            const key = inv.invoice_date.slice(0,7);
+            monthlyMap[key] = (monthlyMap[key]||0) + parseFloat(inv.total||inv.amount||0);
         });
-
+        // If period is short, also load trailing 12 months for trend
+        if (safeInvs.length < 5 || Object.keys(monthlyMap).length < 3) {
+            const now2 = new Date();
+            const { data: trend12 } = await supabaseClient
+                .from('invoices')
+                .select('invoice_date, total, amount')
+                .gte('invoice_date', new Date(now2.getFullYear()-1, now2.getMonth()+1, 1).toISOString().slice(0,10))
+                .lte('invoice_date', now2.toISOString().slice(0,10));
+            (trend12||[]).forEach(inv => {
+                const key = (inv.invoice_date||'').slice(0,7);
+                if (key) monthlyMap[key] = (monthlyMap[key]||0) + parseFloat(inv.total||inv.amount||0);
+            });
+        }
         const sortedMonths = Object.keys(monthlyMap).sort();
         const monthLabels  = sortedMonths.map(k => {
             const [y2,mo] = k.split('-');
@@ -50061,6 +50025,126 @@ document.addEventListener('change', function(event) {
         if (document.body) {
             observer.observe(document.body, { childList: true, subtree: true });
         }
+    });
+})();
+</script>
+
+
+<script>
+/* ── General category cleanup: keep every category dropdown simple across the whole website ── */
+(function () {
+    const JC_GENERAL_CATEGORIES = [
+        "Produce",
+        "Poultry",
+        "Beef",
+        "Pork",
+        "Seafood",
+        "Rice / Grains",
+        "Noodles",
+        "Flour / Baking",
+        "Dairy / Eggs",
+        "Oils",
+        "Condiments / Sauces",
+        "Spices / Seasoning",
+        "Paper / Disposables",
+        "Cleaning / Chemicals",
+        "Office / Supplies",
+        "AutoChlor",
+        "Beverage",
+        "Bakery / Dessert",
+        "Frozen Foods",
+        "Snacks / Candy",
+        "Other"
+    ];
+
+    function normalizeGeneralCategory(value, productName) {
+        const text = `${value || ""} ${productName || ""}`.toLowerCase();
+
+        if (/(chicken|poultry|turkey|duck)/.test(text)) return "Poultry";
+        if (/(beef|flank|shank|steak|brisket|sukarne)/.test(text)) return "Beef";
+        if (/(pork|lard|bacon|ham|sausage|rib|eggroll)/.test(text)) return "Pork";
+        if (/(shrimp|fish|seafood|salmon|swai|basa|squid|octopus|seaweed|oyster)/.test(text)) return "Seafood";
+        if (/(produce|vegetable|fruit|herb|onion|pepper|potato|broccoli|carrot|cabbage|bean|bamboo|corn|eggplant|mushroom|pea)/.test(text)) return "Produce";
+        if (/(rice|grain|starch|tapioca|corn starch|bean thread)/.test(text)) return "Rice / Grains";
+        if (/(noodle|pasta|rice stick)/.test(text)) return "Noodles";
+        if (/(flour|baking|bakemark|cake|bread|bun|dough|cmc)/.test(text)) return "Flour / Baking";
+        if (/(milk|cream|dairy|egg|butter|cheese|yogurt)/.test(text)) return "Dairy / Eggs";
+        if (/(oil|fry|sesame oil|clear fry)/.test(text)) return "Oils";
+        if (/(sauce|soy|vinegar|wine|mustard|mayo|ketchup|dressing|condiment|marinade)/.test(text)) return "Condiments / Sauces";
+        if (/(spice|season|salt|sugar|pepper|chili|cumin|clove|bay leaf|aniseed|ash)/.test(text)) return "Spices / Seasoning";
+        if (/(cup|lid|container|box|takeout|pail|foil|film|bag|wrap|glove|napkin|straw|towel|toilet|liner|paper|disposable|disposal|portion|steam pan|tray|toothpick)/.test(text)) return "Paper / Disposables";
+        if (/(clean|chemical|sanitize|sanitizer|soap|detergent|rinse|autochlor|fabuloso|degreaser|urinal|mint fresh|magic eraser|floor)/.test(text)) return "Cleaning / Chemicals";
+        if (/(office|sharpie|envelope|battery|batteries|paper roll|thermal|first aid|dispenser|label|printer)/.test(text)) return "Office / Supplies";
+        if (/(autochlor|machine charge|service charge|rinse aid)/.test(text)) return "AutoChlor";
+        if (/(tea|drink|beverage|juice|soda)/.test(text)) return "Beverage";
+        if (/(bakery|dessert|cake|pastry)/.test(text)) return "Bakery / Dessert";
+        if (/(frozen)/.test(text)) return "Frozen Foods";
+        if (/(snack|mint|candy|peanut|cashew|nut)/.test(text)) return "Snacks / Candy";
+
+        if (JC_GENERAL_CATEGORIES.includes(value)) return value;
+        return value && value !== "Uncategorized" ? "Other" : "";
+    }
+
+    window.JC_GENERAL_CATEGORIES = JC_GENERAL_CATEGORIES;
+    window.normalizeGeneralCategory = normalizeGeneralCategory;
+
+    function isCategorySelect(select) {
+        const id = String(select.id || "").toLowerCase();
+        const name = String(select.name || "").toLowerCase();
+        const label = select.closest(".filter-group, .form-group, td, div")?.querySelector("label")?.textContent?.toLowerCase() || "";
+        const optionText = Array.from(select.options || []).slice(0, 12).map(o => o.textContent.toLowerCase()).join(" ");
+
+        return id.includes("category") ||
+            name.includes("category") ||
+            label.includes("category") ||
+            optionText.includes("fresh vegetables") ||
+            optionText.includes("chicken breast") ||
+            optionText.includes("cleaning & janitorial") ||
+            optionText.includes("disposal supplies");
+    }
+
+    function replaceCategoryOptions(select) {
+        if (!select || select.dataset.jcGeneralCategoryReady === "1") return;
+
+        const current = select.value;
+        const normalized = normalizeGeneralCategory(current, "");
+        const firstLabel = select.options?.[0]?.value === "" ? select.options[0].textContent : "All Categories";
+
+        select.innerHTML = "";
+
+        const empty = document.createElement("option");
+        empty.value = "";
+        empty.textContent = firstLabel || "All Categories";
+        select.appendChild(empty);
+
+        JC_GENERAL_CATEGORIES.forEach(category => {
+            const option = document.createElement("option");
+            option.value = category;
+            option.textContent = category;
+            select.appendChild(option);
+        });
+
+        if (normalized && JC_GENERAL_CATEGORIES.includes(normalized)) {
+            select.value = normalized;
+        }
+
+        select.dataset.jcGeneralCategoryReady = "1";
+    }
+
+    function normalizeCategorySelects() {
+        document.querySelectorAll("select").forEach(select => {
+            if (isCategorySelect(select)) {
+                replaceCategoryOptions(select);
+            }
+        });
+    }
+
+    document.addEventListener("DOMContentLoaded", normalizeCategorySelects);
+    window.addEventListener("load", normalizeCategorySelects);
+
+    const observer = new MutationObserver(() => normalizeCategorySelects());
+    document.addEventListener("DOMContentLoaded", () => {
+        observer.observe(document.body, { childList: true, subtree: true });
     });
 })();
 </script>
