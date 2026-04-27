@@ -3008,7 +3008,6 @@
       await loadDailyEntries();
       await loadMainInventory();
 
-      inventoryComplete = true;
       updateProductionAccess();
       renderEntrySheet("production");
       updateProductionAccess();
@@ -3143,80 +3142,52 @@
       return grouped;
     }
 
+    async function loadMainInventory() {
+      const entryDate = document.getElementById("entryDate").value;
 
-    
+      const { data, error } = await client.rpc("get_dumpling_inventory_staff", {
+        p_count_date: entryDate
+      });
 
+      if (error) {
+        console.error("Dumpling inventory load error:", error);
+        mainInventoryRows = [];
+        inventoryComplete = false;
+        showToast("Unable to load dumpling inventory. Run the updated Supabase SQL first.");
+        return;
+      }
 
-  async function loadMainInventory() {
-    const entryDate = document.getElementById("entryDate").value;
-
-    const { data, error } = await client.rpc("get_dumpling_inventory_staff", {
-      p_count_date: entryDate
-    });
-
-    if (error) {
-      console.error("Dumpling inventory load error:", error);
-      mainInventoryRows = [];
-      inventoryComplete = false;
-      showToast("Unable to load dumpling inventory. Run the updated Supabase SQL first.");
-      return;
-    }
-
-    const currentDateRows = data || [];
-    const hasCurrentDateInventory = currentDateRows.some(row => row.counted_for_date);
-
-    if (hasCurrentDateInventory) {
-      mainInventoryRows = currentDateRows;
+      mainInventoryRows = data || [];
       inventoryComplete = isInventoryCompleteForDate();
-      return;
-    }
 
-    const { data: latestDate, error: latestDateError } = await client.rpc(
-      "get_latest_dumpling_inventory_count_date",
-      {
-        p_before_date: entryDate
+      const sourceCountDate = getLoadedPreviousInventoryDate();
+
+      if (sourceCountDate) {
+        showToast(`Loaded from previous inventory date ${sourceCountDate}.`);
       }
-    );
-
-    if (latestDateError) {
-      console.error("Latest inventory date load error:", latestDateError);
-      mainInventoryRows = currentDateRows;
-      inventoryComplete = false;
-      return;
     }
 
-    if (!latestDate) {
-      mainInventoryRows = currentDateRows;
-      inventoryComplete = false;
-      return;
+    function getLoadedPreviousInventoryDate() {
+      const entryDate = document.getElementById("entryDate").value;
+      const sourceRow = mainInventoryRows.find(row => row.source_count_date && row.source_count_date !== entryDate);
+
+      return sourceRow ? sourceRow.source_count_date : "";
     }
 
-    const { data: previousRows, error: previousRowsError } = await client.rpc(
-      "get_dumpling_inventory_staff",
-      {
-        p_count_date: latestDate
+    function renderPreviousInventoryNotice() {
+      const entryDate = document.getElementById("entryDate").value;
+      const sourceCountDate = getLoadedPreviousInventoryDate();
+
+      if (!sourceCountDate) {
+        return "";
       }
-    );
 
-    if (previousRowsError) {
-      console.error("Previous inventory load error:", previousRowsError);
-      mainInventoryRows = currentDateRows;
-      inventoryComplete = false;
-      return;
+      return `
+        <div class="notice" style="margin-bottom:14px;">
+          Loaded from previous inventory date ${escapeHtml(sourceCountDate)}. Save changes to create a new inventory count for ${escapeHtml(entryDate)}.
+        </div>
+      `;
     }
-
-    mainInventoryRows = (previousRows || []).map(row => ({
-      ...row,
-      counted_for_date: false,
-      source_count_date: latestDate
-    }));
-
-    inventoryComplete = false;
-    showToast(`Loaded previous inventory from ${latestDate} as default values.`);
-  }
-
-
-    
 
     function getMainInventoryRow(itemId) {
       return mainInventoryRows.find(row => row.item_id === itemId);
@@ -3286,6 +3257,7 @@
       const remainingCount = Math.max(dumplingItems.length - countedCount, 0);
 
       let html = `
+        ${renderPreviousInventoryNotice()}
         <div class="section-card">
           <div class="section-head">
             <div>
@@ -3381,7 +3353,7 @@
         items.forEach(item => {
           const inventoryRow = getMainInventoryRow(item.id);
           const countedForDate = Boolean(inventoryRow && inventoryRow.counted_for_date);
-        const stockQuantity = inventoryRow ? Number(inventoryRow.stock_quantity || 0) : "";
+          const stockQuantity = inventoryRow ? Number(inventoryRow.stock_quantity || 0) : "";
 
           html += `
             <tr id="inventory-row-${item.id}" data-item-id="${item.id}">
@@ -3537,6 +3509,7 @@
       const grouped = groupItemsByCategory();
 
       let html = `
+        ${renderPreviousInventoryNotice()}
         <div class="section-card production-sheet">
           <div class="section-head">
             <div>
