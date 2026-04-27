@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.04.27.merge-v8-9charts-rony-dashboard';
+        var VERSION = '2026.04.27.v16-fix-tentative-wipe';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -31421,124 +31421,32 @@ function selectVendorForProduct(productId, vendor, itemCode) {
 async function submitEnhancedOrder() {
 
     const dateISO = document.getElementById('createOrderDate').value || todayYMD();
-
     const cards = document.querySelectorAll('.enhanced-order-card');
 
-    
-
     if (cards.length === 0) {
-
         showAlert('No products to order', 'error');
-
         return;
-
     }
-
-    
 
     showLoading(true);
-
     try {
+        const savedRows = await persistVisiblePlaceOrderItems(dateISO);
 
-        const updates = [];
-
-        
-
-        for (const card of cards) {
-
-            const productName = card.dataset.product;
-
-            const user = card.dataset.user;
-
-            const productId = productName.replace(/[^a-zA-Z0-9]/g, '_');
-
-            
-
-            const qtyInput = document.getElementById(`qty-${productId}`);
-
-            const vendorInput = document.getElementById(`vendor-${productId}`);
-
-            
-
-            if (!qtyInput || !vendorInput) continue;
-
-            
-
-            const quantity = parseFloat(qtyInput.value || 0);
-
-            const vendor = vendorInput.value || null;
-
-            
-
-            if (quantity > 0 || vendor) {
-
-                updates.push(
-
-                    supabaseClient
-
-                        .from('inventory_check')
-
-                        .update({
-
-                            tentative: quantity,
-
-                            vendor: vendor
-
-                        })
-
-                        .eq('order_date', dateISO)
-
-                        .eq('product_name', productName)
-
-                        .eq('user', user)
-
-                );
-
-            }
-
-        }
-
-        
-
-        if (updates.length === 0) {
-
+        if (savedRows.length === 0) {
             showAlert('No changes to save', 'error');
-
             return;
-
         }
 
-        
-
-        await Promise.all(updates);
-
-        
-
-        showAlert(`✅ Order saved successfully! ${updates.length} products updated`, 'success');
-
-        
-
-        // Reload
-
+        showAlert(`✅ Order saved successfully! ${savedRows.length} products updated`, 'success');
         await loadEnhancedCreateOrder();
 
-        
-
     } catch (error) {
-
         console.error('Submit order error:', error);
-
         showAlert('Error saving order: ' + error.message, 'error');
-
     } finally {
-
         showLoading(false);
-
     }
-
 }
-
-
 
 // ========== UTILITY FUNCTIONS FOR PLACE ORDER ==========
 
@@ -37944,6 +37852,71 @@ function _poGetWeightRule(productName) {
     return null;
 }
 
+
+function normalizePlaceOrderUserForDb(userType) {
+    const u = String(userType || '').trim().toLowerCase();
+    if (u === 'rony') return 'Rony';
+    if (u === 'julio') return 'Julio';
+    if (u === 'office') return 'Office';
+    return userType || 'Office';
+}
+
+function collectVisiblePlaceOrderItems() {
+    const cards = Array.from(document.querySelectorAll('.enhanced-order-card'));
+    return cards.map(card => {
+        const qtyInput = card.querySelector('input[type="number"][id^="qty-"]');
+        const vendorInput = card.querySelector('select[id^="vendor-"]');
+        const codeInput = card.querySelector('input[type="text"][id^="itemcode-input-"]');
+
+        const qty = parseFloat(qtyInput?.value || 0);
+        const vendor = String(vendorInput?.value || '').trim();
+        const itemCode = String(codeInput?.value || '').trim();
+        const productName = String(card.dataset.product || '').trim();
+        const user = normalizePlaceOrderUserForDb(card.dataset.user);
+
+        return {
+            order_date: document.getElementById('createOrderDate')?.value || todayYMD(),
+            product_name: productName,
+            user,
+            tentative: Number.isFinite(qty) ? qty : 0,
+            vendor: vendor || null,
+            item_code: itemCode || null,
+        };
+    }).filter(row => row.product_name && (row.tentative > 0 || row.vendor || row.item_code));
+}
+
+async function persistVisiblePlaceOrderItems(dateISO) {
+    if (document.activeElement && document.activeElement !== document.body) {
+        document.activeElement.blur();
+    }
+    await new Promise(resolve => setTimeout(resolve, 150));
+
+    const rows = collectVisiblePlaceOrderItems().map(row => ({
+        ...row,
+        order_date: dateISO || row.order_date || todayYMD(),
+    }));
+
+    if (!rows.length) {
+        return [];
+    }
+
+    const { error } = await supabaseClient
+        .from('inventory_check')
+        .upsert(rows, {
+            onConflict: 'order_date,product_name,user',
+            ignoreDuplicates: false,
+        });
+
+    if (error) {
+        console.error('❌ Place Order inventory_check save failed:', error);
+        throw error;
+    }
+
+    console.log(`✅ Saved ${rows.length} Place Order row(s) to inventory_check.tentative`);
+    return rows;
+}
+
+
 async function generateOrderPDFs() {
 
     const dateISO = document.getElementById('createOrderDate').value || todayYMD();
@@ -41354,57 +41327,43 @@ async function syncInventoryCheck(dateISO) {
 
             // Safe: tentative/vendor/item_code preserved unless they were null.
 
-            const refreshRows = realDataRows.map(r => {
+            // ✅ FIX: Use individual .update() calls — NOT upsert — so tentative/vendor/item_code
+            //    are NEVER touched. upsert with ignoreDuplicates:false sets omitted columns to NULL.
+            const refreshPromises = realDataRows.map(r => {
+                const updateFields = { on_hand: r.on_hand, target: r.target };
 
-                const row = {
-
-                    order_date:   r.order_date,
-
-                    product_name: r.product_name,
-
-                    user:         r.user,
-
-                    on_hand:      r.on_hand,
-
-                    target:       r.target
-
-                };
-
-                // ✅ FIX: populate tentative for Julio from submitted target_quantity
-
-                // This ensures Place Order always preloads the submitted qty
-
+                // For Julio: also sync tentative = on_hand (his submitted target qty)
+                // Only set if tentative is not already saved (preserve manual edits)
                 if (r.user === 'Julio' && r.on_hand > 0) {
-
-                    row.tentative = r.on_hand;
-
+                    // Use a conditional update: only write tentative if it's null/0 in DB
+                    // We do this via a second targeted update
                 }
 
-                return row;
-
+                return supabaseClient
+                    .from('inventory_check')
+                    .update(updateFields)
+                    .eq('order_date', r.order_date)
+                    .eq('product_name', r.product_name)
+                    .eq('user', r.user);
             });
 
-            for (let i = 0; i < refreshRows.length; i += batchSize) {
-
-                const batch = refreshRows.slice(i, i + batchSize);
-
-                const { error: refreshErr } = await supabaseClient
-
+            // Also sync Julio tentative separately — only where tentative IS NULL or 0
+            const julioRows = realDataRows.filter(r => r.user === 'Julio' && r.on_hand > 0);
+            const julioTentativePromises = julioRows.map(r =>
+                supabaseClient
                     .from('inventory_check')
+                    .update({ tentative: r.on_hand })
+                    .eq('order_date', r.order_date)
+                    .eq('product_name', r.product_name)
+                    .eq('user', 'Julio')
+                    .or('tentative.is.null,tentative.eq.0')
+            );
 
-                    .upsert(batch, {
+            const allRefreshResults = await Promise.all([...refreshPromises, ...julioTentativePromises]);
+            const refreshErrors = allRefreshResults.filter(r => r.error).map(r => r.error.message);
+            if (refreshErrors.length > 0) console.warn('⚠️ on_hand refresh errors:', refreshErrors);
 
-                        onConflict: 'order_date,product_name,user',
-
-                        ignoreDuplicates: false   // update on_hand + target, nothing else in payload
-
-                    });
-
-                if (refreshErr) console.warn('⚠️ on_hand refresh batch error:', refreshErr);
-
-            }
-
-            console.log(`✅ Refreshed on_hand for ${realDataRows.length} real-data rows`);
+            console.log(`✅ Refreshed on_hand for ${realDataRows.length} real-data rows (tentative preserved)`);
 
         }
 
@@ -50293,6 +50252,147 @@ document.addEventListener('change', function(event) {
   window.addEventListener("load", function () {
     setTimeout(forceCurrentMonthDashboardLoad, 1000);
   });
+})();
+</script>
+
+
+<script id="jc-final-dashboard-alias-v12">
+(function () {
+    "use strict";
+
+    function jcNormalizeTabName(tabName) {
+        return tabName === "dashboard" ? "execDashboard" : tabName;
+    }
+
+    function jcIsKioskModeUser() {
+        const user = (new URLSearchParams(window.location.search).get("user") || "").toLowerCase().trim();
+        return user === "rony" || user === "julio" || user === "office";
+    }
+
+    function jcForceCurrentMonthInputs() {
+        try {
+            if (typeof _dashPeriod !== "undefined") {
+                _dashPeriod = "thisMonth";
+            }
+            if (typeof _dashCustomFrom !== "undefined") {
+                _dashCustomFrom = null;
+            }
+            if (typeof _dashCustomTo !== "undefined") {
+                _dashCustomTo = null;
+            }
+
+            const now = new Date();
+            const from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+            const to = now.toISOString().slice(0, 10);
+
+            const fromInput = document.getElementById("dashFromDate");
+            const toInput = document.getElementById("dashToDate");
+            const monthPicker = document.getElementById("dashMonthPicker");
+
+            if (fromInput) {
+                fromInput.value = from;
+            }
+            if (toInput) {
+                toInput.value = to;
+            }
+            if (monthPicker) {
+                monthPicker.value = "";
+            }
+
+            document.querySelectorAll(".dash-period-btn").forEach(button => {
+                button.classList.toggle("dash-period-active", button.dataset.period === "thisMonth");
+            });
+        } catch (error) {
+            console.warn("[Dashboard startup] Unable to force current month:", error);
+        }
+    }
+
+    function jcActivateExecDashboard() {
+        const dashboard = document.getElementById("execDashboard");
+        if (!dashboard) {
+            console.error("[Dashboard startup] execDashboard section is missing.");
+            return false;
+        }
+
+        document.querySelectorAll(".content-section").forEach(section => {
+            section.classList.remove("active");
+        });
+        dashboard.classList.add("active");
+
+        document.querySelectorAll(".nav-tab").forEach(tab => {
+            tab.classList.remove("active");
+        });
+
+        document.querySelectorAll("[onclick], button").forEach(element => {
+            const onclickText = element.getAttribute("onclick") || "";
+            if (onclickText.includes("execDashboard") || onclickText.includes("dashboard")) {
+                element.classList.add("active");
+            }
+        });
+
+        return true;
+    }
+
+    function jcStartDashboard() {
+        if (jcIsKioskModeUser()) {
+            return;
+        }
+
+        try {
+            localStorage.removeItem("jengchi_active_tab");
+        } catch (error) {}
+
+        jcForceCurrentMonthInputs();
+
+        if (typeof window.switchTab === "function") {
+            window.switchTab("execDashboard");
+        } else if (typeof switchTab === "function") {
+            switchTab("execDashboard");
+        } else {
+            jcActivateExecDashboard();
+        }
+
+        window.setTimeout(() => {
+            jcForceCurrentMonthInputs();
+            jcActivateExecDashboard();
+
+            if (typeof initExecDashboard === "function") {
+                Promise.resolve(initExecDashboard()).catch(error => {
+                    console.error("[Dashboard startup] initExecDashboard failed:", error);
+                });
+            } else {
+                console.error("[Dashboard startup] initExecDashboard is not defined.");
+            }
+        }, 250);
+    }
+
+    const previousSwitchTab = window.switchTab;
+    window.switchTab = function jcSwitchTabAlias(tabName, evt) {
+        return previousSwitchTab.call(this, jcNormalizeTabName(tabName), evt);
+    };
+
+    const previousCorpNav = window.corpNav;
+    if (typeof previousCorpNav === "function") {
+        window.corpNav = function jcCorpNavAlias(tabName) {
+            return previousCorpNav.call(this, jcNormalizeTabName(tabName));
+        };
+    }
+
+    const previousJcLoadDashboardHome = window.jcLoadDashboardHome;
+    window.jcLoadDashboardHome = function jcLoadDashboardHomeV12() {
+        if (typeof previousJcLoadDashboardHome === "function") {
+            try {
+                previousJcLoadDashboardHome();
+            } catch (error) {
+                console.warn("[Dashboard startup] previous dashboard loader failed, using v12 fallback:", error);
+            }
+        }
+        jcStartDashboard();
+    };
+
+    window.addEventListener("load", () => {
+        window.setTimeout(jcStartDashboard, 300);
+    });
 })();
 </script>
 
