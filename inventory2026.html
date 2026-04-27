@@ -26749,6 +26749,17 @@ async function loadRonyOrders() {
         });
 
         
+        ronyProductsByPosition.forEach(products => {
+            products.sort((a, b) => {
+                const sa = Number(a.rony_sort_order) || 0;
+                const sb = Number(b.rony_sort_order) || 0;
+                if (sa !== sb) return sa - sb;
+                return (a.product_name || '').localeCompare(b.product_name || '');
+            });
+            products.forEach((product, index) => {
+                product.rony_sort_order = index + 1;
+            });
+        });
 
         renderRonyProducts();
 
@@ -26897,7 +26908,7 @@ function renderRonyProducts() {
                      ondrop="ronyGridDrop(event)"
                      style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; min-height: 80px; transition: background 0.2s; border-radius: 8px; padding: 4px;">
 
-                    ${products.map(product => renderRonyProductCard(product)).join('')}
+                    ${products.map((product, index) => renderRonyProductCard(product, index + 1, position)).join('')}
 
                 </div>
 
@@ -26919,9 +26930,9 @@ function renderRonyProducts() {
 
 // ✅ UPDATED: renderRonyProductCard with DELETE button
 
-function renderRonyProductCard(product) {
+function renderRonyProductCard(product, displayOrder = 1, positionGroup = product.position || '') {
 
-    const imageUrl = resolveImage(product.image_url);
+    const imageUrl = resolveImage(product.image_url || product.product_name);
 
     // ✅ 0 is a valid stock count (means "out of stock") — only null means "not entered yet"
 
@@ -26960,6 +26971,19 @@ function renderRonyProductCard(product) {
 
         ">
 
+            <!-- ORDER NUMBER INSIDE THIS POSITION -->
+            <div style="position:absolute;top:8px;left:8px;z-index:5;display:flex;align-items:center;gap:0.25rem;background:white;border:1px solid var(--neutral-300);border-radius:8px;padding:0.15rem 0.35rem;box-shadow:var(--shadow-sm);">
+                <span style="font-size:0.7rem;color:var(--neutral-500);font-weight:700;">#</span>
+                <input type="number" min="1" step="1"
+                       value="${displayOrder}"
+                       data-pname="${escAttr(product.product_name)}"
+                       data-position="${escAttr(positionGroup)}"
+                       onchange="saveRonySortOrderInput(this)"
+                       onkeydown="if(event.key === 'Enter'){ this.blur(); }"
+                       title="Order inside this position"
+                       style="width:36px;border:none;outline:none;text-align:center;font-size:0.78rem;font-weight:800;font-family:var(--font-mono);background:transparent;color:var(--neutral-800);">
+            </div>
+
             <!-- DELETE BUTTON -->
 
             <button data-product="${escAttr(product.product_name)}"
@@ -26975,12 +26999,6 @@ function renderRonyProductCard(product) {
                 <i class="fas fa-trash"></i>
 
             </button>
-
-
-
-            <!-- ✅ SAVED BADGE -->
-
-            ${hasStock ? `<div style="position:absolute;top:8px;left:8px;background:var(--success-600);color:white;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.75rem;">✓</div>` : ''}
 
 
 
@@ -27339,6 +27357,38 @@ function _showSavedBadge(anchorEl) {
         setTimeout(() => badge.remove(), 1400);
     }
 }
+
+
+async function saveRonySortOrderInput(inputEl) {
+    const productName = inputEl.dataset.pname;
+    const position = inputEl.dataset.position;
+    const requestedOrder = parseInt(inputEl.value, 10);
+
+    if (!productName || !position || Number.isNaN(requestedOrder)) {
+        return;
+    }
+
+    const group = ronyProductsByPosition.get(position) || [];
+    const currentIndex = group.findIndex(product => product.product_name === productName);
+
+    if (currentIndex === -1) {
+        return;
+    }
+
+    const [product] = group.splice(currentIndex, 1);
+    const targetIndex = Math.max(0, Math.min(requestedOrder - 1, group.length));
+    group.splice(targetIndex, 0, product);
+
+    group.forEach((item, index) => {
+        item.rony_sort_order = index + 1;
+    });
+
+    ronyProductsByPosition.set(position, group);
+    renderRonyProducts();
+
+    await _ronyPersistOrder(new Set([position]));
+}
+
 
 function updateRonyStock(productName, delta) {
 
