@@ -470,6 +470,56 @@
       box-shadow: none;
     }
 
+    .remember-admin {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: none;
+      letter-spacing: 0;
+      cursor: pointer;
+    }
+
+    .remember-admin input {
+      width: auto;
+      margin: 0;
+    }
+
+    .admin-session-bar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: stretch;
+      margin-bottom: 14px;
+    }
+
+    .admin-session-bar .notice {
+      margin-bottom: 0;
+    }
+
+    .logout-btn {
+      background: var(--brand-dark);
+      min-height: 100%;
+      white-space: nowrap;
+    }
+
+    .current-admins {
+      margin-top: 16px;
+    }
+
+    .current-admins h4 {
+      margin: 0 0 10px;
+      color: var(--brand-dark);
+      font-size: 16px;
+    }
+
+    .current-admins-table {
+      min-width: 620px;
+    }
+
     .filter-grid {
       display: grid;
       grid-template-columns: 1fr 1fr 1fr auto;
@@ -595,7 +645,8 @@
       .access-grid,
       .filter-grid,
       .chart-grid,
-      .restroom-switch {
+      .restroom-switch,
+      .admin-session-bar {
         grid-template-columns: 1fr;
       }
 
@@ -790,9 +841,17 @@
         <div class="admin-grid">
           <div>
             <label>Admin Employee</label>
-            <select id="adminEmployeeSelect" tabindex="1">
+            <select id="adminEmployeeSelect" tabindex="1" onchange="saveRememberedAdminEmployee()">
               <option value="">Loading admins...</option>
             </select>
+            <label class="remember-admin">
+              <input
+                type="checkbox"
+                id="rememberAdminEmployee"
+                onchange="saveRememberedAdminEmployee()"
+              />
+              Remember Admin Employee
+            </label>
           </div>
 
           <div>
@@ -841,8 +900,15 @@
       </div>
 
       <div id="adminContent" class="hidden">
-        <div class="notice" id="adminWelcome">
-          Reports unlocked.
+        <div class="admin-session-bar">
+          <div class="notice" id="adminWelcome">
+            Reports unlocked.
+          </div>
+
+          <button type="button" class="logout-btn" onclick="logoutReports()">
+            <i class="fa-solid fa-right-from-bracket"></i>
+            Logout
+          </button>
         </div>
 
         <div class="admin-box">
@@ -874,6 +940,23 @@
 
           <div style="margin-top:12px; font-weight:800; color:#667085;" id="adminAccessStatus">
             Search an employee from employees2025 and add report access.
+          </div>
+
+          <div class="current-admins">
+            <h4><i class="fa-solid fa-users-gear"></i> Current Report Admins</h4>
+
+            <div class="report-table-wrap">
+              <table class="report-table current-admins-table">
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th>Username</th>
+                    <th>Role</th>
+                  </tr>
+                </thead>
+                <tbody id="currentAdminsBody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
 
@@ -1080,6 +1163,7 @@
       document.querySelector(`[data-tab="${tabId}"]`).classList.add("active");
 
       if (tabId === "reports" && adminSession) {
+        renderCurrentAdminsTable();
         loadReports();
       }
     }
@@ -1241,6 +1325,7 @@
       adminAccessList = data || [];
 
       const select = document.getElementById("adminEmployeeSelect");
+      const rememberCheckbox = document.getElementById("rememberAdminEmployee");
       if (!select) return;
 
       select.innerHTML = `<option value="">Select admin</option>`;
@@ -1252,6 +1337,59 @@
           </option>
         `;
       });
+
+      const rememberedAdminId = localStorage.getItem("restroomAdminEmployeeId") || "";
+      if (
+        rememberedAdminId
+        && adminAccessList.some(admin => String(admin.employee_id) === rememberedAdminId)
+      ) {
+        select.value = rememberedAdminId;
+        if (rememberCheckbox) {
+          rememberCheckbox.checked = true;
+        }
+      }
+
+      renderCurrentAdminsTable();
+    }
+
+    function renderCurrentAdminsTable() {
+      const body = document.getElementById("currentAdminsBody");
+      if (!body) return;
+
+      if (!adminAccessList.length) {
+        body.innerHTML = `
+          <tr>
+            <td colspan="3">No report admins found.</td>
+          </tr>
+        `;
+        return;
+      }
+
+      body.innerHTML = "";
+
+      adminAccessList.forEach(admin => {
+        body.innerHTML += `
+          <tr>
+            <td>${escapeHtml(admin.full_name)}</td>
+            <td>${escapeHtml(admin.username || "")}</td>
+            <td>${escapeHtml(admin.role || "admin")}</td>
+          </tr>
+        `;
+      });
+    }
+
+    function saveRememberedAdminEmployee() {
+      const select = document.getElementById("adminEmployeeSelect");
+      const rememberCheckbox = document.getElementById("rememberAdminEmployee");
+
+      if (!select || !rememberCheckbox) return;
+
+      if (rememberCheckbox.checked && select.value) {
+        localStorage.setItem("restroomAdminEmployeeId", select.value);
+        return;
+      }
+
+      localStorage.removeItem("restroomAdminEmployeeId");
     }
 
     function saveEmployeePreference() {
@@ -1562,14 +1700,53 @@
         role: result.role
       };
 
+      saveRememberedAdminEmployee();
+
       document.getElementById("adminLoginBox").classList.add("hidden");
       document.getElementById("adminContent").classList.remove("hidden");
       document.getElementById("adminWelcome").textContent =
         `Reports unlocked for ${result.full_name}.`;
 
+      renderCurrentAdminsTable();
       renderChecklistEditor();
       setReportPeriod();
       loadReports();
+    }
+
+    function logoutReports() {
+      adminSession = null;
+
+      document.getElementById("adminContent").classList.add("hidden");
+      document.getElementById("adminLoginBox").classList.remove("hidden");
+      document.getElementById("adminPin").value = "";
+
+      const pinInput = document.getElementById("adminPin");
+      const toggle = document.getElementById("adminPinToggle");
+
+      if (pinInput) {
+        pinInput.type = "password";
+      }
+
+      if (toggle) {
+        toggle.innerHTML = '<i class="fa-solid fa-eye"></i>';
+        toggle.setAttribute("aria-label", "Show PIN");
+      }
+
+      const rememberedAdminId = localStorage.getItem("restroomAdminEmployeeId") || "";
+      if (!rememberedAdminId) {
+        const select = document.getElementById("adminEmployeeSelect");
+        if (select) {
+          select.value = "";
+        }
+      }
+
+      const usernameInput = document.getElementById("adminUsername");
+      if (usernameInput) {
+        usernameInput.value = "";
+        usernameInput.focus();
+      }
+
+      showToast("Reports locked.");
     }
 
     function renderChecklistEditor() {
