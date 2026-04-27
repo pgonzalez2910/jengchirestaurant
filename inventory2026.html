@@ -20185,157 +20185,141 @@ function toggleWeightFields() {
 // Sync missing images from inventory_management to invoice_items
 
 async function syncMissingImages() {
-
-    if (!confirm('Sync images for all items missing images? This will copy image paths from Inventory Management.')) {
-
-        return;
-
-    }
-
-    
+    if (!confirm(
+        'Sync missing images across the entire catalog?\n\n' +
+        '• Products in inventory_management with no image will get one copied from another row with the same name.\n' +
+        '• Invoice line items with no image will get one from inventory_management.\n\n' +
+        'Continue?'
+    )) return;
 
     showLoading(true);
 
+    let imUpdated = 0;   // inventory_management rows updated
+    let iiUpdated = 0;   // invoice_items rows updated
+    let errors    = [];
+
     try {
+        // ═══════════════════════════════════════════════════
+        // PASS 1 — Sync within inventory_management itself
+        //   Copy image_url to rows missing it, matched by
+        //   lower-cased product_name.
+        // ═══════════════════════════════════════════════════
+        const { data: allIM, error: imErr } = await supabaseClient
+            .from('inventory_management')
+            .select('id, product_name, image_url, is_hidden')
+            .eq('is_hidden', false);
 
-        // Step 1: Get all items missing images from invoice_items
+        if (imErr) throw imErr;
 
-        const { data: itemsMissingImages, error: fetchError } = await supabaseClient
+        // Build a name→imageUrl map from rows that have an image
+        const imgByName = {};
+        allIM.forEach(row => {
+            if (row.image_url && row.image_url.trim()) {
+                const key = (row.product_name || '').toLowerCase().trim();
+                if (key && !imgByName[key]) imgByName[key] = row.image_url.trim();
+            }
+        });
 
+        // Find rows that are missing an image but have a name-match
+        const imMissing = allIM.filter(row => {
+            if (row.image_url && row.image_url.trim()) return false;  // already has image
+            const key = (row.product_name || '').toLowerCase().trim();
+            return key && imgByName[key];  // match exists
+        });
+
+        console.log(`[syncImages] PASS 1: ${imMissing.length} inventory_management rows to update`);
+
+        for (const row of imMissing) {
+            const key   = (row.product_name || '').toLowerCase().trim();
+            const img   = imgByName[key];
+            const { error: updErr } = await supabaseClient
+                .from('inventory_management')
+                .update({ image_url: img })
+                .eq('id', row.id);
+            if (!updErr) {
+                imUpdated++;
+                console.log(`  ✅ inventory_management "${row.product_name}" → ${img}`);
+            } else {
+                errors.push(`IM ${row.product_name}: ${updErr.message}`);
+            }
+        }
+
+        // ═══════════════════════════════════════════════════
+        // PASS 2 — Sync invoice_items ← inventory_management
+        //   (existing logic, now case-insensitive)
+        // ═══════════════════════════════════════════════════
+        const { data: iiMissing, error: iiErr } = await supabaseClient
             .from('invoice_items')
-
             .select('id, product_name, item_code')
-
             .or('image_path.is.null,image_path.eq.');
 
-        
+        if (iiErr) throw iiErr;
 
-        if (fetchError) throw fetchError;
+        console.log(`[syncImages] PASS 2: ${iiMissing.length} invoice_items rows to update`);
 
-        
+        for (const item of iiMissing) {
+            const key  = (item.product_name || '').toLowerCase().trim();
+            if (!key) continue;
 
-        console.log(`📸 Found ${itemsMissingImages.length} items missing images`);
+            // Try inventory_management first
+            let img = imgByName[key];
 
-        
-
-        if (itemsMissingImages.length === 0) {
-
-            showAlert('✅ All items already have images!', 'success');
-
-            return;
-
-        }
-
-        
-
-        // Step 2: Get all products with images from inventory_management
-
-        const { data: inventoryWithImages, error: inventoryError } = await supabaseClient
-
-            .from('inventory_management')
-
-            .select('product_name, image_url')
-
-            .not('image_url', 'is', null)
-
-            .neq('image_url', '');
-
-        
-
-        if (inventoryError) throw inventoryError;
-
-        
-
-        console.log(`📦 Found ${inventoryWithImages.length} products with images in inventory_management`);
-
-        
-
-        // Step 3: Match and update
-
-        let updatedCount = 0;
-
-        
-
-        for (const item of itemsMissingImages) {
-
-            // Find matching product in inventory_management
-
-            const inventoryItem = inventoryWithImages.find(inv => 
-
-                inv.product_name === item.product_name
-
-            );
-
-            
-
-            if (inventoryItem) {
-
-                // Build the full GitHub URL
-
-                let imagePath = inventoryItem.image_url;
-
-                if (!imagePath.startsWith('http')) {
-
-                    imagePath = `https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/${imagePath}`;
-
-                }
-
-                
-
-                // Update the invoice_item
-
-                const { error: updateError } = await supabaseClient
-
+            // Also check other invoice_items with same name that DO have an image
+            if (!img) {
+                const { data: withImg } = await supabaseClient
                     .from('invoice_items')
-
-                    .update({ image_path: imagePath })
-
-                    .eq('id', item.id);
-
-                
-
-                if (!updateError) {
-
-                    updatedCount++;
-
-                    console.log(`✅ Updated image for: ${item.product_name}`);
-
-                }
-
+                    .select('image_path')
+                    .ilike('product_name', item.product_name || '')
+                    .not('image_path', 'is', null)
+                    .neq('image_path', '')
+                    .limit(1)
+                    .maybeSingle();
+                if (withImg?.image_path) img = withImg.image_path;
             }
 
+            if (!img) continue;
+
+            // Ensure full URL
+            if (!img.startsWith('http')) {
+                img = `https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/${img}`;
+            }
+
+            const { error: updErr2 } = await supabaseClient
+                .from('invoice_items')
+                .update({ image_path: img })
+                .eq('id', item.id);
+
+            if (!updErr2) {
+                iiUpdated++;
+                console.log(`  ✅ invoice_items "${item.product_name}" → ${img}`);
+            } else {
+                errors.push(`II ${item.product_name}: ${updErr2.message}`);
+            }
         }
 
-        
+        // ─── Summary ─────────────────────────────────────
+        const msg = [
+            `\u2705 Sync complete!`,
+            `\u2022 ${imUpdated} catalog products updated`,
+            `\u2022 ${iiUpdated} invoice line items updated`,
+            errors.length ? `\u26a0\ufe0f ${errors.length} error(s) — see console` : ''
+        ].filter(Boolean).join('\n');
 
-        showAlert(`✅ Synced images for ${updatedCount} items!`, 'success');
-
-        
+        showAlert(msg, 'success');
+        if (errors.length) console.warn('[syncImages] Errors:', errors);
 
         // Reload data
-
         await loadInventoryData();
-
         renderQuickEditTable();
-
         applyFilters();
 
-        
-
-    } catch (error) {
-
-        console.error('Error syncing images:', error);
-
-        showAlert('Error: ' + error.message, 'error');
-
+    } catch (err) {
+        console.error('[syncImages] Fatal error:', err);
+        showAlert('Error during sync: ' + err.message, 'error');
     } finally {
-
         showLoading(false);
-
     }
-
 }
-
 
 
      async function openAddItemModal() {
@@ -21650,7 +21634,7 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
             resultsDiv.innerHTML = `
                 <div style="padding:0.75rem 1rem;background:#fef9c3;border:1.5px solid #fde047;border-radius:8px;">
                     <div style="font-size:0.78rem;font-weight:700;color:#854d0e;margin-bottom:0.4rem;">
-                        ⚠️ Not found for <strong>${currentVendor || 'this vendor'}</strong> — found under a different vendor:
+                        🔍 Not in catalog for <strong>${currentVendor || 'this vendor'}</strong> — found at another vendor. Link it?
                     </div>
                     ${nameResults.map(item => `
                     <div style="display:flex;align-items:center;gap:0.65rem;background:white;border-radius:6px;padding:0.5rem 0.65rem;margin-bottom:0.35rem;border:1px solid #fde047;">
@@ -21666,8 +21650,8 @@ let isSubmittingItem = false; // Flag to prevent multiple submissions
                         </div>
                         <button type="button"
                             onclick="openSameProductNewVendorModal('${(item.product_name||'').replace(/'/g,'\'').replace(/"/g,'&quot;')}','${(item.item_code||'').replace(/'/g,"\'")}','${(item.vendor||'').replace(/'/g,"\'")}',${parseFloat(item.unit_price||0)},'${(item.category||'').replace(/'/g,"\'")}','${(item.image_path||'').replace(/'/g,"\'")}',${!!(item.has_weight)})"
-                            style="padding:0.35rem 0.7rem;background:linear-gradient(135deg,var(--primary-500),var(--primary-600));color:white;border:none;border-radius:6px;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0;">
-                            ➕ New Code / Vendor
+                            style="padding:0.35rem 0.7rem;background:linear-gradient(135deg,#16a34a,#15803d);color:white;border:none;border-radius:6px;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0;">
+                            🔗 Use for ${currentVendor||'this vendor'}
                         </button>
                     </div>`).join('')}
                 </div>`;
@@ -21922,6 +21906,8 @@ function renderSelectedInvoiceProducts(_scrollToLast = false) {
 
         <tr style="background:linear-gradient(135deg,var(--primary-700),var(--primary-600));color:white;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">
 
+          <th style="padding:0.65rem 0.35rem;text-align:center;width:28px;" title="Drag to reorder">⊟</th>
+
           <th style="padding:0.65rem 0.5rem;text-align:left;width:44px;"></th>
 
           <th style="padding:0.65rem 0.75rem;text-align:left;">Product</th>
@@ -21988,7 +21974,18 @@ function renderSelectedInvoiceProducts(_scrollToLast = false) {
 
 
 
+        tr.draggable = true;
+        tr.dataset.idx = idx;
+
         tr.innerHTML = `
+
+          <!-- Drag Handle -->
+
+          <td class="inv-drag-handle" style="padding:0.4rem 0.35rem;text-align:center;cursor:grab;color:#cbd5e1;font-size:1rem;user-select:none;" title="Drag to reorder">
+
+            ⊟
+
+          </td>
 
           <!-- Image -->
 
@@ -22186,13 +22183,13 @@ function renderSelectedInvoiceProducts(_scrollToLast = false) {
 
             <label title="Uncheck if this item's price does NOT match your real invoice (flags as missing/mismatch)" style="display:flex;flex-direction:column;align-items:center;gap:0.1rem;cursor:pointer;">
 
-              <input type="checkbox" id="invMatch_${idx}" checked
+              <input type="checkbox" id="invMatch_${idx}"
 
                      onchange="togglePriceMismatch(${idx}, this.checked)"
 
                      style="width:16px;height:16px;cursor:pointer;accent-color:#16a34a;">
 
-              <span id="invMatchLabel_${idx}" style="font-size:0.58rem;font-weight:700;color:#16a34a;">OK</span>
+              <span id="invMatchLabel_${idx}" style="font-size:0.58rem;font-weight:700;color:#94a3b8;">—</span>
 
             </label>
 
@@ -22260,11 +22257,146 @@ function renderSelectedInvoiceProducts(_scrollToLast = false) {
 
     }
 
+    // ✅ Attach row drag-and-drop for visual reordering
+
+    attachInvoiceRowDrag();
+
 }
 
 
 
 // ── In-place field update — NO full re-render, NO scroll ─────────────────────
+
+
+// ============================================================
+// FIX 3: INVOICE ROW DRAG-AND-DROP REORDERING
+// ============================================================
+// Persists order to invoice_items.sort_order (INT col needed in Supabase).
+// Falls back to localStorage if the column does not exist yet.
+// DB migration: ALTER TABLE invoice_items ADD COLUMN sort_order INTEGER DEFAULT 0;
+// ============================================================
+let _invDragSrcIdx = null;
+
+function attachInvoiceRowDrag() {
+    const tbody = document.getElementById('invoiceItemsTbody');
+    if (!tbody) return;
+
+    const rows = Array.from(tbody.querySelectorAll('tr[data-idx]'));
+    rows.forEach(row => {
+
+        row.addEventListener('dragstart', e => {
+            _invDragSrcIdx = parseInt(row.dataset.idx);
+            row.classList.add('inv-dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', String(_invDragSrcIdx));
+        });
+
+        row.addEventListener('dragend', () => {
+            row.classList.remove('inv-dragging');
+            document.querySelectorAll('.inv-drag-over').forEach(r => r.classList.remove('inv-drag-over'));
+            _invDragSrcIdx = null;
+        });
+
+        row.addEventListener('dragover', e => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (_invDragSrcIdx === null) return;
+            const targetIdx = parseInt(row.dataset.idx);
+            if (targetIdx === _invDragSrcIdx) return;
+            document.querySelectorAll('.inv-drag-over').forEach(r => r.classList.remove('inv-drag-over'));
+            row.classList.add('inv-drag-over');
+        });
+
+        row.addEventListener('dragleave', () => {
+            row.classList.remove('inv-drag-over');
+        });
+
+        row.addEventListener('drop', e => {
+            e.preventDefault();
+            if (_invDragSrcIdx === null) return;
+            const targetIdx = parseInt(row.dataset.idx);
+            if (targetIdx === _invDragSrcIdx) return;
+            row.classList.remove('inv-drag-over');
+            _reorderInvoiceItems(_invDragSrcIdx, targetIdx);
+        });
+
+        // Prevent dragging from inputs (only handle starts drag)
+        row.querySelectorAll('input, select, button').forEach(el => {
+            el.addEventListener('mousedown', e => e.stopPropagation());
+        });
+    });
+}
+
+function _reorderInvoiceItems(fromIdx, toIdx) {
+    if (fromIdx < 0 || toIdx < 0) return;
+    if (fromIdx >= selectedInvoiceProducts.length || toIdx >= selectedInvoiceProducts.length) return;
+    const moved = selectedInvoiceProducts.splice(fromIdx, 1)[0];
+    selectedInvoiceProducts.splice(toIdx, 0, moved);
+    renderSelectedInvoiceProducts(false);
+    _saveInvoiceItemsSortOrder();
+}
+
+async function _saveInvoiceItemsSortOrder() {
+    const invoiceId = document.getElementById('invoiceForm')?.dataset?.editId;
+    if (!invoiceId) return;
+
+    // localStorage fallback (always reliable)
+    try {
+        const orderMap = selectedInvoiceProducts.map((p, i) => ({ id: p._dbId, sort_order: i }));
+        localStorage.setItem('inv_sort_' + invoiceId, JSON.stringify(orderMap));
+    } catch(e) { /* ignore */ }
+
+    // Supabase persistence (requires sort_order INTEGER column on invoice_items)
+    try {
+        const updates = selectedInvoiceProducts
+            .filter(p => p._dbId)
+            .map((p, i) => supabaseClient
+                .from('invoice_items')
+                .update({ sort_order: i })
+                .eq('id', p._dbId)
+            );
+        await Promise.all(updates);
+    } catch(e) {
+        // Graceful: column may not exist yet
+        console.info('[inv-sort] DB sort_order not saved (add column if needed):', e.message);
+    }
+}
+
+// Call this in editInvoice after loading items to restore saved order
+function _applyInvoiceSortOrder(invoiceId) {
+    try {
+        const saved = localStorage.getItem('inv_sort_' + invoiceId);
+        if (!saved) return;
+        const orderMap = JSON.parse(saved);
+        if (!Array.isArray(orderMap)) return;
+        const posById = {};
+        orderMap.forEach(entry => { posById[entry.id] = entry.sort_order; });
+        selectedInvoiceProducts.sort((a, b) => {
+            const sa = (posById[a._dbId] !== undefined) ? posById[a._dbId] : 9999;
+            const sb = (posById[b._dbId] !== undefined) ? posById[b._dbId] : 9999;
+            return sa - sb;
+        });
+    } catch(e) { /* ignore */ }
+}
+
+// Inject drag CSS once
+(function _injectInvDragCSS() {
+    if (document.getElementById('invDragCSS')) return;
+    const style = document.createElement('style');
+    style.id = 'invDragCSS';
+    style.textContent = [
+        'tr.inv-dragging { opacity: 0.4; background: #e0f2fe !important; }',
+        'tr.inv-drag-over { outline: 2px dashed var(--primary-500); background: #eff6ff !important; }',
+        '.inv-drag-handle { cursor: grab !important; transition: color 0.15s; }',
+        '.inv-drag-handle:hover { color: var(--primary-600) !important; }',
+        '.inv-drag-handle:active { cursor: grabbing !important; }'
+    ].join('\n');
+    document.head.appendChild(style);
+})();
+// ============================================================
+// END FIX 3
+// ============================================================
+
 
 // ✅ NEW: Toggle price mismatch flag on invoice item row
 
@@ -23764,6 +23896,10 @@ for (const product of selectedInvoiceProducts) {
 
 
                     console.log('selectedInvoiceProducts:', selectedInvoiceProducts);
+
+                    // ✅ FIX 3: Restore saved drag-drop order
+
+                    _applyInvoiceSortOrder(id);
 
 
 
@@ -47431,7 +47567,7 @@ function openSameProductNewVendorModal(productName, oldCode, oldVendor, oldPrice
     document.getElementById('spnv_oldCode').textContent  = oldCode || '—';
     document.getElementById('spnv_oldVendor').textContent= oldVendor || '—';
     document.getElementById('spnv_newVendor').value     = currentVendor;
-    document.getElementById('spnv_newCode').value       = '';
+    document.getElementById('spnv_newCode').value       = oldCode || '';  // ✅ FIX: pre-fill from existing product
     document.getElementById('spnv_price').value         = '';
     document.getElementById('spnv_isWeight').checked    = hasWeight || false;
     document.getElementById('spnv_category').value      = category || '';
