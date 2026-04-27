@@ -3143,23 +3143,80 @@
       return grouped;
     }
 
-    async function loadMainInventory() {
-      const entryDate = document.getElementById("entryDate").value;
 
-      const { data, error } = await client.rpc("get_dumpling_inventory_staff", {
-        p_count_date: entryDate
-      });
+    
 
-      if (error) {
-        console.error("Dumpling inventory load error:", error);
-        mainInventoryRows = [];
-        inventoryComplete = false;
-        showToast("Unable to load dumpling inventory. Run the updated Supabase SQL first.");
-        return;
-      }
 
-      mainInventoryRows = data || [];
+  async function loadMainInventory() {
+    const entryDate = document.getElementById("entryDate").value;
+
+    const { data, error } = await client.rpc("get_dumpling_inventory_staff", {
+      p_count_date: entryDate
+    });
+
+    if (error) {
+      console.error("Dumpling inventory load error:", error);
+      mainInventoryRows = [];
+      inventoryComplete = false;
+      showToast("Unable to load dumpling inventory. Run the updated Supabase SQL first.");
+      return;
     }
+
+    const currentDateRows = data || [];
+    const hasCurrentDateInventory = currentDateRows.some(row => row.counted_for_date);
+
+    if (hasCurrentDateInventory) {
+      mainInventoryRows = currentDateRows;
+      inventoryComplete = isInventoryCompleteForDate();
+      return;
+    }
+
+    const { data: latestDate, error: latestDateError } = await client.rpc(
+      "get_latest_dumpling_inventory_count_date",
+      {
+        p_before_date: entryDate
+      }
+    );
+
+    if (latestDateError) {
+      console.error("Latest inventory date load error:", latestDateError);
+      mainInventoryRows = currentDateRows;
+      inventoryComplete = false;
+      return;
+    }
+
+    if (!latestDate) {
+      mainInventoryRows = currentDateRows;
+      inventoryComplete = false;
+      return;
+    }
+
+    const { data: previousRows, error: previousRowsError } = await client.rpc(
+      "get_dumpling_inventory_staff",
+      {
+        p_count_date: latestDate
+      }
+    );
+
+    if (previousRowsError) {
+      console.error("Previous inventory load error:", previousRowsError);
+      mainInventoryRows = currentDateRows;
+      inventoryComplete = false;
+      return;
+    }
+
+    mainInventoryRows = (previousRows || []).map(row => ({
+      ...row,
+      counted_for_date: false,
+      source_count_date: latestDate
+    }));
+
+    inventoryComplete = false;
+    showToast(`Loaded previous inventory from ${latestDate} as default values.`);
+  }
+
+
+    
 
     function getMainInventoryRow(itemId) {
       return mainInventoryRows.find(row => row.item_id === itemId);
