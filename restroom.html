@@ -433,12 +433,41 @@
       color: var(--red-strong);
     }
 
-    .admin-grid,
+    .admin-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr auto;
+      gap: 12px;
+      align-items: end;
+    }
+
     .access-grid {
       display: grid;
       grid-template-columns: 1fr 1fr auto;
       gap: 12px;
       align-items: end;
+    }
+
+    .pin-field {
+      position: relative;
+    }
+
+    .pin-field input {
+      padding-right: 48px;
+    }
+
+    .pin-toggle {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      min-height: 34px;
+      width: 38px;
+      padding: 0;
+      background: #fff;
+      color: var(--brand-dark);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: none;
     }
 
     .filter-grid {
@@ -761,17 +790,50 @@
         <div class="admin-grid">
           <div>
             <label>Admin Employee</label>
-            <select id="adminEmployeeSelect">
+            <select id="adminEmployeeSelect" tabindex="1">
               <option value="">Loading admins...</option>
             </select>
           </div>
 
           <div>
-            <label>PIN</label>
-            <input type="password" id="adminPin" placeholder="Enter PIN" />
+            <label>Username</label>
+            <input
+              type="text"
+              id="adminUsername"
+              placeholder="Enter username"
+              autocomplete="username"
+              autocapitalize="characters"
+              spellcheck="false"
+              tabindex="2"
+              oninput="forceUppercaseUsername(this)"
+            />
           </div>
 
-          <button onclick="unlockReports()">
+          <div>
+            <label>PIN</label>
+            <div class="pin-field">
+              <input
+                type="password"
+                id="adminPin"
+                placeholder="Enter PIN"
+                autocomplete="current-password"
+                inputmode="numeric"
+                tabindex="3"
+              />
+              <button
+                type="button"
+                class="pin-toggle"
+                id="adminPinToggle"
+                tabindex="4"
+                aria-label="Show PIN"
+                onclick="toggleAdminPinVisibility()"
+              >
+                <i class="fa-solid fa-eye"></i>
+              </button>
+            </div>
+          </div>
+
+          <button onclick="unlockReports()" tabindex="5">
             <i class="fa-solid fa-lock-open"></i>
             Unlock Reports
           </button>
@@ -995,6 +1057,7 @@
 
       await loadSetupData();
       await loadReportAdmins();
+      setupAdminLoginHandlers();
 
       const savedEmployee = localStorage.getItem("restroomEmployeeName") || "";
       if (savedEmployee) {
@@ -1166,35 +1229,31 @@
       }
     }
 
-  async function loadReportAdmins() {
-  const { data, error } = await client.rpc("restroom_get_admin_access");
+    async function loadReportAdmins() {
+      const { data, error } = await client.rpc("restroom_get_admin_access");
 
-  if (error) {
-    console.error(error);
-    showToast("Unable to load report admins.");
-    return;
-  }
+      if (error) {
+        console.error(error);
+        showToast("Unable to load report admins.");
+        return;
+      }
 
-  adminAccessList = data || [];
+      adminAccessList = data || [];
 
-  const select = document.getElementById("adminEmployeeSelect");
-  if (!select) return;
+      const select = document.getElementById("adminEmployeeSelect");
+      if (!select) return;
 
-  select.innerHTML = `<option value="">Select admin</option>`;
+      select.innerHTML = `<option value="">Select admin</option>`;
 
-  adminAccessList.forEach(admin => {
-    const displayName = admin.username
-      ? `${admin.full_name} · ${admin.username}`
-      : admin.full_name;
+      adminAccessList.forEach(admin => {
+        select.innerHTML += `
+          <option value="${admin.employee_id}">
+            ${escapeHtml(admin.full_name)}
+          </option>
+        `;
+      });
+    }
 
-    select.innerHTML += `
-      <option value="${admin.employee_id}">
-        ${escapeHtml(displayName)}
-      </option>
-    `;
-  });
-}
-    
     function saveEmployeePreference() {
       const employeeName = document.getElementById("employeeName").value;
       localStorage.setItem("restroomEmployeeName", employeeName);
@@ -1462,34 +1521,43 @@
 
     async function unlockReports() {
       const employeeId = Number(document.getElementById("adminEmployeeSelect").value);
-      const pin = document.getElementById("adminPin").value.trim();
+      const usernameInput = document.getElementById("adminUsername");
+      const pinInput = document.getElementById("adminPin");
+      const username = usernameInput.value.trim().toUpperCase();
+      const pin = pinInput.value.trim();
 
-      if (!employeeId || !pin) {
-        showToast("Please select admin employee and enter PIN.");
+      usernameInput.value = username;
+
+      if (!employeeId || !username || !pin) {
+        showToast("Please select admin employee, enter username, and enter PIN.");
         return;
       }
 
       const { data, error } = await client.rpc("restroom_admin_login", {
         p_employee_id: employeeId,
+        p_username: username,
         p_pin: pin
       });
 
       if (error) {
         console.error(error);
-        showToast("Unable to verify admin PIN.");
+        clearAdminCredentials();
+        showToast("Unable to verify admin login.");
         return;
       }
 
       const result = data && data.length ? data[0] : null;
 
       if (!result || !result.ok) {
-        showToast("Invalid admin employee or PIN.");
+        clearAdminCredentials();
+        showToast("Invalid admin employee, username, or PIN.");
         return;
       }
 
       adminSession = {
         employeeId: result.employee_id,
         fullName: result.full_name,
+        username: result.username,
         pin: pin,
         role: result.role
       };
@@ -2062,6 +2130,76 @@
         day: "2-digit",
         year: "numeric"
       });
+    }
+
+    function setupAdminLoginHandlers() {
+      const pinInput = document.getElementById("adminPin");
+      const usernameInput = document.getElementById("adminUsername");
+
+      if (pinInput) {
+        pinInput.addEventListener("keydown", event => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            unlockReports();
+          }
+        });
+      }
+
+      if (usernameInput) {
+        usernameInput.addEventListener("keydown", event => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            pinInput.focus();
+          }
+        });
+      }
+    }
+
+    function forceUppercaseUsername(input) {
+      const cursorStart = input.selectionStart;
+      const cursorEnd = input.selectionEnd;
+
+      input.value = input.value.toUpperCase();
+
+      if (cursorStart !== null && cursorEnd !== null) {
+        input.setSelectionRange(cursorStart, cursorEnd);
+      }
+    }
+
+    function toggleAdminPinVisibility() {
+      const pinInput = document.getElementById("adminPin");
+      const toggle = document.getElementById("adminPinToggle");
+
+      if (!pinInput || !toggle) return;
+
+      const shouldShow = pinInput.type === "password";
+      pinInput.type = shouldShow ? "text" : "password";
+      toggle.innerHTML = shouldShow
+        ? '<i class="fa-solid fa-eye-slash"></i>'
+        : '<i class="fa-solid fa-eye"></i>';
+      toggle.setAttribute("aria-label", shouldShow ? "Hide PIN" : "Show PIN");
+      pinInput.focus();
+    }
+
+    function clearAdminCredentials() {
+      const usernameInput = document.getElementById("adminUsername");
+      const pinInput = document.getElementById("adminPin");
+
+      if (usernameInput) {
+        usernameInput.value = "";
+        usernameInput.focus();
+      }
+
+      if (pinInput) {
+        pinInput.value = "";
+        pinInput.type = "password";
+      }
+
+      const toggle = document.getElementById("adminPinToggle");
+      if (toggle) {
+        toggle.innerHTML = '<i class="fa-solid fa-eye"></i>';
+        toggle.setAttribute("aria-label", "Show PIN");
+      }
     }
 
     function showToast(message) {
