@@ -1289,7 +1289,7 @@
           </div>
 
           <div class="report-note">
-            Use this grid as the only Admin Setup Review. Add a new invoice, click Refresh, then choose how the item should be counted on the Physical Count page. Changes auto-save after a short pause. Produce normally uses LB. Flour normally uses BAG. A case with 12 inside can use Units Inside Invoice Pack = 12 so the case price is divided automatically.
+            Use this grid as the only Admin Setup Review. Add a new invoice, click Refresh, then choose how the item should be counted on the Physical Count page. Turn Auto Save ON to save unit, price, and LB/package immediately after each change. This also updates the current Physical Count row for the selected inventory date. Produce normally uses LB. Flour normally uses BAG. A case with 12 inside can use Units Inside Invoice Pack = 12 so the case price is divided automatically.
           </div>
 
           <div class="setup-fix-toolbar">
@@ -1315,6 +1315,15 @@
             </div>
             <button onclick="loadPhysicalCountPriceGrid()"><i class="fa-solid fa-filter"></i> Refresh</button>
             <button class="secondary" onclick="reloadAll()"><i class="fa-solid fa-scale-balanced"></i> Reload Dashboard</button>
+          </div>
+
+          <div style="padding:10px 18px; background:#fffaf5; border-bottom:1px solid var(--line); display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+            <label style="display:flex; align-items:center; gap:8px; margin:0; text-transform:none; letter-spacing:0; font-size:13px; color:var(--brand-dark);">
+              <input type="checkbox" id="physicalPriceAutoSaveEnabled" checked style="width:auto;" />
+              Auto Save unit, price, and LB/package after every change
+            </label>
+            <button class="small-btn secondary" onclick="saveVisiblePhysicalCountPriceRows()"><i class="fa-solid fa-floppy-disk"></i> Save Visible Rows Now</button>
+            <span class="price-meta">Auto Save also updates the current Physical Count dropdown for the selected Inventory Date.</span>
           </div>
 
           <div class="table-wrap">
@@ -4656,7 +4665,7 @@ async function previewRonyStock() {
           </td>
           <td>
             <button class="small-btn" onclick="savePhysicalCountPriceRow(${rowIndex})"><i class="fa-solid fa-floppy-disk"></i> Save Now</button>
-            <div class="price-meta">Changes auto-save after 1 second.</div>
+            <div class="price-meta">Auto Save ON saves after each change.</div>
             <div class="price-meta" id="physicalPriceSaveStatus-${rowIndex}"></div>
           </td>
         </tr>
@@ -4710,15 +4719,26 @@ async function previewRonyStock() {
       return `${priceLine}<br><strong>Formula:</strong> ${formula}<br>Physical Count will use: <strong>${escapeHtml(String(unit).toUpperCase())}</strong><br>Physical Count LB/Pkg will save: <strong>${formatNumber(calculated.poundsPerPackage || savedPoundsPerPackage || 1)} LB</strong>`;
     }
 
+    function isPhysicalPriceAutoSaveEnabled() {
+      const checkbox = document.getElementById("physicalPriceAutoSaveEnabled");
+      return !checkbox || checkbox.checked;
+    }
+
     function schedulePhysicalPriceAutoSave(rowIndex) {
       clearTimeout(physicalPriceAutoSaveTimers[rowIndex]);
 
       const statusId = `physicalPriceSaveStatus-${rowIndex}`;
+
+      if (!isPhysicalPriceAutoSaveEnabled()) {
+        setTextContent(statusId, "Changed - click Save Now");
+        return;
+      }
+
       setTextContent(statusId, "Auto-saving...");
 
       physicalPriceAutoSaveTimers[rowIndex] = setTimeout(async () => {
         await savePhysicalCountPriceRow(rowIndex, { skipReload: true, auto: true });
-      }, 900);
+      }, 700);
     }
 
     function handlePhysicalPriceUnitChange(rowIndex) {
@@ -4774,6 +4794,90 @@ async function previewRonyStock() {
       schedulePhysicalPriceAutoSave(rowIndex);
     }
 
+    async function updateCurrentPhysicalCountUnitForItem(itemId, unitType) {
+      const countDate = document.getElementById("entryDate")?.value;
+
+      if (!countDate || !itemId || !unitType) {
+        return { error: null };
+      }
+
+      const { data: existingRows, error: selectError } = await client
+        .from("fresh_inventory_counts")
+        .select("id,item_id,count_date,quantity,unit_type")
+        .eq("count_date", countDate)
+        .eq("item_id", itemId)
+        .limit(1);
+
+      if (selectError) {
+        return { error: selectError };
+      }
+
+      if (!existingRows || !existingRows.length) {
+        return { error: null };
+      }
+
+      const { error } = await client
+        .from("fresh_inventory_counts")
+        .update({ unit_type: unitType })
+        .eq("count_date", countDate)
+        .eq("item_id", itemId);
+
+      if (!error) {
+        const countIndex = inventoryCounts.findIndex(row => row.item_id === itemId);
+        if (countIndex >= 0) {
+          inventoryCounts[countIndex] = {
+            ...inventoryCounts[countIndex],
+            unit_type: unitType
+          };
+        }
+      }
+
+      return { error };
+    }
+
+    async function persistPhysicalCountSetup(row, values) {
+      const rpcPayload = {
+        p_item_id: row.id,
+        p_category: values.category || "Other",
+        p_source_area: values.sourceArea || "JULIO",
+        p_vendor: values.vendor || "",
+        p_vendor_item_code: values.vendorItemCode || "",
+        p_default_unit: values.defaultUnit,
+        p_price: values.price,
+        p_price_unit: values.priceUnit,
+        p_pounds_per_package: values.poundsPerPackage,
+        p_purchase_unit: values.defaultUnit,
+        p_base_unit: "lb",
+        p_active: true,
+        p_notes: values.notes || "",
+        p_updated_by: values.updatedBy || "ADMIN"
+      };
+
+      const rpcResult = await client.rpc("update_fresh_inventory_setup", rpcPayload);
+
+      const directResult = await saveFreshInventorySetupDirect(row, {
+        category: values.category || "Other",
+        sourceArea: values.sourceArea || "JULIO",
+        vendor: values.vendor || "",
+        vendorItemCode: values.vendorItemCode || "",
+        defaultUnit: values.defaultUnit,
+        price: values.price,
+        priceUnit: values.priceUnit,
+        poundsPerPackage: values.poundsPerPackage,
+        active: true
+      });
+
+      if (directResult.error) {
+        return directResult;
+      }
+
+      if (rpcResult.error && !isMissingFunctionError(rpcResult.error)) {
+        console.warn("RPC setup save did not complete, but direct item update was saved.", rpcResult.error);
+      }
+
+      return { error: null };
+    }
+
     async function savePhysicalCountPriceRow(rowIndex, options = {}) {
       const row = lastPhysicalPriceGridRows[rowIndex];
 
@@ -4781,16 +4885,18 @@ async function previewRonyStock() {
         return false;
       }
 
-      const unit = document.getElementById(`physicalPriceUnit-${rowIndex}`)?.value || row.__selectedUnit || "lb";
+      const unit = normalizeInventoryUnit(document.getElementById(`physicalPriceUnit-${rowIndex}`)?.value || row.__selectedUnit || "lb") || "lb";
       const price = Number(document.getElementById(`physicalPriceValue-${rowIndex}`)?.value || 0);
-      const invoicePackUnit = document.getElementById(`physicalPriceInvoicePack-${rowIndex}`)?.value || row.__invoicePackUnit || row.recent_invoice_price_unit || row.price_unit || row.default_unit || "each";
+      const invoicePackUnit = normalizeInventoryUnit(document.getElementById(`physicalPriceInvoicePack-${rowIndex}`)?.value || row.__invoicePackUnit || row.recent_invoice_price_unit || row.price_unit || row.default_unit || "each") || "each";
       const unitsInsidePack = Math.max(Number(document.getElementById(`physicalPriceInsidePack-${rowIndex}`)?.value || row.__unitsInsidePack || 1), 1);
       const lbPerInnerUnit = Math.max(Number(document.getElementById(`physicalPricePounds-${rowIndex}`)?.value || row.__lbPerInnerUnit || row.pounds_per_box || 1), 0.0001);
       row.__selectedUnit = unit;
       row.__invoicePackUnit = invoicePackUnit;
       row.__unitsInsidePack = unitsInsidePack;
       row.__lbPerInnerUnit = lbPerInnerUnit;
+
       const poundsPerPackage = getPhysicalGridSavedPoundsPerPackage(row, unit);
+      const safePoundsPerPackage = Number.isFinite(poundsPerPackage) && poundsPerPackage > 0 ? poundsPerPackage : 1;
       const statusId = `physicalPriceSaveStatus-${rowIndex}`;
       const updatedBy = document.getElementById("reportAdminUsername")?.value.trim().toUpperCase() || "ADMIN";
 
@@ -4799,64 +4905,79 @@ async function previewRonyStock() {
         return false;
       }
 
-      setTextContent(statusId, "Saving...");
+      setTextContent(statusId, options.auto ? "Auto-saving..." : "Saving...");
 
-      let { error } = await client.rpc("update_fresh_inventory_setup", {
-        p_item_id: row.id,
-        p_category: row.category || "Other",
-        p_source_area: "JULIO",
-        p_vendor: row.vendor || row.recent_invoice_vendor || "",
-        p_vendor_item_code: row.vendor_item_code || "",
-        p_default_unit: unit,
-        p_price: price,
-        p_price_unit: unit,
-        p_pounds_per_package: Number.isFinite(poundsPerPackage) && poundsPerPackage > 0 ? poundsPerPackage : 1,
-        p_purchase_unit: unit,
-        p_base_unit: "lb",
-        p_active: true,
-        p_notes: row.notes || "",
-        p_updated_by: updatedBy
+      const setupResult = await persistPhysicalCountSetup(row, {
+        category: row.category || "Other",
+        sourceArea: "JULIO",
+        vendor: row.vendor || row.recent_invoice_vendor || "",
+        vendorItemCode: row.vendor_item_code || "",
+        defaultUnit: unit,
+        price,
+        priceUnit: unit,
+        poundsPerPackage: safePoundsPerPackage,
+        notes: row.notes || "",
+        updatedBy
       });
 
-      if (error && isMissingFunctionError(error)) {
-        ({ error } = await saveFreshInventorySetupDirect(row, {
-          category: row.category || "Other",
-          sourceArea: "JULIO",
-          vendor: row.vendor || row.recent_invoice_vendor || "",
-          vendorItemCode: row.vendor_item_code || "",
-          defaultUnit: unit,
-          price,
-          priceUnit: unit,
-          poundsPerPackage: Number.isFinite(poundsPerPackage) && poundsPerPackage > 0 ? poundsPerPackage : 1,
-          active: true
-        }));
+      if (setupResult.error) {
+        console.error(setupResult.error);
+        setTextContent(statusId, "Save failed");
+        showToast(`Unable to save ${row.item_name || "item"}. Check Supabase table permissions.`);
+        return false;
       }
 
-      if (error) {
-        console.error(error);
-        setTextContent(statusId, "Error");
-        showToast(`Unable to save ${row.item_name || "item"}.`);
-        return false;
+      const countUnitResult = await updateCurrentPhysicalCountUnitForItem(row.id, unit);
+
+      if (countUnitResult.error) {
+        console.warn("Item setup was saved, but current count unit was not updated.", countUnitResult.error);
       }
 
       row.price = price;
       row.price_unit = unit;
       row.default_unit = unit;
-      row.pounds_per_box = Number.isFinite(poundsPerPackage) && poundsPerPackage > 0 ? poundsPerPackage : 1;
+      row.pounds_per_box = safePoundsPerPackage;
+      row.pounds_per_package = safePoundsPerPackage;
 
-      setTextContent(statusId, options.auto ? "Auto-saved" : "Saved");
-
-      if (options.auto) {
-        showToast(`${row.item_name || "Item"} auto-saved to Physical Count.`);
+      const inventoryItem = inventoryItems.find(item => item.id === row.id);
+      if (inventoryItem) {
+        inventoryItem.price = price;
+        inventoryItem.price_unit = unit;
+        inventoryItem.default_unit = unit;
+        inventoryItem.pounds_per_box = safePoundsPerPackage;
+        inventoryItem.pounds_per_package = safePoundsPerPackage;
       }
+
+      setTextContent(statusId, options.auto ? "Auto-saved to dashboard" : "Saved to dashboard");
 
       if (!options.skipReload) {
         await reloadAll();
         await loadPhysicalCountPriceGrid();
-        showToast(`${row.item_name || "Item"} unit and price saved to Physical Count.`);
+        showToast(`${row.item_name || "Item"} unit, price, and LB/Pkg saved to Physical Count.`);
+      } else if (options.auto) {
+        renderInventory();
       }
 
       return true;
+    }
+
+    async function saveVisiblePhysicalCountPriceRows() {
+      const visibleRows = Array.from(document.querySelectorAll(".physical-price-grid-row"))
+        .map(row => Number(String(row.id || "").replace("physicalPriceRow-", "")))
+        .filter(index => Number.isInteger(index));
+
+      if (!visibleRows.length) {
+        showToast("No visible rows to save.");
+        return;
+      }
+
+      for (const rowIndex of visibleRows) {
+        await savePhysicalCountPriceRow(rowIndex, { skipReload: true });
+      }
+
+      await reloadAll();
+      await loadPhysicalCountPriceGrid();
+      showToast(`Saved ${visibleRows.length} visible row(s) to Physical Count.`);
     }
 
     async function bulkSavePhysicalCountMissingPrices() {
