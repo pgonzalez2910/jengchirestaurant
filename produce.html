@@ -1328,14 +1328,15 @@
                   <th>Physical Count Unit</th>
                   <th>Invoice Pack Type</th>
                   <th>Units Inside Invoice Pack</th>
-                  <th>LB Per Saved Unit</th>
+                  <th>LB Per Unit Inside</th>
+                  <th>Saved LB/Pkg</th>
                   <th>Calculated Price To Save</th>
                   <th>Status</th>
                   <th>Save Unit + Price</th>
                 </tr>
               </thead>
               <tbody id="physicalPriceGridBody">
-                <tr><td colspan="11">Unlock reports, then click Load Latest Invoice Prices.</td></tr>
+                <tr><td colspan="12">Unlock reports, then click Load Latest Invoice Prices.</td></tr>
               </tbody>
             </table>
           </div>
@@ -4288,14 +4289,49 @@ async function previewRonyStock() {
     }
 
 
+    function getPhysicalGridUnitsInside(row) {
+      return Math.max(Number(row?.__unitsInsidePack || row?.units_inside_pack || 1), 1);
+    }
+
+    function getPhysicalGridLbPerInnerUnit(row) {
+      const unitsInsidePack = getPhysicalGridUnitsInside(row);
+      const savedPounds = Number(row?.__lbPerInnerUnit || row?.pounds_per_box || row?.pounds_per_package || 1);
+      const selectedUnit = normalizeInventoryUnit(row?.__selectedUnit || row?.default_unit || row?.price_unit || "lb") || "lb";
+      const invoicePackUnit = normalizeInventoryUnit(row?.__invoicePackUnit || row?.recent_invoice_price_unit || row?.price_unit || row?.default_unit || "each") || "each";
+
+      if (selectedUnit === invoicePackUnit && unitsInsidePack > 1 && savedPounds > unitsInsidePack) {
+        return Math.max(savedPounds / unitsInsidePack, 0.0001);
+      }
+
+      return Math.max(savedPounds || 1, 0.0001);
+    }
+
+    function getPhysicalGridSavedPoundsPerPackage(row, preferredUnit = "") {
+      const unit = normalizeInventoryUnit(preferredUnit || row?.__selectedUnit || row?.default_unit || row?.price_unit || "lb") || "lb";
+      const invoicePackUnit = normalizeInventoryUnit(row?.__invoicePackUnit || row?.recent_invoice_price_unit || row?.price_unit || row?.default_unit || "each") || "each";
+      const unitsInsidePack = getPhysicalGridUnitsInside(row);
+      const lbPerInnerUnit = getPhysicalGridLbPerInnerUnit(row);
+
+      if (unit === "lb") {
+        return 1;
+      }
+
+      if (unit === invoicePackUnit) {
+        return Math.max(unitsInsidePack * lbPerInnerUnit, 0.0001);
+      }
+
+      return Math.max(lbPerInnerUnit, 0.0001);
+    }
+
     function getPhysicalGridLatestInput(row, preferredUnit = "") {
       const unit = normalizeInventoryUnit(preferredUnit || row?.default_unit || row?.price_unit || "lb") || "lb";
       const lineTotal = Number(row?.recent_invoice_line_total || 0);
       const invoicePounds = Number(row?.recent_invoice_weight_lbs || row?.recent_invoice_pounds || 0);
       const invoiceQty = Number(row?.recent_invoice_quantity || row?.quantity || 0);
       const invoicePackUnit = normalizeInventoryUnit(row?.__invoicePackUnit || row?.recent_invoice_price_unit || row?.price_unit || row?.default_unit || "each") || "each";
-      const unitsInsidePack = Math.max(Number(row?.__unitsInsidePack || row?.units_inside_pack || 1), 1);
-      const poundsPerSavedUnit = Math.max(Number(row?.pounds_per_box || row?.pounds_per_package || 1), 0.0001);
+      const unitsInsidePack = getPhysicalGridUnitsInside(row);
+      const lbPerInnerUnit = getPhysicalGridLbPerInnerUnit(row);
+      const savedPoundsPerPackage = getPhysicalGridSavedPoundsPerPackage(row, unit);
       const invoicePackagePrice = lineTotal > 0 && invoiceQty > 0
         ? lineTotal / invoiceQty
         : Number(row?.recent_invoice_price_per_unit || 0);
@@ -4309,20 +4345,18 @@ async function previewRonyStock() {
             price: invoiceLbPrice,
             unit: "lb",
             defaultUnit: "lb",
+            poundsPerPackage: 1,
             source: "invoice line total ÷ invoice pounds"
           };
         }
 
-        if (invoicePackagePrice > 0 && poundsPerSavedUnit > 0) {
-          const totalPackPounds = Math.max(unitsInsidePack * poundsPerSavedUnit, 0.0001);
-
+        if (invoicePackagePrice > 0 && savedPoundsPerPackage > 0) {
           return {
-            price: invoicePackagePrice / totalPackPounds,
+            price: invoicePackagePrice / savedPoundsPerPackage,
             unit: "lb",
             defaultUnit: "lb",
-            source: unitsInsidePack > 1
-              ? "package price ÷ units inside pack ÷ LB per saved unit"
-              : "package price ÷ LB per saved unit"
+            poundsPerPackage: 1,
+            source: "invoice pack price ÷ total LB in invoice pack"
           };
         }
       }
@@ -4332,7 +4366,8 @@ async function previewRonyStock() {
           price: invoicePackagePrice,
           unit,
           defaultUnit: unit,
-          source: "invoice package price"
+          poundsPerPackage: savedPoundsPerPackage,
+          source: "invoice pack price"
         };
       }
 
@@ -4341,15 +4376,17 @@ async function previewRonyStock() {
           price: invoicePackagePrice / unitsInsidePack,
           unit,
           defaultUnit: unit,
-          source: "invoice package price ÷ units inside pack"
+          poundsPerPackage: savedPoundsPerPackage,
+          source: "invoice pack price ÷ units inside pack"
         };
       }
 
-      if (invoiceLbPrice > 0 && poundsPerSavedUnit > 0) {
+      if (invoiceLbPrice > 0 && savedPoundsPerPackage > 0) {
         return {
-          price: invoiceLbPrice * poundsPerSavedUnit,
+          price: invoiceLbPrice * savedPoundsPerPackage,
           unit,
           defaultUnit: unit,
+          poundsPerPackage: savedPoundsPerPackage,
           source: "invoice LB price × LB per saved unit"
         };
       }
@@ -4359,7 +4396,8 @@ async function previewRonyStock() {
           price: invoicePackagePrice,
           unit,
           defaultUnit: unit,
-          source: "invoice package price"
+          poundsPerPackage: savedPoundsPerPackage,
+          source: "invoice pack price"
         };
       }
 
@@ -4367,6 +4405,7 @@ async function previewRonyStock() {
         price: 0,
         unit,
         defaultUnit: unit,
+        poundsPerPackage: savedPoundsPerPackage,
         source: "no latest invoice price"
       };
     }
@@ -4410,7 +4449,7 @@ async function previewRonyStock() {
 
       const body = document.getElementById("physicalPriceGridBody");
       if (body) {
-        body.innerHTML = `<tr><td colspan="11">Loading latest invoice prices...</td></tr>`;
+        body.innerHTML = `<tr><td colspan="12">Loading latest invoice prices...</td></tr>`;
       }
 
       const { data, error } = await client
@@ -4423,7 +4462,7 @@ async function previewRonyStock() {
         console.error(error);
         showToast("Unable to load physical count price grid.");
         if (body) {
-          body.innerHTML = `<tr><td colspan="11">Unable to load price grid. Check Supabase view permissions.</td></tr>`;
+          body.innerHTML = `<tr><td colspan="12">Unable to load price grid. Check Supabase view permissions.</td></tr>`;
         }
         return;
       }
@@ -4437,7 +4476,8 @@ async function previewRonyStock() {
           __gridIndex: index,
           __selectedUnit: normalizeInventoryUnit(row.default_unit || row.price_unit || "lb") || "lb",
           __invoicePackUnit: normalizeInventoryUnit(row.recent_invoice_price_unit || row.price_unit || row.default_unit || "each") || "each",
-          __unitsInsidePack: Number(row.units_inside_pack || 1) || 1
+          __unitsInsidePack: Number(row.units_inside_pack || 1) || 1,
+          __lbPerInnerUnit: Number(row.pounds_per_box || row.pounds_per_package || 1) || 1
         }));
 
       lastSetupFixRows = await applyLatestInvoicePricesToSetupFixRows(physicalRows);
@@ -4446,7 +4486,8 @@ async function previewRonyStock() {
         __gridIndex: index,
         __selectedUnit: normalizeInventoryUnit(row.default_unit || row.price_unit || "lb") || "lb",
         __invoicePackUnit: normalizeInventoryUnit(row.recent_invoice_price_unit || row.price_unit || row.default_unit || "each") || "each",
-        __unitsInsidePack: Number(row.units_inside_pack || 1) || 1
+        __unitsInsidePack: Number(row.units_inside_pack || 1) || 1,
+        __lbPerInnerUnit: Number(row.pounds_per_box || row.pounds_per_package || 1) || 1
       }));
 
       populatePhysicalPriceCategoryFilter(lastPhysicalPriceGridRows);
@@ -4510,7 +4551,7 @@ async function previewRonyStock() {
       });
 
       if (!filteredRows.length) {
-        body.innerHTML = `<tr><td colspan="11">No physical count items found for this filter.</td></tr>`;
+        body.innerHTML = `<tr><td colspan="12">No physical count items found for this filter.</td></tr>`;
         return;
       }
 
@@ -4527,7 +4568,8 @@ async function previewRonyStock() {
       const unitsInsidePack = Math.max(Number(row.__unitsInsidePack || row.units_inside_pack || 1), 1);
       const calculated = getPhysicalGridLatestInput(row, selectedUnit);
       const status = getPhysicalGridRowStatus(row);
-      const poundsPerPackage = Number(row.pounds_per_box || row.pounds_per_package || 1);
+      const lbPerInnerUnit = getPhysicalGridLbPerInnerUnit(row);
+      const savedPoundsPerPackage = getPhysicalGridSavedPoundsPerPackage(row, selectedUnit);
       const invoicePounds = Number(row.recent_invoice_weight_lbs || row.recent_invoice_pounds || 0);
       const lineTotal = Number(row.recent_invoice_line_total || 0);
       const invoiceProduct = row.recent_invoice_product_name || row.recent_invoice_product || "";
@@ -4542,7 +4584,7 @@ async function previewRonyStock() {
         : hasInvoiceAmount
           ? `<span class="pill yellow">Suggested latest invoice</span>`
           : `<span class="danger-text">No invoice found</span>`;
-      const poundsText = buildPhysicalPriceGridPoundsText(selectedUnit, invoicePounds, lineTotal, invoiceQty, poundsPerPackage, invoicePackUnit, unitsInsidePack);
+      const poundsText = buildPhysicalPriceGridPoundsText(selectedUnit, invoicePounds, lineTotal, invoiceQty, savedPoundsPerPackage, invoicePackUnit, unitsInsidePack, lbPerInnerUnit);
       const unitMismatch = currentPrice > 0 && dashboardUnit !== currentUnit;
       const needsSaveMessage = currentPrice <= 0 && calculatedPrice > 0
         ? `<div class="warning-pill">Ready to save. This will update the Physical Count card automatically.</div>`
@@ -4589,14 +4631,18 @@ async function previewRonyStock() {
             <div class="price-meta">Example: case has 12 = enter 12.</div>
           </td>
           <td>
-            <input class="physical-price-input" type="number" min="0.0001" step="0.01" id="physicalPricePounds-${rowIndex}" value="${escapeAttr(Number(poundsPerPackage || 1).toFixed(2))}" oninput="handlePhysicalPriceUnitChange(${rowIndex})" />
-            <div class="price-meta">Example: BAG has 50 lb.</div>
+            <input class="physical-price-input" type="number" min="0.0001" step="0.01" id="physicalPricePounds-${rowIndex}" value="${escapeAttr(Number(lbPerInnerUnit || 1).toFixed(2))}" oninput="handlePhysicalPriceUnitChange(${rowIndex})" />
+            <div class="price-meta">Example: each BAG has 50 lb, each inner unit has 1 lb.</div>
+          </td>
+          <td class="physical-price-cell" id="physicalPriceSavedLb-${rowIndex}">
+            <strong>${formatNumber(savedPoundsPerPackage)} LB</strong>
+            <div class="price-meta">This is saved to the Physical Count card as LB/Pkg.</div>
           </td>
           <td class="physical-price-cell">
             <input class="physical-price-input" type="number" min="0" step="0.01" id="physicalPriceValue-${rowIndex}" value="${escapeAttr(calculatedPrice.toFixed(2))}" />
             <div class="price-meta" id="physicalPriceCalc-${rowIndex}">
               ${calculatedPrice > 0
-                ? buildPhysicalPriceGridFormulaText(calculated, selectedUnit, invoicePounds, invoiceQty, lineTotal, poundsPerPackage, invoicePackUnit, unitsInsidePack)
+                ? buildPhysicalPriceGridFormulaText(calculated, selectedUnit, invoicePounds, invoiceQty, lineTotal, savedPoundsPerPackage, invoicePackUnit, unitsInsidePack, lbPerInnerUnit)
                 : "No calculated invoice price"}
             </div>
           </td>
@@ -4615,7 +4661,7 @@ async function previewRonyStock() {
       `;
     }
 
-    function buildPhysicalPriceGridPoundsText(selectedUnit, invoicePounds, lineTotal, invoiceQty, poundsPerPackage, invoicePackUnit = "each", unitsInsidePack = 1) {
+    function buildPhysicalPriceGridPoundsText(selectedUnit, invoicePounds, lineTotal, invoiceQty, savedPoundsPerPackage, invoicePackUnit = "each", unitsInsidePack = 1, lbPerInnerUnit = 1) {
       const unit = normalizeInventoryUnit(selectedUnit || "lb") || "lb";
       const packUnit = normalizeInventoryUnit(invoicePackUnit || "each") || "each";
 
@@ -4628,20 +4674,19 @@ async function previewRonyStock() {
 
       if (unit === "lb") {
         return `
-          <span class="pill yellow">No invoice pounds</span>
-          <div class="price-meta">LB price will use package conversion.</div>
-          <div class="price-meta">Formula uses ${formatNumber(unitsInsidePack || 1)} ${escapeHtml(unit.toUpperCase())} inside each ${escapeHtml(packUnit.toUpperCase())}, and ${formatNumber(poundsPerPackage || 1)} LB per saved unit.</div>
+          <span class="pill yellow">No invoice pounds saved</span>
+          <div class="price-meta">Using conversion: invoice pack has ${formatNumber(unitsInsidePack || 1)} inside × ${formatNumber(lbPerInnerUnit || 1)} LB each = ${formatNumber(savedPoundsPerPackage || 1)} LB.</div>
         `;
       }
 
       return `
-        <span class="pill green">Pounds not needed for ${escapeHtml(unit.toUpperCase())}</span>
-        <div class="price-meta">Package price uses invoice line total ÷ invoice qty.</div>
-        <div class="price-meta">If ${escapeHtml(packUnit.toUpperCase())} has multiple units inside, use Units Inside Invoice Pack.</div>
+        <span class="pill green">Pounds conversion ready</span>
+        <div class="price-meta">Invoice pack: ${escapeHtml(packUnit.toUpperCase())} • Inside: ${formatNumber(unitsInsidePack || 1)} • LB each: ${formatNumber(lbPerInnerUnit || 1)}</div>
+        <div class="price-meta">Physical Count LB/Pkg to save: ${formatNumber(savedPoundsPerPackage || 1)} LB.</div>
       `;
     }
 
-    function buildPhysicalPriceGridFormulaText(calculated, selectedUnit, invoicePounds, invoiceQty, lineTotal, poundsPerPackage, invoicePackUnit = "each", unitsInsidePack = 1) {
+    function buildPhysicalPriceGridFormulaText(calculated, selectedUnit, invoicePounds, invoiceQty, lineTotal, savedPoundsPerPackage, invoicePackUnit = "each", unitsInsidePack = 1, lbPerInnerUnit = 1) {
       const unit = normalizeInventoryUnit(selectedUnit || calculated.unit || "lb") || "lb";
       const packUnit = normalizeInventoryUnit(invoicePackUnit || "each") || "each";
       const priceLine = `${formatCurrency(calculated.price)} / ${escapeHtml(String(calculated.unit).toUpperCase())}`;
@@ -4649,17 +4694,18 @@ async function previewRonyStock() {
       let formula = escapeHtml(calculated.source);
 
       if (unit === "lb" && invoicePounds > 0 && lineTotal > 0) {
-        formula = `${formatCurrency(lineTotal)} ÷ ${formatNumber(invoicePounds)} LB`;
+        formula = `${formatCurrency(lineTotal)} ÷ ${formatNumber(invoicePounds)} invoice LB`;
       } else if (unit === "lb" && packagePrice > 0) {
-        const totalPackPounds = Math.max(Number(unitsInsidePack || 1) * Number(poundsPerPackage || 1), 0.0001);
-        formula = `${formatCurrency(packagePrice)} per ${escapeHtml(packUnit.toUpperCase())} ÷ ${formatNumber(totalPackPounds)} LB`;
+        formula = `${formatCurrency(packagePrice)} per ${escapeHtml(packUnit.toUpperCase())} ÷ ${formatNumber(savedPoundsPerPackage || 1)} LB`;
+      } else if (unit === packUnit && lineTotal > 0 && invoiceQty > 0) {
+        formula = `${formatCurrency(lineTotal)} ÷ ${formatNumber(invoiceQty)} ${escapeHtml(packUnit.toUpperCase())}`;
       } else if (unit !== "lb" && lineTotal > 0 && invoiceQty > 0 && Number(unitsInsidePack || 1) > 1) {
         formula = `${formatCurrency(lineTotal)} ÷ ${formatNumber(invoiceQty)} ${escapeHtml(packUnit.toUpperCase())} ÷ ${formatNumber(unitsInsidePack)} inside`;
       } else if (unit !== "lb" && invoiceQty > 0 && lineTotal > 0) {
         formula = `${formatCurrency(lineTotal)} ÷ ${formatNumber(invoiceQty)} ${escapeHtml(unit.toUpperCase())}`;
       }
 
-      return `${priceLine}<br><strong>Formula:</strong> ${formula}<br>Physical Count will use: <strong>${escapeHtml(String(unit).toUpperCase())}</strong>`;
+      return `${priceLine}<br><strong>Formula:</strong> ${formula}<br>Physical Count will use: <strong>${escapeHtml(String(unit).toUpperCase())}</strong><br>Physical Count LB/Pkg will save: <strong>${formatNumber(calculated.poundsPerPackage || savedPoundsPerPackage || 1)} LB</strong>`;
     }
 
     function handlePhysicalPriceUnitChange(rowIndex) {
@@ -4674,17 +4720,21 @@ async function previewRonyStock() {
       const insidePackInput = document.getElementById(`physicalPriceInsidePack-${rowIndex}`);
       const poundsInput = document.getElementById(`physicalPricePounds-${rowIndex}`);
       const unitsInsidePack = Math.max(Number(insidePackInput?.value || row.__unitsInsidePack || 1), 1);
-      const poundsPerPackage = Number(poundsInput?.value || row.pounds_per_box || row.pounds_per_package || 1);
+      const lbPerInnerUnit = Math.max(Number(poundsInput?.value || row.__lbPerInnerUnit || row.pounds_per_box || row.pounds_per_package || 1), 0.0001);
 
       row.__selectedUnit = unit;
       row.__invoicePackUnit = invoicePackUnit;
       row.__unitsInsidePack = unitsInsidePack;
-      row.pounds_per_box = Number.isFinite(poundsPerPackage) && poundsPerPackage > 0 ? poundsPerPackage : 1;
+      row.__lbPerInnerUnit = lbPerInnerUnit;
+
+      const savedPoundsPerPackage = getPhysicalGridSavedPoundsPerPackage(row, unit);
+      row.pounds_per_box = savedPoundsPerPackage;
 
       const calculated = getPhysicalGridLatestInput(row, unit);
       const valueInput = document.getElementById(`physicalPriceValue-${rowIndex}`);
       const calcLine = document.getElementById(`physicalPriceCalc-${rowIndex}`);
       const poundsText = document.getElementById(`physicalPricePoundsText-${rowIndex}`);
+      const savedLbText = document.getElementById(`physicalPriceSavedLb-${rowIndex}`);
 
       if (valueInput) {
         valueInput.value = Number(calculated.price || 0).toFixed(2);
@@ -4696,12 +4746,16 @@ async function previewRonyStock() {
 
       if (calcLine) {
         calcLine.innerHTML = Number(calculated.price || 0) > 0
-          ? buildPhysicalPriceGridFormulaText(calculated, unit, invoicePounds, invoiceQty, lineTotal, row.pounds_per_box, invoicePackUnit, unitsInsidePack)
+          ? buildPhysicalPriceGridFormulaText(calculated, unit, invoicePounds, invoiceQty, lineTotal, savedPoundsPerPackage, invoicePackUnit, unitsInsidePack, lbPerInnerUnit)
           : "No calculated invoice price";
       }
 
       if (poundsText) {
-        poundsText.innerHTML = buildPhysicalPriceGridPoundsText(unit, invoicePounds, lineTotal, invoiceQty, row.pounds_per_box, invoicePackUnit, unitsInsidePack);
+        poundsText.innerHTML = buildPhysicalPriceGridPoundsText(unit, invoicePounds, lineTotal, invoiceQty, savedPoundsPerPackage, invoicePackUnit, unitsInsidePack, lbPerInnerUnit);
+      }
+
+      if (savedLbText) {
+        savedLbText.innerHTML = `<strong>${formatNumber(savedPoundsPerPackage)} LB</strong><div class="price-meta">This is saved to the Physical Count card as LB/Pkg.</div>`;
       }
     }
 
@@ -4714,7 +4768,14 @@ async function previewRonyStock() {
 
       const unit = document.getElementById(`physicalPriceUnit-${rowIndex}`)?.value || row.__selectedUnit || "lb";
       const price = Number(document.getElementById(`physicalPriceValue-${rowIndex}`)?.value || 0);
-      const poundsPerPackage = Number(document.getElementById(`physicalPricePounds-${rowIndex}`)?.value || row.pounds_per_box || 1);
+      const invoicePackUnit = document.getElementById(`physicalPriceInvoicePack-${rowIndex}`)?.value || row.__invoicePackUnit || row.recent_invoice_price_unit || row.price_unit || row.default_unit || "each";
+      const unitsInsidePack = Math.max(Number(document.getElementById(`physicalPriceInsidePack-${rowIndex}`)?.value || row.__unitsInsidePack || 1), 1);
+      const lbPerInnerUnit = Math.max(Number(document.getElementById(`physicalPricePounds-${rowIndex}`)?.value || row.__lbPerInnerUnit || row.pounds_per_box || 1), 0.0001);
+      row.__selectedUnit = unit;
+      row.__invoicePackUnit = invoicePackUnit;
+      row.__unitsInsidePack = unitsInsidePack;
+      row.__lbPerInnerUnit = lbPerInnerUnit;
+      const poundsPerPackage = getPhysicalGridSavedPoundsPerPackage(row, unit);
       const statusId = `physicalPriceSaveStatus-${rowIndex}`;
       const updatedBy = document.getElementById("reportAdminUsername")?.value.trim().toUpperCase() || "ADMIN";
 
