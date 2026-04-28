@@ -1261,7 +1261,7 @@
 
     <section id="setup" class="panel">
       <div class="notice">
-        Admin Setup Review is now a single live price grid for <strong>Physical Count</strong> items. It checks the latest vendor invoice every time you load this tab, then lets you choose LB, BOX, CASE, BAG, or EACH. When you click <strong>Save Unit + Price</strong>, the physical count dashboard updates automatically with the selected unit, price, and LB/package.
+        Admin Setup Review is now a single live price grid for <strong>Physical Count</strong> items. It checks the latest vendor invoice every time you load this tab, then lets you choose LB, BOX, CASE, BAG, or EACH. When you change the unit, pack, or LB/package, this grid auto-saves the selected unit, calculated price, and LB/package back to the Physical Count dashboard.
       </div>
 
       <div id="setupLockedBox" class="section-card">
@@ -1279,7 +1279,7 @@
           <div class="section-head">
             <div>
               <h2>Physical Count Price Grid</h2>
-              <small>Simple grid for all Physical Count items. Choose the Physical Count unit, invoice pack type, units inside the pack, and LB per saved unit. The price is calculated from the latest invoice and saved back to the dashboard.</small>
+              <small>Simple grid for all Physical Count items. Choose the Physical Count unit, invoice pack type, units inside the pack, and LB per saved unit. The price is calculated from the latest invoice and auto-saved back to the dashboard.</small>
             </div>
             <div class="inventory-actions">
               <button class="secondary small-btn" onclick="loadPhysicalCountPriceGrid()"><i class="fa-solid fa-rotate"></i> Load Latest Invoice Prices</button>
@@ -1289,7 +1289,7 @@
           </div>
 
           <div class="report-note">
-            Use this grid as the only Admin Setup Review. Add a new invoice, click Refresh, choose how the item should be counted on the Physical Count page, then click Save Unit + Price. Produce normally uses LB. Flour normally uses BAG. A case with 12 inside can use Units Inside Invoice Pack = 12 so the case price is divided automatically.
+            Use this grid as the only Admin Setup Review. Add a new invoice, click Refresh, then choose how the item should be counted on the Physical Count page. Changes auto-save after a short pause. Produce normally uses LB. Flour normally uses BAG. A case with 12 inside can use Units Inside Invoice Pack = 12 so the case price is divided automatically.
           </div>
 
           <div class="setup-fix-toolbar">
@@ -1332,7 +1332,7 @@
                   <th>Saved LB/Pkg</th>
                   <th>Calculated Price To Save</th>
                   <th>Status</th>
-                  <th>Save Unit + Price</th>
+                  <th>Auto Save</th>
                 </tr>
               </thead>
               <tbody id="physicalPriceGridBody">
@@ -1758,6 +1758,7 @@
     let inventoryCounts = [];
     let reportsUnlocked = false;
     let saveTimers = {};
+    let physicalPriceAutoSaveTimers = {};
     let ronySettingSaveTimers = {};
     let lastCogsRows = [];
     let lastRonyRows = [];
@@ -4654,7 +4655,8 @@ async function previewRonyStock() {
             ${needsSaveMessage}
           </td>
           <td>
-            <button class="small-btn" onclick="savePhysicalCountPriceRow(${rowIndex})"><i class="fa-solid fa-floppy-disk"></i> Save Unit + Price</button>
+            <button class="small-btn" onclick="savePhysicalCountPriceRow(${rowIndex})"><i class="fa-solid fa-floppy-disk"></i> Save Now</button>
+            <div class="price-meta">Changes auto-save after 1 second.</div>
             <div class="price-meta" id="physicalPriceSaveStatus-${rowIndex}"></div>
           </td>
         </tr>
@@ -4708,6 +4710,17 @@ async function previewRonyStock() {
       return `${priceLine}<br><strong>Formula:</strong> ${formula}<br>Physical Count will use: <strong>${escapeHtml(String(unit).toUpperCase())}</strong><br>Physical Count LB/Pkg will save: <strong>${formatNumber(calculated.poundsPerPackage || savedPoundsPerPackage || 1)} LB</strong>`;
     }
 
+    function schedulePhysicalPriceAutoSave(rowIndex) {
+      clearTimeout(physicalPriceAutoSaveTimers[rowIndex]);
+
+      const statusId = `physicalPriceSaveStatus-${rowIndex}`;
+      setTextContent(statusId, "Auto-saving...");
+
+      physicalPriceAutoSaveTimers[rowIndex] = setTimeout(async () => {
+        await savePhysicalCountPriceRow(rowIndex, { skipReload: true, auto: true });
+      }, 900);
+    }
+
     function handlePhysicalPriceUnitChange(rowIndex) {
       const row = lastPhysicalPriceGridRows[rowIndex];
 
@@ -4757,6 +4770,8 @@ async function previewRonyStock() {
       if (savedLbText) {
         savedLbText.innerHTML = `<strong>${formatNumber(savedPoundsPerPackage)} LB</strong><div class="price-meta">This is saved to the Physical Count card as LB/Pkg.</div>`;
       }
+
+      schedulePhysicalPriceAutoSave(rowIndex);
     }
 
     async function savePhysicalCountPriceRow(rowIndex, options = {}) {
@@ -4829,7 +4844,11 @@ async function previewRonyStock() {
       row.default_unit = unit;
       row.pounds_per_box = Number.isFinite(poundsPerPackage) && poundsPerPackage > 0 ? poundsPerPackage : 1;
 
-      setTextContent(statusId, "Saved");
+      setTextContent(statusId, options.auto ? "Auto-saved" : "Saved");
+
+      if (options.auto) {
+        showToast(`${row.item_name || "Item"} auto-saved to Physical Count.`);
+      }
 
       if (!options.skipReload) {
         await reloadAll();
