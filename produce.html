@@ -271,6 +271,10 @@
       border-bottom: 1px solid var(--line);
     }
 
+    .inventory-summary {
+      grid-template-columns: repeat(3, 1fr);
+    }
+
     .summary-card, .metric-card {
       background: #fff;
       border: 1px solid var(--line);
@@ -1145,7 +1149,6 @@
         <div class="inventory-summary">
           <div class="summary-card"><span>Active Items</span><strong id="summaryItems">0</strong></div>
           <div class="summary-card"><span>Counted</span><strong id="summaryCounted">0</strong></div>
-          <div class="summary-card"><span>Total Base LB</span><strong id="summaryLb">0</strong></div>
           <div class="summary-card"><span>Total Value</span><strong id="summaryValue">$0.00</strong></div>
         </div>
 
@@ -1198,14 +1201,14 @@
         <div class="section-head">
           <div>
             <h2>Preview Stock Reference</h2>
-            <small>Reads approved food-only reference stock using <code>get_rony_cogs_stock_as_of(date)</code>. Any date uses the latest reference count on or before that date. This stock is reference-only and is never imported into physical count.</small>
+            <small>Reads the approved food-only Stock Reference list using the fixed COGS inventory date <strong>2026-04-27</strong>. This stock is reference-only and is never imported into physical count.</small>
           </div>
         </div>
 
         <div class="grid-4" style="padding:14px 18px; background:#fffaf5; border-bottom:1px solid var(--line);">
           <input type="hidden" id="ronyStockDate" />
           <div><label>Counted By</label><input type="text" id="ronyCountedBy" /></div>
-          <button id="ronyPreviewButton" onclick="previewRonyStock()"><i class="fa-solid fa-eye"></i> Preview Stock Reference</button>
+          <button id="ronyPreviewButton" onclick="previewRonyStock()"><i class="fa-solid fa-eye"></i> Load 4/27/2026 Stock Reference</button>
           <button class="secondary" disabled title="Reference stock is reference-only and should not be imported into physical count."><i class="fa-solid fa-ban"></i> Reference Only - Not Imported</button>
         </div>
 
@@ -1760,6 +1763,20 @@
       "RESTAURANT DEPOT": "Restaurant Depot",
       MANUAL: "Manual",
       OTHER: "Other"
+    };
+
+    const DEFAULT_STOCK_REFERENCE_DATE = "2026-04-27";
+    const HIDDEN_PHYSICAL_COUNT_ITEM_NAMES = [
+      "chicken drum stick #40",
+      "chicken drumstick #40",
+      "chicken wings jumbo",
+      "white shrimp 26/30"
+    ];
+    const STOCK_REFERENCE_PRICE_OVERRIDES = {
+      "mussel 1/2 shell": 95.97,
+      "mussels 1/2 shell": 95.97,
+      "mussel half shell": 95.97,
+      "mussels half shell": 95.97
     };
 
     let inventoryItems = [];
@@ -2518,6 +2535,33 @@
     }
 
 
+
+    function normalizedLooseItemName(value) {
+      return normalizeName(value)
+        .replace(/[#]/g, "")
+        .replace(/[^\w\s/]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function isHiddenPhysicalCountItem(item) {
+      const candidate = normalizedLooseItemName(item?.item_name || item?.product_name || "");
+      return HIDDEN_PHYSICAL_COUNT_ITEM_NAMES.some(hiddenName => {
+        const hidden = normalizedLooseItemName(hiddenName);
+        return candidate === hidden || candidate.includes(hidden) || hidden.includes(candidate);
+      });
+    }
+
+    function getStockReferencePriceOverride(productName) {
+      const candidate = normalizedLooseItemName(productName || "");
+      const overrideKey = Object.keys(STOCK_REFERENCE_PRICE_OVERRIDES).find(key => {
+        const normalizedKey = normalizedLooseItemName(key);
+        return candidate === normalizedKey || candidate.includes(normalizedKey) || normalizedKey.includes(candidate);
+      });
+
+      return overrideKey ? Number(STOCK_REFERENCE_PRICE_OVERRIDES[overrideKey] || 0) : 0;
+    }
+
     async function loadItems() {
       const { data, error } = await client
         .from("fresh_inventory_items")
@@ -2541,7 +2585,8 @@
         item.active !== false &&
         String(item.source_area || "").toUpperCase() !== "RONY" &&
         String(item.category || "").toLowerCase() !== "rony reference only" &&
-        !isNonInventorySetupItem(item)
+        !isNonInventorySetupItem(item) &&
+        !isHiddenPhysicalCountItem(item)
       );
 
       inventoryItems = activePhysicalItems;
@@ -2659,7 +2704,7 @@
       const sourceClass = getSourceClass(source);
       const imageCandidates = buildImageCandidates(item.image_url, item.item_name, item.vendor || item.source_area);
       const imageUrl = imageCandidates[0] || PLACEHOLDER_IMAGE;
-      const poundsPerPackage = getPoundsPerPackage(item);
+      const poundsPerPackage = normalizeUnitType(unitType) === "lb" ? 1 : getPoundsPerPackage(item);
       const baseQty = convertQuantityToBaseLb(Number(quantity || 0), unitType, item);
       const displayPrice = getDisplayPrice(item);
       const value = baseQty * getPricePerBaseUnit(item);
@@ -2688,12 +2733,12 @@
           <div class="entry-box">
             <div class="qty-label">Physical Count Quantity</div>
             <div class="entry-row">
-              <input class="qty-input" type="number" min="0" step="0.01" inputmode="decimal" value="${escapeAttr(quantity)}" onchange="queueSaveCount('${escapeAttr(item.id)}')" oninput="queueSaveCount('${escapeAttr(item.id)}')" />
-              <select class="unit-select" onchange="queueSaveCount('${escapeAttr(item.id)}')">
+              <input class="qty-input" type="number" min="0" step="0.01" inputmode="decimal" value="${escapeAttr(quantity)}" onchange="handleInventoryCardChange('${escapeAttr(item.id)}')" oninput="handleInventoryCardChange('${escapeAttr(item.id)}')" />
+              <select class="unit-select" onchange="handleInventoryCardChange('${escapeAttr(item.id)}')">
                 ${UNIT_OPTIONS.map(unit => `<option value="${unit}" ${unitType === unit ? "selected" : ""}>${unit.toUpperCase()}</option>`).join("")}
               </select>
             </div>
-            <div class="small-meta-line">Base: ${formatNumber(baseQty)} LB • LB/Pkg: ${formatNumber(poundsPerPackage)} • Value: ${formatCurrency(value)}</div>
+            <div class="small-meta-line js-base-value-line">Base: ${formatNumber(baseQty)} LB • LB/Pkg: ${formatNumber(poundsPerPackage)} • Value: ${formatCurrency(value)}</div>
             <div class="current-price-line ${displayPrice.price > 0 ? "" : "missing"}">Price: ${priceLine}</div>
             ${invoicePoundsLine ? `<div class="current-price-detail">${invoicePoundsLine}</div>` : ""}
           </div>
@@ -2701,6 +2746,29 @@
           <div class="card-status" id="status-${escapeAttr(item.id)}">${count ? `<span class="status-saved">Saved</span>` : "Not counted"}</div>
         </div>
       `;
+    }
+
+    function handleInventoryCardChange(itemId) {
+      updateInventoryCardDisplay(itemId);
+      queueSaveCount(itemId);
+    }
+
+    function updateInventoryCardDisplay(itemId) {
+      const card = document.querySelector(`[data-item-id="${cssEscape(itemId)}"]`);
+      const item = inventoryItems.find(row => row.id === itemId);
+
+      if (!card || !item) return;
+
+      const quantity = Number(card.querySelector(".qty-input")?.value || 0);
+      const unitType = normalizeUnitType(card.querySelector(".unit-select")?.value || item.default_unit || "lb");
+      const baseQty = convertQuantityToBaseLb(quantity, unitType, item);
+      const value = calculateInventoryValue(quantity, unitType, item);
+      const poundsPerPackage = unitType === "lb" ? 1 : getPoundsPerPackage(item);
+      const baseValueLine = card.querySelector(".js-base-value-line");
+
+      if (baseValueLine) {
+        baseValueLine.textContent = `Base: ${formatNumber(baseQty)} LB • LB/Pkg: ${formatNumber(poundsPerPackage)} • Value: ${formatCurrency(value)}`;
+      }
     }
 
     function queueSaveCount(itemId) {
@@ -2714,7 +2782,7 @@
       if (!card) return;
 
       const quantityValue = card.querySelector(".qty-input").value;
-      const unitType = card.querySelector(".unit-select").value;
+      const unitType = normalizeUnitType(card.querySelector(".unit-select").value);
       const countDate = document.getElementById("entryDate").value;
       const countedBy = document.getElementById("employeeName").value.trim();
       const item = inventoryItems.find(row => row.id === itemId);
@@ -2756,13 +2824,35 @@
         return;
       }
 
+      const normalizedData = {
+        ...data,
+        item_id: itemId,
+        quantity,
+        unit_type: unitType,
+        base_quantity_lb: convertQuantityToBaseLb(quantity, unitType, item)
+      };
+
       const existingIndex = inventoryCounts.findIndex(row => row.item_id === itemId);
       if (existingIndex >= 0) {
-        inventoryCounts[existingIndex] = data;
+        inventoryCounts[existingIndex] = normalizedData;
       } else {
-        inventoryCounts.push(data);
+        inventoryCounts.push(normalizedData);
       }
 
+      if (item && normalizeUnitType(item.default_unit) !== unitType) {
+        item.default_unit = unitType;
+
+        const { error: itemUpdateError } = await client
+          .from("fresh_inventory_items")
+          .update({ default_unit: unitType })
+          .eq("id", itemId);
+
+        if (itemUpdateError) {
+          console.warn("Count unit saved for this date, but default unit update failed:", itemUpdateError);
+        }
+      }
+
+      updateInventoryCardDisplay(itemId);
       setStatus(itemId, "Saved", "status-saved");
       updateSummary();
     }
@@ -2799,7 +2889,6 @@
 
     function updateSummary() {
       const countMap = new Map(inventoryCounts.map(row => [row.item_id, row]));
-      let totalLb = 0;
       let totalValue = 0;
       let counted = 0;
 
@@ -2812,14 +2901,12 @@
           const quantity = Number(count.quantity) || 0;
           if (quantity > 0) counted += 1;
 
-          const baseLb = Number(count.base_quantity_lb || convertQuantityToBaseLb(quantity, count.unit_type, item));
-          totalLb += baseLb;
+          const baseLb = convertQuantityToBaseLb(quantity, count.unit_type, item);
           totalValue += baseLb * getPricePerBaseUnit(item);
         });
 
       setTextContent("summaryItems", inventoryItems.filter(item => item.active !== false).length);
       setTextContent("summaryCounted", counted);
-      setTextContent("summaryLb", formatNumber(totalLb));
       setTextContent("summaryValue", formatCurrency(totalValue));
     }
 
@@ -3338,12 +3425,14 @@
       return (rows || []).map(row => {
         const normalized = normalizeRonyRow(row);
 
-        if (Number(normalized.package_price || 0) > 0 || Number(normalized.unit_price || 0) > 0) {
+        const overridePrice = getStockReferencePriceOverride(normalized.product_name);
+
+        if (!overridePrice && (Number(normalized.package_price || 0) > 0 || Number(normalized.unit_price || 0) > 0)) {
           return normalized;
         }
 
         const priceInfo = priceMap.get(ronyCogsKey(normalized.product_name));
-        const packagePrice = Number(priceInfo?.price || 0) || 0;
+        const packagePrice = overridePrice || Number(priceInfo?.price || 0) || 0;
         const unitPrice = calculateRonyUnitPrice(packagePrice, normalized.price_unit, normalized.units_per_package);
         const baseQuantity = calculateRonyBaseQuantity(
           normalized.quantity_in_stock,
@@ -3356,9 +3445,9 @@
           package_price: packagePrice,
           unit_price: unitPrice,
           latest_price: unitPrice,
-          latest_price_date: priceInfo?.date || normalized.latest_price_date || "",
-          latest_price_vendor: priceInfo?.vendor || normalized.latest_price_vendor || "",
-          latest_price_source: priceInfo?.source || normalized.latest_price_source || "",
+          latest_price_date: overridePrice ? DEFAULT_STOCK_REFERENCE_DATE : priceInfo?.date || normalized.latest_price_date || "",
+          latest_price_vendor: overridePrice ? "Manual Stock Reference Override" : priceInfo?.vendor || normalized.latest_price_vendor || "",
+          latest_price_source: overridePrice ? "manual override" : priceInfo?.source || normalized.latest_price_source || "",
           base_quantity: baseQuantity,
           stock_value: baseQuantity * unitPrice,
           estimated_value: baseQuantity * unitPrice
@@ -3456,14 +3545,13 @@
 async function previewRonyStock() {
       syncReferenceDateFromInventoryDate();
 
-      const stockDateInput = document.getElementById("entryDate");
       const previewBody = document.getElementById("ronyPreviewBody");
       const previewButton = document.getElementById("ronyPreviewButton");
-      const stockDate = stockDateInput?.value || document.getElementById("ronyStockDate")?.value || "";
+      const stockDate = DEFAULT_STOCK_REFERENCE_DATE;
+      const stockDateHidden = document.getElementById("ronyStockDate");
 
-      if (!stockDate) {
-        showToast("Choose a stock reference date.");
-        return;
+      if (stockDateHidden) {
+        stockDateHidden.value = stockDate;
       }
 
       if (previewButton) {
@@ -3483,7 +3571,7 @@ async function previewRonyStock() {
 
       if (previewButton) {
         previewButton.disabled = false;
-        previewButton.innerHTML = `<i class="fa-solid fa-eye"></i> Preview Stock Reference`;
+        previewButton.innerHTML = `<i class="fa-solid fa-eye"></i> Load 4/27/2026 Stock Reference`;
       }
 
       if (error) {
@@ -7000,11 +7088,11 @@ async function previewRonyStock() {
         const missingPrice = pricePerBase <= 0;
 
         const beginningQty = startRow
-          ? Number(startRow.base_quantity_lb || convertQuantityToBaseLb(startRow.quantity, startRow.unit_type, item))
+          ? convertQuantityToBaseLb(startRow.quantity, startRow.unit_type, item)
           : 0;
 
         const endingQty = endRow
-          ? Number(endRow.base_quantity_lb || convertQuantityToBaseLb(endRow.quantity, endRow.unit_type, item))
+          ? convertQuantityToBaseLb(endRow.quantity, endRow.unit_type, item)
           : 0;
 
         const purchasedQty = Number(purchase.baseQuantity || 0);
@@ -7685,9 +7773,21 @@ async function previewRonyStock() {
       return Math.max(Number(item?.pounds_per_box) || 1, 0.0001);
     }
 
+    function normalizeUnitType(unit) {
+      const normalized = String(unit || "lb").trim().toLowerCase();
+
+      if (["lb", "lbs", "pound", "pounds", "#"].includes(normalized)) return "lb";
+      if (["case", "cs"].includes(normalized)) return "case";
+      if (["box", "bx"].includes(normalized)) return "box";
+      if (["bag", "bg"].includes(normalized)) return "bag";
+      if (["each", "ea", "unit"].includes(normalized)) return "each";
+
+      return normalized || "lb";
+    }
+
     function convertQuantityToBaseLb(quantity, unit, item) {
       const qty = Number(quantity) || 0;
-      const normalizedUnit = String(unit || "lb").toLowerCase();
+      const normalizedUnit = normalizeUnitType(unit);
 
       if (normalizedUnit === "lb") return qty;
       if (["box", "case", "bag"].includes(normalizedUnit)) return qty * getPoundsPerPackage(item);
@@ -7699,11 +7799,11 @@ async function previewRonyStock() {
       const latestPrice = Number(item?.latest_price || 0);
       const savedPrice = Number(item?.price || 0);
       const price = latestPrice > 0 ? latestPrice : savedPrice;
-      const priceUnit = String(
+      const priceUnit = normalizeUnitType(
         latestPrice > 0
           ? (item?.latest_price_unit || item?.price_unit || item?.default_unit || "lb")
           : (item?.price_unit || item?.default_unit || "lb")
-      ).toLowerCase();
+      );
 
       if (price <= 0) return 0;
       if (priceUnit === "lb") return price;
