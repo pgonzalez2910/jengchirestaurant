@@ -3,7 +3,7 @@
 <head>
 
     <script>
-      const JC_FRESH_APP_VERSION = "2026.04.23.latest-invoice-price-save-v9";
+      const JC_FRESH_APP_VERSION = "2026.04.28.merge-8425-rony-clean-v1";
       const JC_FRESH_VERSION_KEY = "jc_fresh_inventory_version";
       const previousFreshVersion = localStorage.getItem(JC_FRESH_VERSION_KEY);
 
@@ -1201,14 +1201,18 @@
         <div class="section-head">
           <div>
             <h2>Preview Stock Reference</h2>
-            <small>Reads the approved food-only Stock Reference list using the fixed COGS inventory date <strong>2026-04-27</strong>. This stock is reference-only and is never imported into physical count.</small>
+            <small>Reads the approved food-only Stock Reference list using the latest Rony inventory date from <code>current_stock</code>. This stock is reference-only and is never imported into physical count.</small>
           </div>
         </div>
 
         <div class="grid-4" style="padding:14px 18px; background:#fffaf5; border-bottom:1px solid var(--line);">
           <input type="hidden" id="ronyStockDate" />
           <div><label>Counted By</label><input type="text" id="ronyCountedBy" /></div>
-          <button id="ronyPreviewButton" onclick="previewRonyStock()"><i class="fa-solid fa-eye"></i> Load 4/27/2026 Stock Reference</button>
+          <div>
+            <label>Latest Rony COGS Inventory</label>
+            <div id="ronyLatestStockDateLabel" class="sales-total-box"><strong>Auto-load latest</strong></div>
+          </div>
+          <button id="ronyPreviewButton" onclick="previewRonyStock()"><i class="fa-solid fa-eye"></i> Preview Stock Reference</button>
           <button class="secondary" disabled title="Reference stock is reference-only and should not be imported into physical count."><i class="fa-solid fa-ban"></i> Reference Only - Not Imported</button>
         </div>
 
@@ -1772,12 +1776,13 @@
       "chicken wings jumbo",
       "white shrimp 26/30"
     ];
-    const STOCK_REFERENCE_PRICE_OVERRIDES = {
-      "mussel 1/2 shell": 95.97,
-      "mussels 1/2 shell": 95.97,
-      "mussel half shell": 95.97,
-      "mussels half shell": 95.97
-    };
+    const HIDDEN_STOCK_REFERENCE_ITEM_NAMES = [
+      "mussel 1/2 shell",
+      "mussels 1/2 shell",
+      "mussel half shell",
+      "mussels half shell"
+    ];
+    const STOCK_REFERENCE_PRICE_OVERRIDES = {};
 
     let inventoryItems = [];
     let matchInventoryItems = [];
@@ -2982,10 +2987,22 @@
       );
     }
 
+
+    function isHiddenStockReferenceItemName(productName) {
+      const candidate = normalizedLooseItemName(productName || "");
+
+      return HIDDEN_STOCK_REFERENCE_ITEM_NAMES.some(hiddenName => {
+        const hiddenCandidate = normalizedLooseItemName(hiddenName);
+        return candidate === hiddenCandidate ||
+          candidate.includes(hiddenCandidate) ||
+          hiddenCandidate.includes(candidate);
+      });
+    }
+
     function isRonyReferenceFoodAllowed(row) {
       const name = String(row?.product_name || "").toLowerCase();
 
-      if (!name || isJulioPhysicalItemName(row.product_name)) {
+      if (!name || isJulioPhysicalItemName(row.product_name) || isHiddenStockReferenceItemName(row.product_name)) {
         return false;
       }
 
@@ -3198,134 +3215,108 @@
       ], 0)) || 0;
     }
 
-    async function queryRonyCogsRowsForDate(stockDate) {
-      const asOfDate = String(stockDate || "").slice(0, 10);
-      let allowedRows = [];
-      let stockRows = [];
+    function isRemovedRonyStockReferenceName(productName) {
+      const name = String(productName || "").toLowerCase();
 
-      const allowedResult = await client
-        .from("rony_cogs_allowed_items")
-        .select("*")
-        .order("product_name", { ascending: true });
+      return (
+        /mussel/.test(name) &&
+        (/1\/2\s*shell/.test(name) || /half\s*shell/.test(name))
+      );
+    }
 
-      if (!allowedResult.error) {
-        allowedRows = (allowedResult.data || []).filter(row => row.include_in_cogs !== false);
-      } else {
-        console.warn("COGS allowed list lookup failed:", allowedResult.error);
+    async function queryRonyCogsRowsForDate(_stockDate) {
+      const { data: latestDateRows, error: latestDateError } = await client
+        .from("current_stock")
+        .select("stock_date")
+        .order("stock_date", { ascending: false })
+        .limit(1);
+
+      if (latestDateError) {
+        return { data: null, error: latestDateError };
       }
 
-      let stockResult = await client
-        .from("inventory_check")
-        .select("*")
-        .ilike("user", "Rony")
-        .limit(10000);
+      const latestStockDate = latestDateRows?.[0]?.stock_date || "";
+
+      if (!latestStockDate) {
+        return { data: [], error: null, latestStockDate: "" };
+      }
+
+      const [stockResult, allowedResult] = await Promise.all([
+        client
+          .from("current_stock")
+          .select("product_name,quantity_in_stock,stock_date,last_updated")
+          .eq("stock_date", latestStockDate)
+          .order("product_name", { ascending: true }),
+        client
+          .from("rony_cogs_allowed_items")
+          .select("product_name,include_in_cogs,category,count_unit,price_unit,units_per_package")
+          .eq("include_in_cogs", true)
+      ]);
 
       if (stockResult.error) {
-        console.warn("Rony inventory_check user filter failed, retrying full stock list:", stockResult.error);
-
-        stockResult = await client
-          .from("inventory_check")
-          .select("*")
-          .limit(10000);
+        return { data: null, error: stockResult.error };
       }
 
-      if (stockResult.error) {
-        console.warn("COGS stock list lookup failed:", stockResult.error);
-      } else {
-        stockRows = stockResult.data || [];
+      if (allowedResult.error) {
+        return { data: null, error: allowedResult.error };
       }
 
-      const latestStockByKey = new Map();
+      const allowedByKey = new Map();
 
-      stockRows.forEach(row => {
-        const productName = String(readFirstRonyValue(row, [
-          "product_name",
-          "item_name",
-          "name",
-          "product",
-          "description"
-        ], "")).trim();
+      (allowedResult.data || []).forEach(item => {
+        const key = ronyCogsKey(item.product_name);
 
-        if (!productName) {
+        if (!key || isRemovedRonyStockReferenceName(item.product_name)) {
           return;
         }
 
-        const userName = String(row.user || row.created_by || row.counted_by || "").toLowerCase();
-
-        if (userName && !userName.includes("rony")) {
-          return;
-        }
-
-        const normalizedCandidate = {
-          ...row,
-          product_name: productName
-        };
-
-        if (!isRonyReferenceFoodAllowed(normalizedCandidate)) {
-          return;
-        }
-
-        const rowDate = readRonyStockDate(row);
-
-        if (asOfDate && rowDate && rowDate > asOfDate) {
-          return;
-        }
-
-        const key = ronyCogsKey(productName);
-        const existing = latestStockByKey.get(key);
-        const existingDate = String(existing?.stock_date || "");
-
-        if (!existing || rowDate >= existingDate) {
-          latestStockByKey.set(key, {
-            ...row,
-            product_name: productName,
-            stock_date: rowDate || asOfDate || "",
-            quantity_in_stock: readRonyStockQuantity(row),
-            package_price: readRonyPackagePrice(row),
-            vendor: readFirstRonyValue(row, ["vendor", "supplier"], ""),
-            item_code: readFirstRonyValue(row, ["item_code", "code", "sku", "item_number"], ""),
-            category: readFirstRonyValue(row, ["category", "cogs_category"], "Reference Stock Food")
-          });
+        if (!allowedByKey.has(key)) {
+          allowedByKey.set(key, item);
         }
       });
 
-      const rows = [];
+      const rows = (stockResult.data || [])
+        .filter(stock => !isRemovedRonyStockReferenceName(stock.product_name))
+        .map(stock => {
+          const allowed = allowedByKey.get(ronyCogsKey(stock.product_name));
 
-      if (allowedRows.length) {
-        allowedRows.forEach(allowedRow => {
-          const productName = String(allowedRow.product_name || "").trim();
-
-          if (!productName) {
-            return;
+          if (!allowed) {
+            return null;
           }
 
-          const stockRow = latestStockByKey.get(ronyCogsKey(productName)) || {};
-          const stockQuantity = readRonyStockQuantity(stockRow);
-          const allowedPack = Number(allowedRow.units_per_package || 1) || 1;
+          const countUnit = allowed.count_unit || "each";
+          const priceUnit = allowed.price_unit || countUnit;
+          const unitsPerPackage = Number(allowed.units_per_package || 1) || 1;
+          const quantityInStock = Number(stock.quantity_in_stock || 0) || 0;
+          const baseQuantity = calculateRonyBaseQuantity(quantityInStock, countUnit, unitsPerPackage);
 
-          rows.push({
-            ...stockRow,
-            ...allowedRow,
-            settings_product_name: productName,
-            product_name: productName,
-            stock_date: stockRow.stock_date || asOfDate || "",
-            quantity_in_stock: stockQuantity,
-            units_per_package: Number(stockRow.units_per_package || allowedPack) || 1,
-            count_unit: allowedRow.count_unit || stockRow.count_unit || "unit",
-            price_unit: allowedRow.price_unit || stockRow.price_unit || "package",
-            package_price: readRonyPackagePrice(stockRow) || readRonyPackagePrice(allowedRow),
-            cogs_category: allowedRow.category || stockRow.category || "Reference Stock Food",
-            category: allowedRow.category || stockRow.category || "Reference Stock Food",
-            vendor: stockRow.vendor || allowedRow.vendor || ""
-          });
-        });
-      } else {
-        latestStockByKey.forEach(row => rows.push(row));
-      }
+          return {
+            product_name: stock.product_name,
+            stock_date: stock.stock_date,
+            used_stock_date: stock.stock_date,
+            quantity_in_stock: quantityInStock,
+            pack_per_case: unitsPerPackage,
+            units_per_package: unitsPerPackage,
+            count_unit: countUnit,
+            price_unit: priceUnit,
+            package_price: 0,
+            unit_price: 0,
+            latest_price: 0,
+            base_quantity: baseQuantity,
+            stock_value: 0,
+            estimated_value: 0,
+            category: allowed.category || "Stock Reference",
+            include_in_cogs: true,
+            alert: "",
+            last_updated: stock.last_updated
+          };
+        })
+        .filter(Boolean);
 
       return {
         data: rows,
-        error: null
+        error: null,
+        latestStockDate
       };
     }
 
@@ -3475,7 +3466,7 @@
         return;
       }
 
-      const rows = data || [];
+      const rows = (data || []).filter(row => !isHiddenStockReferenceItemName(row.product_name));
 
       if (!rows.length) {
         body.innerHTML = `<tr><td colspan="7" class="muted">No approved reference stock settings found.</td></tr>`;
@@ -3543,16 +3534,9 @@
     }
 
 async function previewRonyStock() {
-      syncReferenceDateFromInventoryDate();
-
       const previewBody = document.getElementById("ronyPreviewBody");
       const previewButton = document.getElementById("ronyPreviewButton");
-      const stockDate = DEFAULT_STOCK_REFERENCE_DATE;
-      const stockDateHidden = document.getElementById("ronyStockDate");
-
-      if (stockDateHidden) {
-        stockDateHidden.value = stockDate;
-      }
+      const latestDateLabel = document.getElementById("ronyLatestStockDateLabel");
 
       if (previewButton) {
         previewButton.disabled = true;
@@ -3567,11 +3551,11 @@ async function previewRonyStock() {
         `;
       }
 
-      const { data, error } = await queryRonyCogsRowsForDate(stockDate);
+      const { data, error, latestStockDate } = await queryRonyCogsRowsForDate();
 
       if (previewButton) {
         previewButton.disabled = false;
-        previewButton.innerHTML = `<i class="fa-solid fa-eye"></i> Load 4/27/2026 Stock Reference`;
+        previewButton.innerHTML = `<i class="fa-solid fa-eye"></i> Preview Stock Reference`;
       }
 
       if (error) {
@@ -3582,8 +3566,8 @@ async function previewRonyStock() {
         }
 
         const message = isStatementTimeout
-          ? "Stock reference query timed out in Supabase. The SQL function get_rony_cogs_stock_as_of needs an index or query optimization."
-          : "Unable to load stock reference. Run the corrected SQL function first.";
+          ? "Stock reference query timed out in Supabase."
+          : "Unable to load Stock Reference from current_stock and rony_cogs_allowed_items.";
 
         showToast(message);
 
@@ -3605,12 +3589,11 @@ async function previewRonyStock() {
       lastRonyRows = pricedRows.map(normalizeRonyRow);
       renderRonyPreview();
 
-      const exactRows = lastRonyRows.filter(row => String(row.stock_date || "") === stockDate).length;
-      const fallbackText = exactRows === lastRonyRows.length
-        ? ""
-        : " Some items used the latest stock before the selected date.";
+      if (latestDateLabel) {
+        latestDateLabel.innerHTML = `<strong>${escapeHtml((latestStockDate || ""))}</strong>`;
+      }
 
-      showToast(`Loaded ${lastRonyRows.length} approved stock reference item(s).${fallbackText}`);
+      showToast(`Loaded ${lastRonyRows.length} approved Stock Reference item(s) from ${(latestStockDate || "")}.`);
     }
 
     function queueRonyCogsSettingSave(rowIndex, field, value) {
