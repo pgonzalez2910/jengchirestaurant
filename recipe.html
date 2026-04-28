@@ -2235,6 +2235,8 @@ async function saveRecipePhoto(recipeId, dataUrl) {
 // ===================================================
 async function boot() {
   try {
+    await loadCategories();
+
     var res = await db.from('recipes').select('*').order('category').order('created_at');
     if (res.error) throw res.error;
     if (res.data.length === 0) {
@@ -2248,7 +2250,7 @@ async function boot() {
       // New recipes should be added via the "New Recipe" button instead.
       await repairRecipeCategories();
     }
-    loadCategoryPhotos();
+    await loadCategoryPhotos();
 
     // Diagnose category mismatches (e.g. why Puffs shows 0)
     // Include all possible category names (including aliases/renamed ones)
@@ -2600,11 +2602,15 @@ function deleteCurrent() {
 var _autoSaveTimer = null;
 
 function scheduleAutoSave() {
-  var id = document.getElementById('f-id').value;
-  if (!id) return;
+  var title = (document.getElementById('f-title').value || '').trim();
+  var cat = document.getElementById('f-cat').value;
+
+  if (!title || !cat) return;
+
   clearTimeout(_autoSaveTimer);
   var ind = document.getElementById('autosave-indicator');
   if (ind) { ind.textContent = 'Unsaved changes...'; ind.style.color = 'var(--txt3)'; }
+
   _autoSaveTimer = setTimeout(function() { saveRecipe(true); }, 1800);
 }
 
@@ -2754,6 +2760,9 @@ async function saveRecipe(isAuto) {
       if (res.error) throw res.error;
       data = res.data;
       allRecipes.push(data);
+
+      var idField = document.getElementById('f-id');
+      if (idField && data && data.id) idField.value = data.id;
     }
     if (!isAuto) { closeModal(); render(); toast('Recipe saved to database.', 'success'); }
     else {
@@ -2996,7 +3005,7 @@ async function loadCategoryPhotos() {
 // -- Category data -----------------------------------
 var categoryData   = [];
 var catPhotoTarget = null;
-var CAT_GROUPS     = ['Bakery', 'Kitchen', 'Main Dishes'];
+var CAT_GROUPS     = ['Bakery', 'Kitchen', 'Wok', 'Noodle', 'Main Dishes'];
 var _catSaveTimers = {};
 var _catSaving     = {};
 
@@ -3119,6 +3128,8 @@ function seedCategoriesLocal() {
   categoryData = [].concat(
     BAKERY_CATS.map(function(name,i)  { return { id: name, name: name, group_name: 'Bakery',      sort_order: i, photo: null }; }),
     KITCHEN_CATS.map(function(name,i) { return { id: name, name: name, group_name: 'Kitchen',     sort_order: i, photo: null }; }),
+    WOK_CATS.map(function(name,i)     { return { id: name, name: name, group_name: 'Wok',         sort_order: i, photo: null }; }),
+    NOODLE_CATS.map(function(name,i)  { return { id: name, name: name, group_name: 'Noodle',      sort_order: i, photo: null }; }),
     MAIN_CATS.map(function(name,i)    { return { id: name, name: name, group_name: 'Main Dishes', sort_order: i, photo: null }; })
   );
 }
@@ -3432,20 +3443,39 @@ function compressImageToBase64(file, maxW, maxH, quality) {
 async function addNewCategory(grpName) {
   var name = prompt('New category name:');
   if (!name || !name.trim()) return;
-  var group = grpName || 'Main Dishes';
+
+  name = name.trim();
+  var group = grpName || 'Bakery';
+
+  var existing = (categoryData || []).find(function(c) {
+    return c && c.name && c.name.trim().toLowerCase() === name.toLowerCase();
+  });
+
+  if (existing) {
+    existing.group_name = group;
+    await doSaveCat(categoryData.indexOf(existing));
+    toast('Category already existed. Group verified as ' + group + '.', 'success');
+    return;
+  }
+
   try {
     var res = await db.from('recipe_categories')
-      .insert({ name: name.trim(), group_name: group, sort_order: categoryData.length })
-      .select().single();
+      .insert({ name: name, group_name: group, sort_order: categoryData.length, photo: null })
+      .select()
+      .single();
+
     if (res.error) throw res.error;
     categoryData.push(res.data);
+    setGlobalInd('[OK] Category saved to Supabase');
   } catch(e) {
-    categoryData.push({ id: name.trim(), name: name.trim(), group_name: group, sort_order: categoryData.length, photo: null });
+    toast('Category add error: ' + (e && e.message ? e.message : 'Unknown error'), 'error');
+    return;
   }
+
   rebuildCatArrays();
   render();
   renderCatMgrBody();
-  toast('Category added.', 'success');
+  toast('Category "' + name + '" saved to database.', 'success');
 }
 
 async function deleteCatByIdx(idx) {
@@ -3472,14 +3502,31 @@ async function deleteCatByIdx(idx) {
 // -- Rebuild dynamic arrays ---------------------------
 function rebuildCatArrays() {
   if (!categoryData || categoryData.length === 0) return;
-  var byGroup = { 'Bakery': [], 'Kitchen': [], 'Main Dishes': [] };
+
+  var byGroup = { 'Bakery': [], 'Kitchen': [], 'Wok': [], 'Noodle': [], 'Main Dishes': [] };
   categoryData.forEach(function(c) {
-    var g = c.group_name || 'Main Dishes';
-    if (!byGroup[g]) byGroup[g] = [];
-    byGroup[g].push(c.name);
+    if (!c || !c.name) return;
+
+    var rawGroup = (c.group_name || 'Main Dishes').trim();
+    var key = rawGroup.toLowerCase();
+
+    if (key === 'bakery') byGroup['Bakery'].push(c.name);
+    else if (key === 'kitchen') byGroup['Kitchen'].push(c.name);
+    else if (key === 'wok') byGroup['Wok'].push(c.name);
+    else if (key === 'noodle') byGroup['Noodle'].push(c.name);
+    else byGroup['Main Dishes'].push(c.name);
   });
-  // Deduplicate within each group (prevents sidebar showing same category twice)
-  var dedup = function(arr) { var seen = {}; return arr.filter(function(n) { return seen[n] ? false : (seen[n]=true); }); };
+
+  var dedup = function(arr) {
+    var seen = {};
+    return arr.filter(function(n) {
+      var k = String(n || '').toLowerCase().trim();
+      if (!k || seen[k]) return false;
+      seen[k] = true;
+      return true;
+    });
+  };
+
   if (byGroup['Bakery'].length > 0) {
     BAKERY_CATS.length = 0;
     dedup(byGroup['Bakery']).forEach(function(n) { BAKERY_CATS.push(n); });
@@ -3488,16 +3535,107 @@ function rebuildCatArrays() {
     KITCHEN_CATS.length = 0;
     dedup(byGroup['Kitchen']).forEach(function(n) { KITCHEN_CATS.push(n); });
   }
+  if (byGroup['Wok'].length > 0) {
+    WOK_CATS.length = 0;
+    dedup(byGroup['Wok']).forEach(function(n) { WOK_CATS.push(n); });
+  }
+  if (byGroup['Noodle'].length > 0) {
+    NOODLE_CATS.length = 0;
+    dedup(byGroup['Noodle']).forEach(function(n) { NOODLE_CATS.push(n); });
+  }
   if (byGroup['Main Dishes'].length > 0) {
     MAIN_CATS.length = 0;
     dedup(byGroup['Main Dishes']).forEach(function(n) { MAIN_CATS.push(n); });
   }
+
   categoryData.forEach(function(c) {
     if (c.photo && c.photo.indexOf('data:') === 0) {
       DISH_IMAGES['__cat_' + c.name] = c.photo;
     }
   });
 }
+
+
+async function saveAllCategories() {
+  var rows = [];
+  (categoryData || []).forEach(function(cat, idx) {
+    var nameEl = document.getElementById('catname-' + idx);
+    var grpEl = document.getElementById('catgrp-' + idx);
+
+    rows.push({
+      id: /^[0-9a-f-]{36}$/i.test(String(cat.id)) ? cat.id : undefined,
+      name: (nameEl ? nameEl.value : cat.name || '').trim(),
+      group_name: grpEl ? grpEl.value : (cat.group_name || 'Bakery'),
+      sort_order: Number.isFinite(Number(cat.sort_order)) ? Number(cat.sort_order) : idx,
+      photo: cat.photo || null
+    });
+  });
+
+  rows = rows.filter(function(row) { return row.name; });
+
+  if (!rows.length) {
+    toast('No categories to save.', 'error');
+    return;
+  }
+
+  setGlobalInd('Saving all categories...');
+
+  try {
+    var res = await db.from('recipe_categories')
+      .upsert(rows, { onConflict: 'name' })
+      .select();
+
+    if (res.error) throw res.error;
+
+    categoryData = res.data || categoryData;
+    rebuildCatArrays();
+    render();
+    renderCatMgrBody();
+
+    setGlobalInd('[OK] All categories saved to Supabase');
+    toast('All categories saved to database.', 'success');
+  } catch(e) {
+    setGlobalInd('Save All failed');
+    toast('Save All error: ' + (e && e.message ? e.message : 'Unknown error'), 'error');
+  }
+}
+
+async function verifyRecipeCategories() {
+  try {
+    var catRes = await db.from('recipe_categories').select('name, group_name, sort_order');
+    if (catRes.error) throw catRes.error;
+
+    var recRes = await db.from('recipes').select('id, title, category');
+    if (recRes.error) throw recRes.error;
+
+    var saved = new Set((catRes.data || []).map(function(c) {
+      return String(c.name || '').toLowerCase().trim();
+    }));
+
+    var missing = {};
+    (recRes.data || []).forEach(function(r) {
+      var k = String(r.category || '').toLowerCase().trim();
+      if (!k || saved.has(k)) return;
+      if (!missing[r.category]) missing[r.category] = [];
+      missing[r.category].push(r.title);
+    });
+
+    console.table(missing);
+
+    var count = Object.keys(missing).length;
+    if (count === 0) {
+      toast('All recipe categories are registered in Supabase.', 'success');
+    } else {
+      toast(count + ' category mismatch(es) found. Check console table.', 'error');
+    }
+
+    return missing;
+  } catch(e) {
+    toast('Verify error: ' + (e && e.message ? e.message : 'Unknown error'), 'error');
+    return null;
+  }
+}
+
 
 // ===================================================
 // KITCHEN MANUAL
@@ -4732,10 +4870,14 @@ document.addEventListener("DOMContentLoaded", () => {
     </div>
     <div class="cat-mgr-footer">
       <div class="cat-count-badge">All changes save automatically to <strong>Supabase</strong></div>
-      <button class="btn-save" onclick="addNewCategory()">
-        <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-        Add Category
-      </button>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+        <button class="btn-cancel" onclick="verifyRecipeCategories()">Verify Categories</button>
+        <button class="btn-save" onclick="saveAllCategories()">Save All</button>
+        <button class="btn-save" onclick="addNewCategory('Bakery')">
+          <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          Add Bakery Category
+        </button>
+      </div>
     </div>
   </div>
 </div>
@@ -4743,6 +4885,6 @@ document.addEventListener("DOMContentLoaded", () => {
 <!-- Hidden file input for photo upload -->
 <input type="file" id="cat-photo-file" accept="image/*">
 
-<div id="recipe-version-badge" style="position:fixed;bottom:8px;right:10px;z-index:99999;font:600 12px monospace;color:#C9A86A;background:rgba(0,0,0,.85);padding:5px 11px;border-radius:5px;border:1px solid rgba(201,168,106,.4);pointer-events:none;letter-spacing:.6px;box-shadow:0 2px 8px rgba(0,0,0,.4);">RECIPE46</div>
+<div id="recipe-version-badge" style="position:fixed;bottom:8px;right:10px;z-index:99999;font:600 12px monospace;color:#C9A86A;background:rgba(0,0,0,.85);padding:5px 11px;border-radius:5px;border:1px solid rgba(201,168,106,.4);pointer-events:none;letter-spacing:.6px;box-shadow:0 2px 8px rgba(0,0,0,.4);">RECIPE47_BAKERY_DB_SAVE</div>
 </body>
 </html>
