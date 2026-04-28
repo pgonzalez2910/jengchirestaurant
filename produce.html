@@ -1797,6 +1797,10 @@
 
       await reloadAll();
       await autoSyncGitHubImagesIfNeeded();
+
+      if (document.getElementById("rony")?.classList.contains("active")) {
+        await previewRonyStock();
+      }
     });
 
     async function setDefaultInventoryDateToLatestCount(fallbackDate) {
@@ -2357,7 +2361,7 @@
       try {
         const { data: invoiceRows, error: invoiceError } = await client
           .from("invoice_items")
-          .select("product_name,item_code,vendor,unit,purchase_unit,unit_type,unit_price,invoice_price,price,price_per_unit,has_weight,is_weighted,weight,weight_lbs,lbs,pounds,purchase_weight,purchase_lbs,quantity_lbs,qty_lbs,base_quantity,base_quantity_lb,total_weight,total_lbs,total_weight_lbs,net_weight,quantity,qty,purchase_quantity,line_total,total_price,total,amount,extended_price,invoice_id")
+          .select("*")
           .limit(5000);
 
         if (invoiceError) {
@@ -2573,6 +2577,10 @@
 
       if (tabId === "setup" && reportsUnlocked) {
         loadSetupReview();
+      }
+
+      if (tabId === "rony") {
+        previewRonyStock();
       }
     }
 
@@ -3050,10 +3058,188 @@
         .sort((a, b) => String(a.product_name || "").localeCompare(String(b.product_name || "")));
     }
 
+    function readFirstRonyValue(row, fieldNames, fallback = "") {
+      for (const fieldName of fieldNames) {
+        const value = row?.[fieldName];
+
+        if (value !== undefined && value !== null && String(value).trim() !== "") {
+          return value;
+        }
+      }
+
+      return fallback;
+    }
+
+    function readRonyStockDate(row) {
+      return String(readFirstRonyValue(row, [
+        "stock_date",
+        "count_date",
+        "inventory_date",
+        "submitted_date",
+        "created_date",
+        "date",
+        "created_at",
+        "updated_at"
+      ], "")).slice(0, 10);
+    }
+
+    function readRonyStockQuantity(row) {
+      const quantity = Number(readFirstRonyValue(row, [
+        "quantity_in_stock",
+        "qty_in_stock",
+        "stock_qty",
+        "quantity",
+        "qty",
+        "count",
+        "total_qty",
+        "on_hand",
+        "amount"
+      ], 0)) || 0;
+
+      return quantity;
+    }
+
+    function readRonyPackagePrice(row) {
+      return Number(readFirstRonyValue(row, [
+        "package_price",
+        "latest_price",
+        "price",
+        "unit_price",
+        "price_each",
+        "last_price",
+        "cost"
+      ], 0)) || 0;
+    }
+
     async function queryRonyCogsRowsForDate(stockDate) {
-      return await client.rpc("get_rony_cogs_stock_as_of", {
-        p_as_of_date: stockDate
+      const asOfDate = String(stockDate || "").slice(0, 10);
+      let allowedRows = [];
+      let stockRows = [];
+
+      const allowedResult = await client
+        .from("rony_cogs_allowed_items")
+        .select("*")
+        .order("product_name", { ascending: true });
+
+      if (!allowedResult.error) {
+        allowedRows = (allowedResult.data || []).filter(row => row.include_in_cogs !== false);
+      } else {
+        console.warn("COGS allowed list lookup failed:", allowedResult.error);
+      }
+
+      let stockResult = await client
+        .from("inventory_check")
+        .select("*")
+        .ilike("user", "Rony")
+        .limit(10000);
+
+      if (stockResult.error) {
+        console.warn("Rony inventory_check user filter failed, retrying full stock list:", stockResult.error);
+
+        stockResult = await client
+          .from("inventory_check")
+          .select("*")
+          .limit(10000);
+      }
+
+      if (stockResult.error) {
+        console.warn("COGS stock list lookup failed:", stockResult.error);
+      } else {
+        stockRows = stockResult.data || [];
+      }
+
+      const latestStockByKey = new Map();
+
+      stockRows.forEach(row => {
+        const productName = String(readFirstRonyValue(row, [
+          "product_name",
+          "item_name",
+          "name",
+          "product",
+          "description"
+        ], "")).trim();
+
+        if (!productName) {
+          return;
+        }
+
+        const userName = String(row.user || row.created_by || row.counted_by || "").toLowerCase();
+
+        if (userName && !userName.includes("rony")) {
+          return;
+        }
+
+        const normalizedCandidate = {
+          ...row,
+          product_name: productName
+        };
+
+        if (!isRonyReferenceFoodAllowed(normalizedCandidate)) {
+          return;
+        }
+
+        const rowDate = readRonyStockDate(row);
+
+        if (asOfDate && rowDate && rowDate > asOfDate) {
+          return;
+        }
+
+        const key = ronyCogsKey(productName);
+        const existing = latestStockByKey.get(key);
+        const existingDate = String(existing?.stock_date || "");
+
+        if (!existing || rowDate >= existingDate) {
+          latestStockByKey.set(key, {
+            ...row,
+            product_name: productName,
+            stock_date: rowDate || asOfDate || "",
+            quantity_in_stock: readRonyStockQuantity(row),
+            package_price: readRonyPackagePrice(row),
+            vendor: readFirstRonyValue(row, ["vendor", "supplier"], ""),
+            item_code: readFirstRonyValue(row, ["item_code", "code", "sku", "item_number"], ""),
+            category: readFirstRonyValue(row, ["category", "cogs_category"], "Reference Stock Food")
+          });
+        }
       });
+
+      const rows = [];
+
+      if (allowedRows.length) {
+        allowedRows.forEach(allowedRow => {
+          const productName = String(allowedRow.product_name || "").trim();
+
+          if (!productName) {
+            return;
+          }
+
+          const stockRow = latestStockByKey.get(ronyCogsKey(productName)) || {};
+          const stockQuantity = readRonyStockQuantity(stockRow);
+          const allowedPack = Number(allowedRow.units_per_package || 1) || 1;
+
+          rows.push({
+            ...stockRow,
+            ...allowedRow,
+            settings_product_name: productName,
+            product_name: productName,
+            stock_date: stockRow.stock_date || asOfDate || "",
+            quantity_in_stock: stockQuantity,
+            units_per_package: Number(stockRow.units_per_package || allowedPack) || 1,
+            count_unit: allowedRow.count_unit || stockRow.count_unit || "unit",
+            price_unit: allowedRow.price_unit || stockRow.price_unit || "package",
+            package_price: readRonyPackagePrice(stockRow) || readRonyPackagePrice(allowedRow),
+            cogs_category: allowedRow.category || stockRow.category || "Reference Stock Food",
+            category: allowedRow.category || stockRow.category || "Reference Stock Food",
+            vendor: stockRow.vendor || allowedRow.vendor || ""
+          });
+        });
+      } else {
+        latestStockByKey.forEach(row => rows.push(row));
+      }
+
+      return {
+        data: rows,
+        error: null
+      };
     }
 
     async function loadLatestRonyPrices(rows) {
@@ -3068,7 +3254,7 @@
       try {
         const { data: invoiceItems, error: itemsError } = await client
           .from("invoice_items")
-          .select("product_name,item_code,unit_price,price_per_unit,has_weight,invoice_id")
+          .select("*")
           .in("product_name", productNames);
 
         if (!itemsError && invoiceItems?.length) {
@@ -3325,8 +3511,10 @@ async function previewRonyStock() {
       }
 
       const rows = dedupeRonyCogsRows(data || []);
+      const latestPriceMap = await loadLatestRonyPrices(rows);
+      const pricedRows = applyRonyPrices(rows, latestPriceMap);
 
-      lastRonyRows = rows.map(normalizeRonyRow);
+      lastRonyRows = pricedRows.map(normalizeRonyRow);
       renderRonyPreview();
 
       const exactRows = lastRonyRows.filter(row => String(row.stock_date || "") === stockDate).length;
@@ -3674,7 +3862,7 @@ async function previewRonyStock() {
       try {
         const { data: invoiceRows, error } = await client
           .from("invoice_items")
-          .select("product_name,item_code,vendor,unit,purchase_unit,unit_type,unit_price,invoice_price,price,price_per_unit,has_weight,is_weighted,weight,weight_lbs,lbs,pounds,purchase_weight,purchase_lbs,quantity_lbs,qty_lbs,base_quantity,base_quantity_lb,total_weight,total_lbs,total_weight_lbs,net_weight,quantity,qty,purchase_quantity,line_total,total_price,total,amount,extended_price,invoice_id")
+          .select("*")
           .limit(5000);
 
         if (error) {
