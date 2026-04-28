@@ -197,6 +197,24 @@
       border-bottom: 1px solid var(--line);
     }
 
+    .inventory-controls {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: end;
+      padding: 14px 18px;
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .inventory-date-note {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.4;
+      margin: 8px 0 0;
+    }
+
     .inventory-progress-card {
       background: #fff;
       border: 1px solid var(--line);
@@ -619,6 +637,50 @@
       max-width: 110px;
     }
 
+
+    .superadmin-only {
+      display: none;
+    }
+
+    .superadmin-only.active {
+      display: block;
+    }
+
+    .superadmin-category-grid {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: end;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #fffaf3;
+    }
+
+    .category-select {
+      min-width: 180px;
+      font-weight: 900;
+    }
+
+    .autosave-hint {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      margin-top: 5px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 12px;
+      font-weight: 900;
+      color: var(--muted);
+      background: #fff;
+    }
+
     .admin-price-category-row td {
       background: #f3eee7;
       color: var(--brand-dark);
@@ -672,7 +734,8 @@
       .chart-grid,
       .admin-bar,
       .add-grid,
-      .inventory-progress {
+      .inventory-progress,
+      .inventory-controls {
         grid-template-columns: 1fr;
       }
 
@@ -1324,7 +1387,7 @@
   <main>
     <div class="toolbar">
       <div>
-        <label>Production / Waste Date</label>
+        <label>Inventory / Production / Waste Date</label>
         <input type="date" id="entryDate" onchange="reloadAll()" />
       </div>
 
@@ -1370,7 +1433,7 @@
 
     <section id="inventory" class="panel active">
       <div class="notice">
-        Count bakery inventory first. Production and Waste stay locked until every active bakery item has a stock count for the selected date.
+        Choose today or a previous date, then count or edit bakery inventory by category. Production and Waste stay locked until every active bakery item has a stock count for the selected date.
       </div>
       <div id="inventoryContainer"></div>
     </section>
@@ -1621,7 +1684,7 @@
                   <div class="section-head">
                     <div>
                       <h2>Executive Inventory Cleanup / Edit</h2>
-                      <small>Choose a previous inventory date. Edit one row, delete one row, or delete the full count for that date.</small>
+                      <small>Choose a previous inventory date. Any stock, par, or notes change saves automatically.</small>
                     </div>
                   </div>
 
@@ -1896,6 +1959,47 @@
           Admin mode is unlocked. You can edit item prices and manage employee usernames/PINs. PINs are never displayed.
         </div>
 
+        <div class="notice superadmin-only" id="superadminNotice">
+          Superadmin mode is unlocked from employees2025 portal_role. Category edits autosave after each change. Watch each row: <strong>Saving...</strong> changes to <strong>Saved</strong>.
+        </div>
+
+        <div class="section-card superadmin-only" id="superadminCategorySection">
+          <div class="section-head">
+            <div>
+              <h2>Superadmin Category Manager</h2>
+              <small>Edit every bakery item category or create a new category. No username or PIN is stored in this website code.</small>
+            </div>
+          </div>
+
+          <div class="superadmin-category-grid">
+            <div>
+              <label>Create New Category</label>
+              <input id="newSuperadminCategoryName" type="text" placeholder="Example: Mooncakes" />
+              <div class="autosave-hint">After creating it, select it on any item row. The item category saves automatically.</div>
+            </div>
+
+            <button onclick="createSuperadminCategory()">
+              <i class="fa-solid fa-folder-plus"></i>
+              Create Category
+            </button>
+          </div>
+
+          <div class="table-wrap">
+            <table class="admin-table">
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Saved Category</th>
+                  <th>Website Group</th>
+                  <th>Edit Category</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="superadminCategoryBody"></tbody>
+            </table>
+          </div>
+        </div>
+
         <div class="section-card">
           <div class="section-head">
             <div>
@@ -2108,6 +2212,9 @@
       "Other"
     ];
 
+    let bakeryCategories = [...CATEGORY_OPTIONS];
+    const autosaveTimers = {};
+
     let bakeryItems = [];
     let dailyEntries = [];
     let employees2025 = [];
@@ -2122,6 +2229,8 @@
     let productionChart = null;
     let wasteChart = null;
     let draggedItemId = null;
+    let inventoryCategoryFilter = "all";
+    const inventorySaveTimers = {};
 
     document.addEventListener("DOMContentLoaded", async () => {
       setupEnterAsTabNavigation();
@@ -2136,6 +2245,7 @@
 
       await loadEmployees2025();
       await loadReportAdmins();
+      await loadBakeryCategories();
       populateEmployeeSelects();
 
       const savedEmployee = localStorage.getItem("bakeryEmployeeName") || "";
@@ -2386,6 +2496,7 @@
 
       if (tabId === "admin" && !document.getElementById("adminContent").classList.contains("hidden")) {
         renderAdminPrices();
+        renderSuperadminCategoryManager();
         renderReportAdminAccess();
         renderAdminCredentials();
       }
@@ -2422,6 +2533,106 @@
       }
 
       reportAdmins = data || [];
+    }
+
+
+    async function loadBakeryCategories() {
+      const categorySet = new Set(CATEGORY_OPTIONS);
+
+      bakeryItems.forEach(item => {
+        const savedCategory = String(item.category || "").trim();
+
+        if (savedCategory) {
+          categorySet.add(savedCategory);
+        }
+
+        categorySet.add(getItemDisplayCategory(item));
+      });
+
+      const { data, error } = await client
+        .from("bakery_categories")
+        .select("name")
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true })
+        .order("name", { ascending: true });
+
+      if (!error && Array.isArray(data)) {
+        data.forEach(category => {
+          const name = String(category.name || "").trim();
+
+          if (name) {
+            categorySet.add(name);
+          }
+        });
+      }
+
+      bakeryCategories = Array.from(categorySet).filter(Boolean);
+    }
+
+    function getAllCategoryOptions() {
+      const categorySet = new Set(CATEGORY_OPTIONS);
+
+      bakeryCategories.forEach(category => categorySet.add(category));
+
+      bakeryItems.forEach(item => {
+        const savedCategory = String(item.category || "").trim();
+
+        if (savedCategory) {
+          categorySet.add(savedCategory);
+        }
+
+        categorySet.add(getItemDisplayCategory(item));
+      });
+
+      const defaultCategories = CATEGORY_OPTIONS.filter(category => categorySet.has(category));
+      const customCategories = Array.from(categorySet)
+        .filter(category => !CATEGORY_OPTIONS.includes(category))
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+
+      return [...defaultCategories, ...customCategories];
+    }
+
+    function isCurrentAdminSuperadmin() {
+      if (!currentAdminSession) {
+        return false;
+      }
+
+      if (currentAdminSession.isSuperadmin === true) {
+        return true;
+      }
+
+      const employee = findEmployeeByName(currentAdminSession.employeeName);
+
+      return String(employee?.portal_role || "").toLowerCase() === "superadmin";
+    }
+
+    async function verifySuperadminSessionSilently() {
+      if (!currentAdminSession) {
+        return false;
+      }
+
+      const employee = findEmployeeByName(currentAdminSession.employeeName);
+      const roleIsSuperadmin = String(employee?.portal_role || "").toLowerCase() === "superadmin";
+
+      const { data, error } = await client.rpc("verify_bakery_superadmin_pin", {
+        p_employee_name: currentAdminSession.employeeName,
+        p_username: currentAdminSession.username,
+        p_pin: currentAdminSession.pin
+      });
+
+      if (error) {
+        return roleIsSuperadmin;
+      }
+
+      return Boolean(data);
+    }
+
+    function updateSuperadminVisibility() {
+      const isSuperadmin = isCurrentAdminSuperadmin();
+
+      document.querySelectorAll(".superadmin-only").forEach(element => {
+        element.classList.toggle("active", isSuperadmin);
+      });
     }
 
     function populateEmployeeSelects() {
@@ -2622,6 +2833,7 @@
       }
 
       bakeryItems = data || [];
+      await loadBakeryCategories();
     }
 
     async function loadDailyEntries() {
@@ -2679,23 +2891,106 @@
     function renderSortedBakeryItems() {
       bakeryItems.sort(sortItemsAlphabetically);
 
+      renderInventorySheet();
       renderEntrySheet("production");
       renderEntrySheet("waste");
 
       if (!document.getElementById("adminContent").classList.contains("hidden")) {
         renderAdminPrices();
+        renderSuperadminCategoryManager();
       }
+    }
+
+    function isGenericBakeryCategory(category) {
+      const normalizedCategory = String(category || "").trim().toLowerCase();
+
+      return [
+        "",
+        "other",
+        "flour / baking",
+        "paper / disposables",
+        "produce"
+      ].includes(normalizedCategory);
+    }
+
+    function inferBakeryCategory(name, savedCategory) {
+      const category = String(savedCategory || "").trim();
+
+      if (category && !isGenericBakeryCategory(category)) {
+        return category;
+      }
+
+      const normalizedName = String(name || "").toLowerCase();
+
+      if (normalizedName.includes("puff")) {
+        return "Cream Puffs";
+      }
+
+      if (normalizedName.includes("éclair") || normalizedName.includes("eclair")) {
+        return "Éclairs";
+      }
+
+      if (normalizedName.includes("macaron") || normalizedName.includes("macaroon")) {
+        return "Macarons";
+      }
+
+      if (
+        normalizedName.includes("cookie") ||
+        normalizedName.includes("sable") ||
+        normalizedName.includes("ginger")
+      ) {
+        return "Cookies";
+      }
+
+      if (normalizedName.includes("tart")) {
+        return "Tarts";
+      }
+
+      if (normalizedName.includes("shortcake")) {
+        return "Shortcakes";
+      }
+
+      if (normalizedName.includes("roll")) {
+        return "Cake Rolls";
+      }
+
+      if (normalizedName.includes("square")) {
+        return "Cake Squares";
+      }
+
+      if (normalizedName.includes("cake")) {
+        return "Cake Squares";
+      }
+
+      if (
+        normalizedName.includes("financier") ||
+        normalizedName.includes("mousse") ||
+        normalizedName.includes("panna cotta") ||
+        normalizedName.includes("dessert")
+      ) {
+        return "Desserts";
+      }
+
+      return category || "Other";
+    }
+
+    function getItemDisplayCategory(item) {
+      return inferBakeryCategory(item?.name, item?.category);
+    }
+
+    function getRowDisplayCategory(row) {
+      return inferBakeryCategory(row?.item_name || row?.name, row?.category);
     }
 
     function groupItemsByCategory() {
       const grouped = {};
 
-      CATEGORY_OPTIONS.forEach(category => {
+      getAllCategoryOptions().forEach(category => {
         grouped[category] = [];
       });
 
       bakeryItems.slice().sort(sortItemsAlphabetically).forEach(item => {
-        const category = item.category || "Other";
+        const category = getItemDisplayCategory(item);
 
         if (!grouped[category]) {
           grouped[category] = [];
@@ -2730,7 +3025,7 @@
     }
 
     function getMainInventoryRow(itemId) {
-      return mainInventoryRows.find(row => row.item_id === itemId);
+      return mainInventoryRows.find(row => String(row.item_id) === String(itemId));
     }
 
     function isInventoryCompleteForDate() {
@@ -2793,18 +3088,26 @@
     function renderInventorySheet() {
       const container = document.getElementById("inventoryContainer");
       const grouped = groupItemsByCategory();
+      const selectedCategory = inventoryCategoryFilter || "all";
+      const categoriesToShow = Object.keys(grouped).filter(category => {
+        return selectedCategory === "all" || category === selectedCategory;
+      });
       const countedCount = bakeryItems.filter(item => {
         const inventoryRow = getMainInventoryRow(item.id);
         return Boolean(inventoryRow && inventoryRow.counted_for_date);
       }).length;
       const remainingCount = Math.max(bakeryItems.length - countedCount, 0);
+      const countDate = document.getElementById("entryDate").value;
 
       let html = `
         <div class="section-card">
           <div class="section-head">
             <div>
               <h2>Daily Bakery Inventory Count</h2>
-              <small>${document.getElementById("entryDate").value}</small>
+              <small>${countDate}</small>
+              <p class="inventory-date-note">
+                To edit a previous inventory, change the date at the top, load it, then update any stock number. Changes autosave to that selected date.
+              </p>
             </div>
 
             <div class="sheet-actions">
@@ -2818,6 +3121,20 @@
                 Refresh
               </button>
             </div>
+          </div>
+
+          <div class="inventory-controls">
+            <div>
+              <label>Show Category</label>
+              <select id="inventoryCategoryFilter" onchange="setInventoryCategoryFilter(this.value)">
+                ${renderInventoryCategoryFilterOptions(selectedCategory)}
+              </select>
+            </div>
+
+            <button class="secondary small-btn" onclick="setInventoryCategoryFilter('all')">
+              <i class="fa-solid fa-layer-group"></i>
+              Show All Categories
+            </button>
           </div>
 
           <div class="add-item-panel" id="add-panel-inventory">
@@ -2863,7 +3180,7 @@
           </div>
       `;
 
-      Object.keys(grouped).forEach(category => {
+      categoriesToShow.forEach(category => {
         const items = grouped[category];
 
         if (!items.length) {
@@ -2909,7 +3226,7 @@
                   onkeydown="handleItemNameKeydown(event)"
                   id="item-name-inventory-${item.id}"
                 />
-                <div class="item-meta">${escapeHtml(item.category)} · ${escapeHtml(item.unit || "piece")}</div>
+                <div class="item-meta">${escapeHtml(getItemDisplayCategory(item))} · ${escapeHtml(item.unit || "piece")}</div>
               </td>
 
               <td class="col-qty">
@@ -2921,6 +3238,7 @@
                   step="1"
                   value="${stockQuantity}"
                   placeholder="Count"
+                  oninput="scheduleMainInventorySave('${item.id}')"
                   onchange="saveMainInventory('${item.id}')"
                   id="stock-${item.id}"
                 />
@@ -2952,12 +3270,42 @@
       container.innerHTML = html;
     }
 
+    function renderInventoryCategoryFilterOptions(selectedCategory) {
+      let options = `<option value="all"${selectedCategory === "all" ? " selected" : ""}>All Categories</option>`;
+
+      Object.keys(groupItemsByCategory()).forEach(category => {
+        const selected = category === selectedCategory ? " selected" : "";
+        options += `<option value="${escapeAttr(category)}"${selected}>${escapeHtml(category)}</option>`;
+      });
+
+      return options;
+    }
+
+    function setInventoryCategoryFilter(category) {
+      inventoryCategoryFilter = category || "all";
+      renderInventorySheet();
+    }
+
+    function scheduleMainInventorySave(itemId) {
+      clearTimeout(inventorySaveTimers[itemId]);
+
+      inventorySaveTimers[itemId] = setTimeout(() => {
+        saveMainInventory(itemId);
+      }, 650);
+    }
+
     async function saveMainInventory(itemId) {
+      clearTimeout(inventorySaveTimers[itemId]);
+
       const entryDate = document.getElementById("entryDate").value;
       const employeeName = document.getElementById("employeeName").value.trim();
       const stockInput = document.getElementById(`stock-${itemId}`);
       const row = document.getElementById(`inventory-row-${itemId}`);
       const status = document.getElementById(`inventory-status-${itemId}`);
+
+      if (!stockInput || !row || !status) {
+        return;
+      }
 
       if (!employeeName) {
         showToast("Please select employee name first.");
@@ -2978,7 +3326,8 @@
       }
 
       if (stockInput.value === "") {
-        showToast("Enter 0 when there is no stock.");
+        status.className = "save-status";
+        status.textContent = "Needed";
         return;
       }
 
@@ -3014,7 +3363,7 @@
       }
 
       const savedRow = Array.isArray(data) ? data[0] : data;
-      const existingIndex = mainInventoryRows.findIndex(row => row.item_id === itemId);
+      const existingIndex = mainInventoryRows.findIndex(row => String(row.item_id) === String(itemId));
 
       if (existingIndex >= 0) {
         mainInventoryRows[existingIndex] = savedRow;
@@ -3026,7 +3375,7 @@
 
       row.classList.add("saved");
       status.className = "save-status status-saved";
-      status.textContent = "Counted";
+      status.textContent = "Saved";
 
       updateInventoryProgressStats();
       updateProductionWasteAccess();
@@ -3037,6 +3386,7 @@
 
       setTimeout(() => {
         row.classList.remove("saved");
+        status.textContent = "Counted";
       }, 1800);
     }
 
@@ -3132,7 +3482,7 @@
               id="row-${entryType}-${item.id}"
               draggable="true"
               data-item-id="${item.id}"
-              data-category="${escapeAttr(item.category)}"
+              data-category="${escapeAttr(getItemDisplayCategory(item))}"
               ondragstart="startDrag(event, '${item.id}')"
               ondragend="endDrag(event)"
               ondragover="allowRowDrop(event)"
@@ -3153,7 +3503,7 @@
                   onkeydown="handleItemNameKeydown(event)"
                   id="item-name-${entryType}-${item.id}"
                 />
-                <div class="item-meta">${escapeHtml(item.category)} · ${escapeHtml(item.unit || "piece")}</div>
+                <div class="item-meta">${escapeHtml(getItemDisplayCategory(item))} · ${escapeHtml(item.unit || "piece")}</div>
               </td>
 
               <td class="col-qty">
@@ -3197,7 +3547,7 @@
     }
 
     function renderCategoryOptions(selectedCategory) {
-      return CATEGORY_OPTIONS.map(category => {
+      return getAllCategoryOptions().map(category => {
         const selected = category === selectedCategory ? "selected" : "";
         return `<option value="${escapeAttr(category)}" ${selected}>${escapeHtml(category)}</option>`;
       }).join("");
@@ -3764,7 +4114,7 @@
       rows.forEach(row => {
         const itemId = row.item_id;
         const itemName = row.item_name || "Unknown Item";
-        const category = row.category || "Other";
+        const category = getRowDisplayCategory(row);
         const qty = Number(row.quantity || 0);
         const price = Number(row.price || 0);
         const value = qty * price;
@@ -3908,7 +4258,7 @@
           body.innerHTML += `
             <tr>
               <td>${escapeHtml(row.itemName)}</td>
-              <td>${escapeHtml(row.category)}</td>
+              <td>${escapeHtml(getRowDisplayCategory(row))}</td>
               <td>${capitalize(row.type)}</td>
               <td>${row.qty.toLocaleString()}</td>
               <td>${money(row.price)}</td>
@@ -3929,7 +4279,7 @@
           body.innerHTML += `
             <tr>
               <td>${escapeHtml(row.itemName)}</td>
-              <td>${escapeHtml(row.category)}</td>
+              <td>${escapeHtml(getRowDisplayCategory(row))}</td>
               <td>${row.productionQty.toLocaleString()}</td>
               <td>${row.wasteQty.toLocaleString()}</td>
               <td>${getWasteRate(row).toFixed(1)}%</td>
@@ -3952,7 +4302,7 @@
             <tr>
               <td>${index + 1}</td>
               <td>${escapeHtml(row.itemName)}</td>
-              <td>${escapeHtml(row.category)}</td>
+              <td>${escapeHtml(getRowDisplayCategory(row))}</td>
               <td>${row.wasteQty.toLocaleString()}</td>
               <td>${money(row.price)}</td>
               <td>${money(row.wasteValue)}</td>
@@ -4018,7 +4368,7 @@
           body.innerHTML += `
             <tr>
               <td>${escapeHtml(item.name)}</td>
-              <td>${escapeHtml(item.category)}</td>
+              <td>${escapeHtml(getItemDisplayCategory(item))}</td>
               <td>${escapeHtml(item.unit || "piece")}</td>
               <td>${money(price)}</td>
               <td>${status}</td>
@@ -4088,7 +4438,7 @@
             body.innerHTML += `
               <tr>
                 <td>${escapeHtml(row.item_name)}</td>
-                <td>${escapeHtml(row.category)}</td>
+                <td>${escapeHtml(getRowDisplayCategory(row))}</td>
                 <td>${stockQty.toLocaleString()}</td>
                 <td>${parLevel.toLocaleString()}</td>
                 <td>${money(price)}</td>
@@ -4167,7 +4517,7 @@
           body.innerHTML += `
             <tr id="report-inventory-row-${itemId}">
               <td><strong>${escapeHtml(row.item_name)}</strong></td>
-              <td>${escapeHtml(row.category)}</td>
+              <td>${escapeHtml(getRowDisplayCategory(row))}</td>
               <td>
                 <input
                   class="inventory-maintenance-input"
@@ -4175,6 +4525,7 @@
                   min="0"
                   step="1"
                   value="${Number(row.stock_quantity || 0)}"
+                  onchange="saveReportInventoryRow('${escapeAttr(itemId)}')"
                   id="report-inventory-stock-${itemId}"
                 />
               </td>
@@ -4185,6 +4536,7 @@
                   min="0"
                   step="1"
                   value="${Number(row.par_level || 0)}"
+                  onchange="saveReportInventoryRow('${escapeAttr(itemId)}')"
                   id="report-inventory-par-${itemId}"
                 />
               </td>
@@ -4193,6 +4545,7 @@
                   class="inventory-maintenance-notes"
                   type="text"
                   value="${escapeAttr(row.notes || "")}"
+                  onchange="saveReportInventoryRow('${escapeAttr(itemId)}')"
                   id="report-inventory-notes-${itemId}"
                 />
               </td>
@@ -4407,19 +4760,245 @@
       currentAdminSession = {
         employeeName: document.getElementById("adminEmployeeName").value.trim(),
         username: document.getElementById("adminUsername").value.trim().toUpperCase(),
-        pin: document.getElementById("adminPin").value.trim()
+        pin: document.getElementById("adminPin").value.trim(),
+        isSuperadmin: false
       };
+
+      currentAdminSession.isSuperadmin = await verifySuperadminSessionSilently();
 
       document.getElementById("adminLoginBox").classList.add("hidden");
       document.getElementById("adminContent").classList.remove("hidden");
 
       document.getElementById("deleteEntryDate").value = document.getElementById("entryDate").value || new Date().toISOString().slice(0, 10);
 
+      updateSuperadminVisibility();
       renderAdminPrices();
+      renderSuperadminCategoryManager();
       renderReportAdminAccess();
       renderAdminCredentials();
       loadAdminInventory();
       loadDeletePreview();
+    }
+
+
+    function renderSuperadminCategoryManager() {
+      const body = document.getElementById("superadminCategoryBody");
+
+      if (!body) {
+        return;
+      }
+
+      if (!isCurrentAdminSuperadmin()) {
+        body.innerHTML = "";
+        updateSuperadminVisibility();
+        return;
+      }
+
+      updateSuperadminVisibility();
+      body.innerHTML = "";
+
+      bakeryItems
+        .slice()
+        .sort((a, b) => getItemDisplayCategory(a).localeCompare(getItemDisplayCategory(b)) || sortItemsAlphabetically(a, b))
+        .forEach(item => {
+          const savedCategory = String(item.category || "").trim() || "Other";
+          const displayCategory = getItemDisplayCategory(item);
+
+          body.innerHTML += `
+            <tr id="superadmin-category-row-${item.id}">
+              <td><strong>${escapeHtml(item.name || "")}</strong></td>
+              <td>${escapeHtml(savedCategory)}</td>
+              <td>${escapeHtml(displayCategory)}</td>
+              <td>
+                <select
+                  class="category-select"
+                  id="superadmin-category-${item.id}"
+                  onchange="scheduleSaveItemCategory('${item.id}')"
+                >
+                  ${renderCategoryOptions(displayCategory)}
+                </select>
+                <div class="autosave-hint">Autosaves after change.</div>
+              </td>
+              <td>
+                <span class="status-pill" id="superadmin-category-status-${item.id}">
+                  <i class="fa-solid fa-circle-check"></i>
+                  Ready
+                </span>
+              </td>
+            </tr>
+          `;
+        });
+    }
+
+    async function createSuperadminCategory() {
+      if (!isCurrentAdminSuperadmin()) {
+        showToast("Superadmin access is required.");
+        return;
+      }
+
+      const input = document.getElementById("newSuperadminCategoryName");
+      const categoryName = normalizeCategoryName(input.value);
+
+      if (!categoryName) {
+        showToast("Type a category name first.");
+        input.focus();
+        return;
+      }
+
+      addCategoryOption(categoryName);
+      input.value = "";
+      renderSuperadminCategoryManager();
+
+      const { error } = await client
+        .from("bakery_categories")
+        .upsert({
+          name: categoryName,
+          is_active: true,
+          sort_order: getAllCategoryOptions().length + 1
+        }, {
+          onConflict: "name"
+        });
+
+      if (error) {
+        showToast("Category is ready in this page. Run the category SQL to save empty categories permanently.");
+        return;
+      }
+
+      showToast("Category created.");
+    }
+
+    function normalizeCategoryName(value) {
+      return String(value || "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .replace(/^./, firstLetter => firstLetter.toUpperCase());
+    }
+
+    function addCategoryOption(categoryName) {
+      if (!bakeryCategories.includes(categoryName)) {
+        bakeryCategories.push(categoryName);
+      }
+    }
+
+    function scheduleSaveItemCategory(itemId) {
+      clearTimeout(autosaveTimers[`category-${itemId}`]);
+
+      const status = document.getElementById(`superadmin-category-status-${itemId}`);
+
+      if (status) {
+        status.className = "status-pill status-saving";
+        status.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Waiting...`;
+      }
+
+      autosaveTimers[`category-${itemId}`] = setTimeout(() => {
+        saveItemCategory(itemId);
+      }, 450);
+    }
+
+    async function saveItemCategory(itemId) {
+      if (!isCurrentAdminSuperadmin()) {
+        showToast("Superadmin access is required.");
+        return;
+      }
+
+      const select = document.getElementById(`superadmin-category-${itemId}`);
+      const row = document.getElementById(`superadmin-category-row-${itemId}`);
+      const status = document.getElementById(`superadmin-category-status-${itemId}`);
+      const item = bakeryItems.find(row => String(row.id) === String(itemId));
+
+      if (!select || !item) {
+        return;
+      }
+
+      const newCategory = normalizeCategoryName(select.value);
+      const originalCategory = String(item.category || "").trim() || "Other";
+
+      if (!newCategory) {
+        select.value = getItemDisplayCategory(item);
+        showToast("Category cannot be blank.");
+        return;
+      }
+
+      if (newCategory === originalCategory) {
+        if (status) {
+          status.className = "status-pill status-saved";
+          status.innerHTML = `<i class="fa-solid fa-circle-check"></i> Saved`;
+        }
+        return;
+      }
+
+      addCategoryOption(newCategory);
+
+      if (row) {
+        row.style.background = "#fffaeb";
+      }
+
+      if (status) {
+        status.className = "status-pill status-saving";
+        status.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Saving...`;
+      }
+
+      const nextSortOrder = getNextSortOrder(newCategory);
+
+      const { data, error } = await client
+        .from("bakery_items")
+        .update({
+          category: newCategory,
+          sort_order: nextSortOrder
+        })
+        .eq("id", itemId)
+        .select()
+        .single();
+
+      if (error) {
+        if (row) {
+          row.style.background = "#fef3f2";
+        }
+
+        if (status) {
+          status.className = "status-pill status-error";
+          status.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> Error`;
+        }
+
+        select.value = getItemDisplayCategory(item);
+        console.error("Category update error:", error);
+        showToast("Unable to save category. Check Supabase update permissions.");
+        return;
+      }
+
+      updateLocalItemName(data);
+      await loadItems();
+      renderInventorySheet();
+      renderEntrySheet("production");
+      renderEntrySheet("waste");
+      renderAdminPrices();
+      renderSuperadminCategoryManager();
+
+      const savedStatus = document.getElementById(`superadmin-category-status-${itemId}`);
+      const savedRow = document.getElementById(`superadmin-category-row-${itemId}`);
+
+      if (savedRow) {
+        savedRow.style.background = "#ecfdf3";
+      }
+
+      if (savedStatus) {
+        savedStatus.className = "status-pill status-saved";
+        savedStatus.innerHTML = `<i class="fa-solid fa-circle-check"></i> Saved`;
+      }
+
+      setTimeout(() => {
+        const readyStatus = document.getElementById(`superadmin-category-status-${itemId}`);
+        const readyRow = document.getElementById(`superadmin-category-row-${itemId}`);
+
+        if (readyRow) {
+          readyRow.style.background = "";
+        }
+
+        if (readyStatus) {
+          readyStatus.className = "status-pill";
+          readyStatus.innerHTML = `<i class="fa-solid fa-circle-check"></i> Ready`;
+        }
+      }, 1800);
     }
 
     function renderAdminPrices() {
@@ -4633,6 +5212,7 @@
       status.textContent = "Saved";
       await loadEmployees2025();
       await loadReportAdmins();
+      await loadBakeryCategories();
       populateEmployeeSelects();
       renderAdminCredentials();
 
@@ -4726,7 +5306,7 @@
             <td>${escapeHtml(row.entry_date)}</td>
             <td>${capitalize(row.entry_type)}</td>
             <td>${escapeHtml(row.item_name)}</td>
-            <td>${escapeHtml(row.category)}</td>
+            <td>${escapeHtml(getRowDisplayCategory(row))}</td>
             <td>${Number(row.quantity || 0).toLocaleString()}</td>
             <td>${escapeHtml(row.updated_by || "")}</td>
             <td>
@@ -4849,7 +5429,7 @@
           body.innerHTML += `
             <tr id="inventory-row-${row.item_id}">
               <td><strong>${escapeHtml(row.item_name)}</strong></td>
-              <td>${escapeHtml(row.category)}</td>
+              <td>${escapeHtml(getRowDisplayCategory(row))}</td>
               <td>${money(price)}</td>
               <td>
                 <input
