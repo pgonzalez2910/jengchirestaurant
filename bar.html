@@ -67,16 +67,20 @@
     }
 
     .hero {
-      display: grid;
-      grid-template-columns: 78px minmax(0, 1fr) auto;
-      gap: 12px;
+      display: flex;
       align-items: center;
+      gap: 14px;
       padding: 9px 15px;
       margin-bottom: 8px;
       background: rgba(255, 255, 255, 0.94);
       border: 1px solid var(--line);
       border-radius: 14px;
       box-shadow: 0 10px 26px rgba(16, 24, 40, 0.07);
+    }
+
+    .hero > div:not(.hero-actions) {
+      min-width: 420px;
+      flex: 1 1 auto;
     }
 
     .brand-logo {
@@ -94,6 +98,7 @@
       line-height: 1;
       letter-spacing: -0.035em;
       color: var(--navy);
+      white-space: nowrap;
     }
 
     .hero-subtitle {
@@ -101,16 +106,19 @@
       color: var(--muted);
       font-size: clamp(10px, 0.9vw, 13px);
       line-height: 1.25;
+      white-space: nowrap;
     }
 
     .hero-actions {
       display: flex;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       justify-content: flex-end;
       align-items: center;
       gap: 8px;
       align-self: center;
       align-content: center;
+      margin-left: auto;
+      flex: 0 0 auto;
     }
 
     .status-pill {
@@ -493,7 +501,7 @@
       color: #344054;
       background: #f8fafc;
       text-align: left;
-      font-size: 19px;
+      font-size: 12px;
       font-weight: 1000;
       text-transform: uppercase;
       letter-spacing: 0.04em;
@@ -984,16 +992,27 @@
 
     @media (max-width: 1120px) {
       .hero {
-        grid-template-columns: 54px 1fr;
+        flex-wrap: wrap;
       }
 
       .brand-logo {
         width: 78px;
       }
 
+      .hero > div:not(.hero-actions) {
+        min-width: 0;
+      }
+
+      .hero-title,
+      .hero-subtitle {
+        white-space: normal;
+      }
+
       .hero-actions {
-        grid-column: 1 / -1;
+        width: 100%;
         justify-content: flex-start;
+        flex-wrap: wrap;
+        margin-left: 0;
       }
 
       .dashboard {
@@ -1220,7 +1239,7 @@
 
       <h1 class="login-title">Bar Inventory Login</h1>
       <p class="login-subtitle">
-        Authorized access for Pablo Gonzalez, Janelle Teng, and Craig Reeves.
+        Authorized business use only. All inventory edits, pricing changes, audit actions, and user sessions are logged for accountability.
       </p>
 
       <form id="loginForm">
@@ -4417,6 +4436,10 @@
         .replaceAll("'", "&#039;");
     }
 
+    function uniqueValues(values) {
+      return [...new Set(values.filter(Boolean))];
+    }
+
     function slugifyImagePart(value) {
       return String(value || "")
         .toLowerCase()
@@ -4427,7 +4450,32 @@
         .replace(/^_+|_+$/g, "");
     }
 
+    function slugifyImagePartLegacy(value) {
+      return String(value || "")
+        .toLowerCase()
+        .replace(/&/g, "and")
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    }
+
     function normalizeSizeForImage(size) {
+      const text = String(size || "").toLowerCase().trim();
+
+      if (!text) return "";
+      if (text.includes("litre") || text.includes("liter")) return "litre";
+      if (text.includes("1l")) return "litre";
+      if (text.includes("750")) return "750_ml";
+      if (text.includes("700")) return "700_ml";
+      if (text.includes("330")) return "330_ml";
+      if (text.includes("12 oz")) return "12_oz";
+      if (text.includes("16 oz")) return "16_oz";
+      if (text.includes("32 oz")) return "32_oz";
+      if (text.includes("case")) return "case";
+
+      return slugifyImagePart(text);
+    }
+
+    function normalizeSizeForImageCompact(size) {
       const text = String(size || "").toLowerCase().trim();
 
       if (!text) return "";
@@ -4444,21 +4492,86 @@
       return slugifyImagePart(text);
     }
 
+    function getImageNameAliases(product) {
+      const rawName = String(product.name || product.product_name || product.brand_name || "");
+      const normalizedName = slugifyImagePart(rawName);
+      const legacyName = slugifyImagePartLegacy(rawName);
+
+      const aliases = [normalizedName, legacyName];
+
+      const exactAliases = {
+        "cazadores_anejo": ["cazadores_a_ejo"],
+        "cazadores_a_ejo": ["cazadores_anejo"],
+        "don_julio_repo": ["don_julio_repo"],
+        "g4_silver": ["g4_silver"]
+      };
+
+      for (const alias of exactAliases[normalizedName] || []) {
+        aliases.push(alias);
+      }
+
+      return uniqueValues(aliases);
+    }
+
+    function buildGitHubImageFilenames(product) {
+      const groupValues = uniqueValues([
+        slugifyImagePart(product.group || product.inventory_group),
+        slugifyImagePartLegacy(product.group || product.inventory_group)
+      ]);
+
+      const categoryValues = uniqueValues([
+        slugifyImagePart(product.category || product.category_name),
+        slugifyImagePartLegacy(product.category || product.category_name)
+      ]);
+
+      const nameValues = getImageNameAliases(product);
+
+      const sizeValues = uniqueValues([
+        normalizeSizeForImage(product.size || product.size_label),
+        normalizeSizeForImageCompact(product.size || product.size_label)
+      ]);
+
+      const filenames = [];
+
+      for (const group of groupValues) {
+        for (const category of categoryValues) {
+          for (const name of nameValues) {
+            for (const size of sizeValues) {
+              filenames.push([group, category, name, size].filter(Boolean).join("_") + ".jpg");
+            }
+
+            filenames.push([group, category, name].filter(Boolean).join("_") + ".jpg");
+          }
+        }
+      }
+
+      return uniqueValues(filenames);
+    }
+
     function buildGitHubImageUrl(product) {
-      const group = slugifyImagePart(product.group || product.inventory_group);
-      const category = slugifyImagePart(product.category || product.category_name);
-      const name = slugifyImagePart(product.name || product.product_name || product.brand_name);
-      const size = normalizeSizeForImage(product.size || product.size_label);
+      return `${GITHUB_IMAGE_BASE_URL}${buildGitHubImageFilenames(product)[0]}`;
+    }
 
-      const filename = [group, category, name, size]
-        .filter(Boolean)
-        .join("_") + ".jpg";
+    function getProductImageCandidates(product) {
+      const urls = [];
 
-      return `${GITHUB_IMAGE_BASE_URL}${filename}`;
+      for (const filename of buildGitHubImageFilenames(product)) {
+        urls.push(`${GITHUB_IMAGE_BASE_URL}${filename}`);
+      }
+
+      if (product.image_url) {
+        urls.push(product.image_url);
+      }
+
+      return uniqueValues(urls);
     }
 
     function getProductImageUrl(product) {
-      return product.image_url || buildGitHubImageUrl(product);
+      return getProductImageCandidates(product)[0];
+    }
+
+    function getProductImageCandidatesAttribute(product) {
+      return escapeHtml(JSON.stringify(getProductImageCandidates(product)));
     }
 
     function showImagePlaceholder(imageElement) {
@@ -4467,6 +4580,27 @@
       if (placeholder) {
         placeholder.style.display = "inline-flex";
       }
+    }
+
+    function handleProductImageError(imageElement) {
+      let candidates = [];
+
+      try {
+        candidates = JSON.parse(imageElement.dataset.imageCandidates || "[]");
+      } catch (error) {
+        candidates = [];
+      }
+
+      const currentIndex = Number.parseInt(imageElement.dataset.imageIndex || "0", 10);
+      const nextIndex = currentIndex + 1;
+
+      if (nextIndex < candidates.length) {
+        imageElement.dataset.imageIndex = String(nextIndex);
+        imageElement.src = candidates[nextIndex];
+        return;
+      }
+
+      showImagePlaceholder(imageElement);
     }
 
     function openImageZoom(src, title) {
@@ -4827,8 +4961,10 @@ function renderTabs() {
           <img
             class="product-img"
             src="${escapeHtml(getProductImageUrl(product))}"
+            data-image-candidates="${getProductImageCandidatesAttribute(product)}"
+            data-image-index="0"
             alt="${escapeHtml(product.name)}"
-            onerror="showImagePlaceholder(this)"
+            onerror="handleProductImageError(this)"
             onclick="openImageZoom(this.src, this.alt)"
           />
           <span class="product-placeholder" style="display:none;">
