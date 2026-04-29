@@ -823,11 +823,49 @@
       color: #b7791f;
     }
 
-    .audit-button {
+    .autosave-reminder,
+    .idle-warning {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+      padding: 11px 14px;
+      border-radius: var(--radius);
+      border: 1px solid #bbf7d0;
+      background: #ecfdf5;
+      color: #047857;
+      font-size: 13px;
+      font-weight: 900;
+      line-height: 1.45;
+      box-shadow: 0 10px 28px rgba(16, 24, 40, 0.05);
+    }
+
+    .autosave-reminder i {
+      color: #059669;
+    }
+
+    .idle-warning {
+      display: none;
+      border-color: #f7d889;
+      background: #fff8e6;
+      color: #7c4a03;
+    }
+
+    .idle-warning.visible {
+      display: flex;
+    }
+
+    .idle-warning i {
+      color: #b7791f;
+    }
+
+    .audit-button,
+    .signout-button {
       display: none;
     }
 
-    .audit-button.visible {
+    .audit-button.visible,
+    .signout-button.visible {
       display: inline-flex;
     }
 
@@ -1039,6 +1077,10 @@
           <i class="fa-solid fa-right-to-bracket"></i>
           Employee Login
         </button>
+        <button id="signOutButton" class="btn danger signout-button" type="button">
+          <i class="fa-solid fa-arrow-right-from-bracket"></i>
+          Sign Out
+        </button>
         <button id="auditHistoryButton" class="btn ghost audit-button" type="button">
           <i class="fa-solid fa-clock-rotate-left"></i>
           Audit History
@@ -1057,6 +1099,16 @@
     <section class="site-disclaimer">
       <i class="fa-solid fa-circle-info"></i>
       Authorized business use only. Inventory edits, pricing changes, audit actions, and user sessions are logged for accountability.
+    </section>
+
+    <section class="autosave-reminder">
+      <i class="fa-solid fa-cloud-arrow-up"></i>
+      Autosave is active. When you enter inventory data, the status changes to “Saving...” and then “Saved” after the update is complete.
+    </section>
+
+    <section id="idleWarning" class="idle-warning">
+      <i class="fa-solid fa-triangle-exclamation"></i>
+      No activity detected. You will be signed out automatically after 10 minutes idle.
     </section>
 
     <section id="superDashboard" class="dashboard">
@@ -1198,6 +1250,8 @@
       "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/";
 
     const SAVE_DELAY_MS = 650;
+    const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+    const IDLE_WARNING_MS = 9 * 60 * 1000;
     const SESSION_STORAGE_KEY = "jengchi_employee2025_session";
 
     const GROUP_ICONS = {
@@ -4050,6 +4104,8 @@
     let activeGroup = "Liquor";
     let activeCategory = "VODKA";
     let saveTimer = null;
+    let idleWarningTimer = null;
+    let idleSignOutTimer = null;
     let products = EMBEDDED_PRODUCTS.filter((item) => item.group !== "Supplies").map(normalizeProduct);
 
     const el = {
@@ -4061,6 +4117,7 @@
       loginButton: document.getElementById("loginButton"),
       loginMessage: document.getElementById("loginMessage"),
       saveStatus: document.getElementById("saveStatus"),
+      idleWarning: document.getElementById("idleWarning"),
       superDashboard: document.getElementById("superDashboard"),
       kpiTotal: document.getElementById("kpiTotal"),
       kpiLiquor: document.getElementById("kpiLiquor"),
@@ -4082,6 +4139,7 @@
       tableSubtitle: document.getElementById("tableSubtitle"),
       inventoryTableBody: document.getElementById("inventoryTableBody"),
       superadminButton: document.getElementById("superadminButton"),
+      signOutButton: document.getElementById("signOutButton"),
       auditHistoryButton: document.getElementById("auditHistoryButton"),
       clearDummyDataButton: document.getElementById("clearDummyDataButton"),
       superadminModal: document.getElementById("superadminModal"),
@@ -4439,7 +4497,7 @@
     }
 
     function queueAutosave(product) {
-      setStatus("Saving...", "saving", "fa-clock");
+      setStatus("Saving inventory change...", "saving", "fa-clock");
       window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(() => saveProduct(product), SAVE_DELAY_MS);
     }
@@ -4466,7 +4524,7 @@
         return;
       }
 
-      setStatus(`Saved by ${employeeSession.employee_name}`, "saved", "fa-circle-check");
+      setStatus(`Saved automatically for ${employeeSession.employee_name}`, "saved", "fa-circle-check");
     }
 
     async function loadProductsFromSupabase() {
@@ -4656,6 +4714,44 @@
       };
     }
 
+    function stopIdleTimer() {
+      window.clearTimeout(idleWarningTimer);
+      window.clearTimeout(idleSignOutTimer);
+      idleWarningTimer = null;
+      idleSignOutTimer = null;
+      el.idleWarning?.classList.remove("visible");
+    }
+
+    function showIdleWarning() {
+      if (!employeeSession) return;
+      el.idleWarning?.classList.add("visible");
+      setStatus("Idle warning: auto sign out in 1 minute", "error", "fa-clock");
+    }
+
+    function autoSignOutForIdle() {
+      if (!employeeSession) return;
+      logoutEmployee("idle");
+    }
+
+    function resetIdleTimer() {
+      if (!employeeSession) return;
+
+      window.clearTimeout(idleWarningTimer);
+      window.clearTimeout(idleSignOutTimer);
+      el.idleWarning?.classList.remove("visible");
+
+      idleWarningTimer = window.setTimeout(showIdleWarning, IDLE_WARNING_MS);
+      idleSignOutTimer = window.setTimeout(autoSignOutForIdle, IDLE_TIMEOUT_MS);
+    }
+
+    function registerIdleTracking() {
+      const activityEvents = ["click", "keydown", "input", "mousemove", "touchstart", "scroll"];
+
+      activityEvents.forEach((eventName) => {
+        document.addEventListener(eventName, resetIdleTimer, { passive: true });
+      });
+    }
+
     function setLoginMessage(text, type = "") {
       el.loginMessage.textContent = text;
       el.loginMessage.className = `login-message ${type}`.trim();
@@ -4723,17 +4819,26 @@
       closeModal(el.superadminModal);
       showBarApp();
       setStatus(`Signed in: ${employeeSession.employee_name}`, "saved", "fa-circle-check");
+      resetIdleTimer();
       await loadProductsFromSupabase();
       render();
       return true;
     }
 
-    function logoutEmployee() {
+    function logoutEmployee(reason = "manual") {
       const name = employeeSession?.employee_name || "employee";
       employeeSession = null;
       isSuperadmin = false;
       sessionStorage.removeItem(SESSION_STORAGE_KEY);
-      setStatus(`Signed out: ${name}`, "saved", "fa-circle-check");
+      stopIdleTimer();
+
+      if (reason === "idle") {
+        setLoginMessage("You were signed out automatically after 10 minutes of inactivity.", "error");
+        setStatus("Signed out after 10 minutes idle", "error", "fa-clock");
+      } else {
+        setStatus(`Signed out: ${name}`, "saved", "fa-circle-check");
+      }
+
       render();
       showLoginGate();
     }
@@ -4792,6 +4897,7 @@
         ? `<i class="fa-solid fa-user-check"></i>${escapeHtml(employeeSession.employee_name)}`
         : `<i class="fa-solid fa-right-to-bracket"></i>Employee Login`;
 
+      el.signOutButton.classList.toggle("visible", Boolean(employeeSession));
       el.auditHistoryButton.classList.toggle("visible", isSuperadmin);
       el.clearDummyDataButton.classList.toggle("visible", isSuperadmin);
     }
@@ -4860,14 +4966,15 @@
     });
 
     el.superadminButton.addEventListener("click", () => {
-      if (employeeSession) {
-        const shouldLogout = window.confirm(`Sign out ${employeeSession.employee_name}?`);
-        if (!shouldLogout) return;
-        logoutEmployee();
-        return;
-      }
-
+      if (employeeSession) return;
       openModal(el.superadminModal);
+    });
+
+    el.signOutButton.addEventListener("click", () => {
+      if (!employeeSession) return;
+      const shouldLogout = window.confirm(`Sign out ${employeeSession.employee_name}?`);
+      if (!shouldLogout) return;
+      logoutEmployee();
     });
     el.closeSuperadminModal.addEventListener("click", () => closeModal(el.superadminModal));
     el.auditHistoryButton.addEventListener("click", openAuditHistory);
@@ -4907,8 +5014,11 @@
 
     render();
 
+    registerIdleTracking();
+
     if (employeeSession?.session_token) {
       showBarApp();
+      resetIdleTimer();
       loadProductsFromSupabase();
     } else {
       sessionStorage.removeItem(SESSION_STORAGE_KEY);
