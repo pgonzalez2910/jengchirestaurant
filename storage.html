@@ -209,6 +209,13 @@
       opacity: .5;
       cursor: not-allowed;
     }
+
+    .live-note {
+      display: inline-block;
+      margin-left: 10px;
+      color: var(--green);
+      font-size: 12px;
+    }
     @media (max-width: 760px) {
       .toolbar { grid-template-columns: 1fr; }
       h1 { font-size: 24px; }
@@ -221,12 +228,12 @@
     <section class="hero">
       <div class="hero-content">
         <h1>Jeng Chi Storage Inventory 2026</h1>
-        <p class="subtitle">Two Supabase tabs with original 2026 quantities restored, organized by category.</p>
+        <p class="subtitle">Two Supabase tabs with original 2026 quantities, organized by category, autosaved, and live-updated.</p>
       </div>
     </section>
 
     <p class="disclaimer">
-      Disclaimer: Quantity and container fields autosave directly to Supabase. Delete removes one selected row after confirmation. Use the restore SQL first if your tables are missing or your quantities disappeared.
+      Disclaimer: changes autosave directly to Supabase. Other open browsers receive updates through Supabase Realtime, plus the page refreshes data every 5 minutes. Delete removes one selected row after confirmation.
     </p>
 
     <nav class="tabs" aria-label="Inventory tabs">
@@ -235,7 +242,7 @@
     </nav>
 
     <section id="bakery" class="panel active">
-      <p class="status"><span id="bakeryStatus">Loading Bakery Packaging 2026 data...</span><span class="save-note" id="bakerySaveNote"></span></p>
+      <p class="status"><span id="bakeryStatus">Loading Bakery Packaging 2026 data...</span><span class="save-note" id="bakerySaveNote"></span><span class="live-note" id="bakeryLiveNote"></span></p>
       <div class="toolbar">
         <input id="bakerySearch" type="search" placeholder="Search bakery inventory">
         <select id="bakerySection"></select>
@@ -262,7 +269,7 @@
     </section>
 
     <section id="mooncake" class="panel">
-      <p class="status"><span id="mooncakeStatus">Loading Mooncake Inventory 2026 data...</span><span class="save-note" id="mooncakeSaveNote"></span></p>
+      <p class="status"><span id="mooncakeStatus">Loading Mooncake Inventory 2026 data...</span><span class="save-note" id="mooncakeSaveNote"></span><span class="live-note" id="mooncakeLiveNote"></span></p>
       <div class="toolbar">
         <input id="mooncakeSearch" type="search" placeholder="Search mooncake inventory">
         <select id="mooncakeSection"></select>
@@ -343,6 +350,8 @@
     };
 
     const saveTimers = new Map();
+    const AUTO_REFRESH_MS = 5 * 60 * 1000;
+    let realtimeChannel = null;
 
     document.querySelectorAll('.tab').forEach((button) => {
       button.addEventListener('click', () => {
@@ -353,7 +362,7 @@
       });
     });
 
-    async function loadTable(key, tableName) {
+    async function loadTable(key, tableName, options = {}) {
       const status = document.getElementById(`${key}Status`);
       const { data, error } = await supabaseClient
         .from(tableName)
@@ -361,14 +370,24 @@
 
       if (error || !data || data.length === 0) {
         state[key] = sortRows(key, fallbackData[key]);
-        status.textContent = `${labels[key]}: showing restored embedded 2026 backup data. Run the restore SQL to save it back to Supabase.`;
+        if (!options.silent) {
+          status.textContent = `${labels[key]}: showing restored embedded 2026 backup data. Run the restore SQL to save it back to Supabase.`;
+        }
       } else {
         state[key] = sortRows(key, data);
-        status.textContent = `${labels[key]}: ${data.length} live Supabase rows loaded with restored quantities.`;
+        status.textContent = `${labels[key]}: ${data.length} live Supabase rows loaded.`;
       }
 
       setupFilters(key);
       renderTable(key);
+      setLiveNote(key, options.reason || 'Updated');
+    }
+
+    async function refreshAllTables(reason = 'Auto-refresh') {
+      await Promise.all([
+        loadTable('bakery', tableNames.bakery, { silent: true, reason }),
+        loadTable('mooncake', tableNames.mooncake, { silent: true, reason })
+      ]);
     }
 
     function setupFilters(key) {
@@ -568,6 +587,60 @@
       document.getElementById(`${key}Status`).textContent = `${labels[key]}: ${state[key].length} rows loaded.`;
     }
 
+    function startRealtimeUpdates() {
+      if (realtimeChannel) return;
+
+      realtimeChannel = supabaseClient
+        .channel('inventory-2026-live-updates')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: tableNames.bakery },
+          (payload) => handleRealtimeChange('bakery', payload)
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: tableNames.mooncake },
+          (payload) => handleRealtimeChange('mooncake', payload)
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            setLiveNote('bakery', 'Live updates on');
+            setLiveNote('mooncake', 'Live updates on');
+          }
+        });
+    }
+
+    function handleRealtimeChange(key, payload) {
+      const changedRow = payload.new || payload.old;
+      const changedId = Number(changedRow?.id);
+
+      if (!changedId) {
+        refreshAllTables('Live update received');
+        return;
+      }
+
+      if (payload.eventType === 'DELETE') {
+        state[key] = state[key].filter((row) => Number(row.id) !== changedId);
+      } else if (payload.eventType === 'INSERT') {
+        const exists = state[key].some((row) => Number(row.id) === changedId);
+        if (!exists) state[key].push(payload.new);
+      } else if (payload.eventType === 'UPDATE') {
+        state[key] = state[key].map((row) => Number(row.id) === changedId ? payload.new : row);
+      }
+
+      state[key] = sortRows(key, state[key]);
+      setupFilters(key);
+      renderTable(key);
+      document.getElementById(`${key}Status`).textContent = `${labels[key]}: ${state[key].length} live Supabase rows loaded.`;
+      setLiveNote(key, `Updated ${new Date().toLocaleTimeString()}`);
+    }
+
+    function setLiveNote(key, message) {
+      const note = document.getElementById(`${key}LiveNote`);
+      if (!note) return;
+      note.textContent = message ? `• ${message}` : '';
+    }
+
     function setSaveNote(key, message, status) {
       const note = document.getElementById(`${key}SaveNote`);
       note.textContent = message;
@@ -594,8 +667,9 @@
       });
     });
 
-    loadTable('bakery', tableNames.bakery);
-    loadTable('mooncake', tableNames.mooncake);
+    refreshAllTables('Initial load');
+    startRealtimeUpdates();
+    setInterval(() => refreshAllTables('Auto-refresh every 5 minutes'), AUTO_REFRESH_MS);
   </script>
 </body>
 </html>
