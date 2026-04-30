@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.04.27.v16-fix-tentative-wipe';
+        var VERSION = '2026.04.27.v23-placeorder-alias-prices';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -28554,7 +28554,7 @@ async function loadEnhancedCreateOrder() {
 
             .from('inventory_management')
 
-            .select('product_name, image_url, par, position, category')
+            .select('id, product_name, image_url, par, position, category, item_code')
 
             .order('product_name');
 
@@ -28564,25 +28564,11 @@ async function loadEnhancedCreateOrder() {
 
         
 
-        // ✅ STEP 4: Create lookup map
+        // ✅ STEP 4: Create lookup indexes with normalized names + item codes
 
-        const imageMap = new Map();
+        const mgmtIndex = _poIndexInventoryManagement(mgmtData || []);
 
-        (mgmtData || []).forEach(item => {
-
-            imageMap.set(item.product_name, {
-
-                image_url: item.image_url,
-
-                par: item.par,
-
-                position: item.position,
-
-                category: item.category,
-
-            });
-
-        });
+        const findMgmt = (row) => _poFindInventoryManagement(row, mgmtIndex);
 
         
 
@@ -28604,13 +28590,14 @@ async function loadEnhancedCreateOrder() {
 
         let ronyData = (ronyCheck || []).map(row => {
 
-            const mgmt = imageMap.get(row.product_name);
+            const mgmt = findMgmt(row);
 
             return {
 
                 ...row,
 
                 user: 'rony',
+                inventory_item_id: mgmt?.id || row.inventory_item_id || row.inventory_id || null,
 
                 // on_hand = quantity Rony counted in current_stock for this date
 
@@ -28658,7 +28645,7 @@ async function loadEnhancedCreateOrder() {
 
             .map(row => {
 
-                const mgmt = imageMap.get(row.product_name);
+                const mgmt = findMgmt(row);
 
                 const savedTentative = row.tentative ?? null;
 
@@ -28675,6 +28662,7 @@ async function loadEnhancedCreateOrder() {
                     ...row,
 
                     user: 'julio',
+                    inventory_item_id: mgmt?.id || row.inventory_item_id || row.inventory_id || null,
 
                     on_hand:   submittedQty,
 
@@ -28721,12 +28709,13 @@ async function loadEnhancedCreateOrder() {
 
             .map(row => {
 
-                const mgmt = imageMap.get(row.product_name);
+                const mgmt = findMgmt(row);
 
                 return {
 
                     ...row,
 
+                    inventory_item_id: mgmt?.id || row.inventory_item_id || row.inventory_id || null,
                     image_url: mgmt?.image_url || null,
 
                     par: mgmt?.par || 0,
@@ -28768,6 +28757,12 @@ async function loadEnhancedCreateOrder() {
         }
 
         
+
+        await _poPreloadSubmittedOrders(dateISO, {
+            rony: ronyData,
+            julio: julioData,
+            office: officeData
+        });
 
         console.log('✅ Place Order Data Loaded:');
 
@@ -29907,6 +29902,11 @@ function renderEnhancedCard(row, userType) {
     </div>
   </div>
 
+  <!-- LAST ORDERED -->
+  <div id="last-ordered-${productId}" style="padding:0.45rem 0.75rem;border-bottom:1px solid var(--neutral-200);font-size:0.74rem;color:var(--neutral-500);background:white;">
+    Last Ordered: <span style="font-style:italic;">Loading...</span>
+  </div>
+
   <!-- ORDER FORM -->
   <div style="padding:0.6rem 0.75rem;background:var(--neutral-50);">
     <div style="display:flex;flex-direction:column;gap:0.5rem;">
@@ -30294,105 +30294,622 @@ async function selectVendorAndUpdateItemCode(rowId, productName, vendor) {
 // ════════════════════════════════════════════════════════
 // BATCH VENDOR PRICE LOADER — replaces N*2 queries with 2 queries total
 // ════════════════════════════════════════════════════════
+
+// Place Order matching helpers: keeps invoice/vendor prices and images working when product names differ by case, commas, sizes, or extra spaces.
+function _poNormalizeKey(value) {
+    return String(value || '')
+        .toLowerCase()
+        .replace(/&/g, ' and ')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\b(large|lg)\b/g, 'lg')
+        .replace(/\b(extra large|x large|xl)\b/g, 'xl')
+        .replace(/\b(medium|med|md)\b/g, 'md')
+        .replace(/\b(small|sm)\b/g, 'sm')
+        .trim()
+        .replace(/\s+/g, ' ');
+}
+
+function _poCompactKey(value) {
+    return _poNormalizeKey(value).replace(/\s+/g, '');
+}
+
+function _poCleanCode(value) {
+    const cleaned = String(value || '').toLowerCase().trim();
+    return ['', 'not set', 'n/a', 'na', 'none', 'null', 'auto-fills'].includes(cleaned) ? '' : cleaned;
+}
+
+function _poSafePrice(value) {
+    const price = parseFloat(value);
+    return Number.isFinite(price) && price > 0 ? price : null;
+}
+
+function _poShortDate(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    return `${date.getMonth() + 1}/${date.getDate()}/${String(date.getFullYear()).slice(-2)}`;
+}
+
+function _poTokenSet(value) {
+    const stopWords = new Set([
+        'and', 'the', 'with', 'case', 'cs', 'ct', 'pk', 'pack', 'box', 'bag',
+        'bottle', 'bottles', 'can', 'cans', 'oz', 'lb', 'lbs', 'gal', 'gallon',
+        'sauce', 'food', 'foods', 'select', 'chef', 'brand', 'each', 'unit'
+    ]);
+
+    return new Set(
+        _poNormalizeKey(value)
+            .replace(/\b\d+(\.\d+)?\b/g, ' ')
+            .split(' ')
+            .map(token => token.trim())
+            .filter(token => token.length >= 3 && !stopWords.has(token))
+    );
+}
+
+function _poHasLikelyTokenMatch(itemName, rowName) {
+    return false;
+}
+
+function _poSameProduct(item, row) {
+    const itemName = item?.product_name || '';
+    const rowName = row?.product_name || '';
+    const itemCode = _poCleanCode(item?.item_code);
+    const rowCode = _poCleanCode(row?.item_code || row?.selected_item_code || row?.vendor_item_code);
+
+    if (itemCode && rowCode) return itemCode === rowCode;
+
+    const itemNorm = _poNormalizeKey(itemName);
+    const rowNorm = _poNormalizeKey(rowName);
+    const itemCompact = _poCompactKey(itemName);
+    const rowCompact = _poCompactKey(rowName);
+
+    if (!itemNorm || !rowNorm) return false;
+
+    return itemName === rowName || itemNorm === rowNorm || itemCompact === rowCompact;
+}
+
+function _poBuildProductMatchers(rows) {
+    const exactNames = new Set();
+    const normalizedNames = new Set();
+    const compactNames = new Set();
+    const itemCodes = new Set();
+
+    (rows || []).forEach(row => {
+        const name = row?.product_name || '';
+        if (name) {
+            exactNames.add(name);
+            normalizedNames.add(_poNormalizeKey(name));
+            compactNames.add(_poCompactKey(name));
+        }
+        const code = _poCleanCode(row?.item_code || row?.selected_item_code || row?.vendor_item_code);
+        if (code) itemCodes.add(code);
+    });
+
+    return { exactNames, normalizedNames, compactNames, itemCodes, rows: rows || [] };
+}
+
+function _poMatchesProduct(item, matchers) {
+    return (matchers.rows || []).some(row => _poSameProduct(item, row));
+}
+
+function _poDisplayProductName(item, displayRows) {
+    const found = (displayRows || []).find(row => _poSameProduct(item, row));
+    return found?.product_name || item?.product_name || '';
+}
+
+function _poIndexInventoryManagement(rows) {
+    const byName = new Map();
+    const byNorm = new Map();
+    const byCompact = new Map();
+    const byCode = new Map();
+
+    (rows || []).forEach(item => {
+        const name = item?.product_name || '';
+        if (name && !byName.has(name)) byName.set(name, item);
+        const norm = _poNormalizeKey(name);
+        if (norm && !byNorm.has(norm)) byNorm.set(norm, item);
+        const compact = _poCompactKey(name);
+        if (compact && !byCompact.has(compact)) byCompact.set(compact, item);
+        const code = _poCleanCode(item?.item_code);
+        if (code && !byCode.has(code)) byCode.set(code, item);
+    });
+
+    return { byName, byNorm, byCompact, byCode };
+}
+
+function _poFindInventoryManagement(row, index) {
+    const name = row?.product_name || '';
+    const code = _poCleanCode(row?.item_code || row?.selected_item_code || row?.vendor_item_code);
+
+    return index.byName.get(name) ||
+        index.byNorm.get(_poNormalizeKey(name)) ||
+        index.byCompact.get(_poCompactKey(name)) ||
+        (code ? index.byCode.get(code) : null) ||
+        null;
+}
+
+
+async function _poPreloadSubmittedOrders(dateISO, sections) {
+    const allRows = [
+        ...(sections?.rony || []),
+        ...(sections?.julio || []),
+        ...(sections?.office || [])
+    ].filter(row => row && row.product_name);
+
+    if (!dateISO || allRows.length === 0) return;
+
+    const { data, error } = await supabaseClient
+        .from('submitted_orders')
+        .select('product_name, quantity, vendor, item_code, user_section, order_date')
+        .eq('order_date', dateISO);
+
+    if (error) {
+        console.warn('[PlaceOrder] submitted_orders preload skipped:', error.message);
+        return;
+    }
+
+    (data || []).forEach(order => {
+        const orderUser = (order.user_section || '').toLowerCase().trim();
+        const row = allRows.find(candidate => {
+            const rowUser = (candidate.user || '').toLowerCase().trim();
+            return rowUser === orderUser && _poSameProduct(order, candidate);
+        });
+
+        if (!row) return;
+
+        const quantity = parseFloat(order.quantity);
+        if (Number.isFinite(quantity)) row.tentative = quantity;
+        if (order.vendor) row.vendor = order.vendor;
+        if (order.item_code) row.item_code = order.item_code;
+    });
+}
+
+
 async function _batchLoadAllVendorPrices(rows) {
     if (!rows || rows.length === 0) return;
 
-    const productNames = [...new Set(rows.map(r => r.product_name).filter(Boolean))];
+    const displayRows = rows.filter(row => row && row.product_name);
+    if (displayRows.length === 0) return;
 
-    // Show "Loading…" on all cards immediately
+    const selectedOrderDate = document.getElementById('createOrderDate')?.value || todayYMD();
+    const selectedOrderYear = parseInt(String(selectedOrderDate).slice(0, 4), 10) || 2026;
+    const minimumInvoiceDate = `${selectedOrderYear}-01-01`;
+
+    const chunkArray = (arr, size = 80) => {
+        const chunks = [];
+        for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+        return chunks;
+    };
+
+    const productIdFor = name => name.replace(/[^a-zA-Z0-9]/g, '_');
+    const productNames = [...new Set(displayRows.map(row => row.product_name).filter(Boolean))];
+
     productNames.forEach(name => {
-        const productId = name.replace(/[^a-zA-Z0-9]/g, '_');
-        const el = document.getElementById(`vendor-prices-${productId}`);
-        if (el) el.innerHTML = `<div style="color:var(--neutral-400);font-size:0.78rem;padding:4px 0;">Loading vendor prices…</div>`;
+        const productId = productIdFor(name);
+        const pricesEl = document.getElementById(`vendor-prices-${productId}`);
+        const lastEl = document.getElementById(`last-ordered-${productId}`);
+
+        if (pricesEl) {
+            pricesEl.innerHTML = `<div style="color:var(--neutral-400);font-size:0.78rem;padding:4px 0;">Loading ${selectedOrderYear} invoice prices…</div>`;
+        }
+        if (lastEl) {
+            lastEl.innerHTML = `Last Ordered: <span style="font-style:italic;">Loading...</span>`;
+        }
     });
 
     try {
-        // ── QUERY 1: invoice_items for all products at once ──
-        const { data: invoiceItems, error: itemsErr } = await supabaseClient
-            .from('invoice_items')
-            .select('product_name, item_code, unit_price, price_per_unit, has_weight, invoice_id')
-            .in('product_name', productNames);
+        const inventoryByExactName = new Map();
+        const inventoryByNormName = new Map();
+        const inventoryByCompactName = new Map();
 
-        if (itemsErr) throw itemsErr;
+        for (const nameChunk of chunkArray(productNames)) {
+            const { data, error } = await supabaseClient
+                .from('inventory_management')
+                .select('id, product_name, item_code')
+                .in('product_name', nameChunk);
 
-        // ── QUERY 2: fetch all needed invoices ──
-        const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id).filter(Boolean))];
-        const invoiceDatesMap = new Map();
-
-        if (invoiceIds.length > 0) {
-            const { data: invoices } = await supabaseClient
-                .from('invoices')
-                .select('id, invoice_date, vendor')
-                .in('id', invoiceIds);
-            (invoices || []).forEach(inv => invoiceDatesMap.set(inv.id, { date: inv.invoice_date, vendor: inv.vendor }));
-        }
-
-        // ── Build per-product vendor maps ──
-        const byProduct = {}; // productName → Map<vendor, {item_code, price, date}>
-        (invoiceItems || []).forEach(item => {
-            const invInfo = invoiceDatesMap.get(item.invoice_id);
-            if (!invInfo || !invInfo.date) return;
-            const year = new Date(invInfo.date).getFullYear();
-            if (year !== 2026) return;
-            const price = item.has_weight
-                ? parseFloat(item.price_per_unit || 0)
-                : parseFloat(item.unit_price || 0);
-            const name = item.product_name;
-            if (!byProduct[name]) byProduct[name] = new Map();
-            const existing = byProduct[name].get(invInfo.vendor);
-            if (!existing || new Date(invInfo.date) > new Date(existing.date)) {
-                byProduct[name].set(invInfo.vendor, { item_code: item.item_code || 'N/A', price, date: invInfo.date });
+            if (error) {
+                console.warn('[BatchVendorPrices] inventory lookup skipped:', error);
+                continue;
             }
-        });
 
-        // ── For products with no 2026 invoice data, try price_history ──
-        const needFallback = productNames.filter(n => !byProduct[n] || byProduct[n].size === 0);
-        if (needFallback.length > 0) {
-            const { data: hist } = await supabaseClient
-                .from('price_history')
-                .select('product_name, vendor, item_code, unit_price, purchase_date')
-                .in('product_name', needFallback)
-                .order('purchase_date', { ascending: false });
-            (hist || []).forEach(entry => {
-                const name = entry.product_name;
-                if (!byProduct[name]) byProduct[name] = new Map();
-                const existing = byProduct[name].get(entry.vendor);
-                if (!existing || new Date(entry.purchase_date) > new Date(existing.date)) {
-                    byProduct[name].set(entry.vendor, {
-                        item_code: entry.item_code || 'N/A',
-                        price: parseFloat(entry.unit_price || 0),
-                        date: entry.purchase_date,
-                        source: 'price_history'
-                    });
-                }
+            (data || []).forEach(item => {
+                inventoryByExactName.set(item.product_name, item);
+                inventoryByNormName.set(_poNormalizeKey(item.product_name), item);
+                inventoryByCompactName.set(_poCompactKey(item.product_name), item);
             });
         }
 
-        // ── Render each card ──
-        productNames.forEach(name => {
-            const productId = name.replace(/[^a-zA-Z0-9]/g, '_');
-            const container = document.getElementById(`vendor-prices-${productId}`);
-            if (!container) return;
-            const vendorMap = byProduct[name];
-            if (!vendorMap || vendorMap.size === 0) {
-                container.innerHTML = `<div style="color:var(--neutral-400);font-size:0.78rem;font-style:italic;padding:4px 0;">No price history found</div>`;
-                return;
-            }
-            const rows = Array.from(vendorMap.entries()).map(([vendor, info]) => `
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid var(--neutral-100);gap:8px;font-size:0.78rem;">
-                    <span style="font-weight:600;color:var(--primary-700);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${vendor}</span>
-                    <span style="font-family:var(--font-mono);color:var(--success-600);font-weight:700;white-space:nowrap;">$${info.price.toFixed(2)}</span>
-                    <span style="color:var(--neutral-400);font-size:0.7rem;white-space:nowrap;">${info.item_code}</span>
-                </div>`).join('');
-            container.innerHTML = rows;
+        const resolveInventoryId = row => {
+            if (row.inventory_item_id) return row.inventory_item_id;
+            if (row.inventory_id) return row.inventory_id;
+            if (row.management_id) return row.management_id;
+
+            const exact = inventoryByExactName.get(row.product_name);
+            if (exact?.id) return exact.id;
+
+            const normalized = inventoryByNormName.get(_poNormalizeKey(row.product_name));
+            if (normalized?.id) return normalized.id;
+
+            const compact = inventoryByCompactName.get(_poCompactKey(row.product_name));
+            if (compact?.id) return compact.id;
+
+            return null;
+        };
+
+        displayRows.forEach(row => {
+            row._resolved_inventory_item_id = resolveInventoryId(row);
         });
 
-    } catch(e) {
+        const inventoryIds = [
+            ...new Set(displayRows.map(row => row._resolved_inventory_item_id).filter(Boolean))
+        ];
+
+        const aliasesByInventoryId = new Map();
+        const aliasNames = new Set();
+        const aliasCodes = new Set();
+
+        for (const idChunk of chunkArray(inventoryIds)) {
+            const { data, error } = await supabaseClient
+                .from('product_invoice_aliases')
+                .select('inventory_item_id, invoice_product_name, invoice_item_code, invoice_vendor, is_active')
+                .in('inventory_item_id', idChunk)
+                .eq('is_active', true);
+
+            if (error) {
+                console.warn('[BatchVendorPrices] product_invoice_aliases skipped:', error);
+                continue;
+            }
+
+            (data || []).forEach(alias => {
+                if (!aliasesByInventoryId.has(alias.inventory_item_id)) {
+                    aliasesByInventoryId.set(alias.inventory_item_id, []);
+                }
+
+                aliasesByInventoryId.get(alias.inventory_item_id).push(alias);
+
+                if (alias.invoice_product_name) aliasNames.add(alias.invoice_product_name);
+                const aliasCode = _poCleanCode(alias.invoice_item_code);
+                if (aliasCode) aliasCodes.add(aliasCode);
+            });
+        }
+
+        const rowCodesWithoutAliases = displayRows
+            .filter(row => {
+                const aliases = aliasesByInventoryId.get(row._resolved_inventory_item_id) || [];
+                return aliases.length === 0;
+            })
+            .map(row => _poCleanCode(row.item_code || row.selected_item_code || row.vendor_item_code))
+            .filter(Boolean);
+
+        const rowNamesWithoutAliases = displayRows
+            .filter(row => {
+                const aliases = aliasesByInventoryId.get(row._resolved_inventory_item_id) || [];
+                return aliases.length === 0;
+            })
+            .map(row => row.product_name)
+            .filter(Boolean);
+
+        const searchNames = [...new Set([...aliasNames, ...rowNamesWithoutAliases])];
+        const searchCodes = [...new Set([...aliasCodes, ...rowCodesWithoutAliases])];
+
+        const invoiceItemsByKey = new Map();
+        const mergeByInvoiceItemKey = items => {
+            (items || []).forEach(item => {
+                const key = [
+                    item.invoice_id || '',
+                    _poCleanCode(item.item_code),
+                    _poNormalizeKey(item.product_name),
+                    item.vendor || ''
+                ].join('|');
+
+                if (!invoiceItemsByKey.has(key)) invoiceItemsByKey.set(key, item);
+            });
+        };
+
+        for (const codeChunk of chunkArray(searchCodes)) {
+            const { data, error } = await supabaseClient
+                .from('invoice_items')
+                .select('product_name, item_code, unit_price, price_per_unit, has_weight, invoice_id, vendor')
+                .in('item_code', codeChunk);
+
+            if (error) throw error;
+            mergeByInvoiceItemKey(data);
+        }
+
+        for (const nameChunk of chunkArray(searchNames)) {
+            const { data, error } = await supabaseClient
+                .from('invoice_items')
+                .select('product_name, item_code, unit_price, price_per_unit, has_weight, invoice_id, vendor')
+                .in('product_name', nameChunk);
+
+            if (error) throw error;
+            mergeByInvoiceItemKey(data);
+        }
+
+        const invoiceItems = Array.from(invoiceItemsByKey.values());
+        const invoiceIds = [...new Set(invoiceItems.map(item => item.invoice_id).filter(Boolean))];
+        const invoiceInfoById = new Map();
+
+        for (const invoiceIdChunk of chunkArray(invoiceIds)) {
+            const { data, error } = await supabaseClient
+                .from('invoices')
+                .select('id, invoice_date, vendor')
+                .in('id', invoiceIdChunk)
+                .gte('invoice_date', minimumInvoiceDate);
+
+            if (error) throw error;
+
+            (data || []).forEach(inv => {
+                invoiceInfoById.set(inv.id, {
+                    date: inv.invoice_date,
+                    vendor: inv.vendor
+                });
+            });
+        }
+
+        const aliasMatchesItem = (alias, item, invoiceVendor) => {
+            const aliasCode = _poCleanCode(alias.invoice_item_code);
+            const itemCode = _poCleanCode(item.item_code);
+            const aliasName = _poNormalizeKey(alias.invoice_product_name);
+            const itemName = _poNormalizeKey(item.product_name);
+            const aliasVendor = String(alias.invoice_vendor || '').trim().toLowerCase();
+            const rowVendor = String(item.vendor || invoiceVendor || '').trim().toLowerCase();
+
+            if (aliasVendor && rowVendor && aliasVendor !== rowVendor) return false;
+            if (aliasCode && itemCode === aliasCode) return true;
+            if (aliasName && itemName === aliasName) return true;
+
+            return false;
+        };
+
+        const findDisplayRowForInvoiceItem = item => {
+            const invInfo = invoiceInfoById.get(item.invoice_id) || {};
+
+            const aliasRow = displayRows.find(row => {
+                const aliases = aliasesByInventoryId.get(row._resolved_inventory_item_id) || [];
+                if (aliases.length === 0) return false;
+                return aliases.some(alias => aliasMatchesItem(alias, item, invInfo.vendor));
+            });
+            if (aliasRow) return aliasRow;
+
+            return displayRows.find(row => {
+                const aliases = aliasesByInventoryId.get(row._resolved_inventory_item_id) || [];
+                if (aliases.length > 0) return false;
+
+                const rowCode = _poCleanCode(row.item_code || row.selected_item_code || row.vendor_item_code);
+                const itemCode = _poCleanCode(item.item_code);
+
+                if (rowCode) return itemCode === rowCode;
+                return _poNormalizeKey(row.product_name) === _poNormalizeKey(item.product_name);
+            });
+        };
+
+        const byProduct = {};
+
+        invoiceItems.forEach(item => {
+            const invInfo = invoiceInfoById.get(item.invoice_id) || {};
+            const date = invInfo.date;
+            if (!date) return;
+
+            const displayRow = findDisplayRowForInvoiceItem(item);
+            if (!displayRow) return;
+
+            const price = item.has_weight
+                ? (_poSafePrice(item.price_per_unit) ?? _poSafePrice(item.unit_price))
+                : (_poSafePrice(item.unit_price) ?? _poSafePrice(item.price_per_unit));
+            if (price === null) return;
+
+            const displayName = displayRow.product_name;
+            const vendor = item.vendor || invInfo.vendor || 'Unknown Vendor';
+            if (!displayName || !vendor) return;
+
+            if (!byProduct[displayName]) byProduct[displayName] = new Map();
+
+            const existing = byProduct[displayName].get(vendor);
+            if (!existing || new Date(date) > new Date(existing.date)) {
+                byProduct[displayName].set(vendor, {
+                    item_code: item.item_code || 'N/A',
+                    price,
+                    date,
+                    source: 'invoice'
+                });
+            }
+        });
+
+        const needFallback = displayRows.filter(row => {
+            const aliases = aliasesByInventoryId.get(row._resolved_inventory_item_id) || [];
+            if (aliases.length > 0) return false;
+            return !byProduct[row.product_name] || byProduct[row.product_name].size === 0;
+        });
+
+        if (needFallback.length > 0) {
+            const fallbackNames = [...new Set(needFallback.map(row => row.product_name).filter(Boolean))];
+            const fallbackCodes = [
+                ...new Set(
+                    needFallback
+                        .map(row => _poCleanCode(row.item_code || row.selected_item_code || row.vendor_item_code))
+                        .filter(Boolean)
+                )
+            ];
+
+            const historyRowsByKey = new Map();
+            const mergeHistoryRows = items => {
+                (items || []).forEach(entry => {
+                    const key = [
+                        entry.id || '',
+                        _poCleanCode(entry.item_number),
+                        _poNormalizeKey(entry.product_name),
+                        entry.vendor || '',
+                        entry.invoice_date || entry.effective_date || ''
+                    ].join('|');
+
+                    if (!historyRowsByKey.has(key)) historyRowsByKey.set(key, entry);
+                });
+            };
+
+            for (const codeChunk of chunkArray(fallbackCodes)) {
+                const { data, error } = await supabaseClient
+                    .from('price_history')
+                    .select('id, product_name, vendor, item_number, price, invoice_date, effective_date')
+                    .in('item_number', codeChunk)
+                    .gte('invoice_date', minimumInvoiceDate)
+                    .order('invoice_date', { ascending: false });
+
+                if (error) {
+                    console.warn('[BatchVendorPrices] price_history item_number fallback failed:', error);
+                } else {
+                    mergeHistoryRows(data);
+                }
+            }
+
+            for (const nameChunk of chunkArray(fallbackNames)) {
+                const { data, error } = await supabaseClient
+                    .from('price_history')
+                    .select('id, product_name, vendor, item_number, price, invoice_date, effective_date')
+                    .in('product_name', nameChunk)
+                    .gte('invoice_date', minimumInvoiceDate)
+                    .order('invoice_date', { ascending: false });
+
+                if (error) {
+                    console.warn('[BatchVendorPrices] price_history product_name fallback failed:', error);
+                } else {
+                    mergeHistoryRows(data);
+                }
+            }
+
+            Array.from(historyRowsByKey.values())
+                .filter(entry => {
+                    const historyYear = parseInt(String(entry.invoice_date || entry.effective_date || '').slice(0, 4), 10);
+                    if (historyYear !== selectedOrderYear) return false;
+
+                    return needFallback.some(row => {
+                        const rowCode = _poCleanCode(row.item_code || row.selected_item_code || row.vendor_item_code);
+                        const entryCode = _poCleanCode(entry.item_number);
+
+                        if (rowCode) return entryCode === rowCode;
+                        return _poNormalizeKey(row.product_name) === _poNormalizeKey(entry.product_name);
+                    });
+                })
+                .forEach(entry => {
+                    const price = _poSafePrice(entry.price);
+                    if (price === null) return;
+
+                    const displayRow = needFallback.find(row => {
+                        const rowCode = _poCleanCode(row.item_code || row.selected_item_code || row.vendor_item_code);
+                        const entryCode = _poCleanCode(entry.item_number);
+
+                        if (rowCode) return entryCode === rowCode;
+                        return _poNormalizeKey(row.product_name) === _poNormalizeKey(entry.product_name);
+                    });
+                    if (!displayRow) return;
+
+                    const vendor = entry.vendor || 'Unknown Vendor';
+                    const date = entry.invoice_date || entry.effective_date;
+                    if (!vendor || !date) return;
+
+                    if (!byProduct[displayRow.product_name]) byProduct[displayRow.product_name] = new Map();
+
+                    const existing = byProduct[displayRow.product_name].get(vendor);
+                    if (!existing || new Date(date) > new Date(existing.date)) {
+                        byProduct[displayRow.product_name].set(vendor, {
+                            item_code: entry.item_number || 'N/A',
+                            price,
+                            date,
+                            source: 'price_history'
+                        });
+                    }
+                });
+        }
+
+        productNames.forEach(name => {
+            const productId = productIdFor(name);
+            const priceContainer = document.getElementById(`vendor-prices-${productId}`);
+            const lastOrderedContainer = document.getElementById(`last-ordered-${productId}`);
+            if (!priceContainer) return;
+
+            const vendorMap = byProduct[name];
+
+            if (!vendorMap || vendorMap.size === 0) {
+                priceContainer.innerHTML = `<div style="color:var(--neutral-400);font-size:0.78rem;font-style:italic;padding:4px 0;">No ${selectedOrderYear} invoice price found</div>`;
+                if (lastOrderedContainer) {
+                    lastOrderedContainer.innerHTML = `Last Ordered: <span style="font-style:italic;color:var(--neutral-400);">No ${selectedOrderYear} invoice found</span>`;
+                }
+                return;
+            }
+
+            const vendorRows = Array.from(vendorMap.entries())
+                .map(([vendor, info]) => ({ vendor, ...info }));
+
+            const latestRow = vendorRows
+                .slice()
+                .sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+
+            const recommendedRow = vendorRows
+                .slice()
+                .sort((a, b) => {
+                    const priceDiff = a.price - b.price;
+                    if (Math.abs(priceDiff) > 0.0001) return priceDiff;
+                    return new Date(b.date) - new Date(a.date);
+                })[0];
+
+            const rowsHTML = vendorRows
+                .sort((a, b) => new Date(b.date) - new Date(a.date))
+                .map(info => `
+                    <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid var(--neutral-100);gap:8px;font-size:0.78rem;">
+                        <span style="font-weight:600;color:var(--primary-700);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                            ${info.vendor}
+                            <span style="color:var(--neutral-400);font-size:0.68rem;font-weight:600;margin-left:5px;">${_poShortDate(info.date)}</span>
+                        </span>
+                        <span style="font-family:var(--font-mono);color:var(--success-600);font-weight:700;white-space:nowrap;">$${info.price.toFixed(2)}</span>
+                        <span style="color:var(--neutral-400);font-size:0.7rem;white-space:nowrap;">${info.item_code}</span>
+                    </div>`)
+                .join('');
+
+            priceContainer.innerHTML = rowsHTML;
+
+            if (lastOrderedContainer && latestRow) {
+                lastOrderedContainer.innerHTML = `
+                    <strong style="color:var(--neutral-700);">Last Ordered:</strong>
+                    <span style="color:var(--primary-700);font-weight:700;">${latestRow.vendor}</span>
+                    <span style="color:var(--neutral-400);margin-left:4px;">${_poShortDate(latestRow.date)}</span>
+                    <span style="font-family:var(--font-mono);color:var(--success-600);font-weight:700;margin-left:6px;">$${latestRow.price.toFixed(2)}</span>
+                    <span style="color:var(--neutral-400);font-size:0.7rem;margin-left:5px;">${latestRow.item_code}</span>
+                    <span style="color:var(--neutral-400);font-size:0.62rem;margin-left:5px;">${latestRow.source === 'invoice' ? 'Invoice' : 'History'}</span>
+                `;
+            }
+
+            if (recommendedRow) {
+                const vendorSelect = document.getElementById(`vendor-${productId}`);
+                const itemCodeInput = document.getElementById(`itemcode-input-${productId}`);
+                const qtyInput = document.getElementById(`qty-${productId}`);
+                const hasTodayOrder = Number.isFinite(parseFloat(qtyInput?.value)) && parseFloat(qtyInput?.value) > 0;
+
+                if (vendorSelect && !hasTodayOrder) {
+                    if (![...vendorSelect.options].some(option => option.value === recommendedRow.vendor)) {
+                        vendorSelect.add(new Option(recommendedRow.vendor, recommendedRow.vendor));
+                    }
+                    vendorSelect.value = recommendedRow.vendor;
+                    localStorage.setItem(
+                        `placeOrder_vendor_${selectedOrderDate}_${name}`,
+                        recommendedRow.vendor
+                    );
+                }
+
+                if (itemCodeInput && !hasTodayOrder && _poCleanCode(recommendedRow.item_code)) {
+                    itemCodeInput.value = recommendedRow.item_code;
+                    updateItemCode(itemCodeInput.dataset.rowId, recommendedRow.item_code);
+                }
+            }
+        });
+    } catch (e) {
         console.error('[BatchVendorPrices] error:', e);
         productNames.forEach(name => {
             const productId = name.replace(/[^a-zA-Z0-9]/g, '_');
-            const el = document.getElementById(`vendor-prices-${productId}`);
-            if (el) el.innerHTML = `<div style="color:#dc2626;font-size:0.75rem;">Error loading prices</div>`;
+            const priceEl = document.getElementById(`vendor-prices-${productId}`);
+            const lastEl = document.getElementById(`last-ordered-${productId}`);
+            if (priceEl) priceEl.innerHTML = `<div style="color:#dc2626;font-size:0.75rem;">Error loading prices</div>`;
+            if (lastEl) lastEl.innerHTML = `Last Ordered: <span style="color:#dc2626;">Error loading</span>`;
         });
     }
 }
