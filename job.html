@@ -268,6 +268,7 @@
 
     textarea { resize: vertical; min-height: 118px; }
 
+
     .help {
       margin-top: 6px;
       color: var(--muted);
@@ -434,6 +435,63 @@
     .word-counter.bad { color: var(--danger); font-weight: 700; }
     .word-counter.good { color: var(--success); font-weight: 700; }
 
+
+    .address-autocomplete-wrap {
+      position: relative;
+    }
+
+    .address-suggestions {
+      position: absolute;
+      z-index: 1000;
+      width: 100%;
+      margin-top: 6px;
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 18px 40px rgba(16, 24, 40, 0.16);
+      overflow: hidden;
+    }
+
+    .address-suggestion-item {
+      width: 100%;
+      text-align: left;
+      background: #ffffff;
+      border: 0;
+      border-bottom: 1px solid #edf0f5;
+      color: var(--ink);
+      padding: 12px 14px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 700;
+      box-shadow: none;
+      border-radius: 0;
+    }
+
+    .address-suggestion-item:hover {
+      background: #fffaf2;
+      transform: none;
+    }
+
+    .address-suggestion-item:last-child {
+      border-bottom: 0;
+    }
+
+    .address-suggestion-small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 400;
+    }
+
+    .address-loading {
+      padding: 12px 14px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      background: #f8fafc;
+    }
+
     .hide { display: none !important; }
 
     @media (max-width: 780px) {
@@ -565,11 +623,12 @@
                   <input id="desiredCompensation" name="desiredCompensation" type="text" inputmode="decimal" pattern="^\d+(\.\d{1,2})?$" placeholder="0.00" required />
                   <div class="help" data-i18n="compensationHelp">Numbers only. Example: 18.00</div>
                 </div>
-                <div class="full">
+                <div class="full address-autocomplete-wrap">
                   <label class="required" for="address" data-i18n="address">Dirección</label>
-                  <input id="address" name="address" type="text" autocomplete="street-address" list="addressSuggestions" required />
-                  <datalist id="addressSuggestions"></datalist>
-                  <div class="help" data-i18n="addressHelp">Start typing your address. Browser suggestions may appear when available.</div>
+                  <input id="address" name="address" type="text" autocomplete="street-address" required />
+                  <input type="hidden" id="mapboxAddressId" name="mapboxAddressId" />
+                  <div id="addressSuggestionBox" class="address-suggestions hide"></div>
+                  <div class="help" data-i18n="addressHelp">Start typing your address and select one of the suggested options.</div>
                 </div>
                 <div>
                   <label class="required" for="city" data-i18n="city">Ciudad</label>
@@ -723,7 +782,7 @@
         desiredCompensation: 'Compensación deseada',
         compensationHelp: 'Solo números. Ejemplo: 18.00',
         address: 'Dirección',
-        addressHelp: 'Comience a escribir su dirección. El navegador puede mostrar sugerencias cuando estén disponibles.',
+        addressHelp: 'Comience a escribir su dirección y seleccione una de las sugerencias disponibles.',
         city: 'Ciudad',
         state: 'Estado',
         zip: 'Código ZIP',
@@ -789,7 +848,7 @@
         desiredCompensation: 'Desired wage',
         compensationHelp: 'Numbers only. Example: 18.00',
         address: 'Address',
-        addressHelp: 'Start typing your address. Browser suggestions may appear when available.',
+        addressHelp: 'Start typing your address and select one of the suggested options.',
         city: 'City',
         state: 'State',
         zip: 'ZIP Code',
@@ -1149,22 +1208,176 @@
       });
     }
 
-    function populateAddressSuggestions() {
-      const datalist = document.getElementById('addressSuggestions');
-      if (!datalist) return;
-      const cityValue = document.getElementById('city')?.value || 'Richardson';
-      const examples = [
-        `400 N Greenville Ave, ${cityValue}, TX`,
-        `Main St, ${cityValue}, TX`,
-        `Spring Valley Rd, ${cityValue}, TX`,
-        `Belt Line Rd, ${cityValue}, TX`,
-        `Coit Rd, ${cityValue}, TX`,
-        `Plano Rd, ${cityValue}, TX`,
-        `Arapaho Rd, ${cityValue}, TX`
-      ];
-      datalist.innerHTML = examples.map(item => `<option value="${item}"></option>`).join('');
+    let mapboxSessionToken = crypto.randomUUID();
+    let addressSearchTimer = null;
+    let latestAddressSuggestions = [];
+
+    async function searchAddressSuggestions(query) {
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/mapbox-address-search`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify({
+          action: 'suggest',
+          q: query,
+          language: currentLang,
+          session_token: mapboxSessionToken
+        })
+      });
+
+      const data = await response.json().catch(() => ({ ok: false, error: 'Invalid JSON response from address function.' }));
+
+      if (!response.ok || !data.ok) {
+        console.error('Mapbox address suggest error:', data);
+        return [];
+      }
+
+      mapboxSessionToken = data.session_token || mapboxSessionToken;
+      return data.suggestions || [];
     }
 
+    async function retrieveAddressSuggestion(mapboxId) {
+      const response = await fetch(`${SUPABASE_URL}/functions/v1/mapbox-address-search`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify({
+          action: 'retrieve',
+          mapbox_id: mapboxId,
+          language: currentLang,
+          session_token: mapboxSessionToken
+        })
+      });
+
+      const data = await response.json().catch(() => ({ ok: false, error: 'Invalid JSON response from address function.' }));
+
+      if (!response.ok || !data.ok) {
+        console.error('Mapbox address retrieve error:', data);
+        return null;
+      }
+
+      return data.address || null;
+    }
+
+    function setAddressSuggestionLoading(isLoading) {
+      const box = document.getElementById('addressSuggestionBox');
+      if (!box) return;
+
+      if (isLoading) {
+        box.innerHTML = `<div class="address-loading">${currentLang === 'es' ? 'Buscando direcciones...' : 'Searching addresses...'}</div>`;
+        box.classList.remove('hide');
+      }
+    }
+
+    function renderAddressSuggestions(suggestions) {
+      const box = document.getElementById('addressSuggestionBox');
+      if (!box) return;
+
+      latestAddressSuggestions = suggestions || [];
+
+      if (!latestAddressSuggestions.length) {
+        box.classList.add('hide');
+        box.innerHTML = '';
+        return;
+      }
+
+      box.innerHTML = latestAddressSuggestions.map((item, index) => `
+        <button type="button" class="address-suggestion-item" data-address-index="${index}">
+          ${item.name || item.display || 'Address'}
+          <span class="address-suggestion-small">${item.place_formatted || item.full_address || ''}</span>
+        </button>
+      `).join('');
+
+      box.classList.remove('hide');
+
+      box.querySelectorAll('[data-address-index]').forEach(button => {
+        button.addEventListener('click', async () => {
+          const index = Number(button.getAttribute('data-address-index'));
+          const selected = latestAddressSuggestions[index];
+
+          if (!selected) return;
+
+          setAddressSuggestionLoading(true);
+          const full = await retrieveAddressSuggestion(selected.mapbox_id);
+
+          if (full) {
+            document.getElementById('address').value = full.address_line || selected.display || '';
+            document.getElementById('mapboxAddressId').value = selected.mapbox_id || '';
+
+            if (full.city) {
+              const matchingCity = Object.keys(cityZipMap).find(
+                city => city.toLowerCase() === String(full.city).toLowerCase()
+              );
+
+              if (matchingCity) {
+                document.getElementById('city').value = matchingCity;
+                updateZipOptions();
+              }
+            }
+
+            if (full.zip_code) {
+              const zipSelect = document.getElementById('zip');
+              const zipExists = Array.from(zipSelect.options).some(option => option.value === full.zip_code);
+
+              if (!zipExists) {
+                const option = document.createElement('option');
+                option.value = full.zip_code;
+                option.textContent = full.zip_code;
+                zipSelect.appendChild(option);
+              }
+
+              zipSelect.value = full.zip_code;
+            }
+
+            if (full.state) {
+              document.getElementById('state').value =
+                full.state === 'TX' || full.state === 'Texas' ? 'Texas' : full.state;
+            }
+          } else {
+            document.getElementById('address').value = selected.display || '';
+            document.getElementById('mapboxAddressId').value = selected.mapbox_id || '';
+          }
+
+          box.classList.add('hide');
+          box.innerHTML = '';
+        });
+      });
+    }
+
+    function attachSecureAddressAutocomplete() {
+      const addressInput = document.getElementById('address');
+      const box = document.getElementById('addressSuggestionBox');
+
+      if (!addressInput || !box) return;
+
+      addressInput.addEventListener('input', () => {
+        const query = addressInput.value.trim();
+
+        document.getElementById('mapboxAddressId').value = '';
+        clearTimeout(addressSearchTimer);
+
+        if (query.length < 3) {
+          renderAddressSuggestions([]);
+          return;
+        }
+
+        addressSearchTimer = setTimeout(async () => {
+          setAddressSuggestionLoading(true);
+          const suggestions = await searchAddressSuggestions(query);
+          renderAddressSuggestions(suggestions);
+        }, 350);
+      });
+
+      document.addEventListener('click', event => {
+        if (!event.target.closest('.address-autocomplete-wrap')) {
+          box.classList.add('hide');
+        }
+      });
+    }
 
     function countWords(value) {
       return value.trim().split(/\s+/).filter(Boolean).length;
@@ -1277,61 +1490,38 @@
       status.textContent = message;
       status.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
-    
 
-async function callEmailFunction(applicationId) {
-  const response = await fetch(`${SUPABASE_URL}/functions/v1/send-application-email`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
-    },
-    body: JSON.stringify({
-      application_id: applicationId,
-      to: 'admin@jengchirestaurant.com'
-    })
-  });
+    async function callEmailFunction(applicationId) {
+      const { data, error } = await supabaseClient.functions.invoke('send-application-email', {
+        body: { application_id: applicationId, to: 'admin@jengchirestaurant.com' }
+      });
 
-  const responseText = await response.text();
+      if (error) {
+        throw new Error('The application was saved, but the PDF email function failed: ' + error.message);
+      }
 
-  let data = null;
-  try {
-    data = responseText ? JSON.parse(responseText) : null;
-  } catch {
-    data = { raw: responseText };
-  }
+      if (!data || data.ok !== true) {
+        throw new Error('The application was saved, but the PDF email confirmation was not returned.');
+      }
 
-  console.log('EDGE FUNCTION STATUS:', response.status);
-  console.log('EDGE FUNCTION RESPONSE:', data);
+      if (!data.pdf_url && !data.pdfPath && !data.pdf_path) {
+        throw new Error('The application was saved, but the PDF storage URL was not returned.');
+      }
 
-  if (!response.ok) {
-    throw new Error(
-      'The application was saved, but the PDF email function failed. Status: ' +
-      response.status +
-      ' Response: ' +
-      JSON.stringify(data, null, 2)
-    );
-  }
+      return data;
+    }
 
-  if (!data || data.ok !== true) {
-    throw new Error(
-      'The application was saved, but the PDF function did not return success. Response: ' +
-      JSON.stringify(data, null, 2)
-    );
-  }
 
-  return data;
-}
 
 
     document.addEventListener('DOMContentLoaded', () => {
-      document.getElementById('city').addEventListener('change', () => { updateZipOptions(); populateAddressSuggestions(); });
+      document.getElementById('city').addEventListener('change', updateZipOptions);
       document.getElementById('jobCount').addEventListener('change', event => {
         buildEmploymentBlocks(Number(event.target.value || 0));
       });
       attachPhoneMasks();
       attachCompensationMask();
-      populateAddressSuggestions();
+      attachSecureAddressAutocomplete();
 
       document.getElementById('applicationForm').addEventListener('submit', async event => {
         event.preventDefault();
@@ -1394,6 +1584,7 @@ async function callEmailFunction(applicationId) {
           phone,
           email,
           address_line: document.getElementById('address').value.trim(),
+          mapbox_address_id: document.getElementById('mapboxAddressId')?.value || null,
           city: document.getElementById('city').value,
           state: document.getElementById('state').value,
           zip_code: document.getElementById('zip').value,
