@@ -925,74 +925,62 @@ function normalizeSession(row) {
   };
 }
 
-/** Save a draft session to Supabase — ONE session per date, always */
+/** Save a draft session safely — one session per date, no destructive deletes. */
 async function saveSessionToDB(draft) {
   try {
-    // ── Determine the real session ID ─────────────────────────────
-    // Priority: draft.id > S.editId > existing session for this date
-    // This is the ONLY check — never rely on S.editId alone
-    let sessionId = (draft.id && typeof draft.id === 'string' && draft.id.includes('-'))
-      ? draft.id
-      : S.editId || null;
+    let sessionId = null;
 
-    // Safety net: even if draft.id is missing, check the DB for an
-    // existing session on this date to prevent duplicate INSERTs
-    if (!sessionId) {
-      const { data: existing } = await sb
-        .from('inventory_sessions')
-        .select('id')
-        .eq('session_date', draft.date)
-        .maybeSingle();
-      if (existing?.id) {
-        sessionId = existing.id;
-        // Sync back into draft and state so future saves go UPDATE path
-        draft.id = sessionId;
-        S.editId = sessionId;
-        saveDraftLS();
-      }
+    if (draft.id && typeof draft.id === 'string' && draft.id.includes('-')) {
+      sessionId = draft.id;
+    } else if (S.editId && typeof S.editId === 'string' && S.editId.includes('-')) {
+      sessionId = S.editId;
     }
 
-    if (sessionId) {
-      // ── UPDATE existing session ──────────────────────────────────
-      const { error: e1 } = await sb
-        .from('inventory_sessions')
-        .update({ session_date: draft.date, notes: draft.notes, updated_at: new Date().toISOString() })
-        .eq('id', sessionId);
-      if (e1) throw e1;
-      // Delete old child rows and re-insert fresh
-      await sb.from('inventory_counts').delete().eq('session_id', sessionId);
-      await sb.from('production_logs').delete().eq('session_id', sessionId);
-    } else {
-      // ── INSERT new session (only if truly none exists for this date) ──
-      const { data, error: e2 } = await sb
-        .from('inventory_sessions')
-        .insert({ session_date: draft.date, notes: draft.notes, status: 'completed' })
-        .select().single();
-      if (e2) throw e2;
-      sessionId = data.id;
-      // Immediately store back so next autosave uses UPDATE
-      draft.id = sessionId;
-      S.editId = sessionId;
-      saveDraftLS();
-    }
+    const { data, error } = await sb.rpc('save_noodle_inventory_session', {
+      p_session_id: sessionId,
+      p_session_date: draft.date,
+      p_notes: draft.notes || '',
+      p_inventory: draft.inventory || blankInventory(),
+      p_production: draft.production || blankProduction(),
+    });
 
-    // Insert counts (12 rows: 4 noodles × 3 stations)
-    const counts = [];
-    NOODLES.forEach(n => STATIONS.forEach(st => {
-      counts.push({ session_id: sessionId, noodle_type: n.id, station: st.id, quantity: draft.inventory[n.id][st.id] || 0 });
-    }));
-    const { error: e3 } = await sb.from('inventory_counts').insert(counts);
-    if (e3) throw e3;
+    if (error) throw error;
 
-    // Insert production (4 rows: one per noodle)
-    const prods = NOODLES.map(n => ({ session_id: sessionId, noodle_type: n.id, quantity_produced: draft.production[n.id] || 0 }));
-    const { error: e4 } = await sb.from('production_logs').insert(prods);
-    if (e4) throw e4;
+    draft.id = data;
+    S.editId = data;
+    saveDraftLS();
 
-    return sessionId;
+    await verifySavedSessionRows(data);
+
+    return data;
   } catch (e) {
     console.error('Save error:', e);
     throw e;
+  }
+}
+
+async function verifySavedSessionRows(sessionId) {
+  const [countsRes, prodsRes] = await Promise.all([
+    sb
+      .from('inventory_counts')
+      .select('id', { count: 'exact', head: true })
+      .eq('session_id', sessionId),
+
+    sb
+      .from('production_logs')
+      .select('id', { count: 'exact', head: true })
+      .eq('session_id', sessionId),
+  ]);
+
+  if (countsRes.error) throw countsRes.error;
+  if (prodsRes.error) throw prodsRes.error;
+
+  if (countsRes.count !== 12) {
+    throw new Error(`Save verification failed: expected 12 count rows, found ${countsRes.count || 0}`);
+  }
+
+  if (prodsRes.count !== 4) {
+    throw new Error(`Save verification failed: expected 4 production rows, found ${prodsRes.count || 0}`);
   }
 }
 
@@ -1021,22 +1009,87 @@ function stTotal(inventory, nId) {
 function getPrev() {
   return [...S.sessions].sort((a, b) => b.timestamp - a.timestamp)[0] || null;
 }
-function calcSold(sess) {
-  if (sess._calcCache) return sess._calcCache;
-  const sortedAfter = S.sessions
-    .filter(s => s.date > sess.date || (s.date === sess.date && s.id !== sess.id && s.timestamp > sess.timestamp))
-    .sort((a, b) => a.date > b.date ? 1 : a.date < b.date ? -1 : a.timestamp - b.timestamp);
-  const next = sortedAfter[0] || null;
-  const res = {};
-  NOODLES.forEach(n => {
-    const openingQty = stTotal(sess.inventory, n.id);
-    const prodQty    = Number(sess.production[n.id]) || 0;
-    const newStock   = openingQty + prodQty;
-    const nextQty    = next ? stTotal(next.inventory, n.id) : null;
-    const sold       = nextQty !== null ? Math.max(0, newStock - nextQty) : 0;
-    res[n.id] = { prev: openingQty, produced: prodQty, current: newStock, sold, pending: nextQty === null };
+function getAllSortedSessions() {
+  const byDate = {};
+
+  [...S.sessions]
+    .filter(session => session && session.date)
+    .sort((a, b) => {
+      if (a.date !== b.date) return a.date > b.date ? 1 : -1;
+      return (a.timestamp || 0) - (b.timestamp || 0);
+    })
+    .forEach(session => {
+      byDate[session.date] = session;
+    });
+
+  return Object.values(byDate).sort((a, b) => {
+    if (a.date !== b.date) return a.date > b.date ? 1 : -1;
+    return (a.timestamp || 0) - (b.timestamp || 0);
   });
-  sess._calcCache = res;
+}
+
+function getPreviousSessionForDate(date, currentId = null) {
+  const sessions = getAllSortedSessions();
+  const currentIndex = sessions.findIndex(session => {
+    if (currentId) return session.id === currentId;
+    return session.date === date;
+  });
+
+  return currentIndex > 0 ? sessions[currentIndex - 1] : null;
+}
+
+function getNextSessionForDate(date, currentId = null) {
+  const sessions = getAllSortedSessions();
+  const currentIndex = sessions.findIndex(session => {
+    if (currentId) return session.id === currentId;
+    return session.date === date;
+  });
+
+  return currentIndex >= 0 && currentIndex < sessions.length - 1
+    ? sessions[currentIndex + 1]
+    : null;
+}
+
+function clearCalcCaches() {
+  S.sessions.forEach(session => {
+    Object.keys(session).forEach(key => {
+      if (key.startsWith('_calcCache')) delete session[key];
+    });
+  });
+}
+
+function calcSold(sess) {
+  if (!sess) return {};
+
+  const cacheKey = `_calcCache_next_${S.sessions.length}_${sess.id || sess.date}`;
+  if (sess[cacheKey]) return sess[cacheKey];
+
+  const nextSession = getNextSessionForDate(sess.date, sess.id);
+  const res = {};
+
+  NOODLES.forEach(n => {
+    const startStock = stTotal(sess.inventory, n.id);
+    const produced = Number(sess.production?.[n.id]) || 0;
+    const available = startStock + produced;
+    const nextStock = nextSession ? stTotal(nextSession.inventory, n.id) : null;
+    const rawSold = nextSession ? available - nextStock : 0;
+    const sold = nextSession ? Math.max(0, rawSold) : 0;
+
+    res[n.id] = {
+      prev: startStock,
+      produced,
+      current: available,
+      next: nextStock,
+      sold,
+      pending: !nextSession,
+      netAdded: nextSession && rawSold < 0 ? Math.abs(rawSold) : 0,
+      formula: nextSession
+        ? `${startStock} + ${produced} - ${nextStock} = ${rawSold}`
+        : `${startStock} + ${produced} - pending = pending`,
+    };
+  });
+
+  sess[cacheKey] = res;
   return res;
 }
 
@@ -1126,8 +1179,7 @@ function getSoldSessions() {
 function renderSoldSection() {
   const sessions = getSoldSessions();
 
-  // Build rows: for each session, calculate sold using calcSold logic
-  // We need the full sorted list for calcSold to work (it looks for the next session)
+  // Build rows using sell-through between this count and the next count
   const rows = sessions.map(sess => {
     const c = calcSold(sess);
     const isPending = NOODLES.some(n => c[n.id]?.pending);
@@ -1201,8 +1253,8 @@ function renderSoldSection() {
             📉 Sold History
           </h2>
           <p style="font-size:.75rem;color:var(--text-3);margin:0">
-            Sold = previous stock + produced − next session's opening stock &nbsp;·&nbsp;
-            <span style="color:var(--amber)">⏳ pending</span> = no next session yet
+            Sold = inventory on that date + production − next count's inventory &nbsp;·&nbsp;
+            <span style="color:var(--amber)">⏳ pending</span> = waiting for the next count
           </p>
         </div>
         <div style="display:flex;gap:5px;flex-wrap:wrap">${filterBtns}</div>
@@ -1466,7 +1518,7 @@ function triggerAutosave(flashRowKey) {
         saveDraftLS();
       }
       await loadSessionsFromDB();
-      S.sessions.forEach(s => { delete s._calcCache; });
+      clearCalcCaches();
 
       // Show green (new) or blue (updated) on the bar
       setAutosaveStatus(isUpdate ? 'updated' : 'saved');
@@ -1503,7 +1555,7 @@ async function saveCountNow() {
       saveDraftLS();
     }
     await loadSessionsFromDB();
-    S.sessions.forEach(s => { delete s._calcCache; });
+    clearCalcCaches();
     setAutosaveStatus('saved');
     if (btn) { btn.disabled = false; btn.textContent = '💾 Save Count'; }
     showThankYouModal('count');
@@ -1653,7 +1705,7 @@ function loadDraftForDate(date) {
     // Load the saved session — staff are editing existing data
     S.draft  = JSON.parse(JSON.stringify(existing));
     S.editId = existing.id;
-    delete S.draft._calcCache;
+    clearCalcCaches();
     // All rows already exist in DB → first edit on any row = UPDATE (blue)
     NOODLES.forEach(n => STATIONS.forEach(st => {
       _savedRowKeys[n.id + '-' + st.id] = true;
@@ -1728,10 +1780,10 @@ function setInv(nId, sId, v) {
 function renderProd() {
   if (!S.draft) { nav('count'); return ''; }
 
-  // Always sync production values from DB session if available
-  // This ensures preloaded values appear even after page refresh
   const savedSess = S.sessions.find(s => s.date === S.draft.date);
   if (savedSess) {
+    S.draft.id = savedSess.id;
+    S.editId = savedSess.id;
     NOODLES.forEach(n => {
       if (savedSess.production[n.id] !== undefined) {
         S.draft.production[n.id] = savedSess.production[n.id];
@@ -1739,25 +1791,22 @@ function renderProd() {
     });
   }
 
-  const sessionDates = [...S.sessions]
-    .sort((a,b) => b.date > a.date ? 1 : -1)
+  const sessionDates = getAllSortedSessions()
+    .slice()
+    .reverse()
     .map(s => s.date);
 
-  // Build date options for picker — only dates that have a saved session
   const dateOptions = sessionDates.map(d =>
     `<option value="${d}" ${d === S.draft.date ? 'selected' : ''}>${fmtDateShort(d)}</option>`
   ).join('');
 
-  // Find the session BEFORE the current one so we can show est. sold
-  const allSorted = [...S.sessions].sort((a,b) => a.date > b.date ? 1 : -1);
-  const currentIdx = allSorted.findIndex(s => s.date === S.draft.date);
-  const prevSession = currentIdx > 0 ? allSorted[currentIdx - 1] : null;
+  const prevSession = getPreviousSessionForDate(S.draft.date, S.draft.id);
 
   const cards = NOODLES.map(n => {
     const prevStock = prevSession ? stTotal(prevSession.inventory, n.id) : 0;
     const currStock = stTotal(S.draft.inventory, n.id);
-    const prod      = S.draft.production[n.id] || 0;
-    const estSold   = prevStock + prod - currStock;
+    const prod = Number(S.draft.production[n.id]) || 0;
+    const estSold = prevStock + prod - currStock;
     const soldColor = estSold > 0 ? 'var(--red)' : estSold < 0 ? '#0070c8' : 'var(--text-3)';
     const soldLabel = estSold > 0 ? `Est. Sold: ${estSold}`
                     : estSold < 0 ? `Net Added: ${Math.abs(estSold)}`
@@ -1768,6 +1817,7 @@ function renderProd() {
       turmeric: 'background:#FFF3E8;border-color:#F5A85A;',
       green:    'background:#EDFBF2;border-color:#6EDBA0;',
     }[n.id] || '';
+
     return `
       <div class="prod-card" style="--pc-accent:${n.hex};--pc-glow:${n.glow};${prodCardBg}border-width:2px;">
         <div class="pc-lbl">${n.label}</div>
@@ -1789,21 +1839,7 @@ function renderProd() {
       </div>`;
   }).join('');
 
-  // Summary bar: prev → production → current → sold
-  const summaryRows = NOODLES.map(n => {
-    const prevStock = prevSession ? stTotal(prevSession.inventory, n.id) : 0;
-    const currStock = stTotal(S.draft.inventory, n.id);
-    const prod      = S.draft.production[n.id] || 0;
-    const sold      = Math.max(0, prevStock + prod - currStock);
-    return `
-      <tr>
-        <td style="font-weight:700;color:${n.hex}">${n.short}</td>
-        <td style="text-align:center">${prevStock}</td>
-        <td style="text-align:center;color:var(--green-n);font-weight:700">+${prod}</td>
-        <td style="text-align:center;font-weight:700;color:${n.hex}">${currStock}</td>
-        <td style="text-align:center;color:var(--red);font-weight:700">${sold}</td>
-      </tr>`;
-  }).join('');
+  const summaryRows = buildProdSummaryRows(prevSession);
 
   const noPrevWarning = !prevSession
     ? `<div style="background:rgba(255,179,0,.09);border:1px solid rgba(255,179,0,.3);border-radius:9px;padding:11px 14px;font-size:.82rem;color:var(--amber);margin-bottom:16px">
@@ -1818,7 +1854,6 @@ function renderProd() {
         <p class="step-desc">Enter how many portions were <strong>made/produced</strong> today — not what's in stock.</p>
       </div>
 
-      <!-- ✅ PRODUCTION CLARIFICATION ──────────────── -->
       <div style="
         background: #E8F5E9;
         border: 2px solid #66BB6A;
@@ -1843,7 +1878,6 @@ function renderProd() {
         </div>
       </div>
 
-      <!-- Date picker -->
       <div class="date-row" style="flex-wrap:wrap;gap:10px;margin-bottom:18px">
         <label style="font-weight:600">Session Date:</label>
         <select id="prod-date-picker"
@@ -1865,9 +1899,11 @@ function renderProd() {
 
       <div class="prod-grid">${cards}</div>
 
-      <!-- Quick summary table -->
       <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:20px">
-        <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3);margin-bottom:10px">Session Summary</div>
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+          <div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-3)">Session Summary</div>
+          <button type="button" class="btn-amber" onclick="showCalculationCheck()">🧮 Calculation Check</button>
+        </div>
         <div style="overflow-x:auto">
           <table style="width:100%;border-collapse:collapse;font-size:.85rem">
             <thead>
@@ -1893,6 +1929,7 @@ function renderProd() {
       </div>
       <div class="step-actions">
         <button class="cta secondary" onclick="nav('count')">← Back to Count</button>
+        <button class="cta ghost" onclick="showCalculationCheck()">🧮 Check Formula</button>
         <button class="cta primary" id="save-btn" onclick="saveSession()">✅ Save Production</button>
       </div>
     </div>`;
@@ -1907,7 +1944,7 @@ function switchProdDate(date) {
   if (sess) {
     S.draft  = JSON.parse(JSON.stringify(sess));
     S.editId = sess.id;
-    delete S.draft._calcCache;
+    clearCalcCaches();
     saveDraftLS();
   }
   // Re-render production page
@@ -1920,7 +1957,7 @@ async function saveSession_silent() {
   try {
     await saveSessionToDB(S.draft);
     await loadSessionsFromDB();
-    S.sessions.forEach(s => { delete s._calcCache; });
+    clearCalcCaches();
   } catch(e) { /* silent */ }
 }
 
@@ -1959,42 +1996,136 @@ function setProd(nId, v) {
 }
 function updateEstSold(nId) {
   if (!S.draft) return;
-  const allSorted = [...S.sessions].sort((a,b) => a.date > b.date ? 1 : -1);
-  const currentIdx = allSorted.findIndex(s => s.date === S.draft.date);
-  const prevSession = currentIdx > 0 ? allSorted[currentIdx - 1] : null;
+
+  const prevSession = getPreviousSessionForDate(S.draft.date, S.draft.id);
   const prevStock = prevSession ? stTotal(prevSession.inventory, nId) : 0;
   const currStock = stTotal(S.draft.inventory, nId);
-  const prod      = Number(S.draft.production[nId]) || 0;
-  const estSold   = prevStock + prod - currStock;
+  const prod = Number(S.draft.production[nId]) || 0;
+  const estSold = prevStock + prod - currStock;
   const soldColor = estSold > 0 ? 'var(--red)' : estSold < 0 ? '#0070c8' : 'var(--text-3)';
   const soldLabel = estSold > 0 ? `Est. Sold: ${estSold}`
                   : estSold < 0 ? `Net Added: ${Math.abs(estSold)}`
                   : 'Est. Sold: 0';
+
   const el = document.getElementById(`es-${nId}`);
-  if (el) { el.textContent = soldLabel; el.style.color = soldColor; }
-  // Also refresh the summary table
+  if (el) {
+    el.textContent = soldLabel;
+    el.style.color = soldColor;
+  }
+
   refreshProdSummary();
 }
 
-function refreshProdSummary() {
-  const tbody = document.getElementById('prod-summary-body');
-  if (!tbody || !S.draft) return;
-  const allSorted = [...S.sessions].sort((a,b) => a.date > b.date ? 1 : -1);
-  const currentIdx = allSorted.findIndex(s => s.date === S.draft.date);
-  const prevSession = currentIdx > 0 ? allSorted[currentIdx - 1] : null;
-  tbody.innerHTML = NOODLES.map(n => {
+function buildProdSummaryRows(prevSession) {
+  if (!S.draft) return '';
+
+  return NOODLES.map(n => {
     const prevStock = prevSession ? stTotal(prevSession.inventory, n.id) : 0;
     const currStock = stTotal(S.draft.inventory, n.id);
-    const prod      = S.draft.production[n.id] || 0;
-    const sold      = Math.max(0, prevStock + prod - currStock);
+    const prod = Number(S.draft.production[n.id]) || 0;
+    const rawSold = prevStock + prod - currStock;
+    const sold = Math.max(0, rawSold);
+    const soldText = rawSold < 0 ? `+${Math.abs(rawSold)} stock` : sold;
+
     return `<tr>
       <td style="padding:7px 10px;font-weight:700;color:${n.hex}">${n.short}</td>
       <td style="padding:7px 10px;text-align:center">${prevStock}</td>
       <td style="padding:7px 10px;text-align:center;color:var(--green-n);font-weight:700">+${prod}</td>
       <td style="padding:7px 10px;text-align:center;font-weight:700;color:${n.hex}">${currStock}</td>
-      <td style="padding:7px 10px;text-align:center;color:var(--red);font-weight:700">${sold}</td>
+      <td style="padding:7px 10px;text-align:center;color:${rawSold < 0 ? '#0070c8' : 'var(--red)'};font-weight:700">${soldText}</td>
     </tr>`;
   }).join('');
+}
+
+function refreshProdSummary() {
+  const tbody = document.getElementById('prod-summary-body');
+  if (!tbody || !S.draft) return;
+
+  const prevSession = getPreviousSessionForDate(S.draft.date, S.draft.id);
+  tbody.innerHTML = buildProdSummaryRows(prevSession);
+}
+
+function showCalculationCheck() {
+  if (!S.draft) return;
+
+  const prevSession = getPreviousSessionForDate(S.draft.date, S.draft.id);
+  const prevDate = prevSession ? fmtDateShort(prevSession.date) : 'No previous session';
+  const rows = NOODLES.map(n => {
+    const prevStock = prevSession ? stTotal(prevSession.inventory, n.id) : 0;
+    const currStock = stTotal(S.draft.inventory, n.id);
+    const prod = Number(S.draft.production[n.id]) || 0;
+    const rawSold = prevStock + prod - currStock;
+    const sold = Math.max(0, rawSold);
+    const resultLabel = !prevSession
+      ? 'First session'
+      : rawSold < 0
+        ? `Net Added ${Math.abs(rawSold)}`
+        : `Sold ${sold}`;
+    const resultColor = !prevSession
+      ? 'var(--amber)'
+      : rawSold < 0
+        ? '#0070c8'
+        : 'var(--red)';
+
+    return `<tr>
+      <td style="padding:10px 12px;font-weight:800;color:${n.hex}">${n.short}</td>
+      <td style="padding:10px 12px;text-align:center">${prevStock}</td>
+      <td style="padding:10px 12px;text-align:center;color:var(--green-n);font-weight:700">+${prod}</td>
+      <td style="padding:10px 12px;text-align:center">${currStock}</td>
+      <td style="padding:10px 12px;text-align:center;font-family:'Syne',sans-serif;font-weight:800;color:${resultColor}">${resultLabel}</td>
+      <td style="padding:10px 12px;font-size:.78rem;color:var(--text-2);white-space:nowrap">${prevStock} + ${prod} − ${currStock} = ${rawSold}</td>
+    </tr>`;
+  }).join('');
+
+  const modal = document.createElement('div');
+  modal.id = 'calc-check-modal';
+  modal.style.cssText = `
+    position:fixed;inset:0;z-index:10000;background:rgba(10,10,20,.55);
+    display:flex;align-items:center;justify-content:center;padding:18px;
+    backdrop-filter:blur(4px);
+  `;
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:18px;box-shadow:0 24px 80px rgba(0,0,0,.28);max-width:820px;width:100%;max-height:88vh;overflow:auto;border:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;gap:14px;align-items:flex-start;padding:20px 22px;border-bottom:1px solid var(--border)">
+        <div>
+          <div style="font-family:'Syne',sans-serif;font-weight:800;font-size:1.15rem;color:var(--text-1)">🧮 Calculation Check</div>
+          <div style="font-size:.82rem;color:var(--text-2);margin-top:4px">
+            Date: <strong>${fmtDateShort(S.draft.date)}</strong> · Previous Count: <strong>${prevDate}</strong>
+          </div>
+        </div>
+        <button type="button" onclick="closeCalculationCheck()" style="border:none;background:var(--bg-hover);border-radius:10px;padding:8px 11px;cursor:pointer;font-weight:800">✕</button>
+      </div>
+      <div style="padding:18px 22px">
+        <div style="background:rgba(230,168,0,.10);border:1px solid rgba(230,168,0,.25);border-radius:12px;padding:12px 14px;margin-bottom:16px;color:var(--amber);font-size:.86rem">
+          Formula: <strong>Previous Count + Production Made Today − Current Count = Estimated Sold</strong>
+        </div>
+        <div style="overflow-x:auto;border:1px solid var(--border);border-radius:12px">
+          <table style="width:100%;border-collapse:collapse;font-size:.85rem">
+            <thead>
+              <tr style="background:rgba(0,0,0,.04);border-bottom:1px solid var(--border)">
+                <th style="padding:10px 12px;text-align:left;font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-2)">Noodle</th>
+                <th style="padding:10px 12px;text-align:center;font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-2)">Previous</th>
+                <th style="padding:10px 12px;text-align:center;font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--green-n)">Made</th>
+                <th style="padding:10px 12px;text-align:center;font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-2)">Current</th>
+                <th style="padding:10px 12px;text-align:center;font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--red)">Result</th>
+                <th style="padding:10px 12px;text-align:left;font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-2)">Math</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+  modal.addEventListener('click', e => {
+    if (e.target === modal) closeCalculationCheck();
+  });
+  document.body.appendChild(modal);
+}
+
+function closeCalculationCheck() {
+  const modal = document.getElementById('calc-check-modal');
+  if (modal) modal.remove();
 }
 
 async function saveSession() {
@@ -2006,7 +2137,7 @@ async function saveSession() {
     saveDraftLS();
     S.editId = null;
     await loadSessionsFromDB();
-    S.sessions.forEach(s => { delete s._calcCache; });
+    clearCalcCaches();
     if (btn) { btn.disabled = false; btn.textContent = '✅ Save Production'; }
     showThankYouModal('production');
   } catch (e) {
@@ -2395,7 +2526,7 @@ function editSession(id) {
   if (!rec) return;
   S.draft  = JSON.parse(JSON.stringify(rec));
   S.editId = id;
-  delete S.draft._calcCache;
+  clearCalcCaches();
   saveDraftLS();
   nav('count');
 }
@@ -4273,7 +4404,7 @@ async function syncDB() {
   const btn = document.getElementById('sync-btn');
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="ico">⏳</span>Syncing…'; }
   await loadSessionsFromDB();
-  S.sessions.forEach(s => { delete s._calcCache; });
+  clearCalcCaches();
   toast(S.sessions.length
     ? '✅ Loaded ' + S.sessions.length + ' session(s) from database'
     : '⚠️ No sessions found in database', S.sessions.length ? 'ok' : 'err');
