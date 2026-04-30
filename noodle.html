@@ -900,32 +900,50 @@ async function loadSessionsFromDB() {
 
 /** Normalize a Supabase session row into the app's internal format */
 function normalizeSession(row) {
-  // Build inventory map from inventory_counts rows
+  const inventoryRows = row.inventory_counts || [];
+  const productionRows = row.production_logs || [];
+
   const inv = blankInventory();
-  (row.inventory_counts || []).forEach(c => {
-    if (inv[c.noodle_type] && inv[c.noodle_type][c.station] !== undefined)
-      inv[c.noodle_type][c.station] = c.quantity;
+  inventoryRows.forEach(c => {
+    if (inv[c.noodle_type] && inv[c.noodle_type][c.station] !== undefined) {
+      inv[c.noodle_type][c.station] = Number(c.quantity) || 0;
+    }
   });
-  // Build production map from production_logs rows
+
   const prod = blankProduction();
-  (row.production_logs || []).forEach(p => {
-    if (prod[p.noodle_type] !== undefined)
-      prod[p.noodle_type] = p.quantity_produced;
+  productionRows.forEach(p => {
+    if (prod[p.noodle_type] !== undefined) {
+      prod[p.noodle_type] = Number(p.quantity_produced) || 0;
+    }
   });
+
   return {
-    id:          row.id,
-    date:        row.session_date,
-    timestamp:   new Date(row.created_at).getTime(),
-    notes:       row.notes || '',
-    status:      row.status || 'completed',
-    inventory:   inv,
-    production:  prod,
-    // pre-calc for performance
-    calculated:  null,
+    id:             row.id,
+    date:           row.session_date,
+    timestamp:      new Date(row.created_at).getTime(),
+    notes:          row.notes || '',
+    status:         row.status || 'completed',
+    inventory:      inv,
+    production:     prod,
+    countRows:      inventoryRows.length,
+    productionRows: productionRows.length,
+    calculated:     null,
   };
 }
 
 /** Save a draft session safely — one session per date, no destructive deletes. */
+function showDbSavedTiny() {
+  toast('🐥 Rony, ya está guardado', 'ok');
+}
+
+function setDbSavedBar(barId, savedText = '🐥 Rony, ya está guardado') {
+  const bar = document.getElementById(barId);
+  if (!bar) return;
+  bar.className = 'autosave-bar saved';
+  bar.innerHTML = `<span class="autosave-dot"></span>${savedText}`;
+  bar.style.color = '';
+}
+
 async function saveSessionToDB(draft) {
   try {
     let sessionId = null;
@@ -1006,6 +1024,26 @@ function blankProduction() {
 function stTotal(inventory, nId) {
   return STATIONS.reduce((sum, s) => sum + (Number(inventory[nId][s.id]) || 0), 0);
 }
+
+function hasCompleteCounts(sess) {
+  return !!sess && Number(sess.countRows || 0) === 12;
+}
+
+function hasCompleteProduction(sess) {
+  return !!sess && Number(sess.productionRows || 0) === 4;
+}
+
+function missingCountLabel(sess) {
+  const rows = Number(sess?.countRows || 0);
+  return rows === 0 ? 'Missing Count' : `Partial Count (${rows}/12)`;
+}
+
+function latestCompleteSession(sessions = S.sessions) {
+  return [...sessions]
+    .filter(hasCompleteCounts)
+    .sort((a, b) => a.date > b.date ? 1 : a.date < b.date ? -1 : (a.timestamp || 0) - (b.timestamp || 0))
+    .at(-1) || null;
+}
 function getPrev() {
   return [...S.sessions].sort((a, b) => b.timestamp - a.timestamp)[0] || null;
 }
@@ -1061,31 +1099,60 @@ function clearCalcCaches() {
 function calcSold(sess) {
   if (!sess) return {};
 
-  const cacheKey = `_calcCache_next_${S.sessions.length}_${sess.id || sess.date}`;
+  const cacheKey = `_calcCache_next_safe_${S.sessions.length}_${sess.id || sess.date}_${sess.countRows || 0}`;
   if (sess[cacheKey]) return sess[cacheKey];
 
   const nextSession = getNextSessionForDate(sess.date, sess.id);
+  const currentComplete = hasCompleteCounts(sess);
+  const nextComplete = hasCompleteCounts(nextSession);
   const res = {};
 
   NOODLES.forEach(n => {
-    const startStock = stTotal(sess.inventory, n.id);
+    const startStock = currentComplete ? stTotal(sess.inventory, n.id) : 0;
     const produced = Number(sess.production?.[n.id]) || 0;
     const available = startStock + produced;
-    const nextStock = nextSession ? stTotal(nextSession.inventory, n.id) : null;
-    const rawSold = nextSession ? available - nextStock : 0;
-    const sold = nextSession ? Math.max(0, rawSold) : 0;
+    const nextStock = nextComplete ? stTotal(nextSession.inventory, n.id) : null;
+
+    if (!currentComplete) {
+      res[n.id] = {
+        prev: 0,
+        produced,
+        current: 0,
+        next: nextStock,
+        sold: 0,
+        pending: true,
+        missing: true,
+        reason: missingCountLabel(sess),
+      };
+      return;
+    }
+
+    if (!nextComplete) {
+      res[n.id] = {
+        prev: startStock,
+        produced,
+        current: available,
+        next: null,
+        sold: 0,
+        pending: true,
+        missing: false,
+        reason: 'Waiting for next count',
+      };
+      return;
+    }
+
+    const rawSold = available - nextStock;
 
     res[n.id] = {
       prev: startStock,
       produced,
       current: available,
       next: nextStock,
-      sold,
-      pending: !nextSession,
-      netAdded: nextSession && rawSold < 0 ? Math.abs(rawSold) : 0,
-      formula: nextSession
-        ? `${startStock} + ${produced} - ${nextStock} = ${rawSold}`
-        : `${startStock} + ${produced} - pending = pending`,
+      sold: Math.max(0, rawSold),
+      pending: false,
+      missing: false,
+      added: rawSold < 0 ? Math.abs(rawSold) : 0,
+      reason: '',
     };
   });
 
@@ -1556,9 +1623,9 @@ async function saveCountNow() {
     }
     await loadSessionsFromDB();
     clearCalcCaches();
-    setAutosaveStatus('saved');
+    setAutosaveStatus('saved', '🐥 Rony, ya está guardado');
+    showDbSavedTiny();
     if (btn) { btn.disabled = false; btn.textContent = '💾 Save Count'; }
-    showThankYouModal('count');
   } catch(e) {
     setAutosaveStatus('error', 'Save failed: ' + (e.message || 'unknown error'));
     toast('❌ Save failed — check connection', 'err');
@@ -1964,15 +2031,34 @@ async function saveSession_silent() {
 let _prodAutosaveTimer = null;
 function triggerAutosaveProd(nId) {
   const bar = document.getElementById('prod-autosave-bar');
-  if (bar) { bar.className = 'autosave-bar saving'; bar.innerHTML = '<span class="autosave-dot"></span>Saving production…'; }
+  if (bar) {
+    bar.className = 'autosave-bar saving';
+    bar.innerHTML = '<span class="autosave-dot"></span>Guardando en database…';
+  }
+
   clearTimeout(_prodAutosaveTimer);
   _prodAutosaveTimer = setTimeout(async () => {
     try {
       await saveSessionToDB(S.draft);
       await loadSessionsFromDB();
-      if (bar) { bar.className = 'autosave-bar saved'; bar.innerHTML = '<span class="autosave-dot"></span>✓ Production auto-saved'; setTimeout(()=>{ if(bar){ bar.className='autosave-bar idle'; bar.innerHTML='<span class="autosave-dot"></span>— changes will auto-save'; }}, 2500); }
+      clearCalcCaches();
+
+      setDbSavedBar('prod-autosave-bar');
+      showDbSavedTiny();
+
+      setTimeout(() => {
+        const currentBar = document.getElementById('prod-autosave-bar');
+        if (currentBar) {
+          currentBar.className = 'autosave-bar idle';
+          currentBar.innerHTML = '<span class="autosave-dot"></span>— changes will auto-save';
+        }
+      }, 2500);
     } catch(e) {
-      if (bar) { bar.className = 'autosave-bar error'; bar.innerHTML = '<span class="autosave-dot"></span>Save failed: ' + (e.message||'unknown error'); }
+      if (bar) {
+        bar.className = 'autosave-bar error';
+        bar.innerHTML = '<span class="autosave-dot"></span>Save failed: ' + (e.message || 'unknown error');
+      }
+      toast('❌ No se guardó en database', 'err');
     }
   }, 800);
 }
@@ -2284,22 +2370,49 @@ function triggerPackAutosave() {
     savePackingLogSilent(notes);
   }, 600);
 }
+async function verifyPackingRows(packDate) {
+  const { count, error } = await sb
+    .from('packing_logs')
+    .select('id', { count: 'exact', head: true })
+    .eq('pack_date', packDate);
+
+  if (error) throw error;
+  if (count !== 4) {
+    throw new Error(`Packing verification failed: expected 4 rows, found ${count || 0}`);
+  }
+}
+
 async function savePackingLogSilent(notes) {
   try {
-    await sb.from('packing_logs').delete().eq('pack_date', _packState.date);
     const rows = NOODLES.map(n => ({
       pack_date:   _packState.date,
       noodle_type: n.id,
       pack_size:   _packState.packs[n.id].packSize,
       packs_count: _packState.packs[n.id].count,
       notes,
+      updated_at:  new Date().toISOString(),
     }));
-    await sb.from('packing_logs').insert(rows);
+
+    const { error } = await sb
+      .from('packing_logs')
+      .upsert(rows, { onConflict: 'pack_date,noodle_type' });
+
+    if (error) throw error;
+
+    await verifyPackingRows(_packState.date);
+
     const bar = document.getElementById('pack-autosave-bar');
-    if (bar) { bar.textContent = '✅ Saved automatically'; bar.style.color = 'var(--green-n)'; }
+    if (bar) {
+      bar.textContent = '🐥 Rony, ya está guardado';
+      bar.style.color = 'var(--green-n)';
+    }
+    showDbSavedTiny();
   } catch(e) {
     const bar = document.getElementById('pack-autosave-bar');
-    if (bar) { bar.textContent = '❌ Save failed'; bar.style.color = 'var(--red)'; }
+    if (bar) {
+      bar.textContent = '❌ No se guardó en database';
+      bar.style.color = 'var(--red)';
+    }
   }
 }
 function refreshPackCard(nId) {
@@ -2396,30 +2509,43 @@ async function loadPackingForDate(date) {
 async function savePackingLog() {
   const btn = document.getElementById('pack-save-btn');
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Saving…'; }
-  const notes = document.getElementById('pack-notes')?.value || '';
-  try {
-    // Delete existing entries for this date (upsert pattern)
-    await sb.from('packing_logs').delete().eq('pack_date', _packState.date);
 
-    // Insert one row per noodle
+  const notes = document.getElementById('pack-notes')?.value || '';
+
+  try {
     const rows = NOODLES.map(n => ({
       pack_date:    _packState.date,
       noodle_type:  n.id,
       pack_size:    _packState.packs[n.id].packSize,
       packs_count:  _packState.packs[n.id].count,
       notes:        notes,
+      updated_at:   new Date().toISOString(),
     }));
-    const { error } = await sb.from('packing_logs').insert(rows);
+
+    const { error } = await sb
+      .from('packing_logs')
+      .upsert(rows, { onConflict: 'pack_date,noodle_type' });
+
     if (error) throw error;
 
-    toast('📫 Packing log saved!', 'ok');
+    await verifyPackingRows(_packState.date);
+
+    const bar = document.getElementById('pack-autosave-bar');
+    if (bar) {
+      bar.textContent = '🐥 Rony, ya está guardado';
+      bar.style.color = 'var(--green-n)';
+    }
+
+    showDbSavedTiny();
+
     if (btn) { btn.disabled = false; btn.textContent = '📫 Save Packing Log'; }
     await loadPackingLogs();
   } catch(e) {
-    toast('❌ Packing save failed: ' + (e.message || 'unknown'), 'err');
+    toast('❌ No se guardó en database', 'err');
     if (btn) { btn.disabled = false; btn.textContent = '📫 Save Packing Log'; }
   }
 }
+
 
 
 /* ══════════════════════════════════════════════════════
@@ -2427,7 +2553,6 @@ async function savePackingLog() {
 ══════════════════════════════════════════════════════ */
 let histFilter = '';
 function renderHist() {
-  // Dedup: one session per date (keep the one with the most data / most recent)
   const byDate = {};
   [...S.sessions].forEach(s => {
     if (!byDate[s.date] || s.timestamp > byDate[s.date].timestamp) byDate[s.date] = s;
@@ -2437,58 +2562,63 @@ function renderHist() {
 
   const rows = filtered.length
     ? filtered.map(r => {
+        const missingCount = !hasCompleteCounts(r);
         const c = calcSold(r);
-        const cells = NOODLES.map(n => `
-          <td>
-            <span class="hist-val" style="color:${n.hex}">${c[n.id]?.current||0}</span>
-            <div class="hist-sub">+${c[n.id]?.produced||0} / −${c[n.id]?.sold||0}</div>
-          </td>`).join('');
+        const cells = NOODLES.map(n => {
+          if (missingCount) {
+            return `<td>
+              <span class="hist-val" style="color:var(--red);font-size:.72rem">Missing Count</span>
+              <div class="hist-sub">production: +${Number(r.production?.[n.id]) || 0}</div>
+            </td>`;
+          }
+          return `<td>
+            <span class="hist-val" style="color:${n.hex}">${c[n.id]?.current || 0}</span>
+            <div class="hist-sub">+${c[n.id]?.produced || 0} / −${c[n.id]?.sold || 0}</div>
+          </td>`;
+        }).join('');
+
+        const statusTag = missingCount
+          ? `<span class="tag warn">MISSING COUNT</span>`
+          : `<span class="tag ok">COMPLETED</span>`;
+
         return `<tr>
-          <td class="date-col">${fmtDate(r.timestamp)}<br/><span class="tag ok">${r.status}</span></td>
+          <td class="date-col">${fmtDate(r.timestamp)}<br>${statusTag}</td>
           ${cells}
-          <td style="white-space:nowrap">
+          <td>
             <button class="btn-xs edit" onclick="editSession('${r.id}')">✏️</button>
-            &nbsp;
-            <button class="btn-xs danger" onclick="delSession('${r.id}')">🗑</button>
-          </td>
-        </tr>
-        <tr id="det-${r.id}" class="hidden">
-          <td colspan="6" style="background:rgba(255,255,255,.015);padding:0">
-            ${buildDetailPanel(r, c)}
+            <button class="btn-xs danger" onclick="delSession('${r.id}')">🗑️</button>
           </td>
         </tr>`;
       }).join('')
-    : `<tr><td colspan="6" class="empty-row">No records found.</td></tr>`;
+    : `<tr><td colspan="6" class="empty-row">No sessions found for this date.</td></tr>`;
 
-  return `
-    <div>
-      <div class="step-hd">
-        <h2 class="step-title">Inventory History</h2>
-        <p class="step-desc">${S.sessions.length} total sessions stored in database</p>
-      </div>
-      <div class="hist-ctrl">
-        <input type="date" class="date-filter" id="hf" value="${histFilter}" onchange="histFilter=this.value;nav('history')" />
-        <button class="btn-xs" onclick="histFilter='';nav('history')">Clear</button>
-        <button class="cta primary sm" onclick="exportCSV()"><span class="ico">⬇</span>Export CSV</button>
-      </div>
-      <div class="hist-legend">
-        ${NOODLES.map(n=>`<span style="color:${n.hex}">■</span> ${n.short}`).join('  ')} &nbsp;
-        <span style="color:var(--text-3)">current / +made / −sold</span>
-      </div>
-      <div class="tbl-wrap">
-        <table class="tbl">
-          <thead><tr>
-            <th>Date & Time</th>
-            ${NOODLES.map(n=>`<th style="color:${n.hex}">${n.short}</th>`).join('')}
-            <th>Actions</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-      <div class="step-actions">
-        <button class="cta secondary" onclick="nav('dashboard')">← Dashboard</button>
-      </div>
-    </div>`;
+  return `<section>
+    <div class="step-hd">
+      <h1 class="step-title">Inventory History</h1>
+      <p class="step-desc">${S.sessions.length} total sessions stored in database</p>
+    </div>
+    <div class="hist-ctrl">
+      <input type="date" class="date-filter" id="hist-date" value="${histFilter||''}" onchange="histFilter=this.value;nav('history')" />
+      <button class="btn-xs" onclick="histFilter='';nav('history')">Clear</button>
+      <button class="cta primary sm" onclick="exportCSV()">⬇ Export CSV</button>
+    </div>
+    <div class="hist-legend">
+      <span style="color:var(--white-n)">■ White</span>
+      <span style="color:var(--yellow-n)">■ Yellow</span>
+      <span style="color:var(--turmeric-n)">■ Turmeric</span>
+      <span style="color:var(--green-n)">■ Green</span>
+      <span>current / +made / −sold</span>
+      <span style="color:var(--red)">Missing Count = production exists, but inventory count rows are missing</span>
+    </div>
+    <div class="tbl-wrap">
+      <table class="tbl">
+        <thead>
+          <tr><th>Date & Time</th>${NOODLES.map(n=>`<th style="color:${n.hex}">${n.short}</th>`).join('')}<th>Actions</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </section>`;
 }
 
 function buildDetailPanel(r, c) {
@@ -2874,28 +3004,35 @@ function getCDPeriods() {
   if (all.length < 2) return [];
   const { from, to } = getCDFilterDates();
   const periods = [];
+
   for (let i = 1; i < all.length; i++) {
-    const prev = all[i-1], curr = all[i];
-    const endDate = new Date(curr.date+'T12:00:00');
+    const prev = all[i - 1];
+    const curr = all[i];
+    const endDate = new Date(curr.date + 'T12:00:00');
+
     if (from && endDate < from) continue;
-    if (to   && endDate > to)   continue;
+    if (to && endDate > to) continue;
+    if (!hasCompleteCounts(prev) || !hasCompleteCounts(curr)) continue;
+
     const nData = {};
     NOODLES.forEach(n => {
       const startStock = stTotal(prev.inventory, n.id);
-      const endStock   = stTotal(curr.inventory, n.id);
-      const produced   = prev.production[n.id] || 0;   // production logged at the OPENING session
-      const sold       = startStock + produced - endStock;
-      nData[n.id] = { startStock, endStock, produced, sold };
+      const endStock = stTotal(curr.inventory, n.id);
+      const produced = Number(prev.production?.[n.id]) || 0;
+      const sold = startStock + produced - endStock;
+      nData[n.id] = { startStock, endStock, produced, sold, valid: true };
     });
-    periods.push({ from: prev, to: curr, nData });
+
+    periods.push({ from: prev, to: curr, nData, valid: true });
   }
+
   return periods;
 }
 
 function populateCDDash() {
   const periods  = getCDPeriods();
   const allSess  = [...S.sessions].sort((a,b) => a.date > b.date ? 1 : -1);
-  const latest   = allSess[allSess.length - 1] || null;
+  const latest   = latestCompleteSession(allSess);
   const chartsEl = document.getElementById('cd-charts-area');
   const emptyEl  = document.getElementById('cd-empty');
 
@@ -3106,7 +3243,14 @@ function rebuildCDDonut(totSold) {
 
 function buildCDTable(periods) {
   const wrap = document.getElementById('cd-period-table');
-  if (!wrap || !periods.length) return;
+  if (!wrap) return;
+
+  if (!periods.length) {
+    wrap.innerHTML = `<div style="text-align:center;padding:20px;color:var(--text-3);font-size:.82rem">
+      No valid sold periods in this range. Both the period start and period end must have 12 saved count rows.
+    </div>`;
+    return;
+  }
 
   const rows = periods.map(p => {
     const cols = NOODLES.map(n => {
@@ -3587,26 +3731,32 @@ function buildPeriodRows() {
   if (all.length < 2) return [];
   const { from, to } = getFilterDates();
   const periods = [];
+
   for (let i = 1; i < all.length; i++) {
-    const prev = all[i-1];
+    const prev = all[i - 1];
     const curr = all[i];
     const endDate = new Date(curr.date + 'T12:00:00');
+
     if (from && endDate < from) continue;
-    if (to   && endDate > to)   continue;
-    // Use calcSold(prev) — the single source of truth used by the Dashboard
+    if (to && endDate > to) continue;
+    if (!hasCompleteCounts(prev) || !hasCompleteCounts(curr)) continue;
+
     const c = calcSold(prev);
     const nData = {};
     NOODLES.forEach(n => {
       nData[n.id] = {
         startStock: c[n.id].prev,
-        endStock:   stTotal(curr.inventory, n.id),
-        produced:   c[n.id].produced,
-        sold:       c[n.id].sold,
-        pending:    c[n.id].pending,
+        endStock: stTotal(curr.inventory, n.id),
+        produced: c[n.id].produced,
+        sold: c[n.id].sold,
+        pending: false,
+        valid: true,
       };
     });
-    periods.push({ from: prev, to: curr, nData });
+
+    periods.push({ from: prev, to: curr, nData, valid: true });
   }
+
   return periods;
 }
 
@@ -3692,7 +3842,7 @@ function renderAnalytics() {
   const periods = buildPeriodRows();
 
   if (!periods.length) {
-    wrap.innerHTML = `<div class="corp-no-data">No periods found for this range. Try "All Time".</div>`;
+    wrap.innerHTML = `<div class="corp-no-data">No valid SOLD periods found for this range. A sold period needs 12 count rows on both dates. Production may exist, but sold is hidden until counts are restored.</div>`;
     if (chartsGrid) chartsGrid.style.display = 'none';
     return;
   }
@@ -3716,7 +3866,7 @@ function renderAnalytics() {
   });
 
   // Get latest stock from the last period's end session
-  const latestSession = periods[periods.length - 1]?.to;
+  const latestSession = periods[periods.length - 1]?.to || latestCompleteSession(getAllSortedSessions());
   NOODLES.forEach(n => {
     const elSold  = document.getElementById(`kpi-sold-${n.id}`);
     const elMade  = document.getElementById(`kpi-made-${n.id}`);
@@ -3793,10 +3943,15 @@ function renderAnalytics() {
 
 function buildSnapshotTable(sessions) {
   const rows = sessions.map(r => {
-    const cells = NOODLES.map(n =>
-      `<td><span class="atbl-stock" style="color:${n.hex}">${stTotal(r.inventory,n.id)}</span></td>`
-    ).join('');
-    return `<tr><td class="date-col">${fmtDateShort(r.date)}</td>${cells}</tr>`;
+    const missing = !hasCompleteCounts(r);
+    const cells = NOODLES.map(n => {
+      if (missing) {
+        return `<td><span class="atbl-sold">Missing Count</span><div class="hist-sub">+${Number(r.production?.[n.id]) || 0} production</div></td>`;
+      }
+      return `<td><span class="atbl-stock" style="color:${n.hex}">${stTotal(r.inventory,n.id)}</span></td>`;
+    }).join('');
+    const status = missing ? `<span class="tag warn">Missing Count</span>` : '';
+    return `<tr><td class="date-col">${fmtDateShort(r.date)} ${status}</td>${cells}</tr>`;
   }).join('');
   return `<div class="analytics-tbl-wrap">
     <table class="analytics-tbl">
@@ -4433,7 +4588,7 @@ function toast(msg, type='ok') {
   t.textContent = msg;
   t.className   = `toast ${type} show`;
   clearTimeout(t._timer);
-  t._timer = setTimeout(() => t.classList.remove('show'), 3200);
+  t._timer = setTimeout(() => t.classList.remove('show'), 1700);
 }
 
 /* ══════════════════════════════════════════════════════
