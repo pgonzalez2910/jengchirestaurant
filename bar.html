@@ -1177,6 +1177,7 @@
     .inventory-table col.col-bottle-price { width: var(--col-bottle-price, 91px); }
     .inventory-table col.col-size { width: var(--col-size, 83px); }
     .inventory-table col.col-value { width: var(--col-value, 61px); }
+    .inventory-table col.col-actions { width: var(--col-actions, 95px); }
 
     .th-resizable {
       position: relative;
@@ -1279,6 +1280,41 @@
       font-weight: 900;
       line-height: 1.45;
     }
+
+    .admin-actions {
+      display: none;
+      gap: 6px;
+      align-items: center;
+      justify-content: center;
+    }
+
+    body.superadmin-active .admin-actions {
+      display: flex;
+    }
+
+    .icon-action {
+      width: 34px;
+      height: 34px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      color: var(--navy);
+      box-shadow: none;
+    }
+
+    .icon-action.edit {
+      color: #1d4ed8;
+      background: #eef3ff;
+    }
+
+    .icon-action.delete {
+      color: #c0392b;
+      background: #fff0ee;
+    }
+
 
     @media (max-width: 680px) {
       .add-item-grid {
@@ -1482,6 +1518,7 @@
             <col data-col-key="bottle_price" class="col-bottle-price" />
             <col data-col-key="size" class="col-size" />
             <col data-col-key="value" class="col-value" />
+            <col data-col-key="actions" class="col-actions" />
           </colgroup>
           <thead>
             <tr>
@@ -1495,6 +1532,7 @@
               <th data-col-key="bottle_price"><div class="th-resizable">Bottle Price<span class="col-resizer" title="Drag to resize"></span></div></th>
               <th data-col-key="size"><div class="th-resizable">Size<span class="col-resizer" title="Drag to resize"></span></div></th>
               <th class="super-only" data-col-key="value"><div class="th-resizable">Value<span class="col-resizer" title="Drag to resize"></span></div></th>
+              <th class="super-only" data-col-key="actions"><div class="th-resizable">Actions</div></th>
             </tr>
           </thead>
           <tbody id="inventoryTableBody"></tbody>
@@ -1664,6 +1702,7 @@
       bottle_price: { css: "--col-bottle-price", min: 80, max: 240, defaultWidth: 91 },
       size: { css: "--col-size", min: 70, max: 220, defaultWidth: 83 },
       value: { css: "--col-value", min: 70, max: 220, defaultWidth: 61 },
+      actions: { css: "--col-actions", min: 80, max: 160, defaultWidth: 95 },
     };
 
     const GROUP_ICONS = {
@@ -4755,26 +4794,59 @@
       return uniqueValues(filenames);
     }
 
+    function encodeGitHubPath(path) {
+      return String(path || "")
+        .split("/")
+        .map((part) => encodeURIComponent(part))
+        .join("/");
+    }
+
+    function normalizeImageFilename(value) {
+      const cleaned = String(value || "").trim();
+      if (!cleaned) return "";
+
+      if (/^https?:\/\//i.test(cleaned)) {
+        return cleaned;
+      }
+
+      return cleaned
+        .replace(/^\/+/, "")
+        .replace(/\s+/g, "-")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+    }
+
+    function imageUrlFromDatabaseValue(value) {
+      const cleaned = normalizeImageFilename(value);
+      if (!cleaned) return "";
+
+      if (/^https?:\/\//i.test(cleaned)) {
+        return cleaned;
+      }
+
+      return `${GITHUB_IMAGE_BASE_URL}${encodeGitHubPath(cleaned)}`;
+    }
+
     function buildGitHubImageUrl(product) {
-      return `${GITHUB_IMAGE_BASE_URL}${buildGitHubImageFilenames(product)[0]}`;
+      const firstFilename = buildGitHubImageFilenames(product)[0] || "";
+      return firstFilename ? `${GITHUB_IMAGE_BASE_URL}${encodeGitHubPath(firstFilename)}` : "";
     }
 
     function getProductImageCandidates(product) {
       const urls = [];
 
-      for (const filename of buildGitHubImageFilenames(product)) {
-        urls.push(`${GITHUB_IMAGE_BASE_URL}${filename}`);
-      }
+      const databaseUrl = imageUrlFromDatabaseValue(product.image_url || product.image_github_path);
+      if (databaseUrl) urls.push(databaseUrl);
 
-      if (product.image_url) {
-        urls.push(product.image_url);
+      for (const filename of buildGitHubImageFilenames(product)) {
+        urls.push(`${GITHUB_IMAGE_BASE_URL}${encodeGitHubPath(filename)}`);
       }
 
       return uniqueValues(urls);
     }
 
     function getProductImageUrl(product) {
-      return getProductImageCandidates(product)[0];
+      return getProductImageCandidates(product)[0] || "";
     }
 
     function getProductImageCandidatesAttribute(product) {
@@ -4803,7 +4875,7 @@
 
       if (nextIndex < candidates.length) {
         imageElement.dataset.imageIndex = String(nextIndex);
-        imageElement.src = candidates[nextIndex];
+        imageElement.src = `${candidates[nextIndex]}?v=${Date.now()}`;
         return;
       }
 
@@ -4848,6 +4920,7 @@
         size: row.size_label || row.size || "",
         supplier: row.supplier_name || row.supplier || "",
         image_url: row.image_url || "",
+        image_github_path: row.image_github_path || "",
       };
     }
 
@@ -5188,20 +5261,29 @@ function renderTabs() {
       el.tableSubtitle.textContent = `${activeCategory || "No category"} · Autosave is active.`;
 
       el.inventoryTableBody.innerHTML = rows.map((product) => {
-        const image = `
-          <img
-            class="product-img"
-            src="${escapeHtml(getProductImageUrl(product))}"
-            data-image-candidates="${getProductImageCandidatesAttribute(product)}"
-            data-image-index="0"
-            alt="${escapeHtml(product.name)}"
-            onerror="handleProductImageError(this)"
-            onclick="openImageZoom(this.src, this.alt)"
-          />
-          <span class="product-placeholder" style="display:none;">
-            <i class="fa-regular fa-image"></i>
-          </span>
-        `;
+        const imageUrl = getProductImageUrl(product);
+        const imageCandidates = getProductImageCandidatesAttribute(product);
+        const cacheBust = imageUrl ? `${imageUrl}?v=${Date.now()}` : "";
+        const image = imageUrl
+          ? `
+            <img
+              class="product-img"
+              src="${escapeHtml(cacheBust)}"
+              data-image-candidates="${imageCandidates}"
+              data-image-index="0"
+              alt="${escapeHtml(product.name || "Product image")}"
+              onerror="handleProductImageError(this)"
+              onclick="openImageZoom(this.src, this.alt)"
+            />
+            <span class="product-placeholder" style="display:none;">
+              <i class="fa-regular fa-image"></i>
+            </span>
+          `
+          : `
+            <span class="product-placeholder" style="display:inline-flex;">
+              <i class="fa-regular fa-image"></i>
+            </span>
+          `;
 
         return `
           <tr data-row-id="${escapeHtml(product.id)}">
@@ -5239,6 +5321,16 @@ function renderTabs() {
             </td>
             <td class="value-cell super-only ${isSuperadmin ? "visible" : ""}" data-value-id="${escapeHtml(product.id)}">
               ${money(getValue(product))}
+            </td>
+            <td class="super-only ${isSuperadmin ? "visible" : ""}">
+              <div class="admin-actions">
+                <button class="icon-action edit" type="button" onclick="openEditItemModal('${escapeHtml(product.id)}')" title="Edit item">
+                  <i class="fa-solid fa-pen-to-square"></i>
+                </button>
+                <button class="icon-action delete" type="button" onclick="deleteInventoryItem('${escapeHtml(product.id)}')" title="Delete item">
+                  <i class="fa-solid fa-trash-can"></i>
+                </button>
+              </div>
             </td>
           </tr>
         `;
@@ -5328,17 +5420,23 @@ function renderTabs() {
     }
 
     function normalizeImageInput(value) {
-      const cleaned = String(value || "").trim();
+      const cleaned = normalizeImageFilename(value);
       if (!cleaned) return "";
       if (/^https?:\/\//i.test(cleaned)) return cleaned;
       return cleaned.replace(/^\/+/, "");
     }
 
-    function openAddItemModal() {
-      if (!employeeSession?.is_superadmin) {
-        setStatus("Superadmin required", "error", "fa-circle-xmark");
-        return;
-      }
+    function resetAddItemModal() {
+      delete el.addItemForm.dataset.editProductId;
+
+      document.querySelector("#addItemModal .modal-header h2").textContent = "Add New Inventory Item";
+      document.querySelector("#addItemModal .modal-header p").textContent =
+        "Superadmin only. Complete the fields below and the item will be saved directly to Supabase.";
+
+      el.saveNewItemButton.innerHTML = `
+        <i class="fa-solid fa-cloud-arrow-up"></i>
+        Save New Item
+      `;
 
       const group = activeGroup || "Liquor";
       const category = activeCategory || getDefaultCategoryForGroup(group) || "";
@@ -5350,6 +5448,51 @@ function renderTabs() {
       el.newItemBarCount.value = "0";
       el.newItemLiquorRoomCount.value = "0";
       el.newItemBottlePrice.value = "0";
+    }
+
+    function openAddItemModal() {
+      if (!employeeSession?.is_superadmin) {
+        setStatus("Superadmin required", "error", "fa-circle-xmark");
+        return;
+      }
+
+      resetAddItemModal();
+      openModal(el.addItemModal);
+      window.setTimeout(() => el.newItemName.focus(), 50);
+    }
+
+    function openEditItemModal(productId) {
+      if (!employeeSession?.is_superadmin) {
+        setStatus("Superadmin required", "error", "fa-circle-xmark");
+        return;
+      }
+
+      const product = products.find((item) => String(item.id) === String(productId));
+      if (!product) {
+        setStatus("Item not found", "error", "fa-circle-xmark");
+        return;
+      }
+
+      el.addItemForm.dataset.editProductId = product.id;
+      el.newItemSku.value = product.sku || "";
+      el.newItemGroup.value = product.group || product.inventory_group || "Liquor";
+      el.newItemCategory.value = product.category || product.category_name || "";
+      el.newItemName.value = product.name || product.product_name || "";
+      el.newItemSupplier.value = product.supplier || product.supplier_name || "";
+      el.newItemSize.value = product.size || product.size_label || "";
+      el.newItemBarCount.value = numeric(product.bar_count);
+      el.newItemLiquorRoomCount.value = numeric(product.liquor_room_count);
+      el.newItemBottlePrice.value = numeric(product.bottle_price);
+      el.newItemImageUrl.value = product.image_url || product.image_github_path || "";
+
+      document.querySelector("#addItemModal .modal-header h2").textContent = "Edit Inventory Item";
+      document.querySelector("#addItemModal .modal-header p").textContent =
+        "Superadmin only. Changes save directly to Supabase.";
+
+      el.saveNewItemButton.innerHTML = `
+        <i class="fa-solid fa-cloud-arrow-up"></i>
+        Save Changes
+      `;
 
       openModal(el.addItemModal);
       window.setTimeout(() => el.newItemName.focus(), 50);
@@ -5374,6 +5517,8 @@ function renderTabs() {
         return;
       }
 
+      const editProductId = el.addItemForm.dataset.editProductId || "";
+
       const payload = {
         p_session_token: employeeSession.session_token,
         p_sku: String(el.newItemSku.value || "").trim().toUpperCase(),
@@ -5393,22 +5538,45 @@ function renderTabs() {
         return;
       }
 
-      setStatus("Saving new item...", "saving", "fa-clock");
+      setStatus(editProductId ? "Saving item changes..." : "Saving new item...", "saving", "fa-clock");
       el.saveNewItemButton.disabled = true;
 
-      const { data, error } = await db.rpc("employee2025_create_product", payload);
+      let response;
+
+      if (editProductId) {
+        response = await db.rpc("employee2025_update_product_full", {
+          p_session_token: payload.p_session_token,
+          p_product_id: editProductId,
+          p_sku: payload.p_sku,
+          p_inventory_group: payload.p_inventory_group,
+          p_category_name: payload.p_category_name,
+          p_product_name: payload.p_product_name,
+          p_supplier_name: payload.p_supplier_name,
+          p_size_label: payload.p_size_label,
+          p_bar_count: payload.p_bar_count,
+          p_liquor_room_count: payload.p_liquor_room_count,
+          p_bottle_price: payload.p_bottle_price,
+          p_image_url: payload.p_image_url,
+        });
+      } else {
+        response = await db.rpc("employee2025_create_product", payload);
+      }
 
       el.saveNewItemButton.disabled = false;
 
+      const data = response.data;
+      const error = response.error;
       const result = Array.isArray(data) ? data[0] : data;
 
       if (error || result?.success === false) {
-        setStatus(result?.message || "New item save failed", "error", "fa-circle-xmark");
+        setStatus(result?.message || "Item save failed", "error", "fa-circle-xmark");
         console.error(error || result?.message || result);
         return;
       }
 
       closeModal(el.addItemModal);
+      resetAddItemModal();
+
       activeGroup = payload.p_inventory_group;
       activeCategory = payload.p_category_name;
       el.searchInput.value = "";
@@ -5418,7 +5586,46 @@ function renderTabs() {
       activeCategory = payload.p_category_name;
       render();
 
-      setStatus(`New item saved: ${payload.p_product_name}`, "saved", "fa-circle-check");
+      setStatus(
+        editProductId ? `Updated: ${payload.p_product_name}` : `New item saved: ${payload.p_product_name}`,
+        "saved",
+        "fa-circle-check"
+      );
+    }
+
+    async function deleteInventoryItem(productId) {
+      if (!employeeSession?.session_token || !employeeSession?.is_superadmin) {
+        setStatus("Superadmin required", "error", "fa-circle-xmark");
+        return;
+      }
+
+      const product = products.find((item) => String(item.id) === String(productId));
+      if (!product) {
+        setStatus("Item not found", "error", "fa-circle-xmark");
+        return;
+      }
+
+      const confirmed = window.confirm(`Delete this item?\n\n${product.name || product.product_name}\n${product.sku}`);
+      if (!confirmed) return;
+
+      setStatus("Deleting item...", "saving", "fa-clock");
+
+      const { data, error } = await db.rpc("employee2025_delete_product", {
+        p_session_token: employeeSession.session_token,
+        p_product_id: product.id,
+      });
+
+      const result = Array.isArray(data) ? data[0] : data;
+
+      if (error || result?.success === false) {
+        setStatus(result?.message || "Delete failed", "error", "fa-circle-xmark");
+        console.error(error || result);
+        return;
+      }
+
+      products = products.filter((item) => String(item.id) !== String(product.id));
+      render();
+      setStatus(`Deleted: ${product.name || product.product_name}`, "saved", "fa-circle-check");
     }
 
     async function loadProductsFromSupabase() {
@@ -5881,7 +6088,10 @@ function renderTabs() {
     el.closeAuditModal.addEventListener("click", () => closeModal(el.auditModal));
     el.refreshAuditButton.addEventListener("click", loadAuditHistory);
     el.addItemButton.addEventListener("click", openAddItemModal);
-    el.closeAddItemModal.addEventListener("click", () => closeModal(el.addItemModal));
+    el.closeAddItemModal.addEventListener("click", () => {
+      resetAddItemModal();
+      closeModal(el.addItemModal);
+    });
     el.addItemForm.addEventListener("submit", createNewItem);
     el.newItemGroup.addEventListener("change", syncNewItemSkuFromGroup);
     el.superadminLoginButton.addEventListener("click", loginSuperadmin);
