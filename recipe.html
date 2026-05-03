@@ -1157,10 +1157,216 @@ function _openSideAt(side, category) {
     setTimeout(function() { target.style.background = ''; }, 1000);
   });
 }
-const KITCHEN_CATS = ['Hot Appetizers','Dumplings','Soups','Soup Noodles','Noodle Dishes','House-Made Noodles','Over Rice','Sauces & Condiments'];
-// Categories to hide from the Kitchen sidebar/pills. Edit this list to show/hide.
-// (These categories still exist in the database and are used by the Plating Guide.)
-const KITCHEN_HIDDEN_CATS = ['Hot Appetizers','Dumplings','Soups','Soup Noodles','Noodle Dishes'];
+const KITCHEN_CATS = ['Dumpling','House-Made Noodles','Hot Appetizers','Dumplings','Soups','Over Rice','Sauces & Condiments'];
+const DUMPLING_PARENT_CAT = 'Dumpling';
+const DUMPLING_SUBCATS = ['Juicy Dumpling','Steamed Dumpling','Boiled Dumpling'];
+var dumplingOpen = true;
+
+const HOUSE_MADE_NOODLES_PARENT_CAT = 'House-Made Noodles';
+const HOUSE_MADE_NOODLES_SUBCATS = ['Egg Noodles','White Noodles','Green Noodles','Turmeric Noodles'];
+var houseMadeNoodlesOpen = true;
+
+function isHouseMadeNoodlesCategory(name) {
+  return String(name || '').toLowerCase().trim() === HOUSE_MADE_NOODLES_PARENT_CAT.toLowerCase();
+}
+
+
+// ===================================================
+// HOUSE-MADE NOODLES CATEGORY FIX
+// House-Made Noodles is a Kitchen parent category.
+// Soup Noodles and Noodle Dishes stay in Plating Guide > Noodle Side.
+// ===================================================
+const HOUSE_MADE_NOODLE_RECIPE_FIXES = [
+  { from: ['WHITE NOODLES'], title: 'White Noodles', category: 'White Noodles' },
+  { from: ['YELLOW NOODLES', 'EGG NOODLES'], title: 'Egg Noodles', category: 'Egg Noodles' },
+  { from: ['GREEN NOODLES'], title: 'Green Noodles', category: 'Green Noodles' },
+  { from: ['TURMERIC NOODLES', 'TUMERIC NOODLES'], title: 'Turmeric Noodles', category: 'Turmeric Noodles' }
+];
+
+function normalizeHouseMadeNoodleTitle(title) {
+  return String(title || '').trim().toUpperCase().replace(/\s+/g, ' ');
+}
+
+function getHouseMadeNoodleFix(recipe) {
+  if (!recipe) return null;
+  var key = normalizeHouseMadeNoodleTitle(recipe.title);
+  for (var i = 0; i < HOUSE_MADE_NOODLE_RECIPE_FIXES.length; i++) {
+    if (HOUSE_MADE_NOODLE_RECIPE_FIXES[i].from.indexOf(key) !== -1) return HOUSE_MADE_NOODLE_RECIPE_FIXES[i];
+  }
+  return null;
+}
+
+function applyHouseMadeNoodleCategoriesLocal() {
+  (allRecipes || []).forEach(function(recipe) {
+    var fix = getHouseMadeNoodleFix(recipe);
+    if (!fix) return;
+    recipe.title = fix.title;
+    recipe.category = fix.category;
+  });
+}
+
+async function syncHouseMadeNoodleCategoriesToDatabase() {
+  try {
+    if (!db) return;
+
+    var categoryRows = HOUSE_MADE_NOODLES_SUBCATS.map(function(name, idx) {
+      return {
+        name: name,
+        group_name: 'Kitchen',
+        sort_order: 220 + idx,
+        photo: null
+      };
+    });
+
+    for (var i = 0; i < categoryRows.length; i++) {
+      await db.from('recipe_categories')
+        .upsert(categoryRows[i], { onConflict: 'name' });
+    }
+
+    var updates = [
+      { from: ['WHITE NOODLES'], title: 'White Noodles', category: 'White Noodles' },
+      { from: ['YELLOW NOODLES', 'EGG NOODLES'], title: 'Egg Noodles', category: 'Egg Noodles' },
+      { from: ['GREEN NOODLES'], title: 'Green Noodles', category: 'Green Noodles' },
+      { from: ['TURMERIC NOODLES', 'TUMERIC NOODLES'], title: 'Turmeric Noodles', category: 'Turmeric Noodles' }
+    ];
+
+    for (var u = 0; u < updates.length; u++) {
+      for (var t = 0; t < updates[u].from.length; t++) {
+        await db.from('recipes')
+          .update({ title: updates[u].title, category: updates[u].category })
+          .ilike('title', updates[u].from[t]);
+      }
+    }
+  } catch (e) {
+    console.warn('House-made noodle category sync failed:', e);
+  }
+}
+
+// ===================================================
+// DUMPLING TOTAL AMOUNT FIX
+// Source: Dumplingv4.xlsx, cell H2 on each recipe sheet.
+// Removes old card text like "Menu item: $15.25 / 8".
+// ===================================================
+const DUMPLING_TOTAL_AMOUNT_BY_TITLE = {
+  'SMALL JUICY DUMPLINGS': 1881,
+  'SMALL JUICY STEAMED DUMPLINGS': 1881,
+
+  'CURRY CHICKEN JUICY DUMPLINGS': 1638,
+  'CHICKEN CURRY JUICY DUMPLINGS': 1638,
+  'CURRY CHICKEN JUICY STEAMED DUMPLINGS': 1638,
+
+  'FIERY JUICY DUMPLINGS': 1716,
+  'FIERY JUICY STEAMED DUMPLINGS': 1716,
+
+  'PORK & CRAB JUICY DUMPLINGS': 1450,
+  'PORK AND CRAB JUICY DUMPLINGS': 1450,
+  'CRAB MEAT AND PORK DUMPLINGS': 1450,
+  'CRAB PORK JUICY DUMPLINGS': 1450,
+
+  'BEEF JUICY DUMPLINGS': 2020,
+
+  'SHRIMP & PORK STEAMED DUMPLINGS': 2002,
+  'SHRIMP AND PORK STEAMED DUMPLINGS': 2002,
+  'PORK & SHRIMP STEAMED DUMPLINGS': 2002,
+  'PORK AND SHRIMP STEAMED DUMPLINGS': 2002,
+
+  'CHICKEN STEAMED DUMPLINGS': 1573,
+  'CHICKEN STEAM DUMPLINGS': 1573,
+
+  'VEGETARIAN STEAMED DUMPLINGS': 2800,
+  'VEGETARIAN PAN FRIED DUMPLINGS': 2800,
+  'VEGETARIAN BOILED DUMPLINGS': 2800,
+  'VEGETERIAN BOILED DUMPLINGS': 2800,
+
+  'PORK & NAPA BOILED DUMPLINGS': 2002,
+  'PORK AND NAPA BOILED DUMPLINGS': 2002,
+  'PORK NAPA BOILED DUMPLINGS': 2002,
+
+  'PORK & LEEK BOILED DUMPLINGS': 4620,
+  'PORK AND LEEK BOILED DUMPLINGS': 4620,
+  'PORK LEEK BOILED DUMPLINGS': 4620,
+
+  'BEEF BOILED DUMPLINGS': 2020,
+
+  'PORK, SHRIMP & LEEK BOILED DUMPLINGS': 4466,
+  'PORK SHRIMP & LEEK BOILED DUMPLINGS': 4466,
+  'PORK SHRIMP LEEK BOILED DUMPLINGS': 4466,
+  'PORK, SHRIMP AND LEEK BOILED DUMPLINGS': 4466,
+
+  'CHICKEN & ZUCCHINI BOILED DUMPLINGS': 4060,
+  'CHICKEN AND ZUCCHINI BOILED DUMPLINGS': 4060,
+  'CHICKEN ZUCCHINI BOILED DUMPLINGS': 4060,
+  'CHICKEN BOILED DUMPLINGS': 4060
+};
+
+function normalizeDumplingTitle(title) {
+  return String(title || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
+}
+
+function getDumplingTotalAmount(recipe) {
+  if (!recipe) return null;
+  var key = normalizeDumplingTitle(recipe.title);
+  if (DUMPLING_TOTAL_AMOUNT_BY_TITLE[key] !== undefined) return DUMPLING_TOTAL_AMOUNT_BY_TITLE[key];
+  return null;
+}
+
+function recipeQuantityLabel(recipe) {
+  return getDumplingTotalAmount(recipe) !== null ? 'Total Amount' : 'Serves';
+}
+
+function recipeQuantityDetailLabel(recipe) {
+  return getDumplingTotalAmount(recipe) !== null ? 'Total Amount' : 'Servings';
+}
+
+function recipeQuantityValue(recipe) {
+  var totalAmount = getDumplingTotalAmount(recipe);
+  return totalAmount !== null ? String(totalAmount) : (recipe && recipe.servings ? recipe.servings : '-');
+}
+
+function applyDumplingTotalAmountsLocal() {
+  (allRecipes || []).forEach(function(recipe) {
+    var totalAmount = getDumplingTotalAmount(recipe);
+    if (totalAmount !== null) recipe.servings = String(totalAmount);
+  });
+}
+
+async function syncDumplingTotalAmountsToDatabase() {
+  try {
+    if (!db || !allRecipes || !allRecipes.length) return;
+
+    var updates = [];
+    allRecipes.forEach(function(recipe) {
+      var totalAmount = getDumplingTotalAmount(recipe);
+      if (totalAmount === null) return;
+
+      var value = String(totalAmount);
+      if (String(recipe.servings || '').trim() !== value) {
+        recipe.servings = value;
+      }
+
+      updates.push(
+        db.from('recipes')
+          .update({ servings: value })
+          .eq('id', recipe.id)
+      );
+    });
+
+    if (!updates.length) return;
+    await Promise.all(updates);
+  } catch(e) {
+    console.warn('Dumpling total amount sync failed:', e);
+  }
+}
+// Categories to hide from the automatic Kitchen sidebar/pills.
+// Dumpling is rendered manually as a parent with nested subcategories.
+const KITCHEN_HIDDEN_CATS = [
+  'Hot Appetizers','Dumplings','Soups',
+  'Dumpling','Juicy Dumpling','Steamed Dumpling','Boiled Dumpling',
+  'House-Made Noodles','Egg Noodles','White Noodles','Green Noodles','Turmeric Noodles','Tumeric Noodles'
+];
 const MAIN_CATS    = ['Beef Dishes','Tofu Dishes','Pork Dishes','Fried Rice','Stir Fried Noodle','Seafood','Poultry','Appetizers'];
 const ALL_CATS = ['All', ...BAKERY_CATS, ...KITCHEN_CATS, ...MAIN_CATS];
 
@@ -1175,7 +1381,11 @@ const CAT_STYLE = {
   'Cookies':             { icon: '🍪', cls: 'bakery' },
 
   'Hot Appetizers':      { icon: '🔥', cls: 'kitchen' },
+  'Dumpling':            { icon: '🥟', cls: 'kitchen' },
   'Dumplings':           { icon: '🥟', cls: 'kitchen' },
+  'Juicy Dumpling':      { icon: '🥟', cls: 'kitchen' },
+  'Steamed Dumpling':    { icon: '🥟', cls: 'kitchen' },
+  'Boiled Dumpling':     { icon: '🥟', cls: 'kitchen' },
   'Soups':               { icon: '🍲', cls: 'kitchen' },
   'Soup Noodles':        { icon: '🍜', cls: 'kitchen' },
   'Noodle Dishes':       { icon: '🍝', cls: 'kitchen' },
@@ -1414,22 +1624,22 @@ const SEED = [
     preparation:'1. Blanch beef shank in boiling water 5 min to remove impurities. Rinse clean.\n2. Char onion halves and ginger slices directly on a flame or in a dry skillet until darkened.\n3. Combine cleaned beef, charred aromatics, soy sauce, dark soy sauce, Shaoxing wine, doubanjiang, sugar, garlic, star anise, cinnamon, bay leaves, Sichuan peppercorns, and white pepper in a large pot with water.\n4. Bring to a boil, skim foam thoroughly, then reduce to a low simmer.\n5. Cook 3 to 4 hours until beef is very tender and broth is deep, rich, and dark.\n6. Strain broth. Taste and adjust seasoning. Slice beef thin against the grain. Store in broth.\n7. To serve: ladle dark broth and sliced beef into the soup scoop. Bring to a full boil.\n8. Blanch fresh spinach and place in the serving bowl. Pour boiling soup and beef over the spinach.\n9. Top with diced green onion and cilantro. Drizzle sesame oil and serve immediately.' },
 
   // -- HOUSE-MADE NOODLES ----------------------------
-  { category:'House-Made Noodles', title:'White Noodles', difficulty:'Intermediate', servings:'4 to 6 portions', prep_time:'15 min + 1 hr rest', cook_time:'2 min',
+  { category:'White Noodles', title:'White Noodles', difficulty:'Intermediate', servings:'4 to 6 portions', prep_time:'15 min + 1 hr rest', cook_time:'2 min',
     description:'The restaurant\'s workhorse noodle - a clean, neutral fresh wheat noodle made from a firm, simple dough. Smooth, slightly chewy, and versatile. Used across all soup noodle and noodle dish preparations.',
     ingredients:'- 2 cups all-purpose flour\n- 1/2 tsp salt\n- 2/3 cup water (adjust as needed, room temperature)\n- Extra flour for dusting\n- Sesame oil (a few drops, for storing cooked noodles)',
     preparation:'1. Combine flour and salt in a large bowl. Add water gradually, mixing until a shaggy dough forms.\n2. Turn out onto a clean surface and knead firmly for 8 to 10 min until smooth and firm - noticeably firmer than bread dough. If sticky, add flour one tablespoon at a time.\n3. Wrap tightly in plastic wrap and rest at room temperature for a minimum of 30 min, preferably 1 hour.\n4. Divide rested dough into manageable portions. Using a rolling pin or pasta machine, roll each to approximately 1 to 2 mm thin.\n5. Dust generously with flour. Fold loosely and cut into noodles of desired width.\n6. Shake off excess flour. Cook in rapidly boiling salted water for 1 to 2 min until just cooked through.\n7. Drain thoroughly. Toss immediately with a few drops of sesame oil. Store refrigerated and use within 2 days.' },
 
-  { category:'House-Made Noodles', title:'Yellow Noodles', difficulty:'Intermediate', servings:'4 to 6 portions', prep_time:'15 min + 30 min rest', cook_time:'2 min',
+  { category:'Egg Noodles', title:'Egg Noodles', difficulty:'Intermediate', servings:'4 to 6 portions', prep_time:'15 min + 30 min rest', cook_time:'2 min',
     description:'Rich egg noodles with a beautiful golden color and a satisfying bite. The egg enriches the dough for a silkier texture and deeper flavor. Used in cold noodle dishes where the noodle itself stands out.',
     ingredients:'- 2 cups all-purpose flour\n- 3 large eggs\n- 1/2 tsp salt\n- 1 tsp sesame oil\n- Extra flour for dusting\n- Sesame oil (a few drops, for storing cooked noodles)',
     preparation:'1. Mound flour on a clean work surface and make a well in the center.\n2. Crack eggs into the well. Add salt and sesame oil. Beat eggs lightly with a fork, then gradually incorporate flour from the inside edges inward.\n3. Once dough comes together, knead firmly for 10 min until smooth, firm, and elastic. Wrap and rest 30 min.\n4. Using a pasta machine or rolling pin, roll rested dough very thin - 1 to 2 mm.\n5. Dust generously with flour, fold loosely, and cut into thin noodles.\n6. Cook in rapidly boiling salted water for 1 to 2 min. Drain well.\n7. Toss with a few drops of sesame oil immediately after draining. Use immediately for hot dishes or chill for cold noodle preparations.' },
 
-  { category:'House-Made Noodles', title:'Turmeric Noodles', difficulty:'Intermediate', servings:'4 to 6 portions', prep_time:'15 min + 45 min rest', cook_time:'2 min',
+  { category:'Turmeric Noodles', title:'Turmeric Noodles', difficulty:'Intermediate', servings:'4 to 6 portions', prep_time:'15 min + 45 min rest', cook_time:'2 min',
     description:'A visually striking golden noodle built on the white noodle base, elevated with ground turmeric. Earthy warmth and a deep vibrant yellow that deepens as it rests. Chewy, clean, and beautiful on the plate.',
     ingredients:'- 2 cups all-purpose flour\n- 1 1/2 tsp ground turmeric\n- 1/2 tsp salt\n- 2/3 cup warm water (adjust as needed)\n- 1 tsp sesame oil\n- Extra flour for dusting',
     preparation:'1. Whisk ground turmeric and salt into the flour until completely and evenly distributed - the dry mixture should be uniformly yellow with no streaks.\n2. Add warm water gradually while mixing, then knead on a clean surface for 8 to 10 min until smooth and firm.\n3. Wrap tightly in plastic wrap and rest 30 to 45 min. The turmeric color will deepen and become more vibrant as the dough rests.\n4. Divide into portions and roll very thin (1 to 2 mm) using a rolling pin or pasta machine.\n5. Dust generously with flour, fold loosely, and cut into noodles of desired width.\n6. Boil in rapidly boiling salted water for 1 to 2 min until just cooked through. Drain well.\n7. Toss immediately with a few drops of sesame oil. Store refrigerated and use within 2 days.' },
 
-  { category:'House-Made Noodles', title:'Green Noodles', difficulty:'Intermediate', servings:'4 to 6 portions', prep_time:'20 min + 30 min rest', cook_time:'2 min',
+  { category:'Green Noodles', title:'Green Noodles', difficulty:'Intermediate', servings:'4 to 6 portions', prep_time:'20 min + 30 min rest', cook_time:'2 min',
     description:'A vivid, naturally colored spinach noodle - the signature green noodle of the house. Blanched spinach is pureed and worked into the dough for a bright, grassy hue and subtly earthy flavor.',
     ingredients:'- 2 cups all-purpose flour\n- 1/2 tsp salt\n- 4 oz fresh spinach\n- 1/4 cup water\n- 1 tsp sesame oil\n- Extra flour for dusting\n- Sesame oil (a few drops, for storing cooked noodles)',
     preparation:'1. Blanch fresh spinach in boiling water 30 seconds. Transfer immediately to an ice bath to preserve the bright green color.\n2. Squeeze out all water from the spinach as thoroughly as possible.\n3. Blend squeezed spinach with 1/4 cup water until completely smooth. Strain through a fine-mesh sieve. You need approximately 1/2 cup of vibrant green liquid.\n4. Mix flour and salt in a large bowl. Add spinach liquid gradually, kneading into a smooth, firm, bright green dough. Adjust water or flour as needed.\n5. Wrap tightly in plastic wrap and rest 30 min.\n6. Divide into portions and roll very thin (1 to 2 mm).\n7. Dust generously with flour, fold loosely, and cut into noodles of desired width.\n8. Boil in rapidly boiling salted water for 1 to 2 min. Drain thoroughly.\n9. Toss immediately with a few drops of sesame oil. Use within 2 days for best color and texture.' },
@@ -2243,7 +2453,12 @@ async function boot() {
       await seedRecipes(SEED, 'Initializing recipe collection...');
     } else {
       allRecipes = res.data;
+      applyRecipeImageOverrides();
+      applyDumplingTotalAmountsLocal();
+      applyHouseMadeNoodleCategoriesLocal();
       render();
+      await syncDumplingTotalAmountsToDatabase();
+      await syncHouseMadeNoodleCategoriesToDatabase();
       // NOTE: intentionally NOT re-seeding missing SEED titles.
       // The old check re-inserted any title found in SEED but not in the DB,
       // which caused deleted recipes to reappear on every page refresh.
@@ -2256,7 +2471,7 @@ async function boot() {
     // Include all possible category names (including aliases/renamed ones)
     var knownCats = new Set(BAKERY_CATS.concat(KITCHEN_CATS).concat(MAIN_CATS)
       .concat(WOK_CATS).concat(NOODLE_CATS)
-      .concat(['Choux puffs','Cakes','Macarons','Macaron','Hot Appetizers','Dumplings','Soups'])
+      .concat(['Choux puffs','Cakes','Macarons','Macaron','Hot Appetizers','Dumpling','Dumplings','Juicy Dumpling','Steamed Dumpling','Boiled Dumpling','House-Made Noodles','Egg Noodles','White Noodles','Green Noodles','Turmeric Noodles','Tumeric Noodles','Soup Noodles','Noodle Dishes','Soups'])
       .map(function(c){ return c.toLowerCase().trim(); }));
     var unknownCats = {};
     (allRecipes || []).forEach(function(r) {
@@ -2298,7 +2513,19 @@ async function seedRecipes(rows, loadingMsg, append) {
 // ===================================================
 function applyFilters() {
   var r = allRecipes.slice();
-  if (activeCat !== 'All') r = r.filter(function(x) { return x.category === activeCat; });
+  if (activeCat !== 'All') {
+    if (activeCat === DUMPLING_PARENT_CAT) {
+      r = r.filter(function(x) {
+        return DUMPLING_SUBCATS.indexOf(x.category) !== -1;
+      });
+    } else if (activeCat === HOUSE_MADE_NOODLES_PARENT_CAT) {
+      r = r.filter(function(x) {
+        return HOUSE_MADE_NOODLES_SUBCATS.indexOf(x.category) !== -1;
+      });
+    } else {
+      r = r.filter(function(x) { return x.category === activeCat; });
+    }
+  }
   if (searchQ.trim()) {
     var q = searchQ.toLowerCase();
     r = r.filter(function(x) {
@@ -2342,8 +2569,24 @@ function updateSub() {
 
 function counts() {
   var c = {};
-  ['All'].concat(BAKERY_CATS).concat(KITCHEN_CATS).concat(MAIN_CATS).forEach(function(x) { c[x] = 0; });
-  allRecipes.forEach(function(r) { if (c[r.category] !== undefined) c[r.category]++; });
+  ['All'].concat(BAKERY_CATS).concat(KITCHEN_CATS).concat(MAIN_CATS)
+    .concat(DUMPLING_SUBCATS).concat(HOUSE_MADE_NOODLES_SUBCATS)
+    .forEach(function(x) { c[x] = 0; });
+
+  allRecipes.forEach(function(r) {
+    if (!r || !r.category) return;
+    if (c[r.category] === undefined) c[r.category] = 0;
+    c[r.category]++;
+  });
+
+  c[DUMPLING_PARENT_CAT] = DUMPLING_SUBCATS.reduce(function(total, cat) {
+    return total + (c[cat] || 0);
+  }, 0);
+
+  c[HOUSE_MADE_NOODLES_PARENT_CAT] = HOUSE_MADE_NOODLES_SUBCATS.reduce(function(total, cat) {
+    return total + (c[cat] || 0);
+  }, 0);
+
   c['All'] = allRecipes.length;
   return c;
 }
@@ -2360,6 +2603,12 @@ function _kmGroupCats(hardcoded, groupName) {
   }
   hardcoded.forEach(function(n){
     var k = String(n).toLowerCase().trim();
+    if (groupName.toLowerCase().trim() === 'noodle' && (
+      DUMPLING_PARENT_CAT.toLowerCase() === k ||
+      DUMPLING_SUBCATS.map(function(x){ return x.toLowerCase(); }).indexOf(k) !== -1 ||
+      HOUSE_MADE_NOODLES_SUBCATS.map(function(x){ return x.toLowerCase(); }).indexOf(k) !== -1 ||
+      k === 'dumplings'
+    )) return;
     if (!seen[k] && !hideSet[k]) { seen[k] = 1; out.push(n); }
   });
   try {
@@ -2367,6 +2616,12 @@ function _kmGroupCats(hardcoded, groupName) {
       if (!c || !c.name) return;
       if ((c.group_name || '').toLowerCase().trim() !== groupName.toLowerCase().trim()) return;
       var k = String(c.name).toLowerCase().trim();
+      if (groupName.toLowerCase().trim() === 'noodle' && (
+        DUMPLING_PARENT_CAT.toLowerCase() === k ||
+        DUMPLING_SUBCATS.map(function(x){ return x.toLowerCase(); }).indexOf(k) !== -1 ||
+        HOUSE_MADE_NOODLES_SUBCATS.map(function(x){ return x.toLowerCase(); }).indexOf(k) !== -1 ||
+        k === 'dumplings'
+      )) return;
       if (!seen[k] && !hideSet[k]) { seen[k] = 1; out.push(c.name); }
     });
   } catch(e) { console.warn('_kmGroupCats merge failed:', e); }
@@ -2375,6 +2630,87 @@ function _kmGroupCats(hardcoded, groupName) {
 
 // Helper used by bakery sidebar rows — avoids quote-inside-quote in onclick strings
 // _openBakery and _openSideAt are declared as hoisted functions below
+
+
+function toggleDumplingSection() {
+  dumplingOpen = !dumplingOpen;
+  renderSB();
+}
+
+function openDumplingParent() {
+  dumplingOpen = true;
+  setCat(DUMPLING_PARENT_CAT);
+}
+
+function openDumplingSubcategory(cat) {
+  dumplingOpen = true;
+  setCat(cat);
+}
+
+function renderDumplingSidebar(ct) {
+  var parentActive = activeCat === DUMPLING_PARENT_CAT || DUMPLING_SUBCATS.indexOf(activeCat) !== -1;
+  var html = '';
+
+  html += '<div class="cat-it ' + (parentActive ? 'active' : '') + '" style="padding-left:18px;" onclick="openDumplingParent()">' +
+    '<span onclick="event.stopPropagation();toggleDumplingSection()" style="width:16px;display:inline-flex;justify-content:center;color:var(--gold);font-size:10px;transform:' + (dumplingOpen ? 'rotate(90deg)' : 'rotate(0deg)') + ';transition:transform .18s;">▶</span>' +
+    '<span style="margin-right:2px;">🥟</span>' +
+    '<span class="cat-it-name">Dumpling</span>' +
+    '<span class="cat-n">' + (ct[DUMPLING_PARENT_CAT] || 0) + '</span>' +
+  '</div>';
+
+  if (dumplingOpen) {
+    html += '<div id="dumpling-sub-cats">';
+    DUMPLING_SUBCATS.forEach(function(cat) {
+      html += '<div class="cat-it ' + (activeCat === cat ? 'active' : '') + '" onclick="openDumplingSubcategory(\'' + ea(cat) + '\')" style="padding-left:46px;font-size:11.5px;">' +
+        '<span class="cat-it-name">' + cat + '</span>' +
+        '<span class="cat-n">' + (ct[cat] || 0) + '</span>' +
+      '</div>';
+    });
+    html += '</div>';
+  }
+
+  return html;
+}
+
+function toggleHouseMadeNoodlesSection() {
+  houseMadeNoodlesOpen = !houseMadeNoodlesOpen;
+  renderSB();
+}
+
+function openHouseMadeNoodlesParent() {
+  houseMadeNoodlesOpen = true;
+  setCat(HOUSE_MADE_NOODLES_PARENT_CAT);
+}
+
+function openHouseMadeNoodlesSubcategory(cat) {
+  houseMadeNoodlesOpen = true;
+  setCat(cat);
+}
+
+function renderHouseMadeNoodlesSidebar(ct) {
+  var parentActive = activeCat === HOUSE_MADE_NOODLES_PARENT_CAT || HOUSE_MADE_NOODLES_SUBCATS.indexOf(activeCat) !== -1;
+  var html = '';
+
+  html += '<div class="cat-it ' + (parentActive ? 'active' : '') + '" style="padding-left:18px;" onclick="openHouseMadeNoodlesParent()">' +
+    '<span onclick="event.stopPropagation();toggleHouseMadeNoodlesSection()" style="width:16px;display:inline-flex;justify-content:center;color:var(--gold);font-size:10px;transform:' + (houseMadeNoodlesOpen ? 'rotate(90deg)' : 'rotate(0deg)') + ';transition:transform .18s;">▶</span>' +
+    '<span style="margin-right:2px;">🍜</span>' +
+    '<span class="cat-it-name">House-Made Noodles</span>' +
+    '<span class="cat-n">' + (ct[HOUSE_MADE_NOODLES_PARENT_CAT] || 0) + '</span>' +
+  '</div>';
+
+  if (houseMadeNoodlesOpen) {
+    html += '<div id="house-made-noodles-sub-cats">';
+    HOUSE_MADE_NOODLES_SUBCATS.forEach(function(cat) {
+      html += '<div class="cat-it ' + (activeCat === cat ? 'active' : '') + '" onclick="openHouseMadeNoodlesSubcategory(\'' + ea(cat) + '\')" style="padding-left:46px;font-size:11.5px;">' +
+        '<span class="cat-it-name">' + cat + '</span>' +
+        '<span class="cat-n">' + (ct[cat] || 0) + '</span>' +
+      '</div>';
+    });
+    html += '</div>';
+  }
+
+  return html;
+}
 
 function renderSB() {
   var ct = counts();
@@ -2479,7 +2815,7 @@ function renderSB() {
   }
 
   if (kEl) {
-    kEl.innerHTML = _kmGroupCats(KITCHEN_CATS, 'Kitchen').map(makeRow).join('');
+    kEl.innerHTML = renderDumplingSidebar(ct) + renderHouseMadeNoodlesSidebar(ct) + _kmGroupCats(KITCHEN_CATS, 'Kitchen').map(makeRow).join('');
     kEl.querySelectorAll('.cat-it-add[data-addcat]').forEach(function(btn) {
       btn.addEventListener('click', function(e) {
         e.stopPropagation();
@@ -2495,6 +2831,8 @@ function renderPills() {
   if (!el) return;
   var allCats = ['All']
     .concat(_kmGroupCats(BAKERY_CATS,  'Bakery'))
+    .concat([DUMPLING_PARENT_CAT].concat(DUMPLING_SUBCATS))
+    .concat([HOUSE_MADE_NOODLES_PARENT_CAT].concat(HOUSE_MADE_NOODLES_SUBCATS))
     .concat(_kmGroupCats(KITCHEN_CATS, 'Kitchen'))
     .concat(_kmGroupCats(MAIN_CATS,    'Main Dishes'));
   el.innerHTML = allCats.map(function(c) {
@@ -2520,7 +2858,7 @@ function renderGrid() {
       '<div class="c-head"><span class="c-badge">' + esc(r.category) + '</span><div class="c-title">' + esc(r.title) + '</div></div>' +
       '<div class="c-desc">' + esc(firstLine(r.description||'')) + '</div>' +
       '<div class="c-meta">' +
-        '<div class="mc"><span class="ml">Serves</span><span class="mv">' + esc(r.servings||'-') + '</span></div>' +
+        '<div class="mc"><span class="ml">' + esc(recipeQuantityLabel(r)) + '</span><span class="mv">' + esc(recipeQuantityValue(r)) + '</span></div>' +
         '<div class="mc"><span class="ml">Prep</span><span class="mv">' + esc(r.prep_time||'-') + '</span></div>' +
         '<div class="mc"><span class="ml">Cook</span><span class="mv">' + esc(r.cook_time||'-') + '</span></div>' +
         '<div class="mc"><span class="ml">Level</span><span class="mv ' + dc(r.difficulty) + '">' + esc(r.difficulty||'-') + '</span></div>' +
@@ -2558,7 +2896,7 @@ function buildDetail(r) {
     '<div class="det-title">' + esc(r.title) + '</div>' +
     '<div class="det-desc">' + esc(r.description||'').split('\n').join('<br>') + '</div>' +
     '<div class="det-meta">' +
-      '<div class="dmc"><span class="dml">Servings</span><span class="dmv">' + esc(r.servings||'-') + '</span></div>' +
+      '<div class="dmc"><span class="dml">' + esc(recipeQuantityDetailLabel(r)) + '</span><span class="dmv">' + esc(recipeQuantityValue(r)) + '</span></div>' +
       '<div class="dmc"><span class="dml">Prep Time</span><span class="dmv">' + esc(r.prep_time||'-') + '</span></div>' +
       '<div class="dmc"><span class="dml">Cook Time</span><span class="dmv">' + esc(r.cook_time||'-') + '</span></div>' +
       '<div class="dmc"><span class="dml">Difficulty</span><span class="dmv ' + dc(r.difficulty) + '">' + esc(r.difficulty||'-') + '</span></div>' +
@@ -3071,7 +3409,7 @@ function _rebuildCatsFromDB() {
   }
 
   if (bakery.length)  { BAKERY_CATS.length  = 0; _merge(bakery,  ['Tarts & Pastries','Choux puffs','Cake Rolls','Chilled Desserts','Cookies']).forEach(function(n){ BAKERY_CATS.push(n);  }); }
-  if (kitchen.length) { KITCHEN_CATS.length = 0; _merge(kitchen, ['Hot Appetizers','Dumplings','Soups','Soup Noodles','Noodle Dishes','House-Made Noodles','Over Rice','Sauces & Condiments']).forEach(function(n){ KITCHEN_CATS.push(n); }); }
+  if (kitchen.length) { KITCHEN_CATS.length = 0; _merge(kitchen, ['Dumpling','Hot Appetizers','Dumplings','Soups','House-Made Noodles','Over Rice','Sauces & Condiments']).forEach(function(n){ KITCHEN_CATS.push(n); }); }
   if (main.length)    { MAIN_CATS.length    = 0; _merge(main,    ['Beef Dishes','Tofu Dishes','Pork Dishes','Fried Rice','Stir Fried Noodle','Seafood','Poultry']).forEach(function(n){ MAIN_CATS.push(n);    }); }
   if (wok.length)     { WOK_CATS.length     = 0; _merge(wok,     ['Beef Dishes','Tofu Dishes','Pork Dishes','Fried Rice','Stir Fried Noodle','Seafood','Poultry']).forEach(function(n){ WOK_CATS.push(n);     }); }
   if (noodle.length)  { NOODLE_CATS.length  = 0; _merge(noodle,  ['Soup Noodles','Noodle Dishes']).forEach(function(n){ NOODLE_CATS.push(n); }); }
@@ -3671,7 +4009,7 @@ var KITCHEN_MANUAL_ORDER = [
 ];
 
 var KITCHEN_CATS_ORDER = [
-  'Hot Appetizers','Dumplings','Soups','Soup Noodles','Over Rice','Noodle Dishes'
+  'Hot Appetizers','Dumplings','Soups','Over Rice'
 ];
 
 // Plating Guide section labels — editable display names stored in Supabase
@@ -3765,23 +4103,97 @@ window.kmStripStaleSpinners = function() {
   } catch(e) {}
 };
 
-// Single-pass image fallback: when a card photo fails to load, try the kebab-case
-// slug from the GitHub product images repo. Runs only once per img to avoid loops.
+
+// ===================================================
+// RECIPE PHOTO OVERRIDES START
+// Exact GitHub filenames. GitHub raw URLs are case-sensitive.
+// ===================================================
+const RECIPE_IMAGE_BASE =
+  "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/";
+
+const RECIPE_IMAGE_FILE_OVERRIDES = {
+  "SHRIMP & PORK STEAMED DUMPLINGS": "SHRIMP-PORK-STEAMED-DUMPLINGS.jpg",
+  "CURRY CHICKEN JUICY DUMPLINGS": "curry-chicken-juicy-dumplings.jpg.jpg",
+  "PORK & SHRIMP STEAMED DUMPLINGS": "QQDumplingHouse_PorkAndShrimpSteamedDumplings.jpg",
+  "SHRIMP AND PORK STEAMED DUMPLINGS": "SHRIMP-PORK-STEAMED-DUMPLINGS.jpg"
+};
+
+function normalizeRecipeImageTitle(title) {
+  return String(title || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, " ");
+}
+
+function getRecipeImageOverride(title) {
+  var key = normalizeRecipeImageTitle(title);
+  var fileName = RECIPE_IMAGE_FILE_OVERRIDES[key];
+  return fileName ? RECIPE_IMAGE_BASE + fileName + "?v=4" : "";
+}
+
+function applyRecipeImageOverrides() {
+  try {
+    (window.allRecipes || allRecipes || []).forEach(function(recipe) {
+      var fixedUrl = getRecipeImageOverride(recipe.title);
+      if (fixedUrl) recipe.photo = fixedUrl;
+    });
+  } catch (e) {}
+}
+// ===================================================
+// RECIPE PHOTO OVERRIDES END
+// ===================================================
+
+// Multi-step image fallback. GitHub filenames are case-sensitive, so try exact overrides first.
 window.kmCardImgFallback = function(img) {
   try {
-    if (!img || img.dataset.kmFallbackTried === '1') { img && (img.style.display = 'none'); return; }
-    img.dataset.kmFallbackTried = '1';
-    var title = (img.alt || '').toString();
-    if (!title) { img.style.display = 'none'; return; }
-    var slug = title.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-    var url  = 'https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/' + slug + '.jpg';
-    if (img.src !== url) {
-      img.onerror = function() { img.style.display = 'none'; };
-      img.src = url;
-    } else {
-      img.style.display = 'none';
+    if (!img) return;
+
+    var title = (img.alt || "").toString();
+    var base = "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/";
+    var exactUrl = typeof getRecipeImageOverride === "function" ? getRecipeImageOverride(title) : "";
+
+    if (!img.dataset.kmFallbackStep) {
+      img.dataset.kmFallbackStep = "exact";
+      if (exactUrl && img.src !== exactUrl) {
+        img.src = exactUrl;
+        return;
+      }
     }
-  } catch (e) { try { img.style.display = 'none'; } catch(_){} }
+
+    if (img.dataset.kmFallbackStep === "exact") {
+      img.dataset.kmFallbackStep = "slug-jpg";
+      var slug = title
+        .toLowerCase()
+        .trim()
+        .replace(/&/g, "and")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+
+      if (slug) {
+        img.src = base + slug + ".jpg?v=4";
+        return;
+      }
+    }
+
+    if (img.dataset.kmFallbackStep === "slug-jpg") {
+      img.dataset.kmFallbackStep = "slug-png";
+      var pngSlug = title
+        .toLowerCase()
+        .trim()
+        .replace(/&/g, "and")
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+
+      if (pngSlug) {
+        img.src = base + pngSlug + ".png?v=4";
+        return;
+      }
+    }
+
+    img.style.display = "none";
+  } catch (e) {
+    try { img.style.display = "none"; } catch (_) {}
+  }
 };
 
 var NOODLE_CATS = ['Hot Appetizers','Dumplings','Soups','Soup Noodles','Noodle Dishes','Over Rice'];
