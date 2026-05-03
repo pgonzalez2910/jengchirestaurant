@@ -879,7 +879,7 @@
             </td>
 
             <td>
-              <strong>${escapeHtml(formatDuration(log.duration_seconds))}</strong>
+              <strong>${escapeHtml(formatDuration(log.time_on_page_seconds || log.duration_seconds))}</strong>
             </td>
 
             <td>
@@ -925,6 +925,47 @@
       return data;
     }
 
+    function normalizeAccessLog(visit) {
+      return {
+        id: visit.id,
+        access_log_id: visit.access_log_id || visit.session_id || visit.visit_id || visit.id,
+        entered_at: visit.entered_at || visit.visit_started_at || visit.created_at,
+        last_seen_at: visit.last_seen_at || visit.updated_at || visit.visit_ended_at || visit.created_at,
+        language: visit.language || visit.selected_language || visit.browser_language || "Unknown",
+        page_url: visit.page_url,
+        page_path: visit.page_path || "/",
+        referrer: visit.referrer,
+        user_agent: visit.user_agent,
+        ip_address: visit.ip_address,
+        forwarded_for: visit.forwarded_for,
+        city: visit.city || null,
+        region: visit.region || null,
+        country: visit.country || null,
+        started_form: visit.started_form === true || visit.form_started === true,
+        submitted_application: visit.submitted_application === true || visit.application_submitted === true,
+        application_id: visit.application_id,
+        time_on_page_seconds: visit.time_on_page_seconds || visit.duration_seconds || 0,
+        duration_seconds: visit.duration_seconds || visit.time_on_page_seconds || 0,
+        event_type: visit.event_type || visit.last_event
+      };
+    }
+
+    function buildSummary(data, applications, accessLogs) {
+      const summary = data.summary || {};
+
+      return {
+        totalApplications: summary.total_applications ?? applications.length,
+        totalVisits: summary.total_visits ?? accessLogs.length,
+        submittedVisits: summary.submitted_visits ?? accessLogs.filter(log => log.submitted_application).length,
+        englishVisits: summary.english_visits ?? summary.english_applications ?? accessLogs.filter(log => {
+          return normalizeLanguage(log.language).toLowerCase() === "english";
+        }).length,
+        spanishVisits: summary.spanish_visits ?? summary.spanish_applications ?? accessLogs.filter(log => {
+          return normalizeLanguage(log.language).toLowerCase() === "spanish";
+        }).length
+      };
+    }
+
     async function loadDashboardData() {
       if (!sessionToken) return;
 
@@ -953,24 +994,33 @@
       document.getElementById("adminMeta").textContent =
         `${clean(adminInfo?.full_name)} • ${clean(adminInfo?.username)} • ${clean(adminInfo?.role)}`;
 
+      const applications = Array.isArray(data.applications) ? data.applications : [];
+      const rawAccessLogs = Array.isArray(data.access_logs)
+        ? data.access_logs
+        : Array.isArray(data.visits)
+          ? data.visits
+          : [];
+
+      allAccessLogs = rawAccessLogs.map(normalizeAccessLog);
+
+      const summary = buildSummary(data, applications, allAccessLogs);
+
       document.getElementById("totalApplications").textContent =
-        clean(data.summary?.total_applications || 0);
+        clean(summary.totalApplications);
 
       document.getElementById("totalVisits").textContent =
-        clean(data.summary?.total_visits || 0);
+        clean(summary.totalVisits);
 
       document.getElementById("submittedVisits").textContent =
-        clean(data.summary?.submitted_visits || 0);
+        clean(summary.submittedVisits);
 
       document.getElementById("englishApplications").textContent =
-        clean(data.summary?.english_applications || data.summary?.english_visits || 0);
+        clean(summary.englishVisits);
 
       document.getElementById("spanishApplications").textContent =
-        clean(data.summary?.spanish_applications || data.summary?.spanish_visits || 0);
+        clean(summary.spanishVisits);
 
-      renderApplications(data.applications || []);
-
-      allAccessLogs = Array.isArray(data.access_logs) ? data.access_logs : [];
+      renderApplications(applications);
       renderAccessLogs(getFilteredAccessLogs());
     }
 
