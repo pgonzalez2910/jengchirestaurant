@@ -1161,6 +1161,125 @@ const KITCHEN_CATS = ['Dumpling','Hot Appetizers','Dumplings','Soups','Soup Nood
 const DUMPLING_PARENT_CAT = 'Dumpling';
 const DUMPLING_SUBCATS = ['Juicy Dumpling','Steamed Dumpling','Boiled Dumpling'];
 var dumplingOpen = true;
+
+// ===================================================
+// DUMPLING TOTAL AMOUNT FIX
+// Source: Dumplingv4.xlsx, cell H2 on each recipe sheet.
+// Removes old card text like "Menu item: $15.25 / 8".
+// ===================================================
+const DUMPLING_TOTAL_AMOUNT_BY_TITLE = {
+  'SMALL JUICY DUMPLINGS': 1881,
+  'SMALL JUICY STEAMED DUMPLINGS': 1881,
+
+  'CURRY CHICKEN JUICY DUMPLINGS': 1638,
+  'CHICKEN CURRY JUICY DUMPLINGS': 1638,
+  'CURRY CHICKEN JUICY STEAMED DUMPLINGS': 1638,
+
+  'FIERY JUICY DUMPLINGS': 1716,
+  'FIERY JUICY STEAMED DUMPLINGS': 1716,
+
+  'PORK & CRAB JUICY DUMPLINGS': 1450,
+  'PORK AND CRAB JUICY DUMPLINGS': 1450,
+  'CRAB MEAT AND PORK DUMPLINGS': 1450,
+  'CRAB PORK JUICY DUMPLINGS': 1450,
+
+  'BEEF JUICY DUMPLINGS': 2020,
+
+  'SHRIMP & PORK STEAMED DUMPLINGS': 2002,
+  'SHRIMP AND PORK STEAMED DUMPLINGS': 2002,
+  'PORK & SHRIMP STEAMED DUMPLINGS': 2002,
+  'PORK AND SHRIMP STEAMED DUMPLINGS': 2002,
+
+  'CHICKEN STEAMED DUMPLINGS': 1573,
+  'CHICKEN STEAM DUMPLINGS': 1573,
+
+  'VEGETARIAN STEAMED DUMPLINGS': 2800,
+  'VEGETARIAN PAN FRIED DUMPLINGS': 2800,
+  'VEGETARIAN BOILED DUMPLINGS': 2800,
+  'VEGETERIAN BOILED DUMPLINGS': 2800,
+
+  'PORK & NAPA BOILED DUMPLINGS': 2002,
+  'PORK AND NAPA BOILED DUMPLINGS': 2002,
+  'PORK NAPA BOILED DUMPLINGS': 2002,
+
+  'PORK & LEEK BOILED DUMPLINGS': 4620,
+  'PORK AND LEEK BOILED DUMPLINGS': 4620,
+  'PORK LEEK BOILED DUMPLINGS': 4620,
+
+  'BEEF BOILED DUMPLINGS': 2020,
+
+  'PORK, SHRIMP & LEEK BOILED DUMPLINGS': 4466,
+  'PORK SHRIMP & LEEK BOILED DUMPLINGS': 4466,
+  'PORK SHRIMP LEEK BOILED DUMPLINGS': 4466,
+  'PORK, SHRIMP AND LEEK BOILED DUMPLINGS': 4466,
+
+  'CHICKEN & ZUCCHINI BOILED DUMPLINGS': 4060,
+  'CHICKEN AND ZUCCHINI BOILED DUMPLINGS': 4060,
+  'CHICKEN ZUCCHINI BOILED DUMPLINGS': 4060,
+  'CHICKEN BOILED DUMPLINGS': 4060
+};
+
+function normalizeDumplingTitle(title) {
+  return String(title || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ');
+}
+
+function getDumplingTotalAmount(recipe) {
+  if (!recipe) return null;
+  var key = normalizeDumplingTitle(recipe.title);
+  if (DUMPLING_TOTAL_AMOUNT_BY_TITLE[key] !== undefined) return DUMPLING_TOTAL_AMOUNT_BY_TITLE[key];
+  return null;
+}
+
+function recipeQuantityLabel(recipe) {
+  return getDumplingTotalAmount(recipe) !== null ? 'Total Amount' : 'Serves';
+}
+
+function recipeQuantityDetailLabel(recipe) {
+  return getDumplingTotalAmount(recipe) !== null ? 'Total Amount' : 'Servings';
+}
+
+function recipeQuantityValue(recipe) {
+  var totalAmount = getDumplingTotalAmount(recipe);
+  return totalAmount !== null ? String(totalAmount) : (recipe && recipe.servings ? recipe.servings : '-');
+}
+
+function applyDumplingTotalAmountsLocal() {
+  (allRecipes || []).forEach(function(recipe) {
+    var totalAmount = getDumplingTotalAmount(recipe);
+    if (totalAmount !== null) recipe.servings = String(totalAmount);
+  });
+}
+
+async function syncDumplingTotalAmountsToDatabase() {
+  try {
+    if (!db || !allRecipes || !allRecipes.length) return;
+
+    var updates = [];
+    allRecipes.forEach(function(recipe) {
+      var totalAmount = getDumplingTotalAmount(recipe);
+      if (totalAmount === null) return;
+
+      var value = String(totalAmount);
+      if (String(recipe.servings || '').trim() !== value) {
+        recipe.servings = value;
+      }
+
+      updates.push(
+        db.from('recipes')
+          .update({ servings: value })
+          .eq('id', recipe.id)
+      );
+    });
+
+    if (!updates.length) return;
+    await Promise.all(updates);
+  } catch(e) {
+    console.warn('Dumpling total amount sync failed:', e);
+  }
+}
 // Categories to hide from the automatic Kitchen sidebar/pills.
 // Dumpling is rendered manually as a parent with nested subcategories.
 const KITCHEN_HIDDEN_CATS = [
@@ -2254,7 +2373,9 @@ async function boot() {
     } else {
       allRecipes = res.data;
       applyRecipeImageOverrides();
+      applyDumplingTotalAmountsLocal();
       render();
+      await syncDumplingTotalAmountsToDatabase();
       // NOTE: intentionally NOT re-seeding missing SEED titles.
       // The old check re-inserted any title found in SEED but not in the DB,
       // which caused deleted recipes to reappear on every page refresh.
@@ -2592,7 +2713,7 @@ function renderGrid() {
       '<div class="c-head"><span class="c-badge">' + esc(r.category) + '</span><div class="c-title">' + esc(r.title) + '</div></div>' +
       '<div class="c-desc">' + esc(firstLine(r.description||'')) + '</div>' +
       '<div class="c-meta">' +
-        '<div class="mc"><span class="ml">Serves</span><span class="mv">' + esc(r.servings||'-') + '</span></div>' +
+        '<div class="mc"><span class="ml">' + esc(recipeQuantityLabel(r)) + '</span><span class="mv">' + esc(recipeQuantityValue(r)) + '</span></div>' +
         '<div class="mc"><span class="ml">Prep</span><span class="mv">' + esc(r.prep_time||'-') + '</span></div>' +
         '<div class="mc"><span class="ml">Cook</span><span class="mv">' + esc(r.cook_time||'-') + '</span></div>' +
         '<div class="mc"><span class="ml">Level</span><span class="mv ' + dc(r.difficulty) + '">' + esc(r.difficulty||'-') + '</span></div>' +
@@ -2630,7 +2751,7 @@ function buildDetail(r) {
     '<div class="det-title">' + esc(r.title) + '</div>' +
     '<div class="det-desc">' + esc(r.description||'').split('\n').join('<br>') + '</div>' +
     '<div class="det-meta">' +
-      '<div class="dmc"><span class="dml">Servings</span><span class="dmv">' + esc(r.servings||'-') + '</span></div>' +
+      '<div class="dmc"><span class="dml">' + esc(recipeQuantityDetailLabel(r)) + '</span><span class="dmv">' + esc(recipeQuantityValue(r)) + '</span></div>' +
       '<div class="dmc"><span class="dml">Prep Time</span><span class="dmv">' + esc(r.prep_time||'-') + '</span></div>' +
       '<div class="dmc"><span class="dml">Cook Time</span><span class="dmv">' + esc(r.cook_time||'-') + '</span></div>' +
       '<div class="dmc"><span class="dml">Difficulty</span><span class="dmv ' + dc(r.difficulty) + '">' + esc(r.difficulty||'-') + '</span></div>' +
