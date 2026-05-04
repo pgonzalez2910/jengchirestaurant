@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.04.v15-cross-table-duplicate-check-warning';
+        var VERSION = '2026.05.04.v16-robust-cross-table-duplicate-warning';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -55090,6 +55090,511 @@ document.addEventListener('change', function(event) {
 })();
 </script>
 <!-- ========== END JC CHECK REGISTER CROSS-TABLE DUPLICATE WARNING V15 ========== -->
+
+
+<!-- ========== JC CHECK REGISTER ROBUST DUPLICATE WARNING V16 ========== -->
+<script id="jc-check-register-robust-duplicate-warning-v16">
+(function () {
+    "use strict";
+
+    const CHECK_TABLE = "check_register";
+    const INVOICE_TABLE = "invoices";
+    const DEBOUNCE_MS = 220;
+
+    const state = {
+        timer: null,
+        activeRequest: 0,
+        duplicate: null,
+        editingId: null,
+        previousAutoSave: null,
+        previousSaveNow: null,
+        previousEdit: null,
+        previousNew: null
+    };
+
+    function safeText(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function normalizeCheck(value) {
+        return String(value || "")
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, "");
+    }
+
+    function displayCheck(value) {
+        return String(value || "").trim();
+    }
+
+    function searchToken(value) {
+        return String(value || "")
+            .trim()
+            .replace(/[%_]/g, "")
+            .replace(/[^a-zA-Z0-9-]/g, "");
+    }
+
+    function money(value) {
+        const number = Number.parseFloat(value || 0);
+        return "$" + number.toLocaleString("en-US", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function setStatus(message, tone) {
+        const status = document.getElementById("checkRegisterSaveStatus");
+        if (!status) return;
+
+        status.textContent = message;
+        status.style.color = tone === "success" ? "#15803d" : tone === "error" ? "#b91c1c" : "#64748b";
+    }
+
+    function getCheckNumber() {
+        return document.getElementById("checkFormNumber")?.value || "";
+    }
+
+    function getSaveButton() {
+        return document.getElementById("checkRegisterSaveButton");
+    }
+
+    function ensureWarningBox() {
+        let box = document.getElementById("checkRegisterDuplicateBox");
+        if (box) return box;
+
+        const actions = document.querySelector(".check-register-actions");
+        if (!actions || !actions.parentElement) return null;
+
+        box = document.createElement("div");
+        box.id = "checkRegisterDuplicateBox";
+        box.className = "check-register-duplicate-box";
+        actions.parentElement.insertBefore(box, actions);
+
+        return box;
+    }
+
+    function injectStyles() {
+        if (document.getElementById("jc-robust-duplicate-style-v16")) return;
+
+        const style = document.createElement("style");
+        style.id = "jc-robust-duplicate-style-v16";
+        style.textContent = `
+            #checkRegisterDuplicateBox.v16-duplicate-active {
+                display: flex !important;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+                margin-top: 0.75rem;
+                margin-bottom: 0.75rem;
+                padding: 0.9rem 1rem;
+                border-radius: 12px;
+                border: 1px solid #fca5a5;
+                background: linear-gradient(180deg, #fff7f7, #fef2f2);
+                color: #991b1b;
+                font-size: 0.78rem;
+                font-weight: 800;
+                box-shadow: 0 8px 20px rgba(185, 28, 28, 0.08);
+            }
+
+            #checkRegisterDuplicateBox.v16-duplicate-active .v16-duplicate-pill {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.25rem;
+                padding: 0.16rem 0.5rem;
+                border-radius: 999px;
+                background: #fee2e2;
+                color: #7f1d1d;
+                font-size: 0.63rem;
+                font-weight: 900;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                margin-left: 0.35rem;
+            }
+
+            #checkRegisterDuplicateBox.v16-available-active {
+                display: flex !important;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+                margin-top: 0.75rem;
+                margin-bottom: 0.75rem;
+                padding: 0.75rem 1rem;
+                border-radius: 12px;
+                border: 1px solid #bbf7d0;
+                background: #f0fdf4;
+                color: #166534;
+                font-size: 0.76rem;
+                font-weight: 800;
+            }
+
+            #checkFormNumber.v16-duplicate-input {
+                border-color: #dc2626 !important;
+                box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.18) !important;
+                background: #fff7f7 !important;
+            }
+
+            #checkFormNumber.v16-checking-input {
+                border-color: #2563eb !important;
+                box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14) !important;
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    function unlockSave() {
+        const button = getSaveButton();
+        if (!button) return;
+
+        button.disabled = false;
+        button.style.opacity = "1";
+        button.title = "";
+    }
+
+    function lockSave() {
+        const button = getSaveButton();
+        if (!button) return;
+
+        button.disabled = true;
+        button.style.opacity = "0.55";
+        button.title = "This check number already exists.";
+    }
+
+    function clearWarning() {
+        const box = ensureWarningBox();
+        const input = document.getElementById("checkFormNumber");
+
+        state.duplicate = null;
+
+        if (box) {
+            box.classList.remove("v16-duplicate-active", "v16-available-active", "cross-table-active");
+            box.innerHTML = "";
+        }
+
+        if (input) {
+            input.classList.remove("v16-duplicate-input", "v16-checking-input", "cross-table-duplicate", "cross-table-checking");
+        }
+
+        unlockSave();
+    }
+
+    function renderAvailable(checkNumber) {
+        const box = ensureWarningBox();
+        const input = document.getElementById("checkFormNumber");
+
+        state.duplicate = null;
+
+        if (input) {
+            input.classList.remove("v16-duplicate-input", "cross-table-duplicate", "v16-checking-input", "cross-table-checking");
+        }
+
+        unlockSave();
+
+        if (!box) return;
+
+        box.classList.remove("v16-duplicate-active", "cross-table-active");
+        box.classList.add("v16-available-active");
+        box.innerHTML = `
+            <div>
+                <i class="fas fa-circle-check"></i>
+                Check # <strong>${safeText(checkNumber)}</strong> is available.
+            </div>
+        `;
+    }
+
+    function renderDuplicate(duplicate) {
+        const box = ensureWarningBox();
+        const input = document.getElementById("checkFormNumber");
+
+        state.duplicate = duplicate;
+
+        if (input) {
+            input.classList.remove("v16-checking-input", "cross-table-checking");
+            input.classList.add("v16-duplicate-input", "cross-table-duplicate");
+        }
+
+        lockSave();
+
+        if (!box) return;
+
+        const sourceLabel = duplicate.source === "invoice"
+            ? "Invoice Tracking"
+            : "Check Register";
+
+        const actionHtml = duplicate.source === "check_register" && duplicate.id
+            ? `<button class="btn btn-secondary" type="button" onclick="window.jcCheckRegisterEdit('${safeText(duplicate.id)}')">
+                   <i class="fas fa-folder-open"></i> Open Existing
+               </button>`
+            : `<button class="btn btn-secondary" type="button" onclick="window.jcCheckRegisterSilentSyncInvoices && window.jcCheckRegisterSilentSyncInvoices({force:true, reason:'duplicate-warning-sync'})">
+                   <i class="fas fa-arrows-rotate"></i> Sync Now
+               </button>`;
+
+        box.classList.remove("v16-available-active");
+        box.classList.add("v16-duplicate-active", "cross-table-active");
+        box.innerHTML = `
+            <div>
+                <i class="fas fa-triangle-exclamation"></i>
+                Check # <strong>${safeText(duplicate.check_number)}</strong> already exists.
+                <span class="v16-duplicate-pill">${safeText(sourceLabel)}</span>
+                <div style="margin-top:0.3rem;font-weight:700;color:#7f1d1d;">
+                    ${safeText(duplicate.vendor || "Unknown vendor")}
+                    ${duplicate.check_date ? " · " + safeText(duplicate.check_date) : ""}
+                    ${duplicate.amount !== undefined && duplicate.amount !== null ? " · " + safeText(money(duplicate.amount)) : ""}
+                    ${duplicate.invoice_number ? " · Invoice " + safeText(duplicate.invoice_number) : ""}
+                </div>
+            </div>
+            ${actionHtml}
+        `;
+    }
+
+    function isSameCheck(row, normalized) {
+        return normalizeCheck(row.check_number) === normalized;
+    }
+
+    async function lookupCheckRegister(rawCheckNumber) {
+        const normalized = normalizeCheck(rawCheckNumber);
+        const token = searchToken(rawCheckNumber);
+        if (!normalized || typeof supabaseClient === "undefined") return null;
+
+        const query = supabaseClient
+            .from(CHECK_TABLE)
+            .select("id, check_date, check_number, vendor, amount, reason, source_table")
+            .limit(100);
+
+        const { data, error } = token
+            ? await query.ilike("check_number", `%${token}%`)
+            : await query;
+
+        if (error) {
+            console.warn("[Check Register] v16 check_register duplicate lookup failed:", error);
+            return null;
+        }
+
+        const match = (data || []).find(row => {
+            if (state.editingId && row.id === state.editingId) return false;
+            return isSameCheck(row, normalized);
+        });
+
+        return match ? { ...match, source: "check_register" } : null;
+    }
+
+    async function lookupInvoices(rawCheckNumber) {
+        const normalized = normalizeCheck(rawCheckNumber);
+        const token = searchToken(rawCheckNumber);
+        if (!normalized || typeof supabaseClient === "undefined") return null;
+
+        const query = supabaseClient
+            .from(INVOICE_TABLE)
+            .select("id, vendor, invoice_date, created_at, invoice_number, check_number, total, amount")
+            .not("check_number", "is", null)
+            .limit(100);
+
+        const { data, error } = token
+            ? await query.ilike("check_number", `%${token}%`)
+            : await query;
+
+        if (error) {
+            console.warn("[Check Register] v16 invoice duplicate lookup failed:", error);
+            return null;
+        }
+
+        const matches = (data || []).filter(row => isSameCheck(row, normalized));
+        if (!matches.length) return null;
+
+        const amount = matches.reduce((sum, row) => {
+            return sum + (Number.parseFloat(row.total || row.amount || 0) || 0);
+        }, 0);
+
+        const first = matches[0];
+
+        return {
+            source: "invoice",
+            id: String(first.id || ""),
+            check_date: String(first.invoice_date || first.created_at || "").slice(0, 10),
+            check_number: displayCheck(first.check_number || rawCheckNumber),
+            vendor: String(first.vendor || "Unknown").trim(),
+            amount,
+            invoice_number: matches
+                .map(row => String(row.invoice_number || "").trim())
+                .filter(Boolean)
+                .slice(0, 4)
+                .join(", ")
+        };
+    }
+
+    async function findDuplicate(rawCheckNumber) {
+        const inRegister = await lookupCheckRegister(rawCheckNumber);
+        if (inRegister) return inRegister;
+
+        return await lookupInvoices(rawCheckNumber);
+    }
+
+    async function checkDuplicateNow(showAvailable) {
+        const rawCheckNumber = getCheckNumber();
+        const normalized = normalizeCheck(rawCheckNumber);
+        const input = document.getElementById("checkFormNumber");
+        const requestId = ++state.activeRequest;
+
+        if (!normalized) {
+            clearWarning();
+            return null;
+        }
+
+        if (input) input.classList.add("v16-checking-input");
+        setStatus("Checking check number...", "neutral");
+
+        try {
+            const duplicate = await findDuplicate(rawCheckNumber);
+
+            if (requestId !== state.activeRequest) return state.duplicate;
+
+            if (duplicate) {
+                renderDuplicate(duplicate);
+                setStatus("Duplicate check blocked — already exists", "error");
+                return duplicate;
+            }
+
+            clearWarning();
+
+            if (showAvailable) {
+                renderAvailable(rawCheckNumber);
+                setStatus("Check number available", "success");
+            } else {
+                setStatus("Check number available", "success");
+            }
+
+            return null;
+        } catch (error) {
+            console.warn("[Check Register] v16 duplicate check failed:", error);
+            clearWarning();
+            setStatus("Could not verify duplicate check number", "error");
+            return null;
+        } finally {
+            if (input) input.classList.remove("v16-checking-input");
+        }
+    }
+
+    function debounceDuplicateCheck(showAvailable) {
+        clearTimeout(state.timer);
+        state.timer = setTimeout(function () {
+            checkDuplicateNow(showAvailable);
+        }, DEBOUNCE_MS);
+    }
+
+    function patchFunctions() {
+        if (window.__jcRobustDuplicateWarningV16Patched) return;
+        window.__jcRobustDuplicateWarningV16Patched = true;
+
+        state.previousAutoSave = window.jcCheckRegisterAutoSave;
+        state.previousSaveNow = window.jcCheckRegisterSaveNow;
+        state.previousEdit = window.jcCheckRegisterEdit;
+        state.previousNew = window.jcCheckRegisterNew;
+
+        window.jcCheckRegisterCheckDuplicate = function () {
+            debounceDuplicateCheck(true);
+        };
+
+        window.jcCheckRegisterAutoSave = function () {
+            clearTimeout(state.timer);
+
+            state.timer = setTimeout(async function () {
+                const duplicate = await checkDuplicateNow(false);
+
+                if (duplicate) {
+                    setStatus("Duplicate check blocked — open existing or sync first", "error");
+                    return;
+                }
+
+                if (typeof state.previousAutoSave === "function") {
+                    state.previousAutoSave.apply(window, arguments);
+                }
+            }, DEBOUNCE_MS);
+        };
+
+        window.jcCheckRegisterSaveNow = async function () {
+            const duplicate = await checkDuplicateNow(true);
+
+            if (duplicate) {
+                setStatus("Duplicate check blocked — this check is already in the system", "error");
+                alert(`Check # ${duplicate.check_number} already exists in ${duplicate.source === "invoice" ? "Invoice Tracking" : "Check Register"} for ${duplicate.vendor || "Unknown vendor"}.`);
+                return null;
+            }
+
+            return typeof state.previousSaveNow === "function"
+                ? state.previousSaveNow.apply(window, arguments)
+                : null;
+        };
+
+        window.jcCheckRegisterEdit = function (id) {
+            state.editingId = id || null;
+            clearWarning();
+
+            return typeof state.previousEdit === "function"
+                ? state.previousEdit.apply(window, arguments)
+                : undefined;
+        };
+
+        window.jcCheckRegisterNew = function () {
+            state.editingId = null;
+            clearWarning();
+
+            return typeof state.previousNew === "function"
+                ? state.previousNew.apply(window, arguments)
+                : undefined;
+        };
+    }
+
+    function bindInput() {
+        const input = document.getElementById("checkFormNumber");
+        if (!input || input.dataset.robustDuplicateV16Bound) return;
+
+        input.dataset.robustDuplicateV16Bound = "true";
+        input.addEventListener("input", function () {
+            debounceDuplicateCheck(true);
+        });
+        input.addEventListener("blur", function () {
+            checkDuplicateNow(true);
+        });
+    }
+
+    function bindSaveButton() {
+        const button = getSaveButton();
+        if (!button) return;
+
+        button.setAttribute("onclick", "window.jcCheckRegisterSaveNow()");
+    }
+
+    function boot() {
+        injectStyles();
+        patchFunctions();
+        ensureWarningBox();
+        bindInput();
+        bindSaveButton();
+
+        const observer = new MutationObserver(function () {
+            ensureWarningBox();
+            bindInput();
+            bindSaveButton();
+        });
+
+        if (document.body) {
+            observer.observe(document.body, { childList: true, subtree: true });
+        }
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", boot);
+    } else {
+        boot();
+    }
+})();
+</script>
+<!-- ========== END JC CHECK REGISTER ROBUST DUPLICATE WARNING V16 ========== -->
 
 </body>
 
