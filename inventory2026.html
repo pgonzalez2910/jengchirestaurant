@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.04.v12-check-register-silent-invoice-sync';
+        var VERSION = '2026.05.04.v13-check-register-sync-history-no-websocket';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -53931,19 +53931,26 @@ document.addEventListener('change', function(event) {
 
 
 <!-- file: inventory2026.html -->
-<script id="jc-check-register-silent-invoice-sync-v12">
+<script id="jc-check-register-silent-invoice-sync-v13">
 (function () {
     "use strict";
 
     const CHECK_TABLE = "check_register";
     const INVOICE_TABLE = "invoices";
     const SYNC_INTERVAL_MS = 30000;
+    const HISTORY_KEY = "jc_check_register_sync_history_v13";
+    const MAX_HISTORY_ITEMS = 18;
 
     const syncState = {
         running: false,
         timer: null,
         lastSignature: "",
-        subscription: null
+        lastSyncedAt: "",
+        lastSyncStatus: "Ready",
+        originalLoad: null,
+        originalOpen: null,
+        originalManualImport: null,
+        refreshingUi: false
     };
 
     function normalize(value) {
@@ -53957,8 +53964,27 @@ document.addEventListener('change', function(event) {
             .replace(/\s+/g, "");
     }
 
+    function safeText(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
     function todayValue() {
         return new Date().toISOString().slice(0, 10);
+    }
+
+    function nowLabel(date) {
+        return (date || new Date()).toLocaleString("en-US", {
+            month: "short",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit"
+        });
     }
 
     function invoiceAmount(invoice) {
@@ -54009,24 +54035,303 @@ document.addEventListener('change', function(event) {
         return "Vendor";
     }
 
-    function setSyncStatus(message, tone) {
-        const status = document.getElementById("checkRegisterImportStatus");
-        if (!status) return;
-
-        status.textContent = message;
-
-        if (tone === "success") {
-            status.style.color = "#15803d";
-        } else if (tone === "error") {
-            status.style.color = "#b91c1c";
-        } else {
-            status.style.color = "#64748b";
-        }
-    }
-
     function isCheckRegisterVisible() {
         const section = document.getElementById("checkRegister");
         return Boolean(section && section.classList.contains("active"));
+    }
+
+    function getHistory() {
+        try {
+            const raw = localStorage.getItem(HISTORY_KEY);
+            const parsed = JSON.parse(raw || "[]");
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+            return [];
+        }
+    }
+
+    function saveHistory(history) {
+        try {
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, MAX_HISTORY_ITEMS)));
+        } catch (error) {
+            console.warn("Unable to save sync history:", error);
+        }
+    }
+
+    function renderHistory() {
+        const list = document.getElementById("checkRegisterSyncHistoryList");
+        const empty = document.getElementById("checkRegisterSyncHistoryEmpty");
+        if (!list) return;
+
+        const history = getHistory();
+
+        if (empty) {
+            empty.style.display = history.length ? "none" : "block";
+        }
+
+        list.innerHTML = history.map(item => `
+            <div class="check-register-sync-history-item ${safeText(item.tone || "neutral")}">
+                <div>
+                    <strong>${safeText(item.title || "Sync")}</strong>
+                    <span>${safeText(item.message || "")}</span>
+                </div>
+                <em>${safeText(item.time || "")}</em>
+            </div>
+        `).join("");
+    }
+
+    function recordHistory(title, message, tone) {
+        const entry = {
+            title,
+            message,
+            tone: tone || "neutral",
+            time: nowLabel(new Date())
+        };
+
+        const history = [entry, ...getHistory()].slice(0, MAX_HISTORY_ITEMS);
+        saveHistory(history);
+        renderHistory();
+    }
+
+    function setSyncStatus(message, tone) {
+        const status = document.getElementById("checkRegisterImportStatus");
+        if (status) {
+            status.textContent = message;
+
+            if (tone === "success") {
+                status.style.color = "#15803d";
+            } else if (tone === "error") {
+                status.style.color = "#b91c1c";
+            } else if (tone === "warning") {
+                status.style.color = "#b45309";
+            } else {
+                status.style.color = "#64748b";
+            }
+        }
+
+        const badge = document.getElementById("checkRegisterSyncStatusBadge");
+        if (badge) {
+            badge.textContent = syncState.running ? "Syncing" : (tone === "error" ? "Attention" : "Active");
+            badge.className = "check-register-sync-badge " + (tone || "neutral");
+        }
+
+        const last = document.getElementById("checkRegisterLastSyncedAt");
+        if (last) {
+            last.textContent = syncState.lastSyncedAt
+                ? `Last synced: ${syncState.lastSyncedAt}`
+                : "Last synced: pending";
+        }
+    }
+
+    function updateLastSynced(tone, message) {
+        syncState.lastSyncedAt = nowLabel(new Date());
+        syncState.lastSyncStatus = message || "Sync complete";
+        setSyncStatus(message || "Sync complete", tone || "success");
+    }
+
+    function injectStyles() {
+        if (document.getElementById("jc-check-register-silent-sync-v13-style")) return;
+
+        const style = document.createElement("style");
+        style.id = "jc-check-register-silent-sync-v13-style";
+        style.textContent = `
+            .check-register-sync-tools {
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+                flex-wrap: wrap;
+                justify-content: flex-end;
+            }
+
+            .check-register-sync-meta {
+                display: flex;
+                align-items: center;
+                gap: 0.55rem;
+                flex-wrap: wrap;
+                margin-top: 0.45rem;
+                font-family: var(--font-mono);
+                font-size: 0.68rem;
+                color: #64748b;
+            }
+
+            .check-register-sync-badge {
+                display: inline-flex;
+                align-items: center;
+                border-radius: 999px;
+                padding: 0.15rem 0.5rem;
+                font-size: 0.62rem;
+                font-weight: 850;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                border: 1px solid #cbd5e1;
+                background: #f8fafc;
+                color: #475569;
+            }
+
+            .check-register-sync-badge.success {
+                border-color: #86efac;
+                background: #dcfce7;
+                color: #166534;
+            }
+
+            .check-register-sync-badge.error {
+                border-color: #fecaca;
+                background: #fee2e2;
+                color: #991b1b;
+            }
+
+            .check-register-sync-badge.warning {
+                border-color: #fed7aa;
+                background: #ffedd5;
+                color: #9a3412;
+            }
+
+            .check-register-sync-log {
+                margin-top: 0.7rem;
+                width: 100%;
+            }
+
+            .check-register-sync-log summary {
+                cursor: pointer;
+                color: #1d4ed8;
+                font-weight: 850;
+                font-size: 0.72rem;
+                user-select: none;
+            }
+
+            .check-register-sync-history-list {
+                margin-top: 0.55rem;
+                display: grid;
+                gap: 0.45rem;
+                max-height: 220px;
+                overflow: auto;
+                padding-right: 0.25rem;
+            }
+
+            .check-register-sync-history-item {
+                display: flex;
+                justify-content: space-between;
+                gap: 1rem;
+                border: 1px solid #e2e8f0;
+                background: #f8fafc;
+                border-radius: 10px;
+                padding: 0.5rem 0.65rem;
+            }
+
+            .check-register-sync-history-item strong {
+                display: block;
+                font-size: 0.7rem;
+                color: #0f172a;
+            }
+
+            .check-register-sync-history-item span {
+                display: block;
+                margin-top: 0.15rem;
+                font-size: 0.65rem;
+                color: #64748b;
+                font-family: var(--font-mono);
+            }
+
+            .check-register-sync-history-item em {
+                font-style: normal;
+                white-space: nowrap;
+                color: #94a3b8;
+                font-size: 0.65rem;
+                font-family: var(--font-mono);
+            }
+
+            .check-register-sync-history-item.success {
+                border-left: 4px solid #16a34a;
+            }
+
+            .check-register-sync-history-item.error {
+                border-left: 4px solid #dc2626;
+            }
+
+            .check-register-sync-history-item.warning {
+                border-left: 4px solid #f59e0b;
+            }
+
+            .check-register-sync-history-empty {
+                margin-top: 0.45rem;
+                color: #94a3b8;
+                font-family: var(--font-mono);
+                font-size: 0.68rem;
+            }
+
+            @media (max-width: 800px) {
+                .check-register-sync-tools {
+                    justify-content: flex-start;
+                }
+
+                .check-register-sync-history-item {
+                    flex-direction: column;
+                    gap: 0.25rem;
+                }
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    function ensureSyncUi() {
+        const panel = document.querySelector(".check-register-import-panel");
+        if (!panel) return;
+
+        const left = panel.querySelector("div");
+        if (left && !document.getElementById("checkRegisterSyncMeta")) {
+            const meta = document.createElement("div");
+            meta.id = "checkRegisterSyncMeta";
+            meta.className = "check-register-sync-meta";
+            meta.innerHTML = `
+                <span id="checkRegisterLastSyncedAt">Last synced: pending</span>
+                <span id="checkRegisterSyncStatusBadge" class="check-register-sync-badge">Active</span>
+                <span>Realtime disabled in Canvas; silent polling is active.</span>
+            `;
+            left.appendChild(meta);
+
+            const log = document.createElement("details");
+            log.id = "checkRegisterSyncLog";
+            log.className = "check-register-sync-log";
+            log.innerHTML = `
+                <summary><i class="fas fa-clock-rotate-left"></i> Sync History Log</summary>
+                <div id="checkRegisterSyncHistoryEmpty" class="check-register-sync-history-empty">
+                    No sync history yet.
+                </div>
+                <div id="checkRegisterSyncHistoryList" class="check-register-sync-history-list"></div>
+            `;
+            left.appendChild(log);
+        }
+
+        let tools = document.getElementById("checkRegisterSyncTools");
+        if (!tools) {
+            tools = document.createElement("div");
+            tools.id = "checkRegisterSyncTools";
+            tools.className = "check-register-sync-tools";
+
+            const existingImportButton = panel.querySelector("button[onclick*='jcCheckRegisterImportExistingChecks']");
+            if (existingImportButton) {
+                existingImportButton.insertAdjacentElement("beforebegin", tools);
+                tools.appendChild(existingImportButton);
+            } else {
+                panel.appendChild(tools);
+            }
+        }
+
+        if (!document.getElementById("checkRegisterSilentSyncBtn")) {
+            const button = document.createElement("button");
+            button.id = "checkRegisterSilentSyncBtn";
+            button.type = "button";
+            button.className = "btn btn-secondary";
+            button.innerHTML = '<i class="fas fa-arrows-rotate"></i> Sync Now';
+            button.onclick = function () {
+                silentSyncFromInvoices({ force: true, reason: "button" });
+            };
+            tools.appendChild(button);
+        }
+
+        renderHistory();
+        setSyncStatus(syncState.lastSyncStatus, "success");
     }
 
     function buildInvoiceSignature(invoices) {
@@ -54065,6 +54370,7 @@ document.addEventListener('change', function(event) {
 
     function buildInsertRows(invoices, existingChecks) {
         const existingByCheck = new Map();
+
         existingChecks.forEach(row => {
             const key = normalizeCheck(row.check_number);
             if (key) existingByCheck.set(key, row);
@@ -54143,6 +54449,7 @@ document.addEventListener('change', function(event) {
         });
 
         let updatedCount = 0;
+        let duplicateSkipped = 0;
 
         for (const invoice of invoices) {
             if (!isRealCheckNumber(invoice.check_number)) continue;
@@ -54157,7 +54464,10 @@ document.addEventListener('change', function(event) {
             if (!newCheckKey || newCheckKey === oldCheckKey) continue;
 
             const duplicateRow = existingByCheck.get(newCheckKey);
-            if (duplicateRow && duplicateRow.id !== importedRow.id) continue;
+            if (duplicateRow && duplicateRow.id !== importedRow.id) {
+                duplicateSkipped += 1;
+                continue;
+            }
 
             const vendor = String(invoice.vendor || importedRow.vendor || "UNKNOWN").trim().toUpperCase();
 
@@ -54175,24 +54485,54 @@ document.addEventListener('change', function(event) {
                 })
                 .eq("id", importedRow.id);
 
-            if (error && error.code !== "23505") throw error;
-            if (!error) updatedCount += 1;
+            if (error && error.code === "23505") {
+                duplicateSkipped += 1;
+                continue;
+            }
+
+            if (error) throw error;
+
+            updatedCount += 1;
         }
 
-        return updatedCount;
+        return { updatedCount, duplicateSkipped };
+    }
+
+    async function refreshCheckRegisterUi() {
+        if (syncState.refreshingUi) return;
+
+        if (typeof syncState.originalLoad === "function") {
+            syncState.refreshingUi = true;
+            try {
+                await syncState.originalLoad(true);
+            } finally {
+                syncState.refreshingUi = false;
+            }
+            return;
+        }
+
+        if (typeof window.jcCheckRegisterLoad === "function") {
+            syncState.refreshingUi = true;
+            try {
+                await window.jcCheckRegisterLoad(true);
+            } finally {
+                syncState.refreshingUi = false;
+            }
+        }
     }
 
     async function silentSyncFromInvoices(options) {
         const config = Object.assign({ force: false, refreshUi: true, reason: "timer" }, options || {});
 
+        ensureSyncUi();
+
         if (syncState.running || typeof supabaseClient === "undefined") return 0;
         if (!config.force && !isCheckRegisterVisible()) return 0;
 
         syncState.running = true;
+        setSyncStatus("Silent sync checking invoice updates...", "neutral");
 
         try {
-            setSyncStatus("Silent sync checking invoice updates...", "neutral");
-
             const [existingChecks, invoices] = await Promise.all([
                 fetchChecks(),
                 fetchInvoicesWithChecks()
@@ -54201,17 +54541,19 @@ document.addEventListener('change', function(event) {
             const signature = buildInvoiceSignature(invoices);
 
             if (!config.force && signature && signature === syncState.lastSignature) {
-                setSyncStatus("Silent sync active. No new invoice check updates.", "success");
+                const message = "Silent sync active. No new invoice check updates.";
+                updateLastSynced("success", message);
+                recordHistory("No Changes", `${message} Reason: ${config.reason}.`, "success");
                 return 0;
             }
 
             syncState.lastSignature = signature;
 
-            const updatedCount = await updateImportedRowsWhenInvoiceCheckChanged(invoices, existingChecks);
+            const updateResult = await updateImportedRowsWhenInvoiceCheckChanged(invoices, existingChecks);
             const insertRows = buildInsertRows(invoices, existingChecks);
 
             let insertedCount = 0;
-            let duplicateCount = 0;
+            let duplicateCount = updateResult.duplicateSkipped || 0;
 
             for (const row of insertRows) {
                 const { error } = await supabaseClient
@@ -54231,10 +54573,11 @@ document.addEventListener('change', function(event) {
                 throw error;
             }
 
+            const updatedCount = updateResult.updatedCount || 0;
             const changedCount = insertedCount + updatedCount;
 
-            if (changedCount > 0 && config.refreshUi && typeof window.jcCheckRegisterLoad === "function") {
-                await window.jcCheckRegisterLoad(true);
+            if (changedCount > 0 && config.refreshUi) {
+                await refreshCheckRegisterUi();
             }
 
             const parts = [];
@@ -54242,20 +54585,29 @@ document.addEventListener('change', function(event) {
             if (updatedCount) parts.push(`${updatedCount} updated`);
             if (duplicateCount) parts.push(`${duplicateCount} duplicate skipped`);
 
-            setSyncStatus(
-                parts.length
-                    ? `Silent sync complete: ${parts.join(", ")}.`
-                    : "Silent sync active. No new invoice check updates.",
+            const message = parts.length
+                ? `Silent sync complete: ${parts.join(", ")}.`
+                : "Silent sync active. No new invoice check updates.";
+
+            updateLastSynced("success", message);
+            recordHistory(
+                parts.length ? "Synced Updates" : "No Changes",
+                `${message} Reason: ${config.reason}.`,
                 "success"
             );
 
             return changedCount;
         } catch (error) {
             console.error("Silent invoice check sync failed:", error);
-            setSyncStatus("Silent sync failed: " + error.message, "error");
+
+            const message = "Silent sync failed: " + error.message;
+            updateLastSynced("error", message);
+            recordHistory("Sync Failed", `${message} Reason: ${config.reason}.`, "error");
+
             return 0;
         } finally {
             syncState.running = false;
+            setSyncStatus(syncState.lastSyncStatus, syncState.lastSyncStatus.includes("failed") ? "error" : "success");
         }
     }
 
@@ -54268,19 +54620,20 @@ document.addEventListener('change', function(event) {
     }
 
     function patchCheckRegisterOpenAndLoad() {
-        if (window.__jcCheckRegisterSilentInvoiceSyncPatched) return;
-        window.__jcCheckRegisterSilentInvoiceSyncPatched = true;
+        if (window.__jcCheckRegisterSilentInvoiceSyncV13Patched) return;
+        window.__jcCheckRegisterSilentInvoiceSyncV13Patched = true;
 
-        const originalOpen = window.jcOpenCheckRegister;
-        const originalLoad = window.jcCheckRegisterLoad;
-        const originalManualImport = window.jcCheckRegisterImportExistingChecks;
+        syncState.originalOpen = window.jcOpenCheckRegister;
+        syncState.originalLoad = window.jcCheckRegisterLoad;
+        syncState.originalManualImport = window.jcCheckRegisterImportExistingChecks;
 
         window.jcOpenCheckRegister = function () {
-            const result = typeof originalOpen === "function"
-                ? originalOpen.apply(this, arguments)
+            const result = typeof syncState.originalOpen === "function"
+                ? syncState.originalOpen.apply(this, arguments)
                 : undefined;
 
             setTimeout(() => {
+                ensureSyncUi();
                 silentSyncFromInvoices({ force: true, reason: "open" });
             }, 600);
 
@@ -54288,20 +54641,24 @@ document.addEventListener('change', function(event) {
         };
 
         window.jcCheckRegisterLoad = async function () {
-            const result = typeof originalLoad === "function"
-                ? await originalLoad.apply(this, arguments)
+            const result = typeof syncState.originalLoad === "function"
+                ? await syncState.originalLoad.apply(this, arguments)
                 : undefined;
 
-            setTimeout(() => {
-                silentSyncFromInvoices({ force: true, reason: "load" });
-            }, 600);
+            ensureSyncUi();
+
+            if (!syncState.refreshingUi) {
+                setTimeout(() => {
+                    silentSyncFromInvoices({ force: true, reason: "load" });
+                }, 600);
+            }
 
             return result;
         };
 
         window.jcCheckRegisterImportExistingChecks = async function () {
-            if (typeof originalManualImport === "function") {
-                const result = await originalManualImport.apply(this, arguments);
+            if (typeof syncState.originalManualImport === "function") {
+                const result = await syncState.originalManualImport.apply(this, arguments);
                 await silentSyncFromInvoices({ force: true, reason: "manual-import" });
                 return result;
             }
@@ -54310,48 +54667,16 @@ document.addEventListener('change', function(event) {
         };
 
         window.jcCheckRegisterSilentSyncInvoices = silentSyncFromInvoices;
-    }
-
-    function subscribeToInvoiceChanges() {
-        if (!supabaseClient || !supabaseClient.channel || syncState.subscription) return;
-
-        try {
-            syncState.subscription = supabaseClient
-                .channel("jc-check-register-invoice-sync-v12")
-                .on(
-                    "postgres_changes",
-                    { event: "*", schema: "public", table: INVOICE_TABLE },
-                    function () {
-                        if (!isCheckRegisterVisible()) return;
-
-                        setTimeout(() => {
-                            silentSyncFromInvoices({ force: true, reason: "realtime" });
-                        }, 800);
-                    }
-                )
-                .subscribe();
-        } catch (error) {
-            console.warn("Invoice realtime sync unavailable; interval sync is active.", error);
-        }
-    }
-
-    function addSilentSyncButton() {
-        const panel = document.querySelector(".check-register-import-panel");
-        if (!panel || document.getElementById("checkRegisterSilentSyncBtn")) return;
-
-        const button = document.createElement("button");
-        button.id = "checkRegisterSilentSyncBtn";
-        button.type = "button";
-        button.className = "btn btn-secondary";
-        button.innerHTML = '<i class="fas fa-arrows-rotate"></i> Sync Now';
-        button.onclick = function () {
-            silentSyncFromInvoices({ force: true, reason: "button" });
+        window.jcCheckRegisterRenderSyncHistory = renderHistory;
+        window.jcCheckRegisterClearSyncHistory = function () {
+            saveHistory([]);
+            renderHistory();
+            recordHistory("History Cleared", "Sync history was cleared.", "warning");
         };
-
-        panel.appendChild(button);
     }
 
     function boot() {
+        injectStyles();
         patchCheckRegisterOpenAndLoad();
         scheduleSilentSync();
 
@@ -54366,8 +54691,8 @@ document.addEventListener('change', function(event) {
         });
 
         setTimeout(function () {
-            addSilentSyncButton();
-            subscribeToInvoiceChanges();
+            ensureSyncUi();
+            recordHistory("Sync Ready", "Silent polling is active. Realtime WebSocket is disabled to avoid Canvas security errors.", "success");
             silentSyncFromInvoices({ force: false, reason: "boot" });
         }, 1200);
     }
