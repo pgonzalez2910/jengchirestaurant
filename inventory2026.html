@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.04.v13-check-register-sync-history-no-websocket';
+        var VERSION = '2026.05.04.v14-check-register-active-silent-sync';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -53931,15 +53931,15 @@ document.addEventListener('change', function(event) {
 
 
 <!-- file: inventory2026.html -->
-<script id="jc-check-register-silent-invoice-sync-v13">
+<script id="jc-check-register-silent-invoice-sync-v14">
 (function () {
     "use strict";
 
     const CHECK_TABLE = "check_register";
     const INVOICE_TABLE = "invoices";
-    const SYNC_INTERVAL_MS = 30000;
-    const HISTORY_KEY = "jc_check_register_sync_history_v13";
-    const MAX_HISTORY_ITEMS = 18;
+    const SYNC_INTERVAL_MS = 15000;
+    const HISTORY_KEY = "jc_check_register_sync_history_v14";
+    const MAX_HISTORY_ITEMS = 24;
 
     const syncState = {
         running: false,
@@ -53950,7 +53950,9 @@ document.addEventListener('change', function(event) {
         originalLoad: null,
         originalOpen: null,
         originalManualImport: null,
-        refreshingUi: false
+        originalCorpNav: null,
+        refreshingUi: false,
+        activeObserver: null
     };
 
     function normalize(value) {
@@ -54042,8 +54044,7 @@ document.addEventListener('change', function(event) {
 
     function getHistory() {
         try {
-            const raw = localStorage.getItem(HISTORY_KEY);
-            const parsed = JSON.parse(raw || "[]");
+            const parsed = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
             return Array.isArray(parsed) ? parsed : [];
         } catch (error) {
             return [];
@@ -54070,204 +54071,166 @@ document.addEventListener('change', function(event) {
         }
 
         list.innerHTML = history.map(item => `
-            <div class="check-register-sync-history-item ${safeText(item.tone || "neutral")}">
-                <div>
-                    <strong>${safeText(item.title || "Sync")}</strong>
-                    <span>${safeText(item.message || "")}</span>
+            <div class="check-register-sync-history-item ${safeText(item.tone || "success")}">
+                <div style="display:flex;justify-content:space-between;gap:0.75rem;">
+                    <strong>${safeText(item.title)}</strong>
+                    <span>${safeText(item.time)}</span>
                 </div>
-                <em>${safeText(item.time || "")}</em>
+                <div>${safeText(item.detail)}</div>
             </div>
         `).join("");
     }
 
-    function recordHistory(title, message, tone) {
-        const entry = {
+    function recordHistory(title, detail, tone) {
+        const history = getHistory();
+
+        const last = history[0];
+        const time = nowLabel();
+        const nextItem = {
             title,
-            message,
-            tone: tone || "neutral",
-            time: nowLabel(new Date())
+            detail,
+            tone: tone || "success",
+            time
         };
 
-        const history = [entry, ...getHistory()].slice(0, MAX_HISTORY_ITEMS);
+        if (
+            last &&
+            last.title === nextItem.title &&
+            last.detail === nextItem.detail &&
+            Date.now() - Date.parse(last.rawTime || 0) < 5000
+        ) {
+            renderHistory();
+            return;
+        }
+
+        history.unshift({ ...nextItem, rawTime: new Date().toISOString() });
         saveHistory(history);
         renderHistory();
     }
 
     function setSyncStatus(message, tone) {
-        const status = document.getElementById("checkRegisterImportStatus");
-        if (status) {
-            status.textContent = message;
+        const status = document.getElementById("checkRegisterSyncStatus");
+        if (!status) return;
 
-            if (tone === "success") {
-                status.style.color = "#15803d";
-            } else if (tone === "error") {
-                status.style.color = "#b91c1c";
-            } else if (tone === "warning") {
-                status.style.color = "#b45309";
-            } else {
-                status.style.color = "#64748b";
-            }
-        }
-
-        const badge = document.getElementById("checkRegisterSyncStatusBadge");
-        if (badge) {
-            badge.textContent = syncState.running ? "Syncing" : (tone === "error" ? "Attention" : "Active");
-            badge.className = "check-register-sync-badge " + (tone || "neutral");
-        }
-
-        const last = document.getElementById("checkRegisterLastSyncedAt");
-        if (last) {
-            last.textContent = syncState.lastSyncedAt
-                ? `Last synced: ${syncState.lastSyncedAt}`
-                : "Last synced: pending";
-        }
+        status.textContent = message || "Ready";
+        status.className = "check-register-sync-status " + (tone || "neutral");
     }
 
     function updateLastSynced(tone, message) {
-        syncState.lastSyncedAt = nowLabel(new Date());
-        syncState.lastSyncStatus = message || "Sync complete";
-        setSyncStatus(message || "Sync complete", tone || "success");
+        syncState.lastSyncedAt = nowLabel();
+        syncState.lastSyncStatus = message || "Synced";
+
+        const stamp = document.getElementById("checkRegisterLastSyncedAt");
+        if (stamp) {
+            stamp.textContent = syncState.lastSyncedAt;
+        }
+
+        setSyncStatus(syncState.lastSyncStatus, tone || "success");
     }
 
     function injectStyles() {
-        if (document.getElementById("jc-check-register-silent-sync-v13-style")) return;
+        if (document.getElementById("jc-check-register-silent-sync-style-v14")) return;
 
         const style = document.createElement("style");
-        style.id = "jc-check-register-silent-sync-v13-style";
+        style.id = "jc-check-register-silent-sync-style-v14";
         style.textContent = `
-            .check-register-sync-tools {
+            .check-register-sync-toolbar {
                 display: flex;
                 align-items: center;
-                gap: 0.5rem;
+                justify-content: space-between;
+                gap: 0.75rem;
                 flex-wrap: wrap;
-                justify-content: flex-end;
+                width: 100%;
+                margin-top: 0.75rem;
+                padding-top: 0.75rem;
+                border-top: 1px solid rgba(226, 232, 240, 0.9);
             }
 
             .check-register-sync-meta {
                 display: flex;
                 align-items: center;
-                gap: 0.55rem;
+                gap: 0.75rem;
                 flex-wrap: wrap;
-                margin-top: 0.45rem;
-                font-family: var(--font-mono);
-                font-size: 0.68rem;
+                font-size: 0.72rem;
                 color: #64748b;
+                font-family: var(--font-mono);
             }
 
-            .check-register-sync-badge {
+            .check-register-sync-status {
                 display: inline-flex;
                 align-items: center;
+                gap: 0.35rem;
                 border-radius: 999px;
-                padding: 0.15rem 0.5rem;
-                font-size: 0.62rem;
+                padding: 0.3rem 0.65rem;
+                font-size: 0.68rem;
                 font-weight: 850;
-                text-transform: uppercase;
-                letter-spacing: 0.05em;
-                border: 1px solid #cbd5e1;
-                background: #f8fafc;
+                background: #f1f5f9;
                 color: #475569;
             }
 
-            .check-register-sync-badge.success {
-                border-color: #86efac;
+            .check-register-sync-status.success {
                 background: #dcfce7;
                 color: #166534;
             }
 
-            .check-register-sync-badge.error {
-                border-color: #fecaca;
+            .check-register-sync-status.error {
                 background: #fee2e2;
                 color: #991b1b;
             }
 
-            .check-register-sync-badge.warning {
-                border-color: #fed7aa;
-                background: #ffedd5;
-                color: #9a3412;
+            .check-register-sync-status.neutral {
+                background: #dbeafe;
+                color: #1d4ed8;
             }
 
-            .check-register-sync-log {
-                margin-top: 0.7rem;
+            .check-register-sync-history {
+                margin-top: 0.75rem;
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 12px;
+                padding: 0.75rem;
+                max-height: 180px;
+                overflow: auto;
                 width: 100%;
             }
 
-            .check-register-sync-log summary {
-                cursor: pointer;
-                color: #1d4ed8;
-                font-weight: 850;
+            .check-register-sync-history-title {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 0.75rem;
+                margin-bottom: 0.5rem;
                 font-size: 0.72rem;
-                user-select: none;
-            }
-
-            .check-register-sync-history-list {
-                margin-top: 0.55rem;
-                display: grid;
-                gap: 0.45rem;
-                max-height: 220px;
-                overflow: auto;
-                padding-right: 0.25rem;
+                font-weight: 850;
+                color: #334155;
+                text-transform: uppercase;
+                letter-spacing: 0.07em;
             }
 
             .check-register-sync-history-item {
-                display: flex;
-                justify-content: space-between;
-                gap: 1rem;
-                border: 1px solid #e2e8f0;
-                background: #f8fafc;
-                border-radius: 10px;
-                padding: 0.5rem 0.65rem;
-            }
-
-            .check-register-sync-history-item strong {
-                display: block;
+                border-left: 4px solid #22c55e;
+                background: white;
+                border-radius: 8px;
+                padding: 0.55rem 0.65rem;
+                margin-bottom: 0.5rem;
                 font-size: 0.7rem;
-                color: #0f172a;
-            }
-
-            .check-register-sync-history-item span {
-                display: block;
-                margin-top: 0.15rem;
-                font-size: 0.65rem;
-                color: #64748b;
-                font-family: var(--font-mono);
-            }
-
-            .check-register-sync-history-item em {
-                font-style: normal;
-                white-space: nowrap;
-                color: #94a3b8;
-                font-size: 0.65rem;
-                font-family: var(--font-mono);
-            }
-
-            .check-register-sync-history-item.success {
-                border-left: 4px solid #16a34a;
+                color: #475569;
+                box-shadow: 0 1px 4px rgba(15, 23, 42, 0.05);
             }
 
             .check-register-sync-history-item.error {
-                border-left: 4px solid #dc2626;
+                border-left-color: #dc2626;
             }
 
             .check-register-sync-history-item.warning {
-                border-left: 4px solid #f59e0b;
+                border-left-color: #f59e0b;
             }
 
             .check-register-sync-history-empty {
-                margin-top: 0.45rem;
+                font-size: 0.72rem;
                 color: #94a3b8;
-                font-family: var(--font-mono);
-                font-size: 0.68rem;
-            }
-
-            @media (max-width: 800px) {
-                .check-register-sync-tools {
-                    justify-content: flex-start;
-                }
-
-                .check-register-sync-history-item {
-                    flex-direction: column;
-                    gap: 0.25rem;
-                }
+                text-align: center;
+                padding: 0.75rem;
             }
         `;
 
@@ -54278,60 +54241,44 @@ document.addEventListener('change', function(event) {
         const panel = document.querySelector(".check-register-import-panel");
         if (!panel) return;
 
-        const left = panel.querySelector("div");
-        if (left && !document.getElementById("checkRegisterSyncMeta")) {
-            const meta = document.createElement("div");
-            meta.id = "checkRegisterSyncMeta";
-            meta.className = "check-register-sync-meta";
-            meta.innerHTML = `
-                <span id="checkRegisterLastSyncedAt">Last synced: pending</span>
-                <span id="checkRegisterSyncStatusBadge" class="check-register-sync-badge">Active</span>
-                <span>Realtime disabled in Canvas; silent polling is active.</span>
-            `;
-            left.appendChild(meta);
-
-            const log = document.createElement("details");
-            log.id = "checkRegisterSyncLog";
-            log.className = "check-register-sync-log";
-            log.innerHTML = `
-                <summary><i class="fas fa-clock-rotate-left"></i> Sync History Log</summary>
-                <div id="checkRegisterSyncHistoryEmpty" class="check-register-sync-history-empty">
-                    No sync history yet.
+        if (!document.getElementById("checkRegisterSyncToolbar")) {
+            const toolbar = document.createElement("div");
+            toolbar.id = "checkRegisterSyncToolbar";
+            toolbar.className = "check-register-sync-toolbar";
+            toolbar.innerHTML = `
+                <div class="check-register-sync-meta">
+                    <span><strong>Last synced:</strong> <span id="checkRegisterLastSyncedAt">${safeText(syncState.lastSyncedAt || "Not yet")}</span></span>
+                    <span id="checkRegisterSyncStatus" class="check-register-sync-status neutral">${safeText(syncState.lastSyncStatus || "Ready")}</span>
                 </div>
-                <div id="checkRegisterSyncHistoryList" class="check-register-sync-history-list"></div>
+                <div class="check-register-sync-actions">
+                    <button id="checkRegisterSilentSyncBtn" type="button" class="btn btn-secondary">
+                        <i class="fas fa-arrows-rotate"></i> Sync Now
+                    </button>
+                </div>
+                <div class="check-register-sync-history">
+                    <div class="check-register-sync-history-title">
+                        <span><i class="fas fa-clock-rotate-left"></i> Sync History</span>
+                        <button type="button" class="btn btn-secondary" style="padding:0.25rem 0.5rem;font-size:0.62rem;" onclick="window.jcCheckRegisterClearSyncHistory()">
+                            Clear
+                        </button>
+                    </div>
+                    <div id="checkRegisterSyncHistoryEmpty" class="check-register-sync-history-empty">No sync history yet.</div>
+                    <div id="checkRegisterSyncHistoryList"></div>
+                </div>
             `;
-            left.appendChild(log);
+            panel.appendChild(toolbar);
         }
 
-        let tools = document.getElementById("checkRegisterSyncTools");
-        if (!tools) {
-            tools = document.createElement("div");
-            tools.id = "checkRegisterSyncTools";
-            tools.className = "check-register-sync-tools";
-
-            const existingImportButton = panel.querySelector("button[onclick*='jcCheckRegisterImportExistingChecks']");
-            if (existingImportButton) {
-                existingImportButton.insertAdjacentElement("beforebegin", tools);
-                tools.appendChild(existingImportButton);
-            } else {
-                panel.appendChild(tools);
-            }
-        }
-
-        if (!document.getElementById("checkRegisterSilentSyncBtn")) {
-            const button = document.createElement("button");
-            button.id = "checkRegisterSilentSyncBtn";
-            button.type = "button";
-            button.className = "btn btn-secondary";
-            button.innerHTML = '<i class="fas fa-arrows-rotate"></i> Sync Now';
+        const button = document.getElementById("checkRegisterSilentSyncBtn");
+        if (button && !button.dataset.boundV14) {
+            button.dataset.boundV14 = "true";
             button.onclick = function () {
                 silentSyncFromInvoices({ force: true, reason: "button" });
             };
-            tools.appendChild(button);
         }
 
         renderHistory();
-        setSyncStatus(syncState.lastSyncStatus, "success");
+        setSyncStatus(syncState.lastSyncStatus, syncState.lastSyncStatus.includes("failed") ? "error" : "success");
     }
 
     function buildInvoiceSignature(invoices) {
@@ -54342,7 +54289,8 @@ document.addEventListener('change', function(event) {
                 normalizeCheck(invoice.check_number),
                 invoice.vendor || "",
                 invoice.invoice_date || "",
-                invoice.total || invoice.amount || 0
+                invoice.total || invoice.amount || 0,
+                invoice.updated_at || ""
             ].join("|"))
             .sort()
             .join("~");
@@ -54351,16 +54299,19 @@ document.addEventListener('change', function(event) {
     async function fetchChecks() {
         const { data, error } = await supabaseClient
             .from(CHECK_TABLE)
-            .select("id, check_date, check_number, vendor, category, reason, amount, status, notes, source_table, source_id, created_at, updated_at");
+            .select("id, check_date, check_number, vendor, category, reason, amount, status, notes, source_table, source_id")
+            .order("check_date", { ascending: false });
 
         if (error) throw error;
         return data || [];
     }
 
     async function fetchInvoicesWithChecks() {
+        const baseColumns = "id, vendor, invoice_date, created_at, invoice_number, check_number, total, amount, notes";
+
         const { data, error } = await supabaseClient
             .from(INVOICE_TABLE)
-            .select("id, vendor, invoice_date, created_at, invoice_number, check_number, total, amount, notes")
+            .select(baseColumns)
             .not("check_number", "is", null)
             .limit(15000);
 
@@ -54368,21 +54319,14 @@ document.addEventListener('change', function(event) {
         return data || [];
     }
 
-    function buildInsertRows(invoices, existingChecks) {
-        const existingByCheck = new Map();
-
-        existingChecks.forEach(row => {
-            const key = normalizeCheck(row.check_number);
-            if (key) existingByCheck.set(key, row);
-        });
-
+    function buildGroupedInvoiceRows(invoices) {
         const groupedByCheck = new Map();
 
         invoices
             .filter(invoice => isRealCheckNumber(invoice.check_number))
             .forEach(invoice => {
                 const checkKey = normalizeCheck(invoice.check_number);
-                if (!checkKey || existingByCheck.has(checkKey)) return;
+                if (!checkKey) return;
 
                 const vendor = String(invoice.vendor || "UNKNOWN").trim().toUpperCase();
                 const invoiceNumber = String(invoice.invoice_number || "").trim();
@@ -54396,11 +54340,11 @@ document.addEventListener('change', function(event) {
                         reason: vendor,
                         amount: 0,
                         status: normalize(invoice.check_number).includes("ach") ? "ACH" : "Cleared",
-                        notes: "",
                         source_table: INVOICE_TABLE,
                         source_id: String(invoice.id || ""),
                         invoice_numbers: [],
-                        vendors: new Set([vendor])
+                        vendors: new Set([vendor]),
+                        source_ids: []
                     });
                 }
 
@@ -54408,116 +54352,159 @@ document.addEventListener('change', function(event) {
                 row.amount += invoiceAmount(invoice);
                 row.vendors.add(vendor);
 
-                if (invoiceNumber) {
-                    row.invoice_numbers.push(invoiceNumber);
-                }
+                if (invoiceNumber) row.invoice_numbers.push(invoiceNumber);
+                if (invoice.id) row.source_ids.push(String(invoice.id));
             });
 
         return Array.from(groupedByCheck.values()).map(row => {
             const vendors = Array.from(row.vendors).filter(Boolean);
             const invoiceList = row.invoice_numbers.slice(0, 8).join(", ");
             const extraCount = Math.max(row.invoice_numbers.length - 8, 0);
+            const reason = vendors.length === 1 ? vendors[0] : vendors.join(" / ");
 
             return {
                 check_date: row.check_date || todayValue(),
                 check_number: row.check_number,
                 vendor: vendors.length === 1 ? vendors[0] : "MULTIPLE VENDORS",
                 category: row.category,
-                reason: vendors.length === 1 ? vendors[0] : vendors.join(" / "),
+                reason,
                 amount: Number(row.amount || 0),
                 status: row.status,
                 notes: invoiceList
                     ? `Silent sync from invoices ${invoiceList}${extraCount ? " +" + extraCount + " more" : ""}`
                     : "Silent sync from invoices",
                 source_table: INVOICE_TABLE,
-                source_id: row.source_id
+                source_id: row.source_id,
+                source_ids: row.source_ids
             };
         });
     }
 
-    async function updateImportedRowsWhenInvoiceCheckChanged(invoices, existingChecks) {
+    async function syncGroupedInvoiceRows(groupedRows, existingChecks) {
         const existingByCheck = new Map();
-        const importedBySource = new Map();
+        const importedBySourceId = new Map();
 
         existingChecks.forEach(row => {
             const checkKey = normalizeCheck(row.check_number);
             if (checkKey) existingByCheck.set(checkKey, row);
 
             if (row.source_table === INVOICE_TABLE && row.source_id) {
-                importedBySource.set(String(row.source_id), row);
+                importedBySourceId.set(String(row.source_id), row);
             }
         });
 
+        let insertedCount = 0;
         let updatedCount = 0;
         let duplicateSkipped = 0;
 
-        for (const invoice of invoices) {
-            if (!isRealCheckNumber(invoice.check_number)) continue;
+        for (const invoiceRow of groupedRows) {
+            const checkKey = normalizeCheck(invoiceRow.check_number);
+            const existingBySameCheck = existingByCheck.get(checkKey);
+            const existingBySource = invoiceRow.source_ids
+                .map(sourceId => importedBySourceId.get(String(sourceId)))
+                .find(Boolean);
 
-            const sourceKey = String(invoice.id || "");
-            const importedRow = importedBySource.get(sourceKey);
-            if (!importedRow) continue;
+            const target = existingBySameCheck || existingBySource;
 
-            const newCheckKey = normalizeCheck(invoice.check_number);
-            const oldCheckKey = normalizeCheck(importedRow.check_number);
+            if (target) {
+                const currentCheckKey = normalizeCheck(target.check_number);
+                const targetIsSameCheck = currentCheckKey === checkKey;
 
-            if (!newCheckKey || newCheckKey === oldCheckKey) continue;
+                if (!targetIsSameCheck && existingBySameCheck && existingBySameCheck.id !== target.id) {
+                    duplicateSkipped += 1;
+                    continue;
+                }
 
-            const duplicateRow = existingByCheck.get(newCheckKey);
-            if (duplicateRow && duplicateRow.id !== importedRow.id) {
-                duplicateSkipped += 1;
+                const shouldUpdate =
+                    target.source_table === INVOICE_TABLE &&
+                    (
+                        String(target.check_date || "") !== String(invoiceRow.check_date || "") ||
+                        normalizeCheck(target.check_number) !== checkKey ||
+                        normalize(target.vendor) !== normalize(invoiceRow.vendor) ||
+                        normalize(target.category) !== normalize(invoiceRow.category) ||
+                        normalize(target.reason) !== normalize(invoiceRow.reason) ||
+                        Number(target.amount || 0).toFixed(2) !== Number(invoiceRow.amount || 0).toFixed(2) ||
+                        normalize(target.status) !== normalize(invoiceRow.status)
+                    );
+
+                if (!shouldUpdate) continue;
+
+                const { error } = await supabaseClient
+                    .from(CHECK_TABLE)
+                    .update({
+                        check_date: invoiceRow.check_date,
+                        check_number: invoiceRow.check_number,
+                        vendor: invoiceRow.vendor,
+                        category: invoiceRow.category,
+                        reason: invoiceRow.reason,
+                        amount: invoiceRow.amount,
+                        status: invoiceRow.status,
+                        notes: invoiceRow.notes
+                    })
+                    .eq("id", target.id);
+
+                if (error && error.code === "23505") {
+                    duplicateSkipped += 1;
+                    continue;
+                }
+
+                if (error) throw error;
+
+                updatedCount += 1;
+                existingByCheck.set(checkKey, { ...target, ...invoiceRow });
                 continue;
             }
 
-            const vendor = String(invoice.vendor || importedRow.vendor || "UNKNOWN").trim().toUpperCase();
+            const insertPayload = {
+                check_date: invoiceRow.check_date,
+                check_number: invoiceRow.check_number,
+                vendor: invoiceRow.vendor,
+                category: invoiceRow.category,
+                reason: invoiceRow.reason,
+                amount: invoiceRow.amount,
+                status: invoiceRow.status,
+                notes: invoiceRow.notes,
+                source_table: INVOICE_TABLE,
+                source_id: invoiceRow.source_id
+            };
 
             const { error } = await supabaseClient
                 .from(CHECK_TABLE)
-                .update({
-                    check_date: invoiceDate(invoice),
-                    check_number: String(invoice.check_number || "").trim(),
-                    vendor,
-                    category: inferCategoryFromInvoice(invoice),
-                    reason: vendor,
-                    amount: invoiceAmount(invoice),
-                    status: normalize(invoice.check_number).includes("ach") ? "ACH" : "Cleared",
-                    notes: `Silent sync updated from invoice ${String(invoice.invoice_number || invoice.id || "")}`
-                })
-                .eq("id", importedRow.id);
+                .insert(insertPayload);
 
-            if (error && error.code === "23505") {
+            if (!error) {
+                insertedCount += 1;
+                existingByCheck.set(checkKey, insertPayload);
+                continue;
+            }
+
+            if (error.code === "23505") {
                 duplicateSkipped += 1;
                 continue;
             }
 
-            if (error) throw error;
-
-            updatedCount += 1;
+            throw error;
         }
 
-        return { updatedCount, duplicateSkipped };
+        return { insertedCount, updatedCount, duplicateSkipped };
     }
 
     async function refreshCheckRegisterUi() {
         if (syncState.refreshingUi) return;
 
-        if (typeof syncState.originalLoad === "function") {
-            syncState.refreshingUi = true;
-            try {
-                await syncState.originalLoad(true);
-            } finally {
-                syncState.refreshingUi = false;
-            }
-            return;
+        const loader = syncState.originalLoad || window.jcCheckRegisterLoad;
+        if (typeof loader !== "function") return;
+
+        syncState.refreshingUi = true;
+
+        try {
+            await loader(true, true);
+        } finally {
+            syncState.refreshingUi = false;
         }
 
-        if (typeof window.jcCheckRegisterLoad === "function") {
-            syncState.refreshingUi = true;
-            try {
-                await window.jcCheckRegisterLoad(true);
-            } finally {
-                syncState.refreshingUi = false;
-            }
+        if (typeof window.jcCheckRegisterRefreshKpiDashboard === "function") {
+            setTimeout(window.jcCheckRegisterRefreshKpiDashboard, 250);
         }
     }
 
@@ -54549,41 +54536,18 @@ document.addEventListener('change', function(event) {
 
             syncState.lastSignature = signature;
 
-            const updateResult = await updateImportedRowsWhenInvoiceCheckChanged(invoices, existingChecks);
-            const insertRows = buildInsertRows(invoices, existingChecks);
-
-            let insertedCount = 0;
-            let duplicateCount = updateResult.duplicateSkipped || 0;
-
-            for (const row of insertRows) {
-                const { error } = await supabaseClient
-                    .from(CHECK_TABLE)
-                    .insert(row);
-
-                if (!error) {
-                    insertedCount += 1;
-                    continue;
-                }
-
-                if (error.code === "23505") {
-                    duplicateCount += 1;
-                    continue;
-                }
-
-                throw error;
-            }
-
-            const updatedCount = updateResult.updatedCount || 0;
-            const changedCount = insertedCount + updatedCount;
+            const groupedRows = buildGroupedInvoiceRows(invoices);
+            const result = await syncGroupedInvoiceRows(groupedRows, existingChecks);
+            const changedCount = result.insertedCount + result.updatedCount;
 
             if (changedCount > 0 && config.refreshUi) {
                 await refreshCheckRegisterUi();
             }
 
             const parts = [];
-            if (insertedCount) parts.push(`${insertedCount} new`);
-            if (updatedCount) parts.push(`${updatedCount} updated`);
-            if (duplicateCount) parts.push(`${duplicateCount} duplicate skipped`);
+            if (result.insertedCount) parts.push(`${result.insertedCount} new`);
+            if (result.updatedCount) parts.push(`${result.updatedCount} updated`);
+            if (result.duplicateSkipped) parts.push(`${result.duplicateSkipped} duplicate skipped`);
 
             const message = parts.length
                 ? `Silent sync complete: ${parts.join(", ")}.`
@@ -54619,13 +54583,33 @@ document.addEventListener('change', function(event) {
         }, SYNC_INTERVAL_MS);
     }
 
-    function patchCheckRegisterOpenAndLoad() {
-        if (window.__jcCheckRegisterSilentInvoiceSyncV13Patched) return;
-        window.__jcCheckRegisterSilentInvoiceSyncV13Patched = true;
+    function watchActiveSection() {
+        const section = document.getElementById("checkRegister");
+        if (!section || syncState.activeObserver) return;
+
+        syncState.activeObserver = new MutationObserver(() => {
+            if (isCheckRegisterVisible()) {
+                setTimeout(() => {
+                    ensureSyncUi();
+                    silentSyncFromInvoices({ force: true, reason: "section-active" });
+                }, 250);
+            }
+        });
+
+        syncState.activeObserver.observe(section, {
+            attributes: true,
+            attributeFilter: ["class"]
+        });
+    }
+
+    function patchCheckRegisterOpenLoadAndNav() {
+        if (window.__jcCheckRegisterSilentInvoiceSyncV14Patched) return;
+        window.__jcCheckRegisterSilentInvoiceSyncV14Patched = true;
 
         syncState.originalOpen = window.jcOpenCheckRegister;
         syncState.originalLoad = window.jcCheckRegisterLoad;
         syncState.originalManualImport = window.jcCheckRegisterImportExistingChecks;
+        syncState.originalCorpNav = window.corpNav;
 
         window.jcOpenCheckRegister = function () {
             const result = typeof syncState.originalOpen === "function"
@@ -54635,7 +54619,7 @@ document.addEventListener('change', function(event) {
             setTimeout(() => {
                 ensureSyncUi();
                 silentSyncFromInvoices({ force: true, reason: "open" });
-            }, 600);
+            }, 350);
 
             return result;
         };
@@ -54650,7 +54634,7 @@ document.addEventListener('change', function(event) {
             if (!syncState.refreshingUi) {
                 setTimeout(() => {
                     silentSyncFromInvoices({ force: true, reason: "load" });
-                }, 600);
+                }, 350);
             }
 
             return result;
@@ -54666,6 +54650,21 @@ document.addEventListener('change', function(event) {
             return silentSyncFromInvoices({ force: true, reason: "manual-import" });
         };
 
+        window.corpNav = function (tabName) {
+            const result = typeof syncState.originalCorpNav === "function"
+                ? syncState.originalCorpNav.apply(this, arguments)
+                : undefined;
+
+            if (tabName === "checkRegister") {
+                setTimeout(() => {
+                    ensureSyncUi();
+                    silentSyncFromInvoices({ force: true, reason: "corp-nav" });
+                }, 350);
+            }
+
+            return result;
+        };
+
         window.jcCheckRegisterSilentSyncInvoices = silentSyncFromInvoices;
         window.jcCheckRegisterRenderSyncHistory = renderHistory;
         window.jcCheckRegisterClearSyncHistory = function () {
@@ -54677,7 +54676,7 @@ document.addEventListener('change', function(event) {
 
     function boot() {
         injectStyles();
-        patchCheckRegisterOpenAndLoad();
+        patchCheckRegisterOpenLoadAndNav();
         scheduleSilentSync();
 
         window.addEventListener("focus", function () {
@@ -54690,11 +54689,27 @@ document.addEventListener('change', function(event) {
             }
         });
 
+        document.addEventListener("click", function (event) {
+            const target = event.target.closest("button, .nav-tab, .corp-nav-btn");
+            if (!target) return;
+
+            const text = normalize(target.textContent);
+            const onclick = String(target.getAttribute("onclick") || "");
+
+            if (text.includes("check register") || onclick.includes("checkRegister")) {
+                setTimeout(() => {
+                    ensureSyncUi();
+                    silentSyncFromInvoices({ force: true, reason: "nav-click" });
+                }, 450);
+            }
+        }, true);
+
         setTimeout(function () {
             ensureSyncUi();
-            recordHistory("Sync Ready", "Silent polling is active. Realtime WebSocket is disabled to avoid Canvas security errors.", "success");
-            silentSyncFromInvoices({ force: false, reason: "boot" });
-        }, 1200);
+            watchActiveSection();
+            recordHistory("Sync Ready", "Silent polling is active. WebSocket realtime is disabled.", "success");
+            silentSyncFromInvoices({ force: isCheckRegisterVisible(), reason: "boot" });
+        }, 1000);
     }
 
     if (document.readyState === "loading") {
