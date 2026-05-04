@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.04.v33-check-register-permanent-kpi-logo-manager';
+        var VERSION = '2026.05.04.v12-check-register-silent-invoice-sync';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -52014,7 +52014,7 @@ document.addEventListener('change', function(event) {
         return (data || []).find(row => normalizeCheck(row.check_number) === normalized) || null;
     }
 
-    async function saveCheck(quiet) {
+    async function saveCheck(quiet, clearAfterSave) {
         const data = getFormData();
 
         if (!validateForm(data, quiet)) {
@@ -52064,10 +52064,19 @@ document.addEventListener('change', function(event) {
             addVendorOption(result.data.vendor);
             await loadChecks(true, true);
 
-            setSaveStatus("Saved automatically", "success");
+            setSaveStatus(quiet ? "Saved automatically" : "Saved. Clearing form for next check...", "success");
 
             if (!quiet) {
-                showMessage("Check saved successfully.", "success");
+                showMessage("Check saved successfully. Ready for the next check.", "success");
+
+                if (clearAfterSave) {
+                    setTimeout(() => {
+                        newCheck();
+                        setSaveStatus("Ready for next check", "neutral");
+                        const numberField = document.getElementById("checkFormNumber");
+                        if (numberField) numberField.focus();
+                    }, 350);
+                }
             }
 
             return result.data;
@@ -52112,7 +52121,8 @@ document.addEventListener('change', function(event) {
         setSaveStatus("Auto-save pending...", "neutral");
 
         state.saveTimer = setTimeout(() => {
-            saveCheck(true);
+            setSaveStatus("Saving automatically...", "neutral");
+            saveCheck(true, false);
         }, 800);
     }
 
@@ -52810,7 +52820,7 @@ document.addEventListener('change', function(event) {
     window.jcCheckRegisterLoad = loadChecks;
     window.jcCheckRegisterApplyFilters = applyFilters;
     window.jcCheckRegisterClearFilters = clearFilters;
-    window.jcCheckRegisterSaveNow = function () { return saveCheck(false); };
+    window.jcCheckRegisterSaveNow = function () { return saveCheck(false, true); };
     window.jcCheckRegisterAutoSave = autoSave;
     window.jcCheckRegisterNew = newCheck;
     window.jcCheckRegisterEdit = editCheck;
@@ -52833,19 +52843,32 @@ document.addEventListener('change', function(event) {
 
 
 
-<!-- ========== JC ENTERPRISE CHECK REGISTER PERMANENT KPI + LOGO MANAGER V8 ========== -->
-<script id="jc-check-register-kpi-vendor-logo-manager-v8">
+<!-- ========== JC ENTERPRISE CHECK REGISTER PERMANENT KPI + LOGO MANAGER V9 ========== -->
+<script id="jc-check-register-kpi-vendor-logo-manager-v9">
 (function () {
     "use strict";
 
     const KPI_TABLE = "check_register_kpi_vendors";
     const CHECK_TABLE = "check_register";
     const LOGO_BUCKET = "check-register-kpi-logos";
+    const CHECK_CACHE_MS = 45000;
+
+    const FALLBACK_LOGOS = {
+        "FORMOSA FOODS": "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/formosa.jpg",
+        "PACIFIC PLUS": "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/pacific.jpg",
+        "NORTH FOOD GROUP": "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/northfoodgroup.jpg",
+        "GOOD FORTUNE - PRODUCE": "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/fortune.jpg",
+        "GOOD FORTUNE - MEAT": "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/fortune.jpg"
+    };
 
     const managerState = {
         kpis: [],
         checks: [],
-        rendering: false
+        rendering: false,
+        refreshTimer: null,
+        checksLoadedAt: 0,
+        draggingId: null,
+        fallbackLogosSaved: false
     };
 
     function money(value) {
@@ -52872,6 +52895,13 @@ document.addEventListener('change', function(event) {
             .toLowerCase();
     }
 
+    function upperClean(value) {
+        return String(value || "")
+            .trim()
+            .replace(/\s+/g, " ")
+            .toUpperCase();
+    }
+
     function normalizeFileKey(value) {
         return String(value || "")
             .trim()
@@ -52893,18 +52923,38 @@ document.addEventListener('change', function(event) {
     }
 
     function injectStyles() {
-        if (document.getElementById("jc-check-register-kpi-logo-style-v8")) return;
+        if (document.getElementById("jc-check-register-kpi-logo-style-v9")) return;
 
         const style = document.createElement("style");
-        style.id = "jc-check-register-kpi-logo-style-v8";
+        style.id = "jc-check-register-kpi-logo-style-v9";
         style.textContent = `
             .check-register-kpi.logo-enabled {
-                min-height: 184px;
+                min-height: 188px;
+                position: relative;
+            }
+
+            .check-register-kpi.kpi-vendor-card {
+                cursor: grab;
+            }
+
+            .check-register-kpi.kpi-vendor-card:active {
+                cursor: grabbing;
+            }
+
+            .check-register-kpi.kpi-dragging {
+                opacity: 0.5;
+                outline: 2px dashed #2563c8;
+                outline-offset: -6px;
+            }
+
+            .check-register-kpi.kpi-drop-target {
+                box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.35), 0 12px 28px rgba(15, 23, 42, 0.12);
+                transform: translateY(-2px);
             }
 
             .check-register-kpi-logo-row {
                 display: flex;
-                align-items: center;
+                align-items: flex-start;
                 justify-content: space-between;
                 gap: 0.75rem;
                 margin-bottom: 0.65rem;
@@ -52943,6 +52993,20 @@ document.addEventListener('change', function(event) {
                 padding: 0.25rem;
             }
 
+            .check-register-kpi-actions {
+                display: flex;
+                flex-direction: column;
+                gap: 0.35rem;
+                align-items: flex-end;
+            }
+
+            .check-register-kpi-action-row {
+                display: flex;
+                gap: 0.35rem;
+                flex-wrap: wrap;
+                justify-content: flex-end;
+            }
+
             .check-register-kpi-upload {
                 position: relative;
                 overflow: hidden;
@@ -52972,19 +53036,60 @@ document.addEventListener('change', function(event) {
                 cursor: pointer;
             }
 
-            .check-register-kpi-delete {
-                border: 1px solid #fecaca;
-                color: #991b1b;
-                background: #fef2f2;
+            .check-register-kpi-mini-btn {
                 border-radius: 999px;
                 padding: 0.25rem 0.5rem;
                 font-size: 0.6rem;
                 font-weight: 850;
                 cursor: pointer;
+                white-space: nowrap;
+            }
+
+            .check-register-kpi-edit {
+                border: 1px solid #bfdbfe;
+                color: #1d4ed8;
+                background: #eff6ff;
+            }
+
+            .check-register-kpi-edit:hover {
+                background: #dbeafe;
+            }
+
+            .check-register-kpi-delete {
+                border: 1px solid #fecaca;
+                color: #991b1b;
+                background: #fef2f2;
             }
 
             .check-register-kpi-delete:hover {
                 background: #fee2e2;
+            }
+
+            .check-register-kpi-drag-handle {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.35rem;
+                color: #64748b;
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 999px;
+                padding: 0.25rem 0.5rem;
+                font-size: 0.6rem;
+                font-weight: 850;
+                user-select: none;
+            }
+
+            .check-register-kpi-loading {
+                padding: 0.65rem 0.9rem;
+                background: #eff6ff;
+                color: #1d4ed8;
+                border: 1px solid #bfdbfe;
+                border-radius: 999px;
+                font-family: var(--font-mono);
+                font-size: 0.72rem;
+                display: inline-flex;
+                gap: 0.45rem;
+                align-items: center;
             }
         `;
 
@@ -53026,6 +53131,23 @@ document.addEventListener('change', function(event) {
             .reduce((sum, row) => sum + Number(row.amount || 0), 0);
     }
 
+    function getLogoUrl(kpi) {
+        return kpi.logo_url || FALLBACK_LOGOS[upperClean(kpi.vendor_name)] || "";
+    }
+
+    function renderLoadingBanner() {
+        const grid = document.getElementById("checkRegisterKpis");
+        if (!grid || managerState.kpis.length || managerState.checks.length) return;
+
+        grid.innerHTML = `
+            <div class="check-register-kpi">
+                <div class="check-register-kpi-loading">
+                    <i class="fas fa-circle-notch fa-spin"></i> Loading KPI vendors...
+                </div>
+            </div>
+        `;
+    }
+
     function renderPermanentKpis() {
         const grid = document.getElementById("checkRegisterKpis");
         if (!grid || managerState.rendering) return;
@@ -53058,24 +53180,42 @@ document.addEventListener('change', function(event) {
 
         const vendorHtml = managerState.kpis.map(kpi => {
             const total = getVendorTotal(rows, kpi.vendor_name);
-            const logoHtml = kpi.logo_url
-                ? `<img src="${safeText(kpi.logo_url)}" alt="${safeText(kpi.vendor_name)} logo">`
+            const logoUrl = getLogoUrl(kpi);
+            const logoHtml = logoUrl
+                ? `<img src="${safeText(logoUrl)}" alt="${safeText(kpi.vendor_name)} logo" loading="lazy">`
                 : `<div class="check-register-kpi-logo-placeholder">Pending<br>Logo</div>`;
 
             return `
-                <div class="check-register-kpi logo-enabled">
+                <div class="check-register-kpi logo-enabled kpi-vendor-card"
+                     draggable="true"
+                     data-kpi-id="${safeText(kpi.id)}"
+                     ondragstart="window.jcCheckRegisterKpiDragStart(event, '${safeText(kpi.id)}')"
+                     ondragover="window.jcCheckRegisterKpiDragOver(event)"
+                     ondragleave="window.jcCheckRegisterKpiDragLeave(event)"
+                     ondrop="window.jcCheckRegisterKpiDrop(event, '${safeText(kpi.id)}')"
+                     ondragend="window.jcCheckRegisterKpiDragEnd(event)">
                     <div class="check-register-kpi-logo-row">
                         <div class="check-register-kpi-logo-box">${logoHtml}</div>
-                        <div style="display:flex;flex-direction:column;gap:0.35rem;align-items:flex-end;">
+                        <div class="check-register-kpi-actions">
+                            <span class="check-register-kpi-drag-handle">
+                                <i class="fas fa-grip-vertical"></i> Drag
+                            </span>
                             <label class="check-register-kpi-upload">
                                 <i class="fas fa-cloud-arrow-up"></i> Upload Logo
                                 <input type="file"
                                        accept="image/png,image/jpeg,image/webp,image/gif"
                                        onchange="window.jcCheckRegisterUploadKpiLogo('${safeText(kpi.id)}', this.files[0])">
                             </label>
-                            <button class="check-register-kpi-delete" onclick="window.jcCheckRegisterDeactivateKpiVendor('${safeText(kpi.id)}')">
-                                Hide
-                            </button>
+                            <div class="check-register-kpi-action-row">
+                                <button class="check-register-kpi-mini-btn check-register-kpi-edit"
+                                        onclick="window.jcCheckRegisterEditKpiVendor('${safeText(kpi.id)}')">
+                                    Edit
+                                </button>
+                                <button class="check-register-kpi-mini-btn check-register-kpi-delete"
+                                        onclick="window.jcCheckRegisterDeactivateKpiVendor('${safeText(kpi.id)}')">
+                                    Hide
+                                </button>
+                            </div>
                         </div>
                     </div>
                     <div class="check-register-kpi-label">${safeText(kpi.vendor_name)}</div>
@@ -53089,6 +53229,31 @@ document.addEventListener('change', function(event) {
         managerState.rendering = false;
     }
 
+    async function saveFallbackLogosIfMissing() {
+        if (managerState.fallbackLogosSaved) return;
+        managerState.fallbackLogosSaved = true;
+
+        const updates = managerState.kpis
+            .filter(kpi => !kpi.logo_url && FALLBACK_LOGOS[upperClean(kpi.vendor_name)])
+            .map(kpi => {
+                const logoUrl = FALLBACK_LOGOS[upperClean(kpi.vendor_name)];
+                kpi.logo_url = logoUrl;
+
+                return supabaseClient
+                    .from(KPI_TABLE)
+                    .update({ logo_url: logoUrl })
+                    .eq("id", kpi.id);
+            });
+
+        if (!updates.length) return;
+
+        try {
+            await Promise.all(updates);
+        } catch (error) {
+            console.warn("Fallback KPI logo save skipped:", error);
+        }
+    }
+
     async function loadKpiVendors() {
         const { data, error } = await supabaseClient
             .from(KPI_TABLE)
@@ -53100,9 +53265,16 @@ document.addEventListener('change', function(event) {
         if (error) throw error;
 
         managerState.kpis = data || [];
+        saveFallbackLogosIfMissing();
     }
 
-    async function loadChecksForKpis() {
+    async function loadChecksForKpis(force) {
+        const now = Date.now();
+
+        if (!force && managerState.checks.length && now - managerState.checksLoadedAt < CHECK_CACHE_MS) {
+            return;
+        }
+
         const { data, error } = await supabaseClient
             .from(CHECK_TABLE)
             .select("id, check_date, check_number, vendor, category, reason, amount, status, source_table")
@@ -53111,18 +53283,19 @@ document.addEventListener('change', function(event) {
         if (error) throw error;
 
         managerState.checks = data || [];
+        managerState.checksLoadedAt = now;
     }
 
-    async function refreshKpiDashboard() {
+    async function refreshKpiDashboard(options) {
         const grid = document.getElementById("checkRegisterKpis");
         if (!grid || typeof supabaseClient === "undefined") return;
 
-        try {
-            await Promise.all([
-                loadKpiVendors(),
-                loadChecksForKpis()
-            ]);
+        const forceChecks = Boolean(options && options.forceChecks);
+        renderLoadingBanner();
 
+        try {
+            await loadKpiVendors();
+            await loadChecksForKpis(forceChecks);
             renderPermanentKpis();
         } catch (error) {
             console.error("KPI vendor dashboard failed:", error);
@@ -53133,9 +53306,17 @@ document.addEventListener('change', function(event) {
         }
     }
 
+    function scheduleRefresh(options) {
+        clearTimeout(managerState.refreshTimer);
+
+        managerState.refreshTimer = setTimeout(() => {
+            refreshKpiDashboard(options);
+        }, 180);
+    }
+
     async function addKpiPrompt() {
         const vendorName = prompt("Enter vendor name for new KPI:");
-        const cleanName = String(vendorName || "").trim().toUpperCase();
+        const cleanName = upperClean(vendorName);
 
         if (!cleanName) return;
 
@@ -53149,7 +53330,8 @@ document.addEventListener('change', function(event) {
                 .insert({
                     vendor_name: cleanName,
                     display_order: nextOrder,
-                    is_active: true
+                    is_active: true,
+                    logo_url: FALLBACK_LOGOS[cleanName] || null
                 });
 
             if (error) throw error;
@@ -53158,7 +53340,7 @@ document.addEventListener('change', function(event) {
                 showAlert("KPI vendor added: " + cleanName, "success");
             }
 
-            await refreshKpiDashboard();
+            await refreshKpiDashboard({ forceChecks: false });
         } catch (error) {
             console.error("Add KPI vendor failed:", error);
 
@@ -53168,6 +53350,43 @@ document.addEventListener('change', function(event) {
             }
 
             alert("Add KPI failed: " + error.message);
+        }
+    }
+
+    async function editKpiVendorName(kpiId) {
+        const kpi = managerState.kpis.find(item => item.id === kpiId);
+        if (!kpi) return;
+
+        const vendorName = prompt("Edit KPI vendor name:", kpi.vendor_name);
+        const cleanName = upperClean(vendorName);
+
+        if (!cleanName || cleanName === kpi.vendor_name) return;
+
+        try {
+            const { error } = await supabaseClient
+                .from(KPI_TABLE)
+                .update({
+                    vendor_name: cleanName,
+                    logo_url: kpi.logo_url || FALLBACK_LOGOS[cleanName] || null
+                })
+                .eq("id", kpiId);
+
+            if (error) throw error;
+
+            if (typeof showAlert === "function") {
+                showAlert("KPI vendor renamed to " + cleanName, "success");
+            }
+
+            await refreshKpiDashboard({ forceChecks: false });
+        } catch (error) {
+            console.error("Edit KPI vendor failed:", error);
+
+            if (String(error.message || "").toLowerCase().includes("duplicate")) {
+                alert("This KPI vendor already exists.");
+                return;
+            }
+
+            alert("Edit KPI failed: " + error.message);
         }
     }
 
@@ -53185,7 +53404,7 @@ document.addEventListener('change', function(event) {
 
             if (error) throw error;
 
-            await refreshKpiDashboard();
+            await refreshKpiDashboard({ forceChecks: false });
         } catch (error) {
             alert("Unable to hide KPI vendor: " + error.message);
         }
@@ -53246,11 +53465,86 @@ document.addEventListener('change', function(event) {
                 showAlert("Logo uploaded for " + kpi.vendor_name, "success");
             }
 
-            await refreshKpiDashboard();
+            await refreshKpiDashboard({ forceChecks: false });
         } catch (error) {
             console.error("Upload KPI logo failed:", error);
             alert("Logo upload failed: " + error.message);
         }
+    }
+
+    function dragStart(event, kpiId) {
+        managerState.draggingId = kpiId;
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", kpiId);
+
+        const card = event.currentTarget;
+        if (card) card.classList.add("kpi-dragging");
+    }
+
+    function dragOver(event) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+
+        const card = event.currentTarget;
+        if (card) card.classList.add("kpi-drop-target");
+    }
+
+    function dragLeave(event) {
+        const card = event.currentTarget;
+        if (card) card.classList.remove("kpi-drop-target");
+    }
+
+    async function dropCard(event, targetId) {
+        event.preventDefault();
+
+        const draggedId = managerState.draggingId || event.dataTransfer.getData("text/plain");
+        clearDragClasses();
+
+        if (!draggedId || draggedId === targetId) return;
+
+        const draggedIndex = managerState.kpis.findIndex(kpi => kpi.id === draggedId);
+        const targetIndex = managerState.kpis.findIndex(kpi => kpi.id === targetId);
+
+        if (draggedIndex < 0 || targetIndex < 0) return;
+
+        const reordered = [...managerState.kpis];
+        const [dragged] = reordered.splice(draggedIndex, 1);
+        reordered.splice(targetIndex, 0, dragged);
+
+        managerState.kpis = reordered.map((kpi, index) => ({
+            ...kpi,
+            display_order: (index + 1) * 10
+        }));
+
+        renderPermanentKpis();
+
+        try {
+            await Promise.all(managerState.kpis.map(kpi => {
+                return supabaseClient
+                    .from(KPI_TABLE)
+                    .update({ display_order: kpi.display_order })
+                    .eq("id", kpi.id);
+            }));
+
+            if (typeof showAlert === "function") {
+                showAlert("KPI order saved.", "success");
+            }
+        } catch (error) {
+            console.error("KPI reorder failed:", error);
+            alert("KPI order save failed: " + error.message);
+            await refreshKpiDashboard({ forceChecks: false });
+        }
+    }
+
+    function clearDragClasses() {
+        document.querySelectorAll(".kpi-vendor-card").forEach(card => {
+            card.classList.remove("kpi-dragging", "kpi-drop-target");
+        });
+    }
+
+    function dragEnd() {
+        managerState.draggingId = null;
+        clearDragClasses();
     }
 
     function injectManagerButton() {
@@ -53279,21 +53573,22 @@ document.addEventListener('change', function(event) {
     }
 
     function patchExistingFunctions() {
-        if (window.__jcCheckRegisterKpiVendorManagerV8Patched) return;
-        window.__jcCheckRegisterKpiVendorManagerV8Patched = true;
+        if (window.__jcCheckRegisterKpiVendorManagerV9Patched) return;
+        window.__jcCheckRegisterKpiVendorManagerV9Patched = true;
 
         const originalLoad = window.jcCheckRegisterLoad;
         const originalApplyFilters = window.jcCheckRegisterApplyFilters;
         const originalOpen = window.jcOpenCheckRegister;
         const originalSaveNow = window.jcCheckRegisterSaveNow;
         const originalImport = window.jcCheckRegisterImportExistingChecks;
+        const originalDelete = window.jcCheckRegisterDelete;
 
         window.jcCheckRegisterLoad = async function (force) {
             if (typeof originalLoad === "function") {
                 await originalLoad(force);
             }
 
-            setTimeout(refreshKpiDashboard, 300);
+            scheduleRefresh({ forceChecks: Boolean(force) });
         };
 
         window.jcCheckRegisterApplyFilters = function () {
@@ -53301,7 +53596,7 @@ document.addEventListener('change', function(event) {
                 originalApplyFilters();
             }
 
-            setTimeout(renderPermanentKpis, 100);
+            renderPermanentKpis();
         };
 
         window.jcOpenCheckRegister = function () {
@@ -53311,8 +53606,8 @@ document.addEventListener('change', function(event) {
 
             setTimeout(() => {
                 injectManagerButton();
-                refreshKpiDashboard();
-            }, 500);
+                scheduleRefresh({ forceChecks: !managerState.checks.length });
+            }, 250);
         };
 
         window.jcCheckRegisterSaveNow = async function () {
@@ -53322,7 +53617,7 @@ document.addEventListener('change', function(event) {
                 result = await originalSaveNow();
             }
 
-            setTimeout(refreshKpiDashboard, 500);
+            scheduleRefresh({ forceChecks: true });
             return result;
         };
 
@@ -53333,14 +53628,30 @@ document.addEventListener('change', function(event) {
                 result = await originalImport();
             }
 
-            setTimeout(refreshKpiDashboard, 700);
+            scheduleRefresh({ forceChecks: true });
             return result;
         };
 
+        if (typeof originalDelete === "function") {
+            window.jcCheckRegisterDelete = async function (id) {
+                const result = await originalDelete(id);
+                scheduleRefresh({ forceChecks: true });
+                return result;
+            };
+        }
+
         window.jcCheckRegisterAddKpiPrompt = addKpiPrompt;
+        window.jcCheckRegisterEditKpiVendor = editKpiVendorName;
         window.jcCheckRegisterUploadKpiLogo = uploadKpiLogo;
         window.jcCheckRegisterDeactivateKpiVendor = deactivateKpiVendor;
-        window.jcCheckRegisterRefreshKpiDashboard = refreshKpiDashboard;
+        window.jcCheckRegisterRefreshKpiDashboard = function () {
+            return refreshKpiDashboard({ forceChecks: true });
+        };
+        window.jcCheckRegisterKpiDragStart = dragStart;
+        window.jcCheckRegisterKpiDragOver = dragOver;
+        window.jcCheckRegisterKpiDragLeave = dragLeave;
+        window.jcCheckRegisterKpiDrop = dropCard;
+        window.jcCheckRegisterKpiDragEnd = dragEnd;
     }
 
     function boot() {
@@ -53349,8 +53660,12 @@ document.addEventListener('change', function(event) {
 
         setTimeout(() => {
             injectManagerButton();
-            refreshKpiDashboard();
-        }, 900);
+
+            const checkRegister = document.getElementById("checkRegister");
+            if (checkRegister && checkRegister.classList.contains("active")) {
+                scheduleRefresh({ forceChecks: true });
+            }
+        }, 450);
     }
 
     if (document.readyState === "loading") {
@@ -53360,8 +53675,710 @@ document.addEventListener('change', function(event) {
     }
 })();
 </script>
-<!-- ========== END JC ENTERPRISE CHECK REGISTER PERMANENT KPI + LOGO MANAGER V8 ========== -->
+<!-- ========== END JC ENTERPRISE CHECK REGISTER PERMANENT KPI + LOGO MANAGER V9 ========== -->
 
+
+
+<!-- ========== JC CHECK REGISTER SAVE UX V11: GREEN CHECKMARK + ENTER SAVE ========== -->
+<script id="jc-check-register-save-ux-v11">
+(function () {
+    "use strict";
+
+    function injectSaveUxStyles() {
+        if (document.getElementById("jc-check-register-save-ux-style-v11")) return;
+
+        const style = document.createElement("style");
+        style.id = "jc-check-register-save-ux-style-v11";
+        style.textContent = `
+            #checkRegisterSaveStatus {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.45rem;
+                min-height: 24px;
+                transition: color 160ms ease, transform 160ms ease;
+            }
+
+            .check-register-save-icon {
+                width: 22px;
+                height: 22px;
+                border-radius: 999px;
+                background: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
+                color: #ffffff;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 0.72rem;
+                box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.5);
+                transform: scale(0);
+                opacity: 0;
+                flex-shrink: 0;
+            }
+
+            .check-register-save-icon.show {
+                animation: checkRegisterSavedPop 1150ms ease both;
+            }
+
+            .check-register-save-status-flash {
+                animation: checkRegisterSavedTextPulse 900ms ease both;
+            }
+
+            @keyframes checkRegisterSavedPop {
+                0% {
+                    transform: scale(0);
+                    opacity: 0;
+                    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55);
+                }
+                28% {
+                    transform: scale(1.18);
+                    opacity: 1;
+                    box-shadow: 0 0 0 8px rgba(34, 197, 94, 0.18);
+                }
+                52% {
+                    transform: scale(1);
+                    opacity: 1;
+                    box-shadow: 0 0 0 14px rgba(34, 197, 94, 0);
+                }
+                82% {
+                    transform: scale(1);
+                    opacity: 1;
+                }
+                100% {
+                    transform: scale(0.9);
+                    opacity: 0;
+                    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+                }
+            }
+
+            @keyframes checkRegisterSavedTextPulse {
+                0% {
+                    transform: translateY(0);
+                }
+                35% {
+                    transform: translateY(-1px);
+                }
+                100% {
+                    transform: translateY(0);
+                }
+            }
+
+            .check-register-enter-hint {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.35rem;
+                color: #64748b;
+                font-family: var(--font-mono);
+                font-size: 0.66rem;
+                margin-left: 0.4rem;
+                opacity: 0.82;
+            }
+
+            .check-register-enter-hint kbd {
+                border: 1px solid #cbd5e1;
+                border-bottom-width: 2px;
+                background: #f8fafc;
+                color: #334155;
+                border-radius: 5px;
+                padding: 0.05rem 0.3rem;
+                font-size: 0.62rem;
+                font-family: var(--font-mono);
+                font-weight: 800;
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    function getStatusElement() {
+        return document.getElementById("checkRegisterSaveStatus");
+    }
+
+    function ensureSaveIcon() {
+        const status = getStatusElement();
+        if (!status) return null;
+
+        let icon = document.getElementById("checkRegisterSavedIcon");
+        if (!icon) {
+            icon = document.createElement("span");
+            icon.id = "checkRegisterSavedIcon";
+            icon.className = "check-register-save-icon";
+            icon.innerHTML = '<i class="fas fa-check"></i>';
+            status.prepend(icon);
+        }
+
+        return icon;
+    }
+
+    function playSavedAnimation() {
+        const status = getStatusElement();
+        const icon = ensureSaveIcon();
+
+        if (!status || !icon) return;
+
+        icon.classList.remove("show");
+        status.classList.remove("check-register-save-status-flash");
+
+        void icon.offsetWidth;
+
+        icon.classList.add("show");
+        status.classList.add("check-register-save-status-flash");
+    }
+
+    function installSavedObserver() {
+        if (window.__jcCheckRegisterSavedObserverInstalled) return;
+
+        const status = getStatusElement();
+        if (!status) {
+            setTimeout(installSavedObserver, 500);
+            return;
+        }
+
+        window.__jcCheckRegisterSavedObserverInstalled = true;
+        ensureSaveIcon();
+
+        let lastText = "";
+
+        const observer = new MutationObserver(function () {
+            const text = String(status.textContent || "").toLowerCase();
+
+            if (text !== lastText && text.includes("saved")) {
+                playSavedAnimation();
+            }
+
+            lastText = text;
+        });
+
+        observer.observe(status, {
+            childList: true,
+            characterData: true,
+            subtree: true
+        });
+    }
+
+    function addEnterHint() {
+        const title = document.querySelector(".check-register-form-title");
+        if (!title || document.getElementById("checkRegisterEnterHint")) return;
+
+        const hint = document.createElement("span");
+        hint.id = "checkRegisterEnterHint";
+        hint.className = "check-register-enter-hint";
+        hint.innerHTML = '<kbd>Enter</kbd> Save & clear';
+
+        title.appendChild(hint);
+    }
+
+    function installEnterShortcut() {
+        if (window.__jcCheckRegisterEnterShortcutInstalled) return;
+        window.__jcCheckRegisterEnterShortcutInstalled = true;
+
+        document.addEventListener("keydown", function (event) {
+            if (event.key !== "Enter") return;
+            if (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+
+            const target = event.target;
+            if (!target) return;
+
+            const form = target.closest && target.closest(".check-register-form");
+            if (!form) return;
+
+            const tagName = String(target.tagName || "").toLowerCase();
+            if (!["input", "select", "button"].includes(tagName)) return;
+
+            const targetType = String(target.type || "").toLowerCase();
+            if (["file", "button", "submit", "reset"].includes(targetType)) return;
+
+            event.preventDefault();
+
+            if (typeof window.jcCheckRegisterSaveNow === "function") {
+                window.jcCheckRegisterSaveNow();
+            }
+        }, true);
+    }
+
+    function bootSaveUx() {
+        injectSaveUxStyles();
+        installEnterShortcut();
+
+        setTimeout(function () {
+            installSavedObserver();
+            addEnterHint();
+        }, 600);
+
+        const originalOpen = window.jcOpenCheckRegister;
+        if (!window.__jcCheckRegisterSaveUxOpenPatched && typeof originalOpen === "function") {
+            window.__jcCheckRegisterSaveUxOpenPatched = true;
+
+            window.jcOpenCheckRegister = function () {
+                const result = originalOpen.apply(this, arguments);
+
+                setTimeout(function () {
+                    installSavedObserver();
+                    addEnterHint();
+                }, 700);
+
+                return result;
+            };
+        }
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", bootSaveUx);
+    } else {
+        bootSaveUx();
+    }
+})();
+</script>
+<!-- ========== END JC CHECK REGISTER SAVE UX V11 ========== -->
+
+
+<!-- file: inventory2026.html -->
+<script id="jc-check-register-silent-invoice-sync-v12">
+(function () {
+    "use strict";
+
+    const CHECK_TABLE = "check_register";
+    const INVOICE_TABLE = "invoices";
+    const SYNC_INTERVAL_MS = 30000;
+
+    const syncState = {
+        running: false,
+        timer: null,
+        lastSignature: "",
+        subscription: null
+    };
+
+    function normalize(value) {
+        return String(value || "").trim().toLowerCase();
+    }
+
+    function normalizeCheck(value) {
+        return String(value || "")
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, "");
+    }
+
+    function todayValue() {
+        return new Date().toISOString().slice(0, 10);
+    }
+
+    function invoiceAmount(invoice) {
+        return Number.parseFloat(invoice.total || invoice.amount || 0) || 0;
+    }
+
+    function invoiceDate(invoice) {
+        return String(invoice.invoice_date || invoice.created_at || todayValue()).slice(0, 10);
+    }
+
+    function isRealCheckNumber(checkNumber) {
+        const key = normalize(checkNumber);
+        return Boolean(key) && key !== "pending" && key !== "chk-12345" && key !== "none" && key !== "n/a";
+    }
+
+    function inferCategoryFromInvoice(invoice) {
+        const text = normalize([
+            invoice.vendor,
+            invoice.notes,
+            invoice.invoice_number,
+            invoice.check_number
+        ].join(" "));
+
+        if (
+            text.includes("service") ||
+            text.includes("repair") ||
+            text.includes("maintenance") ||
+            text.includes("venthood") ||
+            text.includes("vent hood") ||
+            text.includes("autochlor") ||
+            text.includes("pest") ||
+            text.includes("cleaning") ||
+            text.includes("hvac")
+        ) {
+            return "Services";
+        }
+
+        if (
+            text.includes("misc") ||
+            text.includes("office") ||
+            text.includes("supplies") ||
+            text.includes("equipment") ||
+            text.includes("fee")
+        ) {
+            return "Misc";
+        }
+
+        return "Vendor";
+    }
+
+    function setSyncStatus(message, tone) {
+        const status = document.getElementById("checkRegisterImportStatus");
+        if (!status) return;
+
+        status.textContent = message;
+
+        if (tone === "success") {
+            status.style.color = "#15803d";
+        } else if (tone === "error") {
+            status.style.color = "#b91c1c";
+        } else {
+            status.style.color = "#64748b";
+        }
+    }
+
+    function isCheckRegisterVisible() {
+        const section = document.getElementById("checkRegister");
+        return Boolean(section && section.classList.contains("active"));
+    }
+
+    function buildInvoiceSignature(invoices) {
+        return (invoices || [])
+            .filter(invoice => isRealCheckNumber(invoice.check_number))
+            .map(invoice => [
+                invoice.id,
+                normalizeCheck(invoice.check_number),
+                invoice.vendor || "",
+                invoice.invoice_date || "",
+                invoice.total || invoice.amount || 0
+            ].join("|"))
+            .sort()
+            .join("~");
+    }
+
+    async function fetchChecks() {
+        const { data, error } = await supabaseClient
+            .from(CHECK_TABLE)
+            .select("id, check_date, check_number, vendor, category, reason, amount, status, notes, source_table, source_id, created_at, updated_at");
+
+        if (error) throw error;
+        return data || [];
+    }
+
+    async function fetchInvoicesWithChecks() {
+        const { data, error } = await supabaseClient
+            .from(INVOICE_TABLE)
+            .select("id, vendor, invoice_date, created_at, invoice_number, check_number, total, amount, notes")
+            .not("check_number", "is", null)
+            .limit(15000);
+
+        if (error) throw error;
+        return data || [];
+    }
+
+    function buildInsertRows(invoices, existingChecks) {
+        const existingByCheck = new Map();
+        existingChecks.forEach(row => {
+            const key = normalizeCheck(row.check_number);
+            if (key) existingByCheck.set(key, row);
+        });
+
+        const groupedByCheck = new Map();
+
+        invoices
+            .filter(invoice => isRealCheckNumber(invoice.check_number))
+            .forEach(invoice => {
+                const checkKey = normalizeCheck(invoice.check_number);
+                if (!checkKey || existingByCheck.has(checkKey)) return;
+
+                const vendor = String(invoice.vendor || "UNKNOWN").trim().toUpperCase();
+                const invoiceNumber = String(invoice.invoice_number || "").trim();
+
+                if (!groupedByCheck.has(checkKey)) {
+                    groupedByCheck.set(checkKey, {
+                        check_date: invoiceDate(invoice),
+                        check_number: String(invoice.check_number || "").trim(),
+                        vendor,
+                        category: inferCategoryFromInvoice(invoice),
+                        reason: vendor,
+                        amount: 0,
+                        status: normalize(invoice.check_number).includes("ach") ? "ACH" : "Cleared",
+                        notes: "",
+                        source_table: INVOICE_TABLE,
+                        source_id: String(invoice.id || ""),
+                        invoice_numbers: [],
+                        vendors: new Set([vendor])
+                    });
+                }
+
+                const row = groupedByCheck.get(checkKey);
+                row.amount += invoiceAmount(invoice);
+                row.vendors.add(vendor);
+
+                if (invoiceNumber) {
+                    row.invoice_numbers.push(invoiceNumber);
+                }
+            });
+
+        return Array.from(groupedByCheck.values()).map(row => {
+            const vendors = Array.from(row.vendors).filter(Boolean);
+            const invoiceList = row.invoice_numbers.slice(0, 8).join(", ");
+            const extraCount = Math.max(row.invoice_numbers.length - 8, 0);
+
+            return {
+                check_date: row.check_date || todayValue(),
+                check_number: row.check_number,
+                vendor: vendors.length === 1 ? vendors[0] : "MULTIPLE VENDORS",
+                category: row.category,
+                reason: vendors.length === 1 ? vendors[0] : vendors.join(" / "),
+                amount: Number(row.amount || 0),
+                status: row.status,
+                notes: invoiceList
+                    ? `Silent sync from invoices ${invoiceList}${extraCount ? " +" + extraCount + " more" : ""}`
+                    : "Silent sync from invoices",
+                source_table: INVOICE_TABLE,
+                source_id: row.source_id
+            };
+        });
+    }
+
+    async function updateImportedRowsWhenInvoiceCheckChanged(invoices, existingChecks) {
+        const existingByCheck = new Map();
+        const importedBySource = new Map();
+
+        existingChecks.forEach(row => {
+            const checkKey = normalizeCheck(row.check_number);
+            if (checkKey) existingByCheck.set(checkKey, row);
+
+            if (row.source_table === INVOICE_TABLE && row.source_id) {
+                importedBySource.set(String(row.source_id), row);
+            }
+        });
+
+        let updatedCount = 0;
+
+        for (const invoice of invoices) {
+            if (!isRealCheckNumber(invoice.check_number)) continue;
+
+            const sourceKey = String(invoice.id || "");
+            const importedRow = importedBySource.get(sourceKey);
+            if (!importedRow) continue;
+
+            const newCheckKey = normalizeCheck(invoice.check_number);
+            const oldCheckKey = normalizeCheck(importedRow.check_number);
+
+            if (!newCheckKey || newCheckKey === oldCheckKey) continue;
+
+            const duplicateRow = existingByCheck.get(newCheckKey);
+            if (duplicateRow && duplicateRow.id !== importedRow.id) continue;
+
+            const vendor = String(invoice.vendor || importedRow.vendor || "UNKNOWN").trim().toUpperCase();
+
+            const { error } = await supabaseClient
+                .from(CHECK_TABLE)
+                .update({
+                    check_date: invoiceDate(invoice),
+                    check_number: String(invoice.check_number || "").trim(),
+                    vendor,
+                    category: inferCategoryFromInvoice(invoice),
+                    reason: vendor,
+                    amount: invoiceAmount(invoice),
+                    status: normalize(invoice.check_number).includes("ach") ? "ACH" : "Cleared",
+                    notes: `Silent sync updated from invoice ${String(invoice.invoice_number || invoice.id || "")}`
+                })
+                .eq("id", importedRow.id);
+
+            if (error && error.code !== "23505") throw error;
+            if (!error) updatedCount += 1;
+        }
+
+        return updatedCount;
+    }
+
+    async function silentSyncFromInvoices(options) {
+        const config = Object.assign({ force: false, refreshUi: true, reason: "timer" }, options || {});
+
+        if (syncState.running || typeof supabaseClient === "undefined") return 0;
+        if (!config.force && !isCheckRegisterVisible()) return 0;
+
+        syncState.running = true;
+
+        try {
+            setSyncStatus("Silent sync checking invoice updates...", "neutral");
+
+            const [existingChecks, invoices] = await Promise.all([
+                fetchChecks(),
+                fetchInvoicesWithChecks()
+            ]);
+
+            const signature = buildInvoiceSignature(invoices);
+
+            if (!config.force && signature && signature === syncState.lastSignature) {
+                setSyncStatus("Silent sync active. No new invoice check updates.", "success");
+                return 0;
+            }
+
+            syncState.lastSignature = signature;
+
+            const updatedCount = await updateImportedRowsWhenInvoiceCheckChanged(invoices, existingChecks);
+            const insertRows = buildInsertRows(invoices, existingChecks);
+
+            let insertedCount = 0;
+            let duplicateCount = 0;
+
+            for (const row of insertRows) {
+                const { error } = await supabaseClient
+                    .from(CHECK_TABLE)
+                    .insert(row);
+
+                if (!error) {
+                    insertedCount += 1;
+                    continue;
+                }
+
+                if (error.code === "23505") {
+                    duplicateCount += 1;
+                    continue;
+                }
+
+                throw error;
+            }
+
+            const changedCount = insertedCount + updatedCount;
+
+            if (changedCount > 0 && config.refreshUi && typeof window.jcCheckRegisterLoad === "function") {
+                await window.jcCheckRegisterLoad(true);
+            }
+
+            const parts = [];
+            if (insertedCount) parts.push(`${insertedCount} new`);
+            if (updatedCount) parts.push(`${updatedCount} updated`);
+            if (duplicateCount) parts.push(`${duplicateCount} duplicate skipped`);
+
+            setSyncStatus(
+                parts.length
+                    ? `Silent sync complete: ${parts.join(", ")}.`
+                    : "Silent sync active. No new invoice check updates.",
+                "success"
+            );
+
+            return changedCount;
+        } catch (error) {
+            console.error("Silent invoice check sync failed:", error);
+            setSyncStatus("Silent sync failed: " + error.message, "error");
+            return 0;
+        } finally {
+            syncState.running = false;
+        }
+    }
+
+    function scheduleSilentSync() {
+        clearInterval(syncState.timer);
+
+        syncState.timer = setInterval(() => {
+            silentSyncFromInvoices({ force: false, reason: "interval" });
+        }, SYNC_INTERVAL_MS);
+    }
+
+    function patchCheckRegisterOpenAndLoad() {
+        if (window.__jcCheckRegisterSilentInvoiceSyncPatched) return;
+        window.__jcCheckRegisterSilentInvoiceSyncPatched = true;
+
+        const originalOpen = window.jcOpenCheckRegister;
+        const originalLoad = window.jcCheckRegisterLoad;
+        const originalManualImport = window.jcCheckRegisterImportExistingChecks;
+
+        window.jcOpenCheckRegister = function () {
+            const result = typeof originalOpen === "function"
+                ? originalOpen.apply(this, arguments)
+                : undefined;
+
+            setTimeout(() => {
+                silentSyncFromInvoices({ force: true, reason: "open" });
+            }, 600);
+
+            return result;
+        };
+
+        window.jcCheckRegisterLoad = async function () {
+            const result = typeof originalLoad === "function"
+                ? await originalLoad.apply(this, arguments)
+                : undefined;
+
+            setTimeout(() => {
+                silentSyncFromInvoices({ force: true, reason: "load" });
+            }, 600);
+
+            return result;
+        };
+
+        window.jcCheckRegisterImportExistingChecks = async function () {
+            if (typeof originalManualImport === "function") {
+                const result = await originalManualImport.apply(this, arguments);
+                await silentSyncFromInvoices({ force: true, reason: "manual-import" });
+                return result;
+            }
+
+            return silentSyncFromInvoices({ force: true, reason: "manual-import" });
+        };
+
+        window.jcCheckRegisterSilentSyncInvoices = silentSyncFromInvoices;
+    }
+
+    function subscribeToInvoiceChanges() {
+        if (!supabaseClient || !supabaseClient.channel || syncState.subscription) return;
+
+        try {
+            syncState.subscription = supabaseClient
+                .channel("jc-check-register-invoice-sync-v12")
+                .on(
+                    "postgres_changes",
+                    { event: "*", schema: "public", table: INVOICE_TABLE },
+                    function () {
+                        if (!isCheckRegisterVisible()) return;
+
+                        setTimeout(() => {
+                            silentSyncFromInvoices({ force: true, reason: "realtime" });
+                        }, 800);
+                    }
+                )
+                .subscribe();
+        } catch (error) {
+            console.warn("Invoice realtime sync unavailable; interval sync is active.", error);
+        }
+    }
+
+    function addSilentSyncButton() {
+        const panel = document.querySelector(".check-register-import-panel");
+        if (!panel || document.getElementById("checkRegisterSilentSyncBtn")) return;
+
+        const button = document.createElement("button");
+        button.id = "checkRegisterSilentSyncBtn";
+        button.type = "button";
+        button.className = "btn btn-secondary";
+        button.innerHTML = '<i class="fas fa-arrows-rotate"></i> Sync Now';
+        button.onclick = function () {
+            silentSyncFromInvoices({ force: true, reason: "button" });
+        };
+
+        panel.appendChild(button);
+    }
+
+    function boot() {
+        patchCheckRegisterOpenAndLoad();
+        scheduleSilentSync();
+
+        window.addEventListener("focus", function () {
+            silentSyncFromInvoices({ force: true, reason: "focus" });
+        });
+
+        document.addEventListener("visibilitychange", function () {
+            if (!document.hidden) {
+                silentSyncFromInvoices({ force: true, reason: "visibility" });
+            }
+        });
+
+        setTimeout(function () {
+            addSilentSyncButton();
+            subscribeToInvoiceChanges();
+            silentSyncFromInvoices({ force: false, reason: "boot" });
+        }, 1200);
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", boot);
+    } else {
+        boot();
+    }
+})();
+</script>
 
 </body>
 
