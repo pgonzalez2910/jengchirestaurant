@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.04.v14-check-register-active-silent-sync';
+        var VERSION = '2026.05.04.v15-cross-table-duplicate-check-warning';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -54719,6 +54719,377 @@ document.addEventListener('change', function(event) {
     }
 })();
 </script>
+
+
+<!-- ========== JC CHECK REGISTER CROSS-TABLE DUPLICATE WARNING V15 ========== -->
+<script id="jc-check-register-cross-table-duplicate-warning-v15">
+(function () {
+    "use strict";
+
+    const CHECK_TABLE = "check_register";
+    const INVOICE_TABLE = "invoices";
+    const DEBOUNCE_MS = 450;
+
+    const patchState = {
+        timer: null,
+        duplicate: null,
+        editingId: null,
+        checking: false
+    };
+
+    function safeText(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function normalize(value) {
+        return String(value || "").trim().toLowerCase();
+    }
+
+    function normalizeCheck(value) {
+        return normalize(value).replace(/\s+/g, "");
+    }
+
+    function money(value) {
+        const number = Number.parseFloat(value || 0);
+        return "$" + number.toLocaleString("en-US", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function currentCheckNumber() {
+        return document.getElementById("checkFormNumber")?.value || "";
+    }
+
+    function showStatus(message, tone) {
+        const status = document.getElementById("checkRegisterSaveStatus");
+        if (!status) return;
+
+        status.textContent = message;
+        status.style.color = tone === "success" ? "#15803d" : tone === "error" ? "#b91c1c" : "#64748b";
+    }
+
+    function injectStyles() {
+        if (document.getElementById("jc-cross-table-duplicate-style-v15")) return;
+
+        const style = document.createElement("style");
+        style.id = "jc-cross-table-duplicate-style-v15";
+        style.textContent = `
+            #checkRegisterDuplicateBox.cross-table-active {
+                display: flex !important;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+                margin-top: 0.75rem;
+                padding: 0.85rem 1rem;
+                border-radius: 12px;
+                border: 1px solid #fecaca;
+                background: #fef2f2;
+                color: #991b1b;
+                font-size: 0.78rem;
+                font-weight: 750;
+            }
+
+            #checkRegisterDuplicateBox.cross-table-active .duplicate-source-pill {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.25rem;
+                padding: 0.16rem 0.45rem;
+                border-radius: 999px;
+                background: #fee2e2;
+                color: #7f1d1d;
+                font-size: 0.64rem;
+                font-weight: 900;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+                margin-left: 0.35rem;
+            }
+
+            #checkFormNumber.cross-table-duplicate {
+                border-color: #dc2626 !important;
+                box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.16) !important;
+                background: #fff7f7 !important;
+            }
+
+            #checkFormNumber.cross-table-checking {
+                border-color: #2563eb !important;
+                box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12) !important;
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    function renderDuplicateWarning(duplicate) {
+        const box = document.getElementById("checkRegisterDuplicateBox");
+        const input = document.getElementById("checkFormNumber");
+        const saveButton = document.getElementById("checkRegisterSaveButton");
+
+        if (!box || !input) return;
+
+        input.classList.remove("cross-table-checking");
+
+        if (!duplicate) {
+            patchState.duplicate = null;
+            box.classList.remove("cross-table-active");
+            box.innerHTML = "";
+            input.classList.remove("cross-table-duplicate");
+
+            if (saveButton) {
+                saveButton.disabled = false;
+                saveButton.style.opacity = "1";
+                saveButton.title = "";
+            }
+
+            return;
+        }
+
+        patchState.duplicate = duplicate;
+        input.classList.add("cross-table-duplicate");
+
+        if (saveButton) {
+            saveButton.disabled = true;
+            saveButton.style.opacity = "0.55";
+            saveButton.title = "This check number already exists.";
+        }
+
+        const sourceLabel = duplicate.source === "invoice"
+            ? "Invoice Tracking"
+            : "Check Register";
+
+        const actionHtml = duplicate.source === "check_register" && duplicate.id
+            ? `<button class="btn btn-secondary" onclick="window.jcCheckRegisterEdit('${safeText(duplicate.id)}')">
+                   <i class="fas fa-folder-open"></i> Open Existing
+               </button>`
+            : `<button class="btn btn-secondary" onclick="window.jcCheckRegisterSilentSyncInvoices && window.jcCheckRegisterSilentSyncInvoices({force:true, reason:'duplicate-warning-sync'})">
+                   <i class="fas fa-arrows-rotate"></i> Sync Now
+               </button>`;
+
+        box.classList.add("cross-table-active");
+        box.innerHTML = `
+            <div>
+                <i class="fas fa-triangle-exclamation"></i>
+                Check # <strong>${safeText(duplicate.check_number)}</strong> already exists.
+                <span class="duplicate-source-pill">${safeText(sourceLabel)}</span>
+                <div style="margin-top:0.25rem;font-weight:650;color:#7f1d1d;">
+                    ${safeText(duplicate.vendor || "Unknown vendor")}
+                    ${duplicate.check_date ? " · " + safeText(duplicate.check_date) : ""}
+                    ${duplicate.amount !== undefined && duplicate.amount !== null ? " · " + safeText(money(duplicate.amount)) : ""}
+                    ${duplicate.invoice_number ? " · Invoice " + safeText(duplicate.invoice_number) : ""}
+                </div>
+            </div>
+            ${actionHtml}
+        `;
+    }
+
+    async function findDuplicateInCheckRegister(checkNumber) {
+        const normalized = normalizeCheck(checkNumber);
+        if (!normalized || typeof supabaseClient === "undefined") return null;
+
+        const { data, error } = await supabaseClient
+            .from(CHECK_TABLE)
+            .select("id, check_date, check_number, vendor, amount, reason")
+            .limit(15000);
+
+        if (error) {
+            console.warn("[Check Register] duplicate check_register lookup failed:", error);
+            return null;
+        }
+
+        const match = (data || []).find(row => {
+            if (patchState.editingId && row.id === patchState.editingId) return false;
+            return normalizeCheck(row.check_number) === normalized;
+        });
+
+        return match ? { ...match, source: "check_register" } : null;
+    }
+
+    async function findDuplicateInInvoices(checkNumber) {
+        const normalized = normalizeCheck(checkNumber);
+        if (!normalized || typeof supabaseClient === "undefined") return null;
+
+        const { data, error } = await supabaseClient
+            .from(INVOICE_TABLE)
+            .select("id, vendor, invoice_date, created_at, invoice_number, check_number, total, amount")
+            .not("check_number", "is", null)
+            .limit(15000);
+
+        if (error) {
+            console.warn("[Check Register] duplicate invoice lookup failed:", error);
+            return null;
+        }
+
+        const matches = (data || []).filter(row => normalizeCheck(row.check_number) === normalized);
+        if (!matches.length) return null;
+
+        const amount = matches.reduce((sum, row) => {
+            return sum + (Number.parseFloat(row.total || row.amount || 0) || 0);
+        }, 0);
+
+        const first = matches[0];
+
+        return {
+            source: "invoice",
+            id: String(first.id || ""),
+            check_date: String(first.invoice_date || first.created_at || "").slice(0, 10),
+            check_number: String(first.check_number || checkNumber).trim(),
+            vendor: String(first.vendor || "Unknown").trim().toUpperCase(),
+            amount,
+            invoice_number: matches
+                .map(row => String(row.invoice_number || "").trim())
+                .filter(Boolean)
+                .slice(0, 3)
+                .join(", ")
+        };
+    }
+
+    async function findCrossTableDuplicate(checkNumber) {
+        const duplicateInRegister = await findDuplicateInCheckRegister(checkNumber);
+        if (duplicateInRegister) return duplicateInRegister;
+
+        return await findDuplicateInInvoices(checkNumber);
+    }
+
+    async function checkDuplicateNow() {
+        const checkNumber = currentCheckNumber();
+        const input = document.getElementById("checkFormNumber");
+
+        if (!normalizeCheck(checkNumber)) {
+            renderDuplicateWarning(null);
+            return null;
+        }
+
+        if (input) input.classList.add("cross-table-checking");
+        showStatus("Checking existing checks...", "neutral");
+
+        patchState.checking = true;
+
+        try {
+            const duplicate = await findCrossTableDuplicate(checkNumber);
+            renderDuplicateWarning(duplicate);
+
+            if (duplicate) {
+                showStatus("This check number already exists", "error");
+            } else {
+                showStatus("Check number available", "success");
+            }
+
+            return duplicate;
+        } finally {
+            patchState.checking = false;
+            if (input) input.classList.remove("cross-table-checking");
+        }
+    }
+
+    function debouncedDuplicateCheck() {
+        clearTimeout(patchState.timer);
+        patchState.timer = setTimeout(checkDuplicateNow, DEBOUNCE_MS);
+    }
+
+    function patchFunctions() {
+        if (window.__jcCrossTableDuplicateWarningV15Patched) return;
+        window.__jcCrossTableDuplicateWarningV15Patched = true;
+
+        const originalCheckDuplicate = window.jcCheckRegisterCheckDuplicate;
+        const originalAutoSave = window.jcCheckRegisterAutoSave;
+        const originalSaveNow = window.jcCheckRegisterSaveNow;
+        const originalEdit = window.jcCheckRegisterEdit;
+        const originalNew = window.jcCheckRegisterNew;
+
+        window.jcCheckRegisterCheckDuplicate = function () {
+            if (typeof originalCheckDuplicate === "function") {
+                originalCheckDuplicate.apply(this, arguments);
+            }
+
+            debouncedDuplicateCheck();
+        };
+
+        window.jcCheckRegisterAutoSave = function () {
+            clearTimeout(patchState.timer);
+
+            patchState.timer = setTimeout(async function () {
+                const duplicate = await checkDuplicateNow();
+
+                if (duplicate) {
+                    showStatus("Duplicate check blocked — open existing or sync first", "error");
+                    return;
+                }
+
+                if (typeof originalAutoSave === "function") {
+                    originalAutoSave.apply(window, arguments);
+                }
+            }, DEBOUNCE_MS);
+        };
+
+        window.jcCheckRegisterSaveNow = async function () {
+            const duplicate = await checkDuplicateNow();
+
+            if (duplicate) {
+                showStatus("Duplicate check blocked — this check is already in the system", "error");
+                alert(`Check # ${duplicate.check_number} already exists in ${duplicate.source === "invoice" ? "Invoice Tracking" : "Check Register"} for ${duplicate.vendor || "Unknown vendor"}.`);
+                return null;
+            }
+
+            return typeof originalSaveNow === "function"
+                ? originalSaveNow.apply(this, arguments)
+                : null;
+        };
+
+        window.jcCheckRegisterEdit = function (id) {
+            patchState.editingId = id || null;
+            renderDuplicateWarning(null);
+
+            return typeof originalEdit === "function"
+                ? originalEdit.apply(this, arguments)
+                : undefined;
+        };
+
+        window.jcCheckRegisterNew = function () {
+            patchState.editingId = null;
+            renderDuplicateWarning(null);
+
+            return typeof originalNew === "function"
+                ? originalNew.apply(this, arguments)
+                : undefined;
+        };
+    }
+
+    function bindSaveButton() {
+        const saveButton = document.getElementById("checkRegisterSaveButton");
+        if (!saveButton || saveButton.dataset.crossTableDuplicateBoundV15) return;
+
+        saveButton.dataset.crossTableDuplicateBoundV15 = "true";
+        saveButton.setAttribute("onclick", "window.jcCheckRegisterSaveNow()");
+    }
+
+    function boot() {
+        injectStyles();
+        patchFunctions();
+
+        const observer = new MutationObserver(function () {
+            bindSaveButton();
+        });
+
+        if (document.body) {
+            observer.observe(document.body, { childList: true, subtree: true });
+        }
+
+        setTimeout(bindSaveButton, 500);
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", boot);
+    } else {
+        boot();
+    }
+})();
+</script>
+<!-- ========== END JC CHECK REGISTER CROSS-TABLE DUPLICATE WARNING V15 ========== -->
 
 </body>
 
