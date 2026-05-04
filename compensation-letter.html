@@ -516,12 +516,41 @@ async function loadEmpList() {
 }
 
 /* ── LOAD LETTERS ── */
+
+function normalizeCompType(record) {
+  const raw = String(record.compensation_type || record.type || '').trim().toLowerCase();
+
+  if (raw.includes('hour')) return 'hourly';
+  if (raw.includes('salary') || raw.includes('salaried')) return 'salary';
+
+  const hourlyRate = parseFloat(record.hourly_rate || 0);
+  const annualSalary = parseFloat(record.annual_salary || record.salary_amount || 0);
+
+  if (hourlyRate > 0 && annualSalary <= 0) return 'hourly';
+  if (annualSalary > 0 && hourlyRate <= 0) return 'salary';
+
+  if (Array.isArray(record.positions) && record.positions.length) {
+    const firstWage = parseFloat(record.positions[0]?.wage || 0);
+    if (firstWage > 0 && firstWage < 1000) return 'hourly';
+    if (firstWage >= 1000) return 'salary';
+  }
+
+  return '';
+}
+
 async function loadData() {
   const{data,error}=await db.from('compensation_letters').select('*').order('created_at',{ascending:false});
   if(error){toast('Error loading: '+error.message,'e');return;}
-  const all=data||[];
-  salaryData=all.filter(r=>(r.compensation_type||r.type||'').toLowerCase()==='salary');
-  hourlyData=all.filter(r=>(r.compensation_type||r.type||'').toLowerCase()==='hourly');
+  const all = data || [];
+  salaryData = all.filter(r => normalizeCompType(r) === 'salary');
+  hourlyData = all.filter(r => normalizeCompType(r) === 'hourly');
+
+  console.info('Compensation letters loaded:', {
+    total: all.length,
+    salary: salaryData.length,
+    hourly: hourlyData.length
+  });
+
   applyFilters();
 }
 
@@ -542,7 +571,7 @@ function applyFilters(){
 }
 
 function buildDeptFilter(){
-  const depts=[...new Set([...salaryData,...hourlyData].map(r=>r.department).filter(Boolean))].sort();
+  const depts=[...new Set([...salaryData,...hourlyData,...employees].map(r=>r.department).filter(Boolean))].sort();
   const sel=document.getElementById('filter-dept');
   sel.innerHTML='<option value="">All Departments</option>';
   depts.forEach(d=>{const o=document.createElement('option');o.value=d;o.textContent=d;sel.appendChild(o);});
