@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.05.v20-open-invoice-restore-void-live-refresh';
+        var VERSION = '2026.05.05.v21-save-updates-existing-check';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -57605,6 +57605,713 @@ document.addEventListener('change', function(event) {
 })();
 </script>
 <!-- ========== END JC CHECK REGISTER V20 ========== -->
+
+
+<!-- ========== JC CHECK REGISTER SAVE UPDATES EXISTING CHECK V21 ========== -->
+<script id="jc-check-register-save-updates-existing-v21">
+(function () {
+    "use strict";
+
+    const CHECK_TABLE = "check_register";
+    const INVOICE_TABLE = "invoices";
+    const AUTO_SAVE_DELAY_MS = 850;
+
+    const state = {
+        editingId: null,
+        autoSaveTimer: null,
+        checkingTimer: null,
+        currentDuplicate: null,
+        previousNew: null,
+        previousEdit: null,
+        previousLoad: null,
+        previousRefresh: null
+    };
+
+    function safeText(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function money(value) {
+        const number = Number.parseFloat(value || 0);
+        return "$" + number.toLocaleString("en-US", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function normalizeCheck(value) {
+        return String(value || "")
+            .normalize("NFKD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/[^0-9a-zA-Z]/g, "")
+            .toLowerCase();
+    }
+
+    function getFieldValue(id) {
+        return document.getElementById(id)?.value || "";
+    }
+
+    function setFieldValue(id, value) {
+        const input = document.getElementById(id);
+        if (input) input.value = value ?? "";
+    }
+
+    function setStatus(message, tone) {
+        const status = document.getElementById("checkRegisterSaveStatus");
+        if (!status) return;
+
+        status.textContent = message;
+
+        if (tone === "success") {
+            status.style.color = "#15803d";
+        } else if (tone === "error") {
+            status.style.color = "#b91c1c";
+        } else if (tone === "warning") {
+            status.style.color = "#b45309";
+        } else {
+            status.style.color = "#64748b";
+        }
+    }
+
+    function showToast(message, type) {
+        if (typeof window.showAlert === "function") {
+            window.showAlert(message, type || "success");
+            return;
+        }
+
+        if (type === "error") {
+            alert(message);
+        }
+    }
+
+    function getFormData() {
+        const vendor = getFieldValue("checkFormVendor").trim();
+        const reason = getFieldValue("checkFormReason").trim() || vendor;
+
+        return {
+            check_date: getFieldValue("checkFormDate"),
+            check_number: getFieldValue("checkFormNumber").trim(),
+            vendor,
+            category: getFieldValue("checkFormCategory") || "Vendor",
+            reason,
+            amount: Number.parseFloat(getFieldValue("checkFormAmount") || 0) || 0,
+            status: getFieldValue("checkFormStatus") || "Cleared"
+        };
+    }
+
+    function validateData(data, quiet) {
+        if (!data.check_date) {
+            if (!quiet) alert("Please enter the check date.");
+            return false;
+        }
+
+        if (!normalizeCheck(data.check_number)) {
+            if (!quiet) alert("Please enter the check number.");
+            return false;
+        }
+
+        if (!data.vendor || data.vendor === "__ADD_NEW__") {
+            if (!quiet) alert("Please select a vendor.");
+            return false;
+        }
+
+        if (!data.reason) {
+            if (!quiet) alert("Please enter the reason.");
+            return false;
+        }
+
+        if (data.amount <= 0) {
+            if (!quiet) alert("Please enter a valid amount.");
+            return false;
+        }
+
+        return true;
+    }
+
+    async function findRegisterDuplicate(checkNumber) {
+        const normalized = normalizeCheck(checkNumber);
+        if (!normalized || typeof window.supabaseClient === "undefined") return null;
+
+        const { data, error } = await supabaseClient
+            .from(CHECK_TABLE)
+            .select("id, check_date, check_number, vendor, category, reason, amount, status, source_table, source_id")
+            .limit(15000);
+
+        if (error) {
+            console.warn("[v21] check_register duplicate lookup failed:", error);
+            return null;
+        }
+
+        return (data || []).find(row => normalizeCheck(row.check_number) === normalized) || null;
+    }
+
+    async function findInvoiceDuplicate(checkNumber) {
+        const normalized = normalizeCheck(checkNumber);
+        if (!normalized || typeof window.supabaseClient === "undefined") return null;
+
+        const { data, error } = await supabaseClient
+            .from(INVOICE_TABLE)
+            .select("id, invoice_date, created_at, invoice_number, check_number, vendor, total, amount, notes")
+            .limit(15000);
+
+        if (error) {
+            console.warn("[v21] invoice duplicate lookup failed:", error);
+            return null;
+        }
+
+        const row = (data || []).find(invoice => normalizeCheck(invoice.check_number) === normalized);
+        if (!row) return null;
+
+        return {
+            id: row.id,
+            check_date: row.invoice_date || String(row.created_at || "").slice(0, 10),
+            check_number: row.check_number,
+            vendor: row.vendor || "",
+            category: "Vendor",
+            reason: row.vendor || "",
+            amount: Number.parseFloat(row.total || row.amount || 0) || 0,
+            status: "Cleared",
+            source_table: "invoices",
+            source_id: String(row.id || ""),
+            invoice_number: row.invoice_number || ""
+        };
+    }
+
+    async function findAnyDuplicate(checkNumber) {
+        const registerDuplicate = await findRegisterDuplicate(checkNumber);
+        if (registerDuplicate) {
+            return {
+                ...registerDuplicate,
+                duplicate_source: "check_register"
+            };
+        }
+
+        const invoiceDuplicate = await findInvoiceDuplicate(checkNumber);
+        if (invoiceDuplicate) {
+            return {
+                ...invoiceDuplicate,
+                duplicate_source: "invoices"
+            };
+        }
+
+        return null;
+    }
+
+    function ensureDuplicateBox() {
+        let box = document.getElementById("checkRegisterDuplicateBox");
+
+        if (!box) {
+            const form = document.querySelector(".check-register-form");
+            if (!form) return null;
+
+            box = document.createElement("div");
+            box.id = "checkRegisterDuplicateBox";
+            box.className = "check-register-duplicate-box";
+            const actions = form.querySelector(".check-register-actions");
+            form.insertBefore(box, actions || null);
+        }
+
+        return box;
+    }
+
+    function setSaveButtonEnabled(enabled) {
+        const button = document.getElementById("checkRegisterSaveButton")
+            || document.querySelector(".check-register-actions .btn-primary");
+
+        if (!button) return;
+
+        button.disabled = !enabled;
+        button.style.opacity = enabled ? "1" : "0.55";
+        button.title = enabled
+            ? "Save. If this check already exists, it will update that record."
+            : "Complete required fields first.";
+    }
+
+    function renderDuplicateBox(duplicate) {
+        const box = ensureDuplicateBox();
+        const input = document.getElementById("checkFormNumber");
+
+        if (!box) return;
+
+        if (!duplicate) {
+            box.className = "check-register-duplicate-box";
+            box.innerHTML = "";
+            if (input) {
+                input.classList.remove("duplicate", "cross-table-duplicate", "v16-duplicate-input");
+                input.style.borderColor = "";
+                input.style.boxShadow = "";
+                input.style.background = "";
+            }
+            setSaveButtonEnabled(true);
+            return;
+        }
+
+        const isSameEditingRecord = state.editingId && duplicate.duplicate_source === "check_register" && duplicate.id === state.editingId;
+        const sourceLabel = duplicate.duplicate_source === "invoices" ? "INVOICE TRACKING" : "CHECK REGISTER";
+        const modeLabel = isSameEditingRecord
+            ? "Editing this check — Save will update"
+            : duplicate.duplicate_source === "check_register"
+                ? "Existing check found — Save will update existing"
+                : "Invoice check found — Save will create/update Check Register";
+
+        box.className = "check-register-duplicate-box active";
+        box.style.borderColor = "#93c5fd";
+        box.style.background = "#eff6ff";
+        box.style.color = "#1e3a8a";
+        box.innerHTML = `
+            <div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;flex-wrap:wrap;">
+                <div>
+                    <div style="font-weight:900;margin-bottom:0.45rem;">
+                        <i class="fas fa-circle-info"></i>
+                        Check # ${safeText(duplicate.check_number)} already exists.
+                        <span style="display:inline-flex;margin-left:0.5rem;padding:0.18rem 0.55rem;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:0.67rem;font-weight:900;">
+                            ${safeText(sourceLabel)}
+                        </span>
+                    </div>
+                    <div style="font-weight:800;">
+                        ${safeText(duplicate.vendor || "Unknown Vendor")} · ${safeText(duplicate.check_date || "")} · ${safeText(money(duplicate.amount))}
+                    </div>
+                    <div style="margin-top:0.35rem;font-size:0.76rem;font-weight:800;color:#1d4ed8;">
+                        ${safeText(modeLabel)}
+                    </div>
+                </div>
+                ${duplicate.duplicate_source === "check_register" ? `
+                    <button type="button" class="btn btn-secondary" onclick="window.jcCheckRegisterEdit('${safeText(duplicate.id)}')">
+                        <i class="fas fa-folder-open"></i> Open Existing
+                    </button>
+                ` : `
+                    <button type="button" class="btn btn-secondary" onclick="window.jcCheckRegisterSyncNow && window.jcCheckRegisterSyncNow('duplicate-warning')">
+                        <i class="fas fa-rotate"></i> Sync Invoice
+                    </button>
+                `}
+            </div>
+        `;
+
+        if (input) {
+            input.classList.remove("duplicate", "cross-table-duplicate", "v16-duplicate-input");
+            input.style.borderColor = "#3b82f6";
+            input.style.boxShadow = "0 0 0 3px rgba(59, 130, 246, 0.16)";
+            input.style.background = "#eff6ff";
+        }
+
+        setSaveButtonEnabled(true);
+    }
+
+    async function refreshDuplicateState() {
+        clearTimeout(state.checkingTimer);
+
+        const checkNumber = getFieldValue("checkFormNumber");
+
+        if (!normalizeCheck(checkNumber)) {
+            state.currentDuplicate = null;
+            renderDuplicateBox(null);
+            setStatus("Complete required fields to auto-save", "neutral");
+            return null;
+        }
+
+        state.checkingTimer = null;
+
+        const duplicate = await findAnyDuplicate(checkNumber);
+        state.currentDuplicate = duplicate;
+
+        renderDuplicateBox(duplicate);
+
+        if (duplicate) {
+            const sameEditing = state.editingId && duplicate.duplicate_source === "check_register" && duplicate.id === state.editingId;
+
+            if (sameEditing) {
+                setStatus("Editing existing check — Save will update", "success");
+            } else {
+                setStatus("Existing check found — Save will update instead of duplicate", "warning");
+            }
+        } else {
+            setStatus("Check number available", "success");
+        }
+
+        return duplicate;
+    }
+
+    function refreshDuplicateStateDebounced() {
+        clearTimeout(state.checkingTimer);
+
+        state.checkingTimer = setTimeout(() => {
+            refreshDuplicateState();
+        }, 250);
+    }
+
+    async function saveDirect(options) {
+        const quiet = Boolean(options?.quiet);
+        const clearAfterSave = Boolean(options?.clearAfterSave);
+        const allowDuplicateUpdate = Boolean(options?.allowDuplicateUpdate);
+
+        const data = getFormData();
+
+        if (!validateData(data, quiet)) {
+            setStatus("Complete required fields to auto-save", "neutral");
+            return null;
+        }
+
+        const duplicate = await findAnyDuplicate(data.check_number);
+        state.currentDuplicate = duplicate;
+        renderDuplicateBox(duplicate);
+
+        if (quiet && duplicate && !state.editingId) {
+            setStatus("Existing check found — press Save to update it", "warning");
+            return null;
+        }
+
+        let targetId = state.editingId || null;
+        let sourcePayload = {};
+
+        if (!targetId && duplicate?.duplicate_source === "check_register") {
+            targetId = duplicate.id;
+        }
+
+        if (!targetId && duplicate?.duplicate_source === "invoices") {
+            sourcePayload = {
+                source_table: "invoices",
+                source_id: String(duplicate.id || "")
+            };
+        }
+
+        if (!targetId && duplicate && !allowDuplicateUpdate) {
+            setStatus("Existing check found — press Save to update it", "warning");
+            return null;
+        }
+
+        setStatus(quiet ? "Saving automatically..." : targetId ? "Updating existing check..." : "Saving new check...", "neutral");
+
+        try {
+            let result;
+
+            if (targetId) {
+                result = await supabaseClient
+                    .from(CHECK_TABLE)
+                    .update(data)
+                    .eq("id", targetId)
+                    .select()
+                    .single();
+            } else {
+                result = await supabaseClient
+                    .from(CHECK_TABLE)
+                    .insert({
+                        ...data,
+                        source_table: sourcePayload.source_table || "manual",
+                        source_id: sourcePayload.source_id || null
+                    })
+                    .select()
+                    .single();
+            }
+
+            if (result.error) throw result.error;
+
+            state.editingId = result.data.id;
+            state.currentDuplicate = null;
+
+            setStatus(quiet ? "Saved automatically ✓" : "Saved and ready for next check ✓", "success");
+            showSavedCheckmark();
+
+            await silentRefreshVisibleView();
+
+            if (!quiet && clearAfterSave) {
+                setTimeout(() => {
+                    clearFormForNextCheck();
+                }, 350);
+            }
+
+            return result.data;
+        } catch (error) {
+            console.error("[v21] save/update failed:", error);
+
+            if (error?.code === "23505") {
+                const existing = await findRegisterDuplicate(data.check_number);
+
+                if (existing) {
+                    state.currentDuplicate = {
+                        ...existing,
+                        duplicate_source: "check_register"
+                    };
+                    renderDuplicateBox(state.currentDuplicate);
+                    setStatus("Existing check found — click Save again to update it", "warning");
+                    return null;
+                }
+            }
+
+            setStatus("Save failed: " + (error.message || error), "error");
+
+            if (!quiet) {
+                showToast("Save failed: " + (error.message || error), "error");
+            }
+
+            return null;
+        }
+    }
+
+    function showSavedCheckmark() {
+        let check = document.getElementById("checkRegisterSavedCheckmarkV21");
+
+        if (!check) {
+            check = document.createElement("div");
+            check.id = "checkRegisterSavedCheckmarkV21";
+            check.innerHTML = `<i class="fas fa-circle-check"></i>`;
+            check.style.cssText = `
+                position: fixed;
+                top: 90px;
+                right: 28px;
+                width: 54px;
+                height: 54px;
+                border-radius: 999px;
+                background: #16a34a;
+                color: white;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 1.7rem;
+                box-shadow: 0 16px 30px rgba(22, 163, 74, 0.35);
+                z-index: 99999;
+                transform: scale(0.4);
+                opacity: 0;
+                transition: all 220ms ease;
+                pointer-events: none;
+            `;
+            document.body.appendChild(check);
+        }
+
+        requestAnimationFrame(() => {
+            check.style.opacity = "1";
+            check.style.transform = "scale(1)";
+        });
+
+        setTimeout(() => {
+            check.style.opacity = "0";
+            check.style.transform = "scale(0.4)";
+        }, 900);
+    }
+
+    function clearFormForNextCheck() {
+        state.editingId = null;
+        state.currentDuplicate = null;
+
+        if (typeof state.previousNew === "function") {
+            state.previousNew();
+        } else {
+            setFieldValue("checkFormDate", new Date().toISOString().slice(0, 10));
+            setFieldValue("checkFormNumber", "");
+            setFieldValue("checkFormVendor", "");
+            setFieldValue("checkFormCategory", "Vendor");
+            setFieldValue("checkFormReason", "");
+            setFieldValue("checkFormAmount", "");
+            setFieldValue("checkFormStatus", "Cleared");
+        }
+
+        renderDuplicateBox(null);
+        setStatus("Ready for next check", "neutral");
+
+        const numberField = document.getElementById("checkFormNumber");
+        if (numberField) numberField.focus();
+    }
+
+    async function silentRefreshVisibleView() {
+        try {
+            if (typeof window.jcCheckRegisterLoad === "function") {
+                await window.jcCheckRegisterLoad(true, true);
+            }
+
+            if (typeof window.jcCheckRegisterRefreshVisibleView === "function") {
+                await window.jcCheckRegisterRefreshVisibleView("v21-save");
+            } else if (typeof window.jcCheckRegisterRefreshKpiDashboard === "function") {
+                await window.jcCheckRegisterRefreshKpiDashboard();
+            }
+
+            if (typeof window.jcCheckRegisterSyncNow === "function") {
+                setTimeout(() => window.jcCheckRegisterSyncNow("v21-post-save"), 250);
+            }
+        } catch (error) {
+            console.warn("[v21] silent refresh failed:", error);
+        }
+    }
+
+    function bindEvents() {
+        const ids = [
+            "checkFormDate",
+            "checkFormNumber",
+            "checkFormVendor",
+            "checkFormCategory",
+            "checkFormReason",
+            "checkFormAmount",
+            "checkFormStatus"
+        ];
+
+        ids.forEach(id => {
+            const input = document.getElementById(id);
+            if (!input || input.dataset.v21SaveUpdateBound) return;
+
+            input.dataset.v21SaveUpdateBound = "true";
+
+            input.addEventListener("input", function () {
+                refreshDuplicateStateDebounced();
+                window.jcCheckRegisterAutoSave();
+            });
+
+            input.addEventListener("change", function () {
+                refreshDuplicateStateDebounced();
+                window.jcCheckRegisterAutoSave();
+            });
+
+            input.addEventListener("keydown", function (event) {
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    window.jcCheckRegisterSaveNow();
+                }
+            });
+        });
+
+        const saveButton = document.getElementById("checkRegisterSaveButton")
+            || document.querySelector(".check-register-actions .btn-primary");
+
+        if (saveButton) {
+            saveButton.id = "checkRegisterSaveButton";
+            saveButton.disabled = false;
+            saveButton.style.opacity = "1";
+            saveButton.setAttribute("onclick", "window.jcCheckRegisterSaveNow()");
+        }
+    }
+
+    function patchFunctions() {
+        if (window.__jcCheckRegisterSaveUpdatesExistingV21) return;
+        window.__jcCheckRegisterSaveUpdatesExistingV21 = true;
+
+        state.previousNew = window.jcCheckRegisterNew;
+        state.previousEdit = window.jcCheckRegisterEdit;
+        state.previousLoad = window.jcCheckRegisterLoad;
+        state.previousRefresh = window.jcCheckRegisterRefreshVisibleView;
+
+        window.jcCheckRegisterSaveNow = function () {
+            return saveDirect({
+                quiet: false,
+                clearAfterSave: true,
+                allowDuplicateUpdate: true
+            });
+        };
+
+        window.jcCheckRegisterAutoSave = function () {
+            clearTimeout(state.autoSaveTimer);
+
+            const data = getFormData();
+
+            if (!validateData(data, true)) {
+                setStatus("Complete required fields to auto-save", "neutral");
+                return;
+            }
+
+            setStatus("Auto-save pending...", "neutral");
+
+            state.autoSaveTimer = setTimeout(() => {
+                saveDirect({
+                    quiet: true,
+                    clearAfterSave: false,
+                    allowDuplicateUpdate: false
+                });
+            }, AUTO_SAVE_DELAY_MS);
+        };
+
+        window.jcCheckRegisterNew = function () {
+            state.editingId = null;
+            state.currentDuplicate = null;
+
+            const result = typeof state.previousNew === "function"
+                ? state.previousNew.apply(this, arguments)
+                : undefined;
+
+            renderDuplicateBox(null);
+            setStatus("Ready for new check", "neutral");
+
+            setTimeout(bindEvents, 50);
+
+            return result;
+        };
+
+        window.jcCheckRegisterEdit = async function (id) {
+            state.editingId = id || null;
+            state.currentDuplicate = null;
+
+            let result;
+
+            if (typeof state.previousEdit === "function") {
+                result = await state.previousEdit.apply(this, arguments);
+            }
+
+            renderDuplicateBox(null);
+            setSaveButtonEnabled(true);
+            setStatus("Editing existing check — Save will update", "success");
+
+            setTimeout(() => {
+                bindEvents();
+                refreshDuplicateState();
+            }, 120);
+
+            return result;
+        };
+
+        window.jcCheckRegisterCheckDuplicate = refreshDuplicateState;
+    }
+
+    function injectStyles() {
+        if (document.getElementById("jc-check-register-save-updates-existing-v21-style")) return;
+
+        const style = document.createElement("style");
+        style.id = "jc-check-register-save-updates-existing-v21-style";
+        style.textContent = `
+            #checkRegisterDuplicateBox.active {
+                margin-top: 0.9rem;
+                padding: 0.9rem 1rem;
+                border-radius: 12px;
+                border: 1px solid #93c5fd;
+                background: #eff6ff;
+                color: #1e3a8a;
+                box-shadow: 0 10px 22px rgba(37, 99, 235, 0.08);
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function boot() {
+        injectStyles();
+        patchFunctions();
+        bindEvents();
+
+        const observer = new MutationObserver(function () {
+            bindEvents();
+        });
+
+        if (document.body) {
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        }
+
+        setInterval(function () {
+            const section = document.getElementById("checkRegister");
+            if (section && section.classList.contains("active")) {
+                bindEvents();
+            }
+        }, 1200);
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", boot);
+    } else {
+        boot();
+    }
+})();
+</script>
+<!-- ========== END JC CHECK REGISTER SAVE UPDATES EXISTING CHECK V21 ========== -->
 
 </body>
 
