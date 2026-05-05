@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.04.v16-robust-cross-table-duplicate-warning';
+        var VERSION = '2026.05.04.v17-void-duplicate-save-void-kpi';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -55595,6 +55595,731 @@ document.addEventListener('change', function(event) {
 })();
 </script>
 <!-- ========== END JC CHECK REGISTER ROBUST DUPLICATE WARNING V16 ========== -->
+
+
+<!-- ========== JC CHECK REGISTER VOID DUPLICATE SAVE + VOID KPI V17 ========== -->
+<script id="jc-check-register-void-duplicate-save-void-kpi-v17">
+(function () {
+    "use strict";
+
+    const CHECK_TABLE = "check_register";
+    const INVOICE_TABLE = "invoices";
+    const DEBOUNCE_MS = 250;
+
+    const state = {
+        timer: null,
+        originalSaveNow: null,
+        originalAutoSave: null,
+        originalLoad: null,
+        originalApplyFilters: null,
+        originalNew: null,
+        lastDuplicate: null,
+        renderingVoidKpi: false
+    };
+
+    function safeText(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function normalize(value) {
+        return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+    }
+
+    function normalizeCheck(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    }
+
+    function searchToken(value) {
+        return String(value || "").trim().replace(/[%_]/g, "").replace(/[^a-zA-Z0-9-]/g, "");
+    }
+
+    function money(value) {
+        const number = Number.parseFloat(value || 0);
+        return "$" + number.toLocaleString("en-US", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function getValue(id) {
+        return document.getElementById(id)?.value || "";
+    }
+
+    function setValue(id, value) {
+        const input = document.getElementById(id);
+        if (input) input.value = value;
+    }
+
+    function getStatus() {
+        return getValue("checkFormStatus") || "Cleared";
+    }
+
+    function isVoidMode() {
+        return normalize(getStatus()) === "void";
+    }
+
+    function setSaveStatus(message, tone) {
+        const status = document.getElementById("checkRegisterSaveStatus");
+        if (!status) return;
+
+        status.textContent = message;
+        status.style.color = tone === "success" ? "#15803d" : tone === "error" ? "#b91c1c" : "#64748b";
+    }
+
+    function getFormData() {
+        const vendor = getValue("checkFormVendor").trim();
+        const reason = getValue("checkFormReason").trim() || vendor;
+
+        return {
+            check_date: getValue("checkFormDate") || new Date().toISOString().slice(0, 10),
+            check_number: getValue("checkFormNumber").trim(),
+            vendor,
+            category: getValue("checkFormCategory") || "Vendor",
+            reason,
+            amount: Number.parseFloat(getValue("checkFormAmount") || 0) || 0,
+            status: getStatus() || "Cleared",
+            notes: ""
+        };
+    }
+
+    function validateForm(data, quiet) {
+        if (!data.check_number) {
+            if (!quiet) alert("Please enter the check number.");
+            return false;
+        }
+
+        if (!data.vendor || data.vendor === "__ADD_NEW__") {
+            if (!quiet) alert("Please select a vendor.");
+            return false;
+        }
+
+        if (data.amount < 0) {
+            if (!quiet) alert("Amount cannot be negative.");
+            return false;
+        }
+
+        return true;
+    }
+
+    function getWarningBox() {
+        let box = document.getElementById("checkRegisterDuplicateBox");
+        if (box) return box;
+
+        const actions = document.querySelector(".check-register-actions");
+        if (!actions || !actions.parentElement) return null;
+
+        box = document.createElement("div");
+        box.id = "checkRegisterDuplicateBox";
+        box.className = "check-register-duplicate-box";
+        actions.parentElement.insertBefore(box, actions);
+        return box;
+    }
+
+    function getSaveButton() {
+        return document.getElementById("checkRegisterSaveButton");
+    }
+
+    function unlockSave() {
+        const button = getSaveButton();
+        if (!button) return;
+        button.disabled = false;
+        button.style.opacity = "1";
+        button.title = "";
+    }
+
+    function lockSave() {
+        const button = getSaveButton();
+        if (!button) return;
+        button.disabled = true;
+        button.style.opacity = "0.55";
+        button.title = "This check already exists. Change status to Void to update the existing check.";
+    }
+
+    function injectStyles() {
+        if (document.getElementById("jc-check-register-void-v17-style")) return;
+
+        const style = document.createElement("style");
+        style.id = "jc-check-register-void-v17-style";
+        style.textContent = `
+            #checkRegisterDuplicateBox.v17-void-allowed {
+                display: flex !important;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+                margin-top: 0.75rem;
+                margin-bottom: 0.75rem;
+                padding: 0.9rem 1rem;
+                border-radius: 12px;
+                border: 1px solid #86efac;
+                background: linear-gradient(180deg, #f0fdf4, #ecfdf5);
+                color: #14532d;
+                font-size: 0.78rem;
+                font-weight: 850;
+                box-shadow: 0 8px 20px rgba(21, 128, 61, 0.08);
+            }
+
+            #checkRegisterDuplicateBox.v17-duplicate-blocked {
+                display: flex !important;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+                margin-top: 0.75rem;
+                margin-bottom: 0.75rem;
+                padding: 0.9rem 1rem;
+                border-radius: 12px;
+                border: 1px solid #fca5a5;
+                background: linear-gradient(180deg, #fff7f7, #fef2f2);
+                color: #991b1b;
+                font-size: 0.78rem;
+                font-weight: 850;
+                box-shadow: 0 8px 20px rgba(185, 28, 28, 0.08);
+            }
+
+            .v17-pill {
+                display: inline-flex;
+                align-items: center;
+                padding: 0.16rem 0.55rem;
+                border-radius: 999px;
+                font-size: 0.62rem;
+                font-weight: 950;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                margin-left: 0.35rem;
+            }
+
+            .v17-pill.red {
+                background: #fee2e2;
+                color: #7f1d1d;
+            }
+
+            .v17-pill.green {
+                background: #dcfce7;
+                color: #166534;
+            }
+
+            .check-register-kpi.void-kpi-card::before {
+                background: linear-gradient(90deg, #7c2d12, #f97316) !important;
+            }
+
+            .check-register-kpi.void-kpi-card .check-register-kpi-value {
+                color: #7c2d12;
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    async function lookupCheckRegister(rawCheckNumber) {
+        const normalized = normalizeCheck(rawCheckNumber);
+        const token = searchToken(rawCheckNumber);
+        if (!normalized || typeof supabaseClient === "undefined") return null;
+
+        const query = supabaseClient
+            .from(CHECK_TABLE)
+            .select("id, check_date, check_number, vendor, amount, reason, status, source_table")
+            .limit(100);
+
+        const { data, error } = token
+            ? await query.ilike("check_number", `%${token}%`)
+            : await query;
+
+        if (error) {
+            console.warn("[Check Register] v17 duplicate lookup failed:", error);
+            return null;
+        }
+
+        const match = (data || []).find(row => normalizeCheck(row.check_number) === normalized);
+        return match ? { ...match, source: "check_register" } : null;
+    }
+
+    async function lookupInvoices(rawCheckNumber) {
+        const normalized = normalizeCheck(rawCheckNumber);
+        const token = searchToken(rawCheckNumber);
+        if (!normalized || typeof supabaseClient === "undefined") return null;
+
+        const query = supabaseClient
+            .from(INVOICE_TABLE)
+            .select("id, vendor, invoice_date, created_at, invoice_number, check_number, total, amount")
+            .not("check_number", "is", null)
+            .limit(100);
+
+        const { data, error } = token
+            ? await query.ilike("check_number", `%${token}%`)
+            : await query;
+
+        if (error) {
+            console.warn("[Check Register] v17 invoice duplicate lookup failed:", error);
+            return null;
+        }
+
+        const matches = (data || []).filter(row => normalizeCheck(row.check_number) === normalized);
+        if (!matches.length) return null;
+
+        const amount = matches.reduce((sum, row) => {
+            return sum + (Number.parseFloat(row.total || row.amount || 0) || 0);
+        }, 0);
+
+        const first = matches[0];
+
+        return {
+            source: "invoice",
+            id: String(first.id || ""),
+            check_date: String(first.invoice_date || first.created_at || "").slice(0, 10),
+            check_number: String(first.check_number || rawCheckNumber).trim(),
+            vendor: String(first.vendor || "Unknown").trim(),
+            amount,
+            invoice_number: matches
+                .map(row => String(row.invoice_number || "").trim())
+                .filter(Boolean)
+                .slice(0, 4)
+                .join(", ")
+        };
+    }
+
+    async function findDuplicate(rawCheckNumber) {
+        const inRegister = await lookupCheckRegister(rawCheckNumber);
+        if (inRegister) return inRegister;
+        return await lookupInvoices(rawCheckNumber);
+    }
+
+    function renderDuplicate(duplicate) {
+        const box = getWarningBox();
+        const input = document.getElementById("checkFormNumber");
+        if (!box || !duplicate) return;
+
+        state.lastDuplicate = duplicate;
+
+        const sourceLabel = duplicate.source === "invoice" ? "Invoice Tracking" : "Check Register";
+        const voidMode = isVoidMode();
+
+        if (input) {
+            input.classList.toggle("v16-duplicate-input", !voidMode);
+            input.classList.toggle("cross-table-duplicate", !voidMode);
+        }
+
+        if (voidMode) {
+            unlockSave();
+            box.className = "check-register-duplicate-box v17-void-allowed";
+            box.innerHTML = `
+                <div>
+                    <i class="fas fa-circle-check"></i>
+                    Check # <strong>${safeText(duplicate.check_number)}</strong> already exists.
+                    <span class="v17-pill green">Void update allowed</span>
+                    <div style="margin-top:0.35rem;font-weight:750;color:#166534;">
+                        ${safeText(sourceLabel)} · ${safeText(duplicate.vendor || "Unknown vendor")}
+                        ${duplicate.check_date ? " · " + safeText(duplicate.check_date) : ""}
+                        ${duplicate.amount !== undefined && duplicate.amount !== null ? " · " + safeText(money(duplicate.amount)) : ""}
+                    </div>
+                    <div style="margin-top:0.25rem;font-size:0.7rem;color:#15803d;">
+                        Click Save to mark this existing check as Void. A duplicate check will not be created.
+                    </div>
+                </div>
+                <button class="btn btn-success" type="button" onclick="window.jcCheckRegisterSaveNow()">
+                    <i class="fas fa-ban"></i> Save Void
+                </button>
+            `;
+            setSaveStatus("Duplicate found — Void update is allowed", "success");
+            return;
+        }
+
+        lockSave();
+        box.className = "check-register-duplicate-box v17-duplicate-blocked";
+        box.innerHTML = `
+            <div>
+                <i class="fas fa-triangle-exclamation"></i>
+                Check # <strong>${safeText(duplicate.check_number)}</strong> already exists.
+                <span class="v17-pill red">${safeText(sourceLabel)}</span>
+                <div style="margin-top:0.35rem;font-weight:750;color:#7f1d1d;">
+                    ${safeText(duplicate.vendor || "Unknown vendor")}
+                    ${duplicate.check_date ? " · " + safeText(duplicate.check_date) : ""}
+                    ${duplicate.amount !== undefined && duplicate.amount !== null ? " · " + safeText(money(duplicate.amount)) : ""}
+                    ${duplicate.invoice_number ? " · Invoice " + safeText(duplicate.invoice_number) : ""}
+                </div>
+                <div style="margin-top:0.25rem;font-size:0.7rem;color:#991b1b;">
+                    To void this check, change Status to Void, then click Save.
+                </div>
+            </div>
+            ${duplicate.source === "check_register" && duplicate.id
+                ? `<button class="btn btn-secondary" type="button" onclick="window.jcCheckRegisterEdit('${safeText(duplicate.id)}')">
+                       <i class="fas fa-folder-open"></i> Open Existing
+                   </button>`
+                : `<button class="btn btn-secondary" type="button" onclick="window.jcCheckRegisterSilentSyncInvoices && window.jcCheckRegisterSilentSyncInvoices({force:true, reason:'duplicate-warning-sync'})">
+                       <i class="fas fa-arrows-rotate"></i> Sync Now
+                   </button>`
+            }
+        `;
+        setSaveStatus("Duplicate check blocked — already exists", "error");
+    }
+
+    function clearDuplicateBox() {
+        const box = getWarningBox();
+        const input = document.getElementById("checkFormNumber");
+
+        state.lastDuplicate = null;
+
+        if (box) {
+            box.className = "check-register-duplicate-box";
+            box.innerHTML = "";
+        }
+
+        if (input) {
+            input.classList.remove("v16-duplicate-input", "cross-table-duplicate");
+        }
+
+        unlockSave();
+    }
+
+    async function checkDuplicate(showAvailable) {
+        const checkNumber = getValue("checkFormNumber");
+        const normalized = normalizeCheck(checkNumber);
+
+        if (!normalized) {
+            clearDuplicateBox();
+            return null;
+        }
+
+        setSaveStatus("Checking check number...", "neutral");
+
+        const duplicate = await findDuplicate(checkNumber);
+
+        if (duplicate) {
+            renderDuplicate(duplicate);
+            return duplicate;
+        }
+
+        clearDuplicateBox();
+
+        if (showAvailable) {
+            setSaveStatus("Check number available", "success");
+        }
+
+        return null;
+    }
+
+    async function updateExistingCheckToVoid(duplicate, data) {
+        setSaveStatus("Saving void update...", "neutral");
+
+        const updatePayload = {
+            check_date: data.check_date,
+            check_number: duplicate.check_number || data.check_number,
+            vendor: data.vendor || duplicate.vendor || "",
+            category: data.category || "Vendor",
+            reason: data.reason || data.vendor || duplicate.vendor || "VOID CHECK",
+            amount: data.amount,
+            status: "Void",
+            notes: data.notes || ""
+        };
+
+        const { data: saved, error } = await supabaseClient
+            .from(CHECK_TABLE)
+            .update(updatePayload)
+            .eq("id", duplicate.id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        return saved;
+    }
+
+    async function insertInvoiceDuplicateAsVoid(data, duplicate) {
+        setSaveStatus("Saving void record...", "neutral");
+
+        const { data: saved, error } = await supabaseClient
+            .from(CHECK_TABLE)
+            .insert({
+                ...data,
+                check_number: data.check_number,
+                vendor: data.vendor || duplicate.vendor || "",
+                reason: data.reason || data.vendor || duplicate.vendor || "VOID CHECK",
+                status: "Void",
+                source_table: "manual_void",
+                source_id: duplicate.id || null
+            })
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        return saved;
+    }
+
+    async function saveVoidDuplicate(duplicate, data) {
+        if (!validateForm(data, false)) return null;
+
+        try {
+            const saved = duplicate.source === "check_register"
+                ? await updateExistingCheckToVoid(duplicate, data)
+                : await insertInvoiceDuplicateAsVoid(data, duplicate);
+
+            if (typeof window.jcCheckRegisterLoad === "function") {
+                await window.jcCheckRegisterLoad(true);
+            }
+
+            await renderVoidKpi();
+
+            setSaveStatus("Void check saved. Ready for next check.", "success");
+
+            if (typeof window.jcCheckRegisterNew === "function") {
+                setTimeout(function () {
+                    window.jcCheckRegisterNew();
+                    setSaveStatus("Ready for next check", "neutral");
+                    document.getElementById("checkFormNumber")?.focus();
+                }, 350);
+            }
+
+            if (typeof showAlert === "function") {
+                showAlert("Void check saved successfully.", "success");
+            }
+
+            return saved;
+        } catch (error) {
+            console.error("[Check Register] v17 void save failed:", error);
+
+            if (error && error.code === "23505") {
+                const freshDuplicate = await lookupCheckRegister(data.check_number);
+                if (freshDuplicate) {
+                    return await saveVoidDuplicate(freshDuplicate, data);
+                }
+            }
+
+            setSaveStatus("Void save failed: " + error.message, "error");
+            alert("Void save failed: " + error.message);
+            return null;
+        }
+    }
+
+    function dateMonth(dateString) {
+        return String(dateString || "").slice(0, 7);
+    }
+
+    function dateQuarter(dateString) {
+        if (!dateString) return "";
+        const date = new Date(dateString + "T00:00:00");
+        if (Number.isNaN(date.getTime())) return "";
+        return "Q" + Math.ceil((date.getMonth() + 1) / 3);
+    }
+
+    function rowMatchesCurrentFilters(row) {
+        const search = normalize(getValue("checkFilterSearch"));
+        const vendor = getValue("checkFilterVendor");
+        const category = getValue("checkFilterCategory");
+        const quarter = getValue("checkFilterQuarter");
+        const month = getValue("checkFilterMonth");
+
+        const haystack = normalize([
+            row.check_date,
+            row.check_number,
+            row.vendor,
+            row.category,
+            row.reason,
+            row.status
+        ].join(" "));
+
+        if (search && !haystack.includes(search)) return false;
+        if (vendor && row.vendor !== vendor) return false;
+        if (category && row.category !== category) return false;
+        if (quarter && dateQuarter(row.check_date) !== quarter) return false;
+        if (month && dateMonth(row.check_date) !== month) return false;
+
+        return true;
+    }
+
+    async function renderVoidKpi() {
+        if (state.renderingVoidKpi || typeof supabaseClient === "undefined") return;
+        const grid = document.getElementById("checkRegisterKpis");
+        if (!grid) return;
+
+        state.renderingVoidKpi = true;
+
+        try {
+            const { data, error } = await supabaseClient
+                .from(CHECK_TABLE)
+                .select("id, check_date, check_number, vendor, category, reason, amount, status")
+                .eq("status", "Void")
+                .limit(15000);
+
+            if (error) throw error;
+
+            const rows = (data || []).filter(rowMatchesCurrentFilters);
+            const count = rows.length;
+            const amount = rows.reduce((sum, row) => sum + (Number.parseFloat(row.amount || 0) || 0), 0);
+
+            let card = document.getElementById("checkRegisterVoidKpiCard");
+            if (!card) {
+                card = document.createElement("div");
+                card.id = "checkRegisterVoidKpiCard";
+                card.className = "check-register-kpi void-kpi-card";
+
+                const children = Array.from(grid.children);
+                const insertAfter = children.find(child => /pending amount/i.test(child.textContent || ""));
+                if (insertAfter && insertAfter.nextSibling) {
+                    grid.insertBefore(card, insertAfter.nextSibling);
+                } else {
+                    grid.insertBefore(card, grid.firstChild);
+                }
+            }
+
+            card.innerHTML = `
+                <div class="check-register-kpi-label">Void Checks</div>
+                <div class="check-register-kpi-value">${safeText(count.toLocaleString("en-US"))}</div>
+                <div class="check-register-kpi-sub">${safeText(money(amount))} void amount</div>
+            `;
+        } catch (error) {
+            console.warn("[Check Register] void KPI failed:", error);
+        } finally {
+            state.renderingVoidKpi = false;
+        }
+    }
+
+    function patchFunctions() {
+        if (window.__jcCheckRegisterVoidV17Patched) return;
+        window.__jcCheckRegisterVoidV17Patched = true;
+
+        state.originalSaveNow = window.jcCheckRegisterSaveNow;
+        state.originalAutoSave = window.jcCheckRegisterAutoSave;
+        state.originalLoad = window.jcCheckRegisterLoad;
+        state.originalApplyFilters = window.jcCheckRegisterApplyFilters;
+        state.originalNew = window.jcCheckRegisterNew;
+
+        window.jcCheckRegisterSaveNow = async function () {
+            const data = getFormData();
+            const duplicate = await checkDuplicate(true);
+
+            if (duplicate && isVoidMode()) {
+                return await saveVoidDuplicate(duplicate, data);
+            }
+
+            if (duplicate) {
+                renderDuplicate(duplicate);
+                alert("This check already exists. To void it, change Status to Void, then click Save.");
+                return null;
+            }
+
+            return typeof state.originalSaveNow === "function"
+                ? state.originalSaveNow.apply(window, arguments)
+                : null;
+        };
+
+        window.jcCheckRegisterAutoSave = function () {
+            clearTimeout(state.timer);
+
+            state.timer = setTimeout(async function () {
+                const duplicate = await checkDuplicate(false);
+
+                if (duplicate && isVoidMode()) {
+                    setSaveStatus("Duplicate found — click Save to mark it Void", "success");
+                    return;
+                }
+
+                if (duplicate) {
+                    setSaveStatus("Duplicate check blocked — already exists", "error");
+                    return;
+                }
+
+                if (typeof state.originalAutoSave === "function") {
+                    state.originalAutoSave.apply(window, arguments);
+                }
+            }, DEBOUNCE_MS);
+        };
+
+        window.jcCheckRegisterCheckDuplicate = function () {
+            clearTimeout(state.timer);
+            state.timer = setTimeout(function () {
+                checkDuplicate(true);
+            }, DEBOUNCE_MS);
+        };
+
+        window.jcCheckRegisterLoad = async function () {
+            const result = typeof state.originalLoad === "function"
+                ? await state.originalLoad.apply(window, arguments)
+                : null;
+
+            setTimeout(renderVoidKpi, 250);
+            return result;
+        };
+
+        window.jcCheckRegisterApplyFilters = function () {
+            const result = typeof state.originalApplyFilters === "function"
+                ? state.originalApplyFilters.apply(window, arguments)
+                : null;
+
+            setTimeout(renderVoidKpi, 150);
+            return result;
+        };
+
+        window.jcCheckRegisterNew = function () {
+            clearDuplicateBox();
+
+            const result = typeof state.originalNew === "function"
+                ? state.originalNew.apply(window, arguments)
+                : null;
+
+            setTimeout(renderVoidKpi, 250);
+            return result;
+        };
+
+        window.jcCheckRegisterRenderVoidKpi = renderVoidKpi;
+    }
+
+    function bindInputs() {
+        const numberInput = document.getElementById("checkFormNumber");
+        const statusInput = document.getElementById("checkFormStatus");
+
+        if (numberInput && !numberInput.dataset.voidV17Bound) {
+            numberInput.dataset.voidV17Bound = "true";
+            numberInput.addEventListener("input", function () {
+                clearTimeout(state.timer);
+                state.timer = setTimeout(function () {
+                    checkDuplicate(true);
+                }, DEBOUNCE_MS);
+            });
+        }
+
+        if (statusInput && !statusInput.dataset.voidV17Bound) {
+            statusInput.dataset.voidV17Bound = "true";
+            statusInput.addEventListener("change", function () {
+                clearTimeout(state.timer);
+                state.timer = setTimeout(function () {
+                    if (normalizeCheck(getValue("checkFormNumber"))) {
+                        checkDuplicate(true);
+                    }
+                    renderVoidKpi();
+                }, 80);
+            });
+        }
+    }
+
+    function boot() {
+        injectStyles();
+        patchFunctions();
+        bindInputs();
+
+        const observer = new MutationObserver(function () {
+            bindInputs();
+            renderVoidKpi();
+        });
+
+        if (document.body) {
+            observer.observe(document.body, { childList: true, subtree: true });
+        }
+
+        setTimeout(renderVoidKpi, 900);
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", boot);
+    } else {
+        boot();
+    }
+})();
+</script>
+<!-- ========== END JC CHECK REGISTER VOID DUPLICATE SAVE + VOID KPI V17 ========== -->
 
 </body>
 
