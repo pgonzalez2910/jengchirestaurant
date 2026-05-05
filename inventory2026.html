@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.05.v30-chart-canvas-destroy-fixed';
+        var VERSION = '2026.05.05.v31-stable-kpi-no-blink';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -57598,10 +57598,10 @@ document.addEventListener('change', function(event) {
         if (state.pollingTimer) return;
 
         state.pollingTimer = setInterval(function () {
-            if (getCheckRegisterIsActive()) {
+            if (getCheckRegisterIsActive() && document.visibilityState === "visible") {
                 scheduleLiveRefresh("active-poll", 50);
             }
-        }, 10000);
+        }, 60000);
     }
 
     function watchModuleChanges() {
@@ -61156,7 +61156,6 @@ document.addEventListener('change', function(event) {
 
     function boot() {
         injectStyles();
-        patchWindowFunctions();
 
         const runWhenReady = setInterval(() => {
             if (!document.getElementById("checkRegister")) return;
@@ -61166,20 +61165,7 @@ document.addEventListener('change', function(event) {
             ensureInsightGrid();
             ensureRecordDescription();
             watchSectionActivation();
-            refreshLive("boot");
         }, 350);
-
-        document.addEventListener("visibilitychange", () => {
-            if (!document.hidden && isCheckRegisterOpen()) refreshLive("visibility");
-        });
-
-        window.addEventListener("focus", () => {
-            if (isCheckRegisterOpen()) refreshLive("focus");
-        });
-
-        setInterval(() => {
-            if (isCheckRegisterOpen()) refreshLive("interval");
-        }, 10000);
     }
 
     if (document.readyState === "loading") {
@@ -61231,7 +61217,9 @@ document.addEventListener('change', function(event) {
         renderTimer: null,
         isRendering: false,
         isDraggingId: null,
-        observer: null
+        observer: null,
+        lastFingerprint: "",
+        lastRenderedFingerprint: ""
     };
 
     function safeText(value) {
@@ -61281,6 +61269,30 @@ document.addEventListener('change', function(event) {
 
     function totalAmount(rows) {
         return rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    }
+
+    function makeRefreshFingerprint() {
+        const rowKey = state.rows.map(row => [
+            row.id,
+            row.check_date,
+            row.check_number,
+            row.vendor,
+            row.category,
+            row.amount,
+            row.status,
+            row.payment_method,
+            row.updated_at
+        ].join("|")).join("~");
+
+        const kpiKey = state.kpis.map(kpi => [
+            kpi.id,
+            kpi.vendor_name,
+            kpi.display_order,
+            kpi.logo_url,
+            kpi.logo_storage_path
+        ].join("|")).join("~");
+
+        return rowKey + "||" + kpiKey;
     }
 
     function groupSum(rows, keyFn) {
@@ -61960,6 +61972,20 @@ document.addEventListener('change', function(event) {
     function renderAll() {
         if (!isOpen() || state.isRendering) return;
 
+        const renderFingerprint = JSON.stringify({
+            data: state.lastFingerprint || makeRefreshFingerprint(),
+            activeKpi: state.activeKpi,
+            activeCategory: state.activeCategory,
+            search: document.getElementById("checkFilterSearch")?.value || "",
+            vendor: document.getElementById("checkFilterVendor")?.value || "",
+            category: document.getElementById("checkFilterCategory")?.value || "",
+            quarter: document.getElementById("checkFilterQuarter")?.value || "",
+            month: document.getElementById("checkFilterMonth")?.value || ""
+        });
+
+        if (renderFingerprint === state.lastRenderedFingerprint) return;
+        state.lastRenderedFingerprint = renderFingerprint;
+
         state.isRendering = true;
         injectStyles();
 
@@ -61982,6 +62008,15 @@ document.addEventListener('change', function(event) {
 
         try {
             await Promise.all([loadRows(), loadKpis()]);
+
+            const fingerprint = makeRefreshFingerprint();
+            const passiveReason = !reason || ["interval", "focus", "visibility", "section", "boot"].includes(reason);
+
+            if (passiveReason && fingerprint === state.lastFingerprint) {
+                return;
+            }
+
+            state.lastFingerprint = fingerprint;
             renderAll();
 
             const status = document.getElementById("checkRegisterSaveStatus");
@@ -62349,8 +62384,8 @@ document.addEventListener('change', function(event) {
         });
 
         setInterval(() => {
-            if (isOpen()) scheduleRefresh("interval");
-        }, 10000);
+            if (isOpen() && document.visibilityState === "visible") scheduleRefresh("interval");
+        }, 30000);
     }
 
     if (document.readyState === "loading") {
@@ -62396,6 +62431,19 @@ document.addEventListener('change', function(event) {
     }
 })();
 </script>
+
+
+<!-- ========== JC CHECK REGISTER V31: STABLE KPI REFRESH / NO BLINK ========== -->
+<style id="jc-check-register-v31-stable-no-blink-style">
+    #checkRegisterKpis {
+        contain: layout paint;
+    }
+    #checkRegisterKpis .check-register-kpi {
+        backface-visibility: hidden;
+        transform: translateZ(0);
+    }
+</style>
+<!-- ========== END JC CHECK REGISTER V31 ========== -->
 
 </body>
 
