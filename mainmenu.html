@@ -1550,37 +1550,46 @@ function showDash(){showScreen('mainScreen');document.getElementById('navDB').cl
    CUSTOM APPS  (portal_custom_apps)
 ════════════════════════════════════ */
 async function loadCustomApps(){
-  // Remove previously loaded custom / override entries
-  for(let i=APPS.length-1;i>=0;i--){if(APPS[i].custom||APPS[i]._override)APPS.splice(i,1);}
+  for(let i=APPS.length-1;i>=0;i--){
+    if(APPS[i].custom||APPS[i]._override)APPS.splice(i,1);
+  }
   if(!sb)return;
   try{
-    const{data}=await sb.from('portal_custom_apps').select('*').order('sort_order,created_at');
-    if(data&&data.length){
-      data.forEach(r=>{
-        if(r.is_override){
-          // Update a built-in card's display properties
-          const idx=APPS.findIndex(a=>a.key===r.key&&!a.custom);
-          if(idx>=0){
-            APPS[idx]={...APPS[idx],name:r.name||APPS[idx].name,desc:r.description||APPS[idx].desc,
-              lucide:r.lucide||APPS[idx].lucide,cat:r.cat||APPS[idx].cat,
-              bg:r.bg||APPS[idx].bg,color:r.color||APPS[idx].color,_override:true};
-          }
-        } else {
-          if(!APPS.find(a=>a.key===r.key)){
-            APPS.push({key:r.key,name:r.name,url:r.url,desc:r.description||'',
-              lucide:r.lucide||'layout-dashboard',cat:r.cat||'Operations',
-              bg:r.bg||'#f8f9fa',color:r.color||'#555555',custom:true});
-          }
-        }
-      });
-      TMPLS.superadmin.view=APPS.map(a=>a.key);
-      TMPLS.superadmin.edit=APPS.map(a=>a.key);
-      // Re-sync UP so superadmin automatically has full access to every app (including newly added ones)
-      if(CU&&CU.portal_role==='superadmin'){
-        APPS.forEach(a=>{UP[a.key]={view:true,edit:true};});
+    const{data,error}=await sb.from('portal_custom_apps').select('*').order('sort_order,created_at');
+    if(error)throw error;
+    if(!data||!data.length)return;
+
+    data.forEach(r=>{
+      if(!r||!r.key)return;
+      const idx=APPS.findIndex(a=>a.key===r.key);
+      const dbCard={
+        key:r.key,
+        name:r.name||r.key,
+        url:r.url||'#',
+        desc:r.description||'',
+        lucide:r.lucide||'layout-dashboard',
+        cat:r.cat||'Operations',
+        bg:r.bg||'#f8f9fa',
+        color:r.color||'#555555'
+      };
+
+      if(idx>=0){
+        APPS[idx]={...APPS[idx],...dbCard,custom:true,_override:false};
+      }else{
+        APPS.push({...dbCard,custom:true,_override:false});
       }
+    });
+
+    TMPLS.superadmin.view=APPS.map(a=>a.key);
+    TMPLS.superadmin.edit=APPS.map(a=>a.key);
+
+    if(CU&&CU.portal_role==='superadmin'){
+      APPS.forEach(a=>{UP[a.key]={view:true,edit:true};});
     }
-  }catch(e){console.warn('loadCustomApps:',e);}
+  }catch(e){
+    console.warn('loadCustomApps:',e);
+    if(typeof toast==='function')toast('Could not load custom apps: '+e.message,'err');
+  }
 }
 
 /* ── Card Manager Modal State ── */
@@ -1673,13 +1682,12 @@ function showAddCard(pre){
 function editCard(key){
   const app=APPS.find(a=>a.key===key);
   if(!app)return;
-  const isOverride=!app.custom; // built-in card
-  ACM_MODE=isOverride?'override':'edit';
+  ACM_MODE='edit';
   ACM_EDIT_KEY=key;
   ACM_COLOR=app.color||'#1d4ed8';
   ACM_BG=app.bg||'#eff6ff';
   ACM_ICON=app.lucide||'layout-dashboard';
-  document.getElementById('acmTitle').textContent=isOverride?'Edit Built-in Card':'Edit Custom Card';
+  document.getElementById('acmTitle').textContent='Edit Dashboard Card';
   document.getElementById('acmSaveBtn').innerHTML='<i class="fas fa-floppy-disk" style="margin-right:6px"></i>Update Card';
   document.getElementById('acmUrl').value=app.url||'';
   document.getElementById('acmName').value=app.name||'';
@@ -1848,32 +1856,62 @@ function acmLivePreview(){
 }
 
 async function saveCard(){
+  if(!sb){toast('Database connection is not available.','err');return;}
+
   const url=document.getElementById('acmUrl').value.trim();
   const name=document.getElementById('acmName').value.trim();
-  let key=document.getElementById('acmKey').value.trim().toLowerCase().replace(/[^a-z0-9_-]/g,'');
+  let key=document.getElementById('acmKey').value.trim().toLowerCase()
+    .replace(/[^a-z0-9_-]/g,'')
+    .replace(/_+/g,'-')
+    .replace(/-+/g,'-')
+    .replace(/^-|-$/g,'');
   const desc=document.getElementById('acmDesc').value.trim();
-  const cat=document.getElementById('acmCat').value;
+  const cat=document.getElementById('acmCat').value||'Operations';
+
   if(!name){toast('Name is required.','err');return;}
   if(!key){toast('App key is required.','err');return;}
-  if(ACM_MODE==='add'&&!url){toast('URL is required.','err');return;}
-  if(ACM_MODE==='add'&&APPS.find(a=>a.key===key&&!a.custom)){toast(`Key "${key}" is already used by a built-in app.`,'err');return;}
+  if(!url||url==='#'){toast('Valid URL is required.','err');return;}
+
   const btn=document.getElementById('acmSaveBtn');
-  btn.disabled=true;btn.innerHTML='<span class="spin" style="width:14px;height:14px;border-width:2px;margin-right:6px;"></span>Saving…';
+  btn.disabled=true;
+  btn.innerHTML='<span class="spin" style="width:14px;height:14px;border-width:2px;margin-right:6px;"></span>Saving…';
+
   try{
-    const row={key,name,url:url||APPS.find(a=>a.key===key)?.url||'',description:desc,lucide:ACM_ICON,
-      cat,bg:ACM_BG,color:ACM_COLOR,sort_order:99,
-      is_override:(ACM_MODE==='override'),
-      created_by:CU.employee_id||CU.username};
+    const row={
+      key,
+      name,
+      url,
+      description:desc,
+      lucide:ACM_ICON||'layout-dashboard',
+      cat,
+      bg:ACM_BG||'#f8f9fa',
+      color:ACM_COLOR||'#555555',
+      sort_order:99,
+      is_override:false,
+      created_by:(CU&&CU.employee_id)||CU?.username||null
+    };
+
     const{error}=await sb.from('portal_custom_apps').upsert(row,{onConflict:'key'});
     if(error)throw error;
-    toast(ACM_MODE==='add'?`"${name}" added to dashboard!`:`"${name}" updated!`,'ok');
-    closeAddCard();
+
     await loadCustomApps();
-    await loadUP();
+
+    if(CU&&CU.portal_role==='superadmin'){
+      APPS.forEach(a=>{UP[a.key]={view:true,edit:true};});
+    }else{
+      await loadUP();
+    }
+
+    closeAddCard();
     renderDash();
-  }catch(e){toast('Save failed: '+e.message,'err');}
-  btn.disabled=false;
-  btn.innerHTML='<i class="fas fa-floppy-disk" style="margin-right:6px"></i>'+(ACM_MODE==='add'?'Save Card':'Update Card');
+    toast(ACM_MODE==='add'?`"${name}" added to dashboard!`:`"${name}" updated!`,'ok');
+  }catch(e){
+    console.warn('saveCard:',e);
+    toast('Save failed: '+e.message,'err');
+  }finally{
+    btn.disabled=false;
+    btn.innerHTML='<i class="fas fa-floppy-disk" style="margin-right:6px"></i>'+(ACM_MODE==='add'?'Save Card':'Update Card');
+  }
 }
 
 async function deleteCard(key,name){
