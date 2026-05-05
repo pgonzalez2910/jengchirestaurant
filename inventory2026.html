@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.05.v36-check-edit-popup-vendor-type-bulk';
+        var VERSION = '2026.05.05.v37-kpi-loop-stop-edit-popup-delta';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -62340,19 +62340,15 @@ document.addEventListener('change', function(event) {
 
     function watchKpiGrid() {
         const grid = document.getElementById("checkRegisterKpis");
-        if (!grid || grid.dataset.v27Observed === "true") return;
+        if (!grid) return;
 
-        grid.dataset.v27Observed = "true";
+        if (state.observer && typeof state.observer.disconnect === "function") {
+            state.observer.disconnect();
+        }
 
-        state.observer = new MutationObserver(() => {
-            if (state.isRendering) return;
-            scheduleRender();
-        });
-
-        state.observer.observe(grid, {
-            childList: true,
-            subtree: false
-        });
+        state.observer = null;
+        grid.dataset.v27Observed = "disabled-v37";
+        grid.dataset.v37KpiMutationObserverDisabled = "true";
     }
 
     function boot() {
@@ -62413,11 +62409,9 @@ document.addEventListener('change', function(event) {
 
     function observeKpiGrid() {
         const grid = document.getElementById("checkRegisterKpis");
-        if (!grid || grid.dataset.v29CleanupObserver === "true") return;
+        if (!grid) return;
 
-        grid.dataset.v29CleanupObserver = "true";
-        const observer = new MutationObserver(removeLegacyVoidKpiCard);
-        observer.observe(grid, { childList: true, subtree: false });
+        grid.dataset.v29CleanupObserver = "disabled-v37";
         removeLegacyVoidKpiCard();
     }
 
@@ -63275,6 +63269,130 @@ document.addEventListener('change', function(event) {
 </script>
 <!-- ========== END JC CHECK REGISTER EDIT POPUP + VENDOR TYPE BULK UPDATE V36 ========== -->
 
+
+
+<!-- ========== JC CHECK REGISTER V37: HARD STOP KPI MUTATION LOOP + KEEP EDIT POPUP ========== -->
+<script id="jc-check-register-v37-hard-stop-kpi-loop">
+(function () {
+    "use strict";
+
+    function isCheckRegisterOpen() {
+        const section = document.getElementById("checkRegister");
+        return Boolean(section && section.classList.contains("active"));
+    }
+
+    function stableGridHtmlGuard() {
+        const grid = document.getElementById("checkRegisterKpis");
+        if (!grid || grid.dataset.v37StableGuard === "true") return;
+
+        grid.dataset.v37StableGuard = "true";
+        grid.dataset.v27Observed = "disabled-v37";
+        grid.dataset.v29CleanupObserver = "disabled-v37";
+
+        const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
+        if (!descriptor || !descriptor.get || !descriptor.set) return;
+
+        Object.defineProperty(grid, "innerHTML", {
+            configurable: true,
+            enumerable: true,
+            get: function () {
+                return descriptor.get.call(this);
+            },
+            set: function (value) {
+                const next = String(value ?? "");
+                if (this.dataset.v37LastKpiHtml === next) return;
+                this.dataset.v37LastKpiHtml = next;
+                descriptor.set.call(this, next);
+            }
+        });
+    }
+
+    function patchRefreshLiveView() {
+        const original = window.jcCheckRegisterRefreshLiveView;
+        if (typeof original !== "function" || original.__v37NoLoopPatched) return;
+
+        let running = false;
+        let timer = null;
+        let lastReason = "";
+
+        const patched = function (reason) {
+            lastReason = reason || lastReason || "manual";
+            clearTimeout(timer);
+
+            return new Promise(resolve => {
+                timer = setTimeout(async function () {
+                    if (running || !isCheckRegisterOpen()) {
+                        resolve(null);
+                        return;
+                    }
+
+                    running = true;
+                    try {
+                        const result = await original.call(window, lastReason);
+                        stableGridHtmlGuard();
+                        resolve(result);
+                    } finally {
+                        running = false;
+                    }
+                }, 250);
+            });
+        };
+
+        patched.__v37NoLoopPatched = true;
+        patched.__original = original;
+        window.jcCheckRegisterRefreshLiveView = patched;
+    }
+
+    function patchLegacyRenderEntrypoints() {
+        ["jcCheckRegisterLoad", "jcCheckRegisterApplyFilters"].forEach(function (name) {
+            const original = window[name];
+            if (typeof original !== "function" || original.__v37NoLoopPatched) return;
+
+            const patched = async function () {
+                const result = await original.apply(this, arguments);
+                stableGridHtmlGuard();
+                return result;
+            };
+
+            patched.__v37NoLoopPatched = true;
+            window[name] = patched;
+        });
+    }
+
+    function bootV37() {
+        stableGridHtmlGuard();
+        patchRefreshLiveView();
+        patchLegacyRenderEntrypoints();
+
+        const section = document.getElementById("checkRegister");
+        if (section && section.dataset.v37NoLoopObserver !== "true") {
+            section.dataset.v37NoLoopObserver = "true";
+            new MutationObserver(function () {
+                if (!isCheckRegisterOpen()) return;
+                stableGridHtmlGuard();
+                patchRefreshLiveView();
+                patchLegacyRenderEntrypoints();
+            }).observe(section, { attributes: true, attributeFilter: ["class"] });
+        }
+
+        document.addEventListener("click", function (event) {
+            if (!event.target.closest("#checkRegister")) return;
+            window.setTimeout(function () {
+                stableGridHtmlGuard();
+                patchRefreshLiveView();
+                patchLegacyRenderEntrypoints();
+            }, 0);
+        }, true);
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", bootV37);
+    } else {
+        bootV37();
+    }
+})();
+</script>
+<!-- ========== END JC CHECK REGISTER V37 ========== -->
 
 </body>
 
