@@ -13667,7 +13667,7 @@ function renderInventoryTable() {
 
     if (filteredData.length === 0) {
 
-        tbody.innerHTML = '<tr><td colspan="9"><div class="empty-state"><div class="empty-state-icon">📦</div><h3>No Items Found</h3></div></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10"><div class="empty-state"><div class="empty-state-icon">📦</div><h3>No Items Found</h3></div></td></tr>';
 
         return;
 
@@ -51084,6 +51084,8 @@ document.addEventListener('change', function(event) {
 
     const DEFAULT_CATEGORIES = ["Vendor", "Services", "Misc"];
     const DEFAULT_STATUSES = ["Cleared", "Pending", "ACH", "Void"];
+    const PAYMENT_METHODS = ["Check", "Credit Card"];
+    const CREDIT_CARD_NO_CHECK_VENDORS = new Set(["SYSCO", "RESTAURANT DEPOT"]);
     const DEFAULT_KPI_VENDORS = [
         "RESTAURANT DEPOT",
         "SYSCO",
@@ -51144,6 +51146,22 @@ document.addEventListener('change', function(event) {
 
     function normalizeCheck(value) {
         return normalize(value).replace(/\s+/g, "");
+    }
+
+    function normalizedVendorName(value) {
+        return String(value || "").trim().toUpperCase();
+    }
+
+    function vendorAllowsCreditCardNoCheck(vendor) {
+        return CREDIT_CARD_NO_CHECK_VENDORS.has(normalizedVendorName(vendor));
+    }
+
+    function isCreditCardPayment(data) {
+        return String(data?.payment_method || "Check") === "Credit Card";
+    }
+
+    function isCheckNumberRequired(data) {
+        return !(isCreditCardPayment(data) && vendorAllowsCreditCardNoCheck(data.vendor));
     }
 
     function todayValue() {
@@ -51367,7 +51385,7 @@ document.addEventListener('change', function(event) {
 
             .check-register-form-grid {
                 display: grid;
-                grid-template-columns: 150px 160px 1fr 145px 1fr 150px 140px;
+                grid-template-columns: 130px 145px 160px 1fr 145px 1fr 150px 140px;
                 gap: 0.75rem;
                 align-items: end;
             }
@@ -51726,6 +51744,13 @@ document.addEventListener('change', function(event) {
                         </div>
 
                         <div class="check-register-field">
+                            <label>Payment</label>
+                            <select id="checkFormPaymentMethod" class="check-register-input" onchange="window.jcCheckRegisterPaymentMethodChanged()">
+                                ${optionsHtml(PAYMENT_METHODS, "Check")}
+                            </select>
+                        </div>
+
+                        <div class="check-register-field">
                             <label>Check #</label>
                             <input id="checkFormNumber" class="check-register-input" placeholder="Example: 10452" oninput="window.jcCheckRegisterCheckDuplicate(); window.jcCheckRegisterAutoSave();">
                         </div>
@@ -51857,6 +51882,7 @@ document.addEventListener('change', function(event) {
                         <thead>
                             <tr>
                                 <th>Date</th>
+                                <th>Payment</th>
                                 <th>Check #</th>
                                 <th>Status</th>
                                 <th>Type</th>
@@ -51906,15 +51932,18 @@ document.addEventListener('change', function(event) {
     function getFormData() {
         const vendor = document.getElementById("checkFormVendor")?.value.trim() || "";
         const reasonValue = document.getElementById("checkFormReason")?.value.trim() || "";
+        const paymentMethod = document.getElementById("checkFormPaymentMethod")?.value || "Check";
+        const checkNumber = document.getElementById("checkFormNumber")?.value.trim() || "";
 
         return {
             check_date: document.getElementById("checkFormDate")?.value || "",
-            check_number: document.getElementById("checkFormNumber")?.value.trim() || "",
+            check_number: checkNumber,
+            payment_method: paymentMethod,
             vendor,
             category: document.getElementById("checkFormCategory")?.value || "Vendor",
             reason: reasonValue || vendor,
             amount: Number.parseFloat(document.getElementById("checkFormAmount")?.value || 0) || 0,
-            status: document.getElementById("checkFormStatus")?.value || "Cleared",
+            status: paymentMethod === "Credit Card" ? "Cleared" : (document.getElementById("checkFormStatus")?.value || "Cleared"),
             notes: ""
         };
     }
@@ -51925,13 +51954,18 @@ document.addEventListener('change', function(event) {
             return false;
         }
 
-        if (!data.check_number) {
-            if (!quiet) alert("Please enter the check number.");
+        if (!data.vendor || data.vendor === "__ADD_NEW__") {
+            if (!quiet) alert("Please select or add a vendor.");
             return false;
         }
 
-        if (!data.vendor || data.vendor === "__ADD_NEW__") {
-            if (!quiet) alert("Please select or add a vendor.");
+        if (data.payment_method === "Credit Card" && !vendorAllowsCreditCardNoCheck(data.vendor)) {
+            if (!quiet) alert("Credit Card payment without check number is currently enabled only for SYSCO and RESTAURANT DEPOT.");
+            return false;
+        }
+
+        if (isCheckNumberRequired(data) && !data.check_number) {
+            if (!quiet) alert("Please enter the check number.");
             return false;
         }
 
@@ -51970,15 +52004,16 @@ document.addEventListener('change', function(event) {
         }
 
         input.classList.add("duplicate");
-        saveButton.disabled = true;
-        saveButton.style.opacity = "0.55";
+        saveButton.disabled = false;
+        saveButton.style.opacity = "1";
 
         box.classList.add("active");
         box.innerHTML = `
             <div>
-                <i class="fas fa-triangle-exclamation"></i>
+                <i class="fas fa-circle-info"></i>
                 Check # <strong>${safeText(state.duplicate.check_number)}</strong> already exists:
                 ${safeText(state.duplicate.vendor)} · ${safeText(state.duplicate.check_date || "")} · ${safeText(money(state.duplicate.amount))}
+                <br><span style="font-weight:800;color:#1d4ed8;">Click Save to update the existing check, not create a duplicate.</span>
             </div>
             <button class="btn btn-secondary" onclick="window.jcCheckRegisterEdit('${safeText(state.duplicate.id)}')">
                 Open Existing
@@ -51987,8 +52022,14 @@ document.addEventListener('change', function(event) {
     }
 
     async function checkDuplicate() {
-        const checkNumber = document.getElementById("checkFormNumber")?.value || "";
-        state.duplicate = findDuplicateCheck(checkNumber);
+        const data = getFormData();
+        if (!data.check_number) {
+            state.duplicate = null;
+            renderDuplicateWarning();
+            return null;
+        }
+
+        state.duplicate = findDuplicateCheck(data.check_number);
         renderDuplicateWarning();
         return state.duplicate;
     }
@@ -52022,20 +52063,21 @@ document.addEventListener('change', function(event) {
             return null;
         }
 
-        const duplicate = await checkDuplicateRemote(data.check_number);
+        const duplicate = data.check_number ? await checkDuplicateRemote(data.check_number) : null;
         if (duplicate && duplicate.id !== state.editingId) {
             state.duplicate = duplicate;
             renderDuplicateWarning();
-            setSaveStatus("Duplicate check number blocked", "error");
 
-            if (!quiet) {
-                alert(`Check # ${data.check_number} already exists for ${duplicate.vendor}. Open the existing check instead of creating a duplicate.`);
+            if (quiet) {
+                setSaveStatus("Existing check found. Click Save to update it.", "neutral");
+                return null;
             }
 
-            return null;
+            state.editingId = duplicate.id;
+            setSaveStatus("Updating existing check...", "neutral");
         }
 
-        setSaveStatus("Saving...", "neutral");
+        setSaveStatus(data.payment_method === "Credit Card" ? "Saving credit card payment..." : "Saving...", "neutral");
 
         try {
             let result;
@@ -52084,10 +52126,10 @@ document.addEventListener('change', function(event) {
             console.error("Check save error:", error);
 
             if (error && error.code === "23505") {
-                setSaveStatus("Duplicate check number blocked", "error");
+                setSaveStatus("Existing check found. Click Save to update it.", "neutral");
 
                 if (!quiet) {
-                    showMessage("Duplicate check number blocked. This check already exists in the register.", "error");
+                    showMessage("This check already exists. Open or save again to update the existing record.", "error");
                 }
 
                 return null;
@@ -52114,7 +52156,7 @@ document.addEventListener('change', function(event) {
         }
 
         if (state.duplicate) {
-            setSaveStatus("Duplicate check number blocked", "error");
+            setSaveStatus("Existing check found. Click Save to update it.", "neutral");
             return;
         }
 
@@ -52126,6 +52168,51 @@ document.addEventListener('change', function(event) {
         }, 800);
     }
 
+    function updatePaymentMethodControls() {
+        const data = getFormData();
+        const method = document.getElementById("checkFormPaymentMethod");
+        const number = document.getElementById("checkFormNumber");
+        const status = document.getElementById("checkFormStatus");
+        const creditOption = method ? Array.from(method.options).find(option => option.value === "Credit Card") : null;
+        const allowsCreditCard = vendorAllowsCreditCardNoCheck(data.vendor);
+
+        if (creditOption) {
+            creditOption.disabled = !allowsCreditCard;
+        }
+
+        if (method && method.value === "Credit Card" && !allowsCreditCard) {
+            method.value = "Check";
+        }
+
+        const activeMethod = method?.value || "Check";
+        const creditCardNoCheck = activeMethod === "Credit Card" && allowsCreditCard;
+
+        if (number) {
+            number.required = !creditCardNoCheck;
+            number.placeholder = creditCardNoCheck ? "Not required for credit card" : "Example: 10452";
+            number.disabled = false;
+            if (creditCardNoCheck && !number.value.trim()) {
+                number.classList.remove("duplicate");
+            }
+        }
+
+        if (status && creditCardNoCheck) {
+            status.value = "Cleared";
+        }
+
+        if (creditCardNoCheck) {
+            state.duplicate = null;
+            renderDuplicateWarning();
+            setSaveStatus("Credit Card selected. Check # is not required for this vendor.", "neutral");
+        }
+    }
+
+    function paymentMethodChanged() {
+        updatePaymentMethodControls();
+        checkDuplicate();
+        autoSave();
+    }
+
     function newCheck() {
         state.editingId = null;
         state.duplicate = null;
@@ -52134,6 +52221,7 @@ document.addEventListener('change', function(event) {
         if (title) title.innerHTML = `<i class="fas fa-plus-circle"></i> Add New Check`;
 
         const date = document.getElementById("checkFormDate");
+        const paymentMethod = document.getElementById("checkFormPaymentMethod");
         const number = document.getElementById("checkFormNumber");
         const vendor = document.getElementById("checkFormVendor");
         const category = document.getElementById("checkFormCategory");
@@ -52142,6 +52230,7 @@ document.addEventListener('change', function(event) {
         const status = document.getElementById("checkFormStatus");
 
         if (date) date.value = todayValue();
+        if (paymentMethod) paymentMethod.value = "Check";
         if (number) number.value = "";
         if (vendor) vendor.value = "";
         if (category) category.value = "Vendor";
@@ -52149,6 +52238,7 @@ document.addEventListener('change', function(event) {
         if (amount) amount.value = "";
         if (status) status.value = "Cleared";
 
+        updatePaymentMethodControls();
         renderDuplicateWarning();
         setSaveStatus("Ready for new check", "neutral");
     }
@@ -52166,6 +52256,7 @@ document.addEventListener('change', function(event) {
         addVendorOption(row.vendor);
 
         document.getElementById("checkFormDate").value = row.check_date || todayValue();
+        document.getElementById("checkFormPaymentMethod").value = row.payment_method || (row.check_number ? "Check" : "Credit Card");
         document.getElementById("checkFormNumber").value = row.check_number || "";
         document.getElementById("checkFormVendor").value = row.vendor || "";
         document.getElementById("checkFormCategory").value = row.category || "Vendor";
@@ -52173,6 +52264,7 @@ document.addEventListener('change', function(event) {
         document.getElementById("checkFormAmount").value = Number(row.amount || 0).toFixed(2);
         document.getElementById("checkFormStatus").value = row.status || "Cleared";
 
+        updatePaymentMethodControls();
         renderDuplicateWarning();
         setSaveStatus("Editing existing check", "neutral");
 
@@ -52218,6 +52310,8 @@ document.addEventListener('change', function(event) {
             reason.value = select.value;
         }
 
+        updatePaymentMethodControls();
+        checkDuplicate();
         autoSave();
     }
 
@@ -52429,7 +52523,7 @@ document.addEventListener('change', function(event) {
         if (!state.filtered.length) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="9" style="text-align:center;padding:2.5rem;color:#94a3b8;">
+                    <td colspan="10" style="text-align:center;padding:2.5rem;color:#94a3b8;">
                         No checks found. Add your first check above or import existing checks from invoices.
                     </td>
                 </tr>
@@ -52442,7 +52536,8 @@ document.addEventListener('change', function(event) {
             return `
                 <tr>
                     <td>${safeText(row.check_date || "—")}</td>
-                    <td style="font-family:var(--font-mono);font-weight:850;color:#0f172a;">${safeText(row.check_number || "—")}</td>
+                    <td><span class="check-register-badge ${row.payment_method === "Credit Card" ? "services" : "vendor"}">${safeText(row.payment_method || "Check")}</span></td>
+                    <td style="font-family:var(--font-mono);font-weight:850;color:#0f172a;">${safeText(row.check_number || (row.payment_method === "Credit Card" ? "N/A" : "—"))}</td>
                     <td><span class="check-register-badge ${safeText(normalize(row.status || "Cleared"))}">${safeText(row.status || "Cleared")}</span></td>
                     <td><span class="check-register-badge ${safeText(normalize(row.category || "Vendor"))}">${safeText(row.category || "Vendor")}</span></td>
                     <td style="font-weight:850;">${safeText(row.vendor || "Unknown")}</td>
@@ -52473,6 +52568,7 @@ document.addEventListener('change', function(event) {
             const haystack = normalize([
                 row.check_date,
                 row.check_number,
+                row.payment_method,
                 row.vendor,
                 row.category,
                 row.reason,
@@ -52620,6 +52716,7 @@ document.addEventListener('change', function(event) {
                 return {
                     check_date: row.check_date || todayValue(),
                     check_number: row.check_number,
+                    payment_method: "Check",
                     vendor: vendors.length === 1 ? vendors[0] : "MULTIPLE VENDORS",
                     category: row.category,
                     reason: vendors.length === 1 ? vendors[0] : vendors.join(" / "),
@@ -52684,7 +52781,7 @@ document.addEventListener('change', function(event) {
     async function fetchCheckRows() {
         const { data, error } = await supabaseClient
             .from(CHECK_TABLE)
-            .select("id, check_date, check_number, vendor, category, reason, amount, status, notes, source_table, source_id, created_at, updated_at")
+            .select("id, check_date, check_number, payment_method, vendor, category, reason, amount, status, notes, source_table, source_id, created_at, updated_at")
             .order("check_date", { ascending: false })
             .order("created_at", { ascending: false });
 
@@ -52716,7 +52813,7 @@ document.addEventListener('change', function(event) {
         if (tbody) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="9" style="text-align:center;padding:2.5rem;color:#64748b;">
+                    <td colspan="10" style="text-align:center;padding:2.5rem;color:#64748b;">
                         <i class="fas fa-circle-notch fa-spin"></i> Loading check register...
                     </td>
                 </tr>
@@ -52739,7 +52836,7 @@ document.addEventListener('change', function(event) {
             if (tbody) {
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="9" style="text-align:center;padding:2.5rem;color:#991b1b;">
+                        <td colspan="10" style="text-align:center;padding:2.5rem;color:#991b1b;">
                             Error loading check register: ${safeText(error.message)}
                         </td>
                     </tr>
@@ -52826,6 +52923,7 @@ document.addEventListener('change', function(event) {
     window.jcCheckRegisterEdit = editCheck;
     window.jcCheckRegisterDelete = deleteCheck;
     window.jcCheckRegisterVendorChanged = vendorChanged;
+    window.jcCheckRegisterPaymentMethodChanged = paymentMethodChanged;
     window.jcCheckRegisterAddVendorPrompt = addVendorPrompt;
     window.jcCheckRegisterAddKpiPrompt = addKpiVendorPrompt;
     window.jcCheckRegisterCheckDuplicate = checkDuplicate;
@@ -53277,7 +53375,7 @@ document.addEventListener('change', function(event) {
 
         const { data, error } = await supabaseClient
             .from(CHECK_TABLE)
-            .select("id, check_date, check_number, vendor, category, reason, amount, status, source_table")
+            .select("id, check_date, check_number, payment_method, vendor, category, reason, amount, status, source_table")
             .order("check_date", { ascending: false });
 
         if (error) throw error;
@@ -54299,7 +54397,7 @@ document.addEventListener('change', function(event) {
     async function fetchChecks() {
         const { data, error } = await supabaseClient
             .from(CHECK_TABLE)
-            .select("id, check_date, check_number, vendor, category, reason, amount, status, notes, source_table, source_id")
+            .select("id, check_date, check_number, payment_method, vendor, category, reason, amount, status, notes, source_table, source_id")
             .order("check_date", { ascending: false });
 
         if (error) throw error;
@@ -56146,7 +56244,7 @@ document.addEventListener('change', function(event) {
         try {
             const { data, error } = await supabaseClient
                 .from(CHECK_TABLE)
-                .select("id, check_date, check_number, vendor, category, reason, amount, status")
+                .select("id, check_date, check_number, payment_method, vendor, category, reason, amount, status")
                 .eq("status", "Void")
                 .limit(15000);
 
@@ -56452,7 +56550,7 @@ document.addEventListener('change', function(event) {
     async function fetchCheckById(id) {
         const { data, error } = await supabaseClient
             .from(CHECK_TABLE)
-            .select("id, check_date, check_number, vendor, category, reason, amount, status, notes, source_table, source_id")
+            .select("id, check_date, check_number, payment_method, vendor, category, reason, amount, status, notes, source_table, source_id")
             .eq("id", id)
             .single();
 
