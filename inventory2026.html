@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.05.v31-stable-kpi-no-blink';
+        var VERSION = '2026.05.05.v32-kpi-stable-no-repaint';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -60835,7 +60835,7 @@ document.addEventListener('change', function(event) {
             };
         });
 
-        grid.innerHTML = [...summaryCards, ...kpiCards].map(card => {
+        const nextEnhancedKpiHtml = [...summaryCards, ...kpiCards].map(card => {
             const active = state.activeKpi &&
                 state.activeKpi.kind === card.kind &&
                 normalize(state.activeKpi.value) === normalize(card.value);
@@ -60929,6 +60929,14 @@ document.addEventListener('change', function(event) {
                 </tr>
             `;
         }).join("");
+
+        if (grid.dataset.jcLastKpiHtml === nextEnhancedKpiHtml) {
+            return;
+        }
+
+        grid.dataset.jcLastKpiHtml = nextEnhancedKpiHtml;
+        grid.innerHTML = nextEnhancedKpiHtml;
+
     }
 
     function renderAll() {
@@ -61743,9 +61751,17 @@ document.addEventListener('change', function(event) {
             </div>
         ` : "";
 
-        grid.innerHTML = categoryContext
+        const nextKpiHtml = categoryContext
             + summaryCards.map(card => summaryCard(card, rowsAfterKpi)).join("")
             + visibleKpis.map(kpi => vendorCard(kpi, rowsBeforeKpi)).join("");
+
+        if (grid.dataset.jcLastKpiHtml === nextKpiHtml) {
+            updateRecordDescription(rowsAfterKpi);
+            return;
+        }
+
+        grid.dataset.jcLastKpiHtml = nextKpiHtml;
+        grid.innerHTML = nextKpiHtml;
 
         updateRecordDescription(rowsAfterKpi);
     }
@@ -62383,9 +62399,9 @@ document.addEventListener('change', function(event) {
             if (isOpen()) scheduleRefresh("focus");
         });
 
-        setInterval(() => {
-            if (isOpen() && document.visibilityState === "visible") scheduleRefresh("interval");
-        }, 30000);
+        // v32: disabled passive KPI repaint loop. User actions, focus, visibility,
+        // nav-open, save, import, and filter changes still refresh the view.
+        window.__jcCheckRegisterPassiveRefreshDisabled = true;
     }
 
     if (document.readyState === "loading") {
@@ -62433,8 +62449,9 @@ document.addEventListener('change', function(event) {
 </script>
 
 
-<!-- ========== JC CHECK REGISTER V31: STABLE KPI REFRESH / NO BLINK ========== -->
-<style id="jc-check-register-v31-stable-no-blink-style">
+
+<!-- ========== JC CHECK REGISTER V32: KPI STABLE NO REPAINT ========== -->
+<style id="jc-check-register-v32-stable-no-repaint-style">
     #checkRegisterKpis {
         contain: layout paint;
     }
@@ -62443,7 +62460,101 @@ document.addEventListener('change', function(event) {
         transform: translateZ(0);
     }
 </style>
-<!-- ========== END JC CHECK REGISTER V31 ========== -->
+<script id="jc-check-register-v32-stable-no-repaint">
+(function () {
+    "use strict";
+
+    function isCheckRegisterOpen() {
+        const section = document.getElementById("checkRegister");
+        return Boolean(section && section.classList.contains("active"));
+    }
+
+    function installKpiInnerHtmlGuard() {
+        const grid = document.getElementById("checkRegisterKpis");
+        if (!grid || grid.dataset.v32Guarded === "true") return;
+
+        grid.dataset.v32Guarded = "true";
+
+        const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
+        if (!descriptor || !descriptor.set || !descriptor.get) return;
+
+        Object.defineProperty(grid, "innerHTML", {
+            configurable: true,
+            enumerable: true,
+            get: function () {
+                return descriptor.get.call(this);
+            },
+            set: function (value) {
+                const next = String(value ?? "");
+                if (this.dataset.jcLastCommittedHtml === next) return;
+                this.dataset.jcLastCommittedHtml = next;
+                descriptor.set.call(this, next);
+            }
+        });
+    }
+
+    function patchRefreshButtons() {
+        const refreshFn = window.jcCheckRegisterRefreshLiveView;
+        if (typeof refreshFn !== "function" || refreshFn.__v32Patched) return;
+
+        let timer = null;
+        let running = false;
+
+        const patched = function () {
+            clearTimeout(timer);
+            timer = setTimeout(async function () {
+                if (running || !isCheckRegisterOpen()) return;
+                running = true;
+                try {
+                    await refreshFn.apply(window, arguments);
+                } finally {
+                    running = false;
+                }
+            }, 250);
+        };
+
+        patched.__v32Patched = true;
+        window.jcCheckRegisterRefreshLiveView = patched;
+    }
+
+    function bootV32() {
+        installKpiInnerHtmlGuard();
+        patchRefreshButtons();
+
+        const section = document.getElementById("checkRegister");
+        if (section && !section.dataset.v32Observed) {
+            section.dataset.v32Observed = "true";
+            new MutationObserver(function () {
+                if (isCheckRegisterOpen()) {
+                    installKpiInnerHtmlGuard();
+                    patchRefreshButtons();
+                }
+            }).observe(section, { attributes: true, attributeFilter: ["class"] });
+        }
+
+        document.addEventListener("visibilitychange", function () {
+            if (!document.hidden && isCheckRegisterOpen()) {
+                installKpiInnerHtmlGuard();
+                patchRefreshButtons();
+            }
+        });
+
+        window.addEventListener("focus", function () {
+            if (isCheckRegisterOpen()) {
+                installKpiInnerHtmlGuard();
+                patchRefreshButtons();
+            }
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", bootV32);
+    } else {
+        bootV32();
+    }
+})();
+</script>
+<!-- ========== END JC CHECK REGISTER V32 ========== -->
 
 </body>
 
