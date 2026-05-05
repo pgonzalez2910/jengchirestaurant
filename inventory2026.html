@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.05.v22-existing-save-never-blocks';
+        var VERSION = '2026.05.05.v23-kpi-click-category-grids-log-toggle';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -59125,6 +59125,912 @@ document.addEventListener('change', function(event) {
 })();
 </script>
 <!-- ========== END JC CHECK REGISTER V22 - EXISTING CHECK SAVE NEVER BLOCKS ========== -->
+
+
+<!-- file: inventory2026.html -->
+<script id="jc-check-register-v23-kpi-click-grids-toggle">
+(function () {
+    "use strict";
+
+    const CHECK_TABLE = "check_register";
+    const TOGGLE_KEY = "jc_check_register_sync_panel_visible_v23";
+    const CATEGORY_TYPES = ["Vendor", "Services", "Misc"];
+
+    const v23State = {
+        rows: [],
+        loading: false,
+        lastLoadedAt: 0,
+        activeKpi: null,
+        refreshTimer: null
+    };
+
+    function safeText(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function normalize(value) {
+        return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+    }
+
+    function money(value) {
+        const number = Number.parseFloat(value || 0);
+        return "$" + number.toLocaleString("en-US", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function percent(value, total) {
+        if (!total) return "0.0%";
+        return ((Number(value || 0) / total) * 100).toFixed(1) + "%";
+    }
+
+    function getMonthKey(dateString) {
+        return dateString ? String(dateString).slice(0, 7) : "";
+    }
+
+    function getQuarterFromDate(dateString) {
+        if (!dateString) return "";
+        const date = new Date(String(dateString).slice(0, 10) + "T00:00:00");
+        if (Number.isNaN(date.getTime())) return "";
+        return "Q" + Math.ceil((date.getMonth() + 1) / 3);
+    }
+
+    function setFieldValue(id, value) {
+        const field = document.getElementById(id);
+        if (field) field.value = value || "";
+    }
+
+    function getFieldValue(id) {
+        return document.getElementById(id)?.value || "";
+    }
+
+    function isButtonClick(event) {
+        return Boolean(event.target.closest("button, input, label, select, textarea, a"));
+    }
+
+    function injectStyles() {
+        if (document.getElementById("jc-check-register-v23-style")) return;
+
+        const style = document.createElement("style");
+        style.id = "jc-check-register-v23-style";
+        style.textContent = `
+            .check-register-maintenance-toggle {
+                background: white;
+                border: 1px solid #dbe4ef;
+                border-radius: 14px;
+                box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+                padding: 0.65rem 0.85rem;
+                margin-bottom: 0.75rem;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 1rem;
+            }
+
+            .check-register-maintenance-toggle strong {
+                color: #0f172a;
+                font-size: 0.82rem;
+            }
+
+            .check-register-maintenance-toggle span {
+                color: #64748b;
+                font-size: 0.7rem;
+                font-family: var(--font-mono);
+            }
+
+            .check-register-maintenance-toggle .toggle-state {
+                display: inline-flex;
+                align-items: center;
+                gap: 0.35rem;
+                border-radius: 999px;
+                padding: 0.28rem 0.62rem;
+                font-size: 0.66rem;
+                font-weight: 850;
+                border: 1px solid #cbd5e1;
+                background: #f8fafc;
+                color: #475569;
+            }
+
+            .check-register-maintenance-toggle .toggle-state.on {
+                border-color: #86efac;
+                background: #dcfce7;
+                color: #166534;
+            }
+
+            .check-register-import-panel.v23-hidden {
+                display: none !important;
+            }
+
+            .check-register-kpi {
+                cursor: pointer;
+            }
+
+            .check-register-kpi.v23-clickable:hover {
+                outline: 3px solid rgba(37, 99, 200, 0.18);
+                transform: translateY(-2px);
+            }
+
+            .check-register-kpi.v23-category-kpi {
+                border-top: 4px solid #14b8a6;
+            }
+
+            .check-register-kpi.v23-active-kpi {
+                outline: 3px solid rgba(20, 184, 166, 0.35);
+                box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+            }
+
+            .check-register-kpi-description {
+                background: #eff6ff;
+                color: #1e3a8a;
+                border: 1px solid #bfdbfe;
+                border-left: 5px solid #2563eb;
+                border-radius: 12px;
+                padding: 0.75rem 1rem;
+                margin: -0.25rem 0 1rem;
+                font-size: 0.78rem;
+                display: flex;
+                justify-content: space-between;
+                gap: 1rem;
+                align-items: center;
+            }
+
+            .check-register-kpi-description strong {
+                color: #0f172a;
+            }
+
+            .check-register-type-chip-row {
+                display: flex;
+                gap: 0.5rem;
+                flex-wrap: wrap;
+                margin-bottom: 0.75rem;
+            }
+
+            .check-register-type-chip {
+                border: 1px solid #cbd5e1;
+                background: white;
+                color: #1e3a8a;
+                border-radius: 999px;
+                padding: 0.35rem 0.75rem;
+                font-weight: 850;
+                font-size: 0.72rem;
+                cursor: pointer;
+            }
+
+            .check-register-type-chip.active,
+            .check-register-type-chip:hover {
+                border-color: #2563eb;
+                background: #eff6ff;
+            }
+
+            .check-register-active-kpi-banner {
+                display: none;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+                background: #ecfeff;
+                border: 1px solid #99f6e4;
+                border-left: 5px solid #14b8a6;
+                color: #134e4a;
+                border-radius: 12px;
+                padding: 0.7rem 1rem;
+                margin-bottom: 0.75rem;
+                font-size: 0.78rem;
+                font-weight: 750;
+            }
+
+            .check-register-active-kpi-banner.active {
+                display: flex;
+            }
+
+            .check-register-grid-table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 0.72rem;
+            }
+
+            .check-register-grid-table th {
+                text-align: left;
+                background: #f1f5f9;
+                color: #475569;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                font-size: 0.6rem;
+                padding: 0.55rem 0.65rem;
+                border-bottom: 1px solid #dbe4ef;
+            }
+
+            .check-register-grid-table td {
+                padding: 0.55rem 0.65rem;
+                border-bottom: 1px solid #eef2f7;
+                color: #334155;
+            }
+
+            .check-register-grid-table tbody tr {
+                cursor: pointer;
+            }
+
+            .check-register-grid-table tbody tr:hover {
+                background: #f8fafc;
+            }
+
+            .check-register-percent-bar {
+                height: 7px;
+                width: 100%;
+                border-radius: 999px;
+                background: #e2e8f0;
+                overflow: hidden;
+                min-width: 90px;
+            }
+
+            .check-register-percent-fill {
+                height: 100%;
+                background: linear-gradient(90deg, #1e5799, #14b8a6);
+                border-radius: 999px;
+            }
+
+            .check-register-table-description {
+                font-size: 0.72rem;
+                color: #64748b;
+                margin-top: 0.25rem;
+                font-family: var(--font-display);
+                font-weight: 500;
+            }
+
+            .check-register-chart-wrap.v23-grid-wrap {
+                height: auto !important;
+                min-height: 245px;
+                overflow: auto;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function getMaintenancePanelVisible() {
+        return localStorage.getItem(TOGGLE_KEY) === "1";
+    }
+
+    function setMaintenancePanelVisible(visible) {
+        localStorage.setItem(TOGGLE_KEY, visible ? "1" : "0");
+        applyMaintenanceVisibility();
+    }
+
+    function ensureMaintenanceToggle() {
+        const shell = document.querySelector("#checkRegister .check-register-shell");
+        const importPanel = document.querySelector("#checkRegister .check-register-import-panel");
+
+        if (!shell || !importPanel) return;
+
+        if (!document.getElementById("checkRegisterMaintenanceToggle")) {
+            const toggle = document.createElement("div");
+            toggle.id = "checkRegisterMaintenanceToggle";
+            toggle.className = "check-register-maintenance-toggle";
+            toggle.innerHTML = `
+                <div>
+                    <strong><i class="fas fa-sliders"></i> Sync / Import Tools</strong>
+                    <span>Default is off. Turn on only when you want to see import protection, last sync, and sync history.</span>
+                </div>
+                <button id="checkRegisterMaintenanceToggleBtn" type="button" class="btn btn-secondary">
+                    <span id="checkRegisterMaintenanceToggleState" class="toggle-state">Off</span>
+                    Toggle
+                </button>
+            `;
+            importPanel.insertAdjacentElement("beforebegin", toggle);
+
+            document.getElementById("checkRegisterMaintenanceToggleBtn").onclick = function () {
+                setMaintenancePanelVisible(!getMaintenancePanelVisible());
+            };
+        }
+
+        applyMaintenanceVisibility();
+    }
+
+    function applyMaintenanceVisibility() {
+        const importPanel = document.querySelector("#checkRegister .check-register-import-panel");
+        const state = document.getElementById("checkRegisterMaintenanceToggleState");
+        const visible = getMaintenancePanelVisible();
+
+        if (importPanel) {
+            importPanel.classList.toggle("v23-hidden", !visible);
+        }
+
+        if (state) {
+            state.textContent = visible ? "On" : "Off";
+            state.classList.toggle("on", visible);
+        }
+    }
+
+    async function loadRows(force) {
+        const now = Date.now();
+
+        if (!force && v23State.rows.length && now - v23State.lastLoadedAt < 2500) {
+            return v23State.rows;
+        }
+
+        if (v23State.loading || typeof supabaseClient === "undefined") {
+            return v23State.rows;
+        }
+
+        v23State.loading = true;
+
+        try {
+            const { data, error } = await supabaseClient
+                .from(CHECK_TABLE)
+                .select("id, check_date, check_number, vendor, category, reason, amount, status, source_table, source_id, created_at, updated_at")
+                .order("check_date", { ascending: false })
+                .order("created_at", { ascending: false });
+
+            if (error) throw error;
+
+            v23State.rows = data || [];
+            v23State.lastLoadedAt = now;
+
+            return v23State.rows;
+        } catch (error) {
+            console.error("v23 check register analytics load failed:", error);
+            return v23State.rows;
+        } finally {
+            v23State.loading = false;
+        }
+    }
+
+    function getFilteredRows(rows) {
+        const search = normalize(getFieldValue("checkFilterSearch"));
+        const vendor = getFieldValue("checkFilterVendor");
+        const category = getFieldValue("checkFilterCategory");
+        const quarter = getFieldValue("checkFilterQuarter");
+        const month = getFieldValue("checkFilterMonth");
+
+        return (rows || []).filter(row => {
+            const haystack = normalize([
+                row.check_date,
+                row.check_number,
+                row.vendor,
+                row.category,
+                row.reason,
+                row.status
+            ].join(" "));
+
+            if (search && !haystack.includes(search)) return false;
+            if (vendor && row.vendor !== vendor) return false;
+            if (category && row.category !== category) return false;
+            if (quarter && getQuarterFromDate(row.check_date) !== quarter) return false;
+            if (month && getMonthKey(row.check_date) !== month) return false;
+
+            return true;
+        });
+    }
+
+    function sumRows(rows) {
+        return (rows || []).reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    }
+
+    function groupBy(rows, keyFn) {
+        return (rows || []).reduce((acc, row) => {
+            const key = keyFn(row) || "Unknown";
+            if (!acc[key]) {
+                acc[key] = { key, count: 0, amount: 0 };
+            }
+            acc[key].count += 1;
+            acc[key].amount += Number(row.amount || 0);
+            return acc;
+        }, {});
+    }
+
+    function ensureKpiDescription() {
+        const grid = document.getElementById("checkRegisterKpis");
+        if (!grid) return;
+
+        if (!document.getElementById("checkRegisterKpiDescription")) {
+            const description = document.createElement("div");
+            description.id = "checkRegisterKpiDescription";
+            description.className = "check-register-kpi-description";
+            description.innerHTML = `
+                <div>
+                    <strong>Description:</strong>
+                    Click any KPI card to see the checks that belong to that KPI. Use the type chips for Vendor, Services, and Misc.
+                </div>
+                <button type="button" class="btn btn-secondary" onclick="window.jcCheckRegisterClearKpiView()">
+                    <i class="fas fa-layer-group"></i> Show All Checks
+                </button>
+            `;
+            grid.insertAdjacentElement("afterend", description);
+        }
+    }
+
+    function ensureTypeChips() {
+        const filterPanel = document.querySelector("#checkRegister .check-register-filter-panel");
+        if (!filterPanel || document.getElementById("checkRegisterTypeChips")) return;
+
+        const chips = document.createElement("div");
+        chips.id = "checkRegisterTypeChips";
+        chips.className = "check-register-type-chip-row";
+        chips.innerHTML = `
+            <button type="button" class="check-register-type-chip" data-type="" onclick="window.jcCheckRegisterFilterByCategory('')">
+                All Types
+            </button>
+            <button type="button" class="check-register-type-chip" data-type="Vendor" onclick="window.jcCheckRegisterFilterByCategory('Vendor')">
+                Vendor
+            </button>
+            <button type="button" class="check-register-type-chip" data-type="Services" onclick="window.jcCheckRegisterFilterByCategory('Services')">
+                Services
+            </button>
+            <button type="button" class="check-register-type-chip" data-type="Misc" onclick="window.jcCheckRegisterFilterByCategory('Misc')">
+                Misc
+            </button>
+        `;
+        filterPanel.insertAdjacentElement("afterend", chips);
+    }
+
+    function updateTypeChips() {
+        const category = getFieldValue("checkFilterCategory");
+        document.querySelectorAll(".check-register-type-chip").forEach(button => {
+            button.classList.toggle("active", button.dataset.type === category);
+        });
+    }
+
+    function ensureTableDescription() {
+        const head = document.querySelector("#checkRegister .check-register-table-head h3");
+        if (!head) return;
+
+        if (!document.getElementById("checkRegisterTableDescription")) {
+            const desc = document.createElement("div");
+            desc.id = "checkRegisterTableDescription";
+            desc.className = "check-register-table-description";
+            desc.textContent = "Description: click a KPI, vendor row, spend type row, or monthly row to filter this check list.";
+            head.insertAdjacentElement("afterend", desc);
+        }
+
+        if (!document.getElementById("checkRegisterActiveKpiBanner")) {
+            const tableWrap = document.querySelector("#checkRegister .check-register-table-wrap");
+            const banner = document.createElement("div");
+            banner.id = "checkRegisterActiveKpiBanner";
+            banner.className = "check-register-active-kpi-banner";
+            banner.innerHTML = `
+                <span id="checkRegisterActiveKpiText">Showing selected KPI checks</span>
+                <button type="button" class="btn btn-secondary" onclick="window.jcCheckRegisterClearKpiView()">
+                    <i class="fas fa-xmark"></i> Clear KPI Filter
+                </button>
+            `;
+            tableWrap?.insertAdjacentElement("beforebegin", banner);
+        }
+    }
+
+    function setActiveKpi(label) {
+        v23State.activeKpi = label || null;
+
+        const banner = document.getElementById("checkRegisterActiveKpiBanner");
+        const text = document.getElementById("checkRegisterActiveKpiText");
+
+        if (banner) banner.classList.toggle("active", Boolean(label));
+        if (text) text.textContent = label ? `Showing checks for KPI: ${label}` : "";
+    }
+
+    function activateMatchingKpiCards(label) {
+        document.querySelectorAll("#checkRegisterKpis .check-register-kpi").forEach(card => {
+            const cardLabel = card.querySelector(".check-register-kpi-label")?.textContent?.trim() || "";
+            card.classList.toggle("v23-active-kpi", Boolean(label) && normalize(cardLabel) === normalize(label));
+        });
+    }
+
+    function filterByCategory(category) {
+        setFieldValue("checkFilterCategory", category || "");
+        setFieldValue("checkFilterVendor", "");
+        setFieldValue("checkFilterSearch", "");
+        setActiveKpi(category ? `${category} Checks` : null);
+        callApplyFilters();
+    }
+
+    function filterByVendor(vendor) {
+        if (!vendor) return;
+
+        const vendorSelect = document.getElementById("checkFilterVendor");
+        const exactOption = [...(vendorSelect?.options || [])].find(option => normalize(option.value) === normalize(vendor));
+
+        setFieldValue("checkFilterCategory", "");
+        setFieldValue("checkFilterSearch", "");
+
+        if (exactOption) {
+            vendorSelect.value = exactOption.value;
+        } else {
+            setFieldValue("checkFilterVendor", "");
+            setFieldValue("checkFilterSearch", vendor);
+        }
+
+        setActiveKpi(vendor);
+        callApplyFilters();
+    }
+
+    function filterByMonth(month) {
+        setFieldValue("checkFilterMonth", month || "");
+        setActiveKpi(month ? `Monthly Trend · ${month}` : null);
+        callApplyFilters();
+    }
+
+    function clearKpiView() {
+        setActiveKpi(null);
+        setFieldValue("checkFilterSearch", "");
+        setFieldValue("checkFilterVendor", "");
+        setFieldValue("checkFilterCategory", "");
+        setFieldValue("checkFilterQuarter", "");
+        setFieldValue("checkFilterMonth", "");
+        callApplyFilters();
+    }
+
+    function callApplyFilters() {
+        if (typeof window.__jcCheckRegisterOriginalApplyFiltersV23 === "function") {
+            window.__jcCheckRegisterOriginalApplyFiltersV23();
+        } else if (typeof window.jcCheckRegisterApplyFilters === "function") {
+            window.jcCheckRegisterApplyFilters();
+        }
+
+        scheduleEnhance({ forceRows: true });
+    }
+
+    function removeUnwantedSummaryKpis() {
+        document.querySelectorAll("#checkRegisterKpis .check-register-kpi").forEach(card => {
+            const label = card.querySelector(".check-register-kpi-label")?.textContent?.trim() || "";
+            if (["Imported", "Vendors"].includes(label)) {
+                card.remove();
+            }
+        });
+    }
+
+    function buildCategoryKpiCard(category, rows, totalAmount) {
+        const categoryRows = rows.filter(row => row.category === category);
+        const amount = sumRows(categoryRows);
+
+        return `
+            <div class="check-register-kpi v23-category-kpi v23-clickable"
+                 data-v23-kpi-category="${safeText(category)}"
+                 onclick="window.jcCheckRegisterFilterByCategory('${safeText(category)}')">
+                <div class="check-register-kpi-label">${safeText(category.toUpperCase())}</div>
+                <div class="check-register-kpi-value">${safeText(money(amount))}</div>
+                <div class="check-register-kpi-sub">
+                    ${categoryRows.length.toLocaleString("en-US")} checks · ${safeText(percent(amount, totalAmount))}
+                </div>
+            </div>
+        `;
+    }
+
+    function upsertCategoryKpis(filteredRows) {
+        const grid = document.getElementById("checkRegisterKpis");
+        if (!grid) return;
+
+        grid.querySelectorAll("[data-v23-kpi-category]").forEach(card => card.remove());
+
+        const totalAmount = sumRows(filteredRows);
+        const html = [
+            buildCategoryKpiCard("Vendor", filteredRows, totalAmount),
+            buildCategoryKpiCard("Services", filteredRows, totalAmount),
+            buildCategoryKpiCard("Misc", filteredRows, totalAmount)
+        ].join("");
+
+        const firstVendorCard = grid.querySelector(".kpi-vendor-card");
+        if (firstVendorCard) {
+            firstVendorCard.insertAdjacentHTML("beforebegin", html);
+        } else {
+            grid.insertAdjacentHTML("beforeend", html);
+        }
+    }
+
+    function makeExistingKpisClickable() {
+        document.querySelectorAll("#checkRegisterKpis .check-register-kpi").forEach(card => {
+            card.classList.add("v23-clickable");
+
+            if (card.dataset.v23ClickBound === "true") return;
+            card.dataset.v23ClickBound = "true";
+
+            card.addEventListener("click", function (event) {
+                if (isButtonClick(event)) return;
+
+                const category = card.dataset.v23KpiCategory;
+                const label = card.querySelector(".check-register-kpi-label")?.textContent?.trim() || "";
+
+                if (category) {
+                    filterByCategory(category);
+                    return;
+                }
+
+                if (label === "Total Checks" || label === "Total Amount") {
+                    clearKpiView();
+                    return;
+                }
+
+                if (label === "Pending Amount") {
+                    setFieldValue("checkFilterSearch", "Pending");
+                    setFieldValue("checkFilterVendor", "");
+                    setFieldValue("checkFilterCategory", "");
+                    setActiveKpi("Pending Checks");
+                    callApplyFilters();
+                    return;
+                }
+
+                if (!["Imported", "Vendors"].includes(label)) {
+                    filterByVendor(label);
+                }
+            });
+        });
+
+        activateMatchingKpiCards(v23State.activeKpi);
+    }
+
+    function tableWithPercent(rows, totalAmount, options) {
+        if (!rows.length) {
+            return `<div style="padding:2rem;text-align:center;color:#94a3b8;">No data for the selected filters.</div>`;
+        }
+
+        return `
+            <table class="check-register-grid-table">
+                <thead>
+                    <tr>
+                        <th>${safeText(options.firstHeader)}</th>
+                        <th style="text-align:right;">Checks</th>
+                        <th style="text-align:right;">Total</th>
+                        <th style="text-align:right;">%</th>
+                        <th>Share</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows.map(row => {
+                        const rowPercent = totalAmount ? (row.amount / totalAmount) * 100 : 0;
+                        return `
+                            <tr onclick="${safeText(options.onclick(row.key))}">
+                                <td style="font-weight:850;">${safeText(row.key)}</td>
+                                <td style="text-align:right;">${row.count.toLocaleString("en-US")}</td>
+                                <td style="text-align:right;font-family:var(--font-mono);font-weight:850;">${safeText(money(row.amount))}</td>
+                                <td style="text-align:right;font-family:var(--font-mono);">${rowPercent.toFixed(1)}%</td>
+                                <td>
+                                    <div class="check-register-percent-bar">
+                                        <div class="check-register-percent-fill" style="width:${Math.min(100, Math.max(0, rowPercent)).toFixed(2)}%;"></div>
+                                    </div>
+                                </td>
+                            </tr>
+                        `;
+                    }).join("")}
+                </tbody>
+            </table>
+        `;
+    }
+
+    function findCardByTitle(title) {
+        return [...document.querySelectorAll("#checkRegister .check-register-card")]
+            .find(card => normalize(card.querySelector("h3")?.textContent) === normalize(title));
+    }
+
+    function replaceCardWithGrid(title, html, newTitle) {
+        const card = findCardByTitle(title);
+        if (!card) return;
+
+        const heading = card.querySelector("h3");
+        if (heading && newTitle) heading.innerHTML = newTitle;
+
+        const wrap = card.querySelector(".check-register-chart-wrap");
+        if (!wrap) return;
+
+        wrap.classList.add("v23-grid-wrap");
+        wrap.innerHTML = html;
+    }
+
+    function renderAnalyticsGrids(filteredRows) {
+        const totalAmount = sumRows(filteredRows);
+
+        const typeRows = Object.values(groupBy(filteredRows, row => row.category || "Vendor"))
+            .sort((a, b) => b.amount - a.amount);
+
+        const monthRows = Object.values(groupBy(filteredRows, row => getMonthKey(row.check_date) || "No Date"))
+            .sort((a, b) => String(b.key).localeCompare(String(a.key)));
+
+        const vendorRows = Object.values(groupBy(filteredRows, row => row.vendor || "Unknown"))
+            .sort((a, b) => b.amount - a.amount)
+            .slice(0, 20);
+
+        replaceCardWithGrid(
+            "Spend by Type",
+            tableWithPercent(typeRows, totalAmount, {
+                firstHeader: "Type",
+                onclick: key => `window.jcCheckRegisterFilterByCategory('${safeText(key)}')`
+            }),
+            `<i class="fas fa-chart-pie"></i> Spend Type % Grid`
+        );
+
+        replaceCardWithGrid(
+            "Monthly Trend",
+            tableWithPercent(monthRows, totalAmount, {
+                firstHeader: "Month",
+                onclick: key => `window.jcCheckRegisterFilterByMonth('${safeText(key)}')`
+            }),
+            `<i class="fas fa-calendar-days"></i> Monthly Trend Grid`
+        );
+
+        replaceCardWithGrid(
+            "Top Vendors",
+            tableWithPercent(vendorRows, totalAmount, {
+                firstHeader: "Vendor",
+                onclick: key => `window.jcCheckRegisterFilterByVendor('${safeText(key)}')`
+            }),
+            `<i class="fas fa-building"></i> Vendor Spend % Grid`
+        );
+    }
+
+    async function enhance(options) {
+        if (!document.getElementById("checkRegister")) return;
+
+        injectStyles();
+        ensureMaintenanceToggle();
+        ensureKpiDescription();
+        ensureTypeChips();
+        ensureTableDescription();
+
+        const rows = await loadRows(Boolean(options && options.forceRows));
+        const filteredRows = getFilteredRows(rows);
+
+        removeUnwantedSummaryKpis();
+        upsertCategoryKpis(filteredRows);
+        makeExistingKpisClickable();
+        renderAnalyticsGrids(filteredRows);
+        updateTypeChips();
+        applyMaintenanceVisibility();
+    }
+
+    function scheduleEnhance(options) {
+        clearTimeout(v23State.refreshTimer);
+        v23State.refreshTimer = setTimeout(() => enhance(options || {}), 250);
+    }
+
+    function patchFunctions() {
+        if (window.__jcCheckRegisterV23Patched) return;
+        window.__jcCheckRegisterV23Patched = true;
+
+        window.__jcCheckRegisterOriginalApplyFiltersV23 = window.jcCheckRegisterApplyFilters;
+
+        const originalLoad = window.jcCheckRegisterLoad;
+        const originalApply = window.jcCheckRegisterApplyFilters;
+        const originalSave = window.jcCheckRegisterSaveNow;
+        const originalNew = window.jcCheckRegisterNew;
+        const originalImport = window.jcCheckRegisterImportExistingChecks;
+        const originalRefresh = window.jcCheckRegisterLiveRefresh;
+        const originalOpen = window.jcOpenCheckRegister;
+
+        window.jcCheckRegisterLoad = async function (force) {
+            let result;
+            if (typeof originalLoad === "function") {
+                result = await originalLoad(force);
+            }
+            scheduleEnhance({ forceRows: true });
+            return result;
+        };
+
+        window.jcCheckRegisterApplyFilters = function () {
+            let result;
+            if (typeof originalApply === "function") {
+                result = originalApply();
+            }
+            scheduleEnhance({ forceRows: false });
+            return result;
+        };
+
+        window.jcCheckRegisterSaveNow = async function () {
+            let result;
+            if (typeof originalSave === "function") {
+                result = await originalSave();
+            }
+            scheduleEnhance({ forceRows: true });
+            return result;
+        };
+
+        window.jcCheckRegisterNew = function () {
+            let result;
+            if (typeof originalNew === "function") {
+                result = originalNew();
+            }
+            scheduleEnhance({ forceRows: false });
+            return result;
+        };
+
+        window.jcCheckRegisterImportExistingChecks = async function () {
+            let result;
+            if (typeof originalImport === "function") {
+                result = await originalImport();
+            }
+            scheduleEnhance({ forceRows: true });
+            return result;
+        };
+
+        window.jcCheckRegisterLiveRefresh = async function (reason) {
+            let result;
+            if (typeof originalRefresh === "function") {
+                result = await originalRefresh(reason);
+            }
+            scheduleEnhance({ forceRows: true });
+            return result;
+        };
+
+        window.jcOpenCheckRegister = function () {
+            let result;
+            if (typeof originalOpen === "function") {
+                result = originalOpen();
+            }
+            scheduleEnhance({ forceRows: true });
+            return result;
+        };
+
+        window.jcCheckRegisterFilterByCategory = filterByCategory;
+        window.jcCheckRegisterFilterByVendor = filterByVendor;
+        window.jcCheckRegisterFilterByMonth = filterByMonth;
+        window.jcCheckRegisterClearKpiView = clearKpiView;
+        window.jcCheckRegisterToggleSyncTools = function () {
+            setMaintenancePanelVisible(!getMaintenancePanelVisible());
+        };
+        window.jcCheckRegisterEnhanceKpiView = function () {
+            scheduleEnhance({ forceRows: true });
+        };
+    }
+
+    function observeSection() {
+        const section = document.getElementById("checkRegister");
+        if (!section || section.dataset.v23Observer === "true") return;
+
+        section.dataset.v23Observer = "true";
+
+        const observer = new MutationObserver(() => {
+            if (section.classList.contains("active")) {
+                scheduleEnhance({ forceRows: true });
+            }
+        });
+
+        observer.observe(section, { attributes: true, attributeFilter: ["class"] });
+    }
+
+    function boot() {
+        injectStyles();
+        patchFunctions();
+
+        const run = () => {
+            observeSection();
+            scheduleEnhance({ forceRows: true });
+        };
+
+        setTimeout(run, 500);
+        setTimeout(run, 1500);
+        setTimeout(run, 3000);
+
+        document.addEventListener("change", function (event) {
+            if (
+                event.target &&
+                ["checkFilterVendor", "checkFilterCategory", "checkFilterQuarter", "checkFilterMonth"].includes(event.target.id)
+            ) {
+                setActiveKpi(null);
+                scheduleEnhance({ forceRows: false });
+            }
+        });
+
+        document.addEventListener("input", function (event) {
+            if (event.target && event.target.id === "checkFilterSearch") {
+                setActiveKpi(null);
+                scheduleEnhance({ forceRows: false });
+            }
+        });
+
+        window.addEventListener("focus", function () {
+            if (document.getElementById("checkRegister")?.classList.contains("active")) {
+                scheduleEnhance({ forceRows: true });
+            }
+        });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", boot);
+    } else {
+        boot();
+    }
+})();
+</script>
 
 </body>
 
