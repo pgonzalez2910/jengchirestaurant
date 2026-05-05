@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.05.v23-kpi-click-category-grids-log-toggle';
+        var VERSION = '2026.05.05.v25-kpi-live-drilldown-graphs';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -60120,6 +60120,997 @@ document.addEventListener('change', function(event) {
                 scheduleEnhance({ forceRows: true });
             }
         });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", boot);
+    } else {
+        boot();
+    }
+})();
+</script>
+
+
+<!-- file: inventory2026.html -->
+<script id="jc-check-register-kpi-live-drilldown-v25">
+(function () {
+    "use strict";
+
+    const CHECK_TABLE = "check_register";
+    const KPI_TABLE = "check_register_kpi_vendors";
+    const DEFAULT_KPIS = [
+        "RESTAURANT DEPOT",
+        "SYSCO",
+        "BAKEMARK",
+        "FORMOSA FOODS",
+        "PACIFIC PLUS",
+        "NORTH FOOD GROUP",
+        "AUTOCHLOR",
+        "GOOD FORTUNE - PRODUCE",
+        "GOOD FORTUNE - MEAT",
+        "VENTHOOD"
+    ];
+
+    const state = {
+        rows: [],
+        kpis: [],
+        activeKpi: null,
+        trendChart: null,
+        lastRefreshAt: 0,
+        refreshTimer: null
+    };
+
+    function money(value) {
+        const number = Number.parseFloat(value || 0);
+        return "$" + number.toLocaleString("en-US", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function safeText(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function normalize(value) {
+        return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+    }
+
+    function getMonthKey(dateString) {
+        return dateString ? String(dateString).slice(0, 7) : "";
+    }
+
+    function getQuarterFromDate(dateString) {
+        if (!dateString) return "";
+        const date = new Date(String(dateString).slice(0, 10) + "T00:00:00");
+        if (Number.isNaN(date.getTime())) return "";
+        return "Q" + Math.ceil((date.getMonth() + 1) / 3);
+    }
+
+    function getDayKey(dateString) {
+        return dateString ? String(dateString).slice(0, 10) : "";
+    }
+
+    function isCheckRegisterOpen() {
+        const section = document.getElementById("checkRegister");
+        return Boolean(section && section.classList.contains("active"));
+    }
+
+    function injectStyles() {
+        if (document.getElementById("jc-check-register-kpi-live-style-v25")) return;
+
+        const style = document.createElement("style");
+        style.id = "jc-check-register-kpi-live-style-v25";
+        style.textContent = `
+            .check-register-tools-toggle {
+                display: flex;
+                justify-content: flex-end;
+                margin: 0.5rem 0 0.8rem;
+                gap: 0.5rem;
+            }
+
+            .check-register-tools-toggle .toggle-btn {
+                border: 1px solid #1a3a5c;
+                background: #ffffff;
+                color: #1a3a5c;
+                border-radius: 999px;
+                padding: 0.45rem 0.8rem;
+                font-size: 0.72rem;
+                font-weight: 850;
+                cursor: pointer;
+                display: inline-flex;
+                align-items: center;
+                gap: 0.4rem;
+            }
+
+            .check-register-tools-toggle .toggle-btn.active {
+                background: #1a3a5c;
+                color: #ffffff;
+            }
+
+            .check-register-kpi {
+                cursor: pointer;
+                transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
+            }
+
+            .check-register-kpi:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 14px 28px rgba(15, 23, 42, 0.12);
+            }
+
+            .check-register-kpi.kpi-active {
+                border: 2px solid #2563c8;
+                box-shadow: 0 0 0 4px rgba(37, 99, 200, 0.12), 0 14px 28px rgba(15, 23, 42, 0.12);
+            }
+
+            .check-register-kpi-click-note {
+                margin: -0.25rem 0 1rem;
+                padding: 0.8rem 1rem;
+                background: #eff6ff;
+                border: 1px solid #bfdbfe;
+                border-left: 4px solid #2563c8;
+                border-radius: 12px;
+                color: #1e3a8a;
+                font-size: 0.78rem;
+                font-weight: 700;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 1rem;
+            }
+
+            .check-register-type-chips {
+                display: flex;
+                gap: 0.5rem;
+                flex-wrap: wrap;
+                margin: -0.35rem 0 1rem;
+            }
+
+            .check-register-type-chip {
+                border: 1px solid #cbd5e1;
+                background: white;
+                color: #334155;
+                border-radius: 999px;
+                padding: 0.45rem 0.75rem;
+                font-size: 0.72rem;
+                font-weight: 850;
+                cursor: pointer;
+            }
+
+            .check-register-type-chip.active {
+                background: #1a3a5c;
+                color: white;
+                border-color: #1a3a5c;
+            }
+
+            .check-register-insight-grid {
+                display: grid;
+                grid-template-columns: minmax(360px, 1.1fr) repeat(3, minmax(260px, 1fr));
+                gap: 1rem;
+                margin-bottom: 1rem;
+            }
+
+            .check-register-insight-card {
+                background: #ffffff;
+                border: 1px solid #e2e8f0;
+                border-radius: 14px;
+                padding: 1rem;
+                box-shadow: 0 8px 20px rgba(15, 23, 42, 0.07);
+                min-width: 0;
+            }
+
+            .check-register-insight-card h3 {
+                margin: 0 0 0.75rem;
+                font-size: 0.76rem;
+                color: #334155;
+                font-weight: 900;
+                text-transform: uppercase;
+                letter-spacing: 0.07em;
+                display: flex;
+                justify-content: space-between;
+                gap: 0.75rem;
+            }
+
+            .check-register-selected-chart {
+                position: relative;
+                height: 265px;
+            }
+
+            .check-register-mini-table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 0.72rem;
+            }
+
+            .check-register-mini-table th {
+                text-align: left;
+                background: #f1f5f9;
+                color: #475569;
+                padding: 0.45rem 0.5rem;
+                font-size: 0.6rem;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                border-bottom: 1px solid #cbd5e1;
+            }
+
+            .check-register-mini-table td {
+                padding: 0.45rem 0.5rem;
+                border-bottom: 1px solid #eef2f7;
+                color: #334155;
+            }
+
+            .check-register-mini-table tr {
+                cursor: pointer;
+            }
+
+            .check-register-mini-table tr:hover td {
+                background: #f8fafc;
+            }
+
+            .check-register-percent-bar {
+                height: 6px;
+                background: #e2e8f0;
+                border-radius: 999px;
+                overflow: hidden;
+                min-width: 60px;
+            }
+
+            .check-register-percent-fill {
+                height: 100%;
+                background: linear-gradient(90deg, #1e5799, #14b8a6);
+                border-radius: 999px;
+            }
+
+            .check-register-record-description {
+                padding: 0.75rem 1rem;
+                border-bottom: 1px solid #e2e8f0;
+                background: #f8fafc;
+                color: #475569;
+                font-size: 0.76rem;
+                font-weight: 700;
+                display: flex;
+                justify-content: space-between;
+                gap: 0.75rem;
+                align-items: center;
+            }
+
+            .check-register-record-description strong {
+                color: #0f172a;
+            }
+
+            @media (max-width: 1500px) {
+                .check-register-insight-grid {
+                    grid-template-columns: 1fr 1fr;
+                }
+            }
+
+            @media (max-width: 850px) {
+                .check-register-insight-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function ensureToolsToggle() {
+        const shell = document.querySelector("#checkRegister .check-register-shell");
+        const importPanel = document.querySelector("#checkRegister .check-register-import-panel");
+        if (!shell || document.getElementById("checkRegisterToolsToggleWrap")) return;
+
+        const wrap = document.createElement("div");
+        wrap.id = "checkRegisterToolsToggleWrap";
+        wrap.className = "check-register-tools-toggle";
+        wrap.innerHTML = `
+            <button id="checkRegisterToolsToggleBtn" class="toggle-btn" type="button" onclick="window.jcCheckRegisterToggleTools()">
+                <i class="fas fa-toggle-off"></i> Sync / Import Tools: Off
+            </button>
+        `;
+
+        if (importPanel) {
+            importPanel.style.display = "none";
+            importPanel.insertAdjacentElement("beforebegin", wrap);
+        } else {
+            shell.insertAdjacentElement("afterbegin", wrap);
+        }
+    }
+
+    function toggleTools() {
+        const importPanel = document.querySelector("#checkRegister .check-register-import-panel");
+        const syncPanel = document.querySelector("#checkRegister .check-register-sync-panel");
+        const historyPanel = document.querySelector("#checkRegister .check-register-sync-history");
+        const btn = document.getElementById("checkRegisterToolsToggleBtn");
+        const isOn = btn?.classList.contains("active");
+
+        const nextOn = !isOn;
+        [importPanel, syncPanel, historyPanel].forEach(panel => {
+            if (panel) panel.style.display = nextOn ? "" : "none";
+        });
+
+        if (btn) {
+            btn.classList.toggle("active", nextOn);
+            btn.innerHTML = nextOn
+                ? `<i class="fas fa-toggle-on"></i> Sync / Import Tools: On`
+                : `<i class="fas fa-toggle-off"></i> Sync / Import Tools: Off`;
+        }
+    }
+
+    function ensureKpiNoteAndChips() {
+        const kpiGrid = document.getElementById("checkRegisterKpis");
+        if (!kpiGrid) return;
+
+        if (!document.getElementById("checkRegisterKpiClickNote")) {
+            const note = document.createElement("div");
+            note.id = "checkRegisterKpiClickNote";
+            note.className = "check-register-kpi-click-note";
+            note.innerHTML = `
+                <span><i class="fas fa-circle-info"></i> Click any KPI card to see the checks that belong to that KPI. The graph and grids update silently for the selected month, quarter, vendor, or type.</span>
+                <button class="btn btn-secondary" onclick="window.jcCheckRegisterClearKpiSelection()">
+                    <i class="fas fa-xmark"></i> Clear KPI
+                </button>
+            `;
+            kpiGrid.insertAdjacentElement("beforebegin", note);
+        }
+
+        if (!document.getElementById("checkRegisterTypeChips")) {
+            const chips = document.createElement("div");
+            chips.id = "checkRegisterTypeChips";
+            chips.className = "check-register-type-chips";
+            chips.innerHTML = `
+                <button class="check-register-type-chip" data-category="" onclick="window.jcCheckRegisterSelectCategoryChip('')">All Types</button>
+                <button class="check-register-type-chip" data-category="Vendor" onclick="window.jcCheckRegisterSelectCategoryChip('Vendor')">Vendor</button>
+                <button class="check-register-type-chip" data-category="Services" onclick="window.jcCheckRegisterSelectCategoryChip('Services')">Services</button>
+                <button class="check-register-type-chip" data-category="Misc" onclick="window.jcCheckRegisterSelectCategoryChip('Misc')">Misc</button>
+            `;
+            kpiGrid.insertAdjacentElement("beforebegin", chips);
+        }
+    }
+
+    function ensureInsightGrid() {
+        const chartGrid = document.querySelector("#checkRegister .check-register-chart-grid");
+        if (!chartGrid || chartGrid.dataset.v25Enhanced === "true") return;
+
+        chartGrid.dataset.v25Enhanced = "true";
+        chartGrid.className = "check-register-insight-grid";
+        chartGrid.innerHTML = `
+            <div class="check-register-insight-card">
+                <h3>
+                    <span id="checkRegisterTrendTitle">Selected KPI Spend Trend</span>
+                    <span id="checkRegisterTrendTotal"></span>
+                </h3>
+                <div class="check-register-selected-chart">
+                    <canvas id="checkRegisterSelectedTrendChart"></canvas>
+                </div>
+            </div>
+
+            <div class="check-register-insight-card">
+                <h3><span>Spend Type %</span><span id="checkRegisterTypeTotal"></span></h3>
+                <div id="checkRegisterTypePercentGrid"></div>
+            </div>
+
+            <div class="check-register-insight-card">
+                <h3><span>Monthly Trend Grid</span><span id="checkRegisterMonthTotal"></span></h3>
+                <div id="checkRegisterMonthlyTrendGrid"></div>
+            </div>
+
+            <div class="check-register-insight-card">
+                <h3><span>Vendor Spend %</span><span id="checkRegisterVendorTotal"></span></h3>
+                <div id="checkRegisterVendorPercentGrid"></div>
+            </div>
+        `;
+    }
+
+    function ensureRecordDescription() {
+        const wrap = document.querySelector("#checkRegister .check-register-table-wrap");
+        const head = document.querySelector("#checkRegister .check-register-table-head");
+        if (!wrap || !head || document.getElementById("checkRegisterRecordDescription")) return;
+
+        const desc = document.createElement("div");
+        desc.id = "checkRegisterRecordDescription";
+        desc.className = "check-register-record-description";
+        desc.innerHTML = `
+            <span><strong>Check Register Records</strong> — Click any KPI, type row, monthly row, or vendor row to drill into the checks.</span>
+            <button class="btn btn-secondary" onclick="window.jcCheckRegisterClearKpiSelection()">
+                <i class="fas fa-list"></i> Show All
+            </button>
+        `;
+        head.insertAdjacentElement("afterend", desc);
+    }
+
+    function selectedCategory() {
+        return document.getElementById("checkFilterCategory")?.value || "";
+    }
+
+    function updateTypeChips() {
+        const category = selectedCategory();
+        document.querySelectorAll("#checkRegisterTypeChips .check-register-type-chip").forEach(chip => {
+            chip.classList.toggle("active", chip.dataset.category === category);
+        });
+    }
+
+    function baseFilteredRows() {
+        const search = normalize(document.getElementById("checkFilterSearch")?.value);
+        const vendor = document.getElementById("checkFilterVendor")?.value || "";
+        const category = document.getElementById("checkFilterCategory")?.value || "";
+        const quarter = document.getElementById("checkFilterQuarter")?.value || "";
+        const month = document.getElementById("checkFilterMonth")?.value || "";
+
+        return state.rows.filter(row => {
+            const haystack = normalize([
+                row.check_date,
+                row.check_number,
+                row.payment_method,
+                row.vendor,
+                row.category,
+                row.reason,
+                row.status,
+                row.source_table
+            ].join(" "));
+
+            if (search && !haystack.includes(search)) return false;
+            if (vendor && row.vendor !== vendor) return false;
+            if (category && row.category !== category) return false;
+            if (quarter && getQuarterFromDate(row.check_date) !== quarter) return false;
+            if (month && getMonthKey(row.check_date) !== month) return false;
+            return true;
+        });
+    }
+
+    function applyKpiToRows(rows) {
+        const kpi = state.activeKpi;
+        if (!kpi) return rows;
+
+        if (kpi.kind === "category") {
+            return rows.filter(row => row.category === kpi.value);
+        }
+
+        if (kpi.kind === "vendor") {
+            const key = normalize(kpi.value);
+            return rows.filter(row => normalize(row.vendor).includes(key));
+        }
+
+        if (kpi.kind === "status") {
+            return rows.filter(row => row.status === kpi.value);
+        }
+
+        if (kpi.kind === "payment") {
+            return rows.filter(row => row.payment_method === kpi.value);
+        }
+
+        return rows;
+    }
+
+    function currentRows() {
+        return applyKpiToRows(baseFilteredRows());
+    }
+
+    function groupSum(rows, keyFn) {
+        return rows.reduce((acc, row) => {
+            const key = keyFn(row) || "Unknown";
+            acc[key] = (acc[key] || 0) + Number(row.amount || 0);
+            return acc;
+        }, {});
+    }
+
+    function totalAmount(rows) {
+        return rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    }
+
+    function buildPercentTable(grouped, onClickKind, limit) {
+        const entries = Object.entries(grouped)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, limit || 12);
+        const total = entries.reduce((sum, item) => sum + item[1], 0);
+
+        if (!entries.length) {
+            return `<div style="padding:1.5rem;text-align:center;color:#94a3b8;">No data</div>`;
+        }
+
+        return `
+            <table class="check-register-mini-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th style="text-align:right;">Total</th>
+                        <th style="text-align:right;">%</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${entries.map(([label, value]) => {
+                        const percent = total ? (value / total) * 100 : 0;
+                        return `
+                            <tr onclick="window.jcCheckRegisterGridClick('${safeText(onClickKind)}', '${safeText(label)}')">
+                                <td>
+                                    <strong>${safeText(label)}</strong>
+                                    <div class="check-register-percent-bar">
+                                        <div class="check-register-percent-fill" style="width:${Math.min(100, percent).toFixed(2)}%;"></div>
+                                    </div>
+                                </td>
+                                <td style="text-align:right;font-family:var(--font-mono);font-weight:850;">${safeText(money(value))}</td>
+                                <td style="text-align:right;font-family:var(--font-mono);">${percent.toFixed(1)}%</td>
+                            </tr>
+                        `;
+                    }).join("")}
+                </tbody>
+            </table>
+        `;
+    }
+
+    function buildMonthlyTable(rows) {
+        const grouped = groupSum(rows, row => getMonthKey(row.check_date));
+        const entries = Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0]));
+        const total = entries.reduce((sum, item) => sum + item[1], 0);
+
+        if (!entries.length) {
+            return `<div style="padding:1.5rem;text-align:center;color:#94a3b8;">No monthly data</div>`;
+        }
+
+        return `
+            <table class="check-register-mini-table">
+                <thead>
+                    <tr>
+                        <th>Month</th>
+                        <th style="text-align:right;">Checks</th>
+                        <th style="text-align:right;">Spend</th>
+                        <th style="text-align:right;">%</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${entries.map(([month, value]) => {
+                        const count = rows.filter(row => getMonthKey(row.check_date) === month).length;
+                        const percent = total ? (value / total) * 100 : 0;
+                        return `
+                            <tr onclick="window.jcCheckRegisterGridClick('month', '${safeText(month)}')">
+                                <td><strong>${safeText(month)}</strong></td>
+                                <td style="text-align:right;">${count.toLocaleString("en-US")}</td>
+                                <td style="text-align:right;font-family:var(--font-mono);font-weight:850;">${safeText(money(value))}</td>
+                                <td style="text-align:right;font-family:var(--font-mono);">${percent.toFixed(1)}%</td>
+                            </tr>
+                        `;
+                    }).join("")}
+                </tbody>
+            </table>
+        `;
+    }
+
+    function renderTrendChart(rows) {
+        const canvas = document.getElementById("checkRegisterSelectedTrendChart");
+        if (!canvas || typeof Chart === "undefined") return;
+
+        if (state.trendChart) {
+            try { state.trendChart.destroy(); } catch (error) { console.warn(error); }
+            state.trendChart = null;
+        }
+
+        const month = document.getElementById("checkFilterMonth")?.value || "";
+        const title = state.activeKpi ? state.activeKpi.label : "All Checks";
+        const keyFn = month ? getDayKey : getMonthKey;
+        const grouped = groupSum(rows, row => keyFn(row.check_date));
+        const labels = Object.keys(grouped).sort();
+        const values = labels.map(label => grouped[label]);
+
+        const trendTitle = document.getElementById("checkRegisterTrendTitle");
+        const trendTotal = document.getElementById("checkRegisterTrendTotal");
+        if (trendTitle) trendTitle.textContent = `${title} Spend Trend`;
+        if (trendTotal) trendTotal.textContent = money(totalAmount(rows));
+
+        state.trendChart = new Chart(canvas, {
+            type: "bar",
+            data: {
+                labels,
+                datasets: [{
+                    label: title,
+                    data: values
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: context => money(context.raw)
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        ticks: {
+                            callback: value => money(value)
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    function renderEnhancedKpis(rowsBeforeKpi, rowsAfterKpi) {
+        const grid = document.getElementById("checkRegisterKpis");
+        if (!grid) return;
+
+        const amountAll = totalAmount(rowsBeforeKpi);
+        const pendingAmount = totalAmount(rowsBeforeKpi.filter(row => row.status === "Pending"));
+        const voidRows = rowsBeforeKpi.filter(row => row.status === "Void");
+        const creditCardRows = rowsBeforeKpi.filter(row => row.payment_method === "Credit Card");
+
+        const summaryCards = [
+            { kind: "all", value: "", label: "Total Checks", amount: rowsBeforeKpi.length.toLocaleString("en-US"), sub: `${money(amountAll)} total` },
+            { kind: "all", value: "", label: "Total Amount", amount: money(amountAll), sub: "filtered total" },
+            { kind: "status", value: "Pending", label: "Pending Amount", amount: money(pendingAmount), sub: "pending checks" },
+            { kind: "status", value: "Void", label: "Void Checks", amount: voidRows.length.toLocaleString("en-US"), sub: `${money(totalAmount(voidRows))} void total` },
+            { kind: "payment", value: "Credit Card", label: "Credit Card", amount: money(totalAmount(creditCardRows)), sub: `${creditCardRows.length} transactions` },
+            { kind: "category", value: "Vendor", label: "Vendor", amount: money(totalAmount(rowsBeforeKpi.filter(row => row.category === "Vendor"))), sub: "type KPI" },
+            { kind: "category", value: "Services", label: "Services", amount: money(totalAmount(rowsBeforeKpi.filter(row => row.category === "Services"))), sub: "type KPI" },
+            { kind: "category", value: "Misc", label: "Misc", amount: money(totalAmount(rowsBeforeKpi.filter(row => row.category === "Misc"))), sub: "type KPI" }
+        ];
+
+        const kpiCards = state.kpis.map(kpi => {
+            const total = totalAmount(rowsBeforeKpi.filter(row => normalize(row.vendor).includes(normalize(kpi.vendor_name))));
+            const logo = kpi.logo_url
+                ? `<img src="${safeText(kpi.logo_url)}" alt="${safeText(kpi.vendor_name)}" style="width:58px;height:58px;object-fit:contain;border:1px solid #e2e8f0;border-radius:12px;background:white;padding:0.3rem;">`
+                : "";
+
+            return {
+                kind: "vendor",
+                value: kpi.vendor_name,
+                label: kpi.vendor_name,
+                amount: money(total),
+                sub: "vendor KPI",
+                logo
+            };
+        });
+
+        grid.innerHTML = [...summaryCards, ...kpiCards].map(card => {
+            const active = state.activeKpi &&
+                state.activeKpi.kind === card.kind &&
+                normalize(state.activeKpi.value) === normalize(card.value);
+
+            return `
+                <div class="check-register-kpi ${active ? "kpi-active" : ""}"
+                     onclick="window.jcCheckRegisterSelectKpi('${safeText(card.kind)}', '${safeText(card.value)}', '${safeText(card.label)}')">
+                    <div class="check-register-kpi-top">
+                        <div>
+                            <div class="check-register-kpi-label">${safeText(card.label)}</div>
+                            <div class="check-register-kpi-value">${safeText(card.amount)}</div>
+                            <div class="check-register-kpi-sub">${safeText(card.sub)}</div>
+                        </div>
+                        ${card.logo || ""}
+                    </div>
+                </div>
+            `;
+        }).join("");
+
+        const desc = document.getElementById("checkRegisterRecordDescription");
+        if (desc) {
+            const label = state.activeKpi ? state.activeKpi.label : "All Checks";
+            desc.innerHTML = `
+                <span><strong>Showing:</strong> ${safeText(label)} · ${rowsAfterKpi.length.toLocaleString("en-US")} checks · ${safeText(money(totalAmount(rowsAfterKpi)))}. Click another KPI to switch instantly without refreshing.</span>
+                <button class="btn btn-secondary" onclick="window.jcCheckRegisterClearKpiSelection()">
+                    <i class="fas fa-list"></i> Show All
+                </button>
+            `;
+        }
+    }
+
+    function renderInsightGrids(rows) {
+        const typeGrid = document.getElementById("checkRegisterTypePercentGrid");
+        const monthGrid = document.getElementById("checkRegisterMonthlyTrendGrid");
+        const vendorGrid = document.getElementById("checkRegisterVendorPercentGrid");
+
+        const typeTotal = document.getElementById("checkRegisterTypeTotal");
+        const monthTotal = document.getElementById("checkRegisterMonthTotal");
+        const vendorTotal = document.getElementById("checkRegisterVendorTotal");
+
+        if (typeTotal) typeTotal.textContent = money(totalAmount(rows));
+        if (monthTotal) monthTotal.textContent = `${rows.length} checks`;
+        if (vendorTotal) vendorTotal.textContent = money(totalAmount(rows));
+
+        if (typeGrid) typeGrid.innerHTML = buildPercentTable(groupSum(rows, row => row.category), "category", 10);
+        if (monthGrid) monthGrid.innerHTML = buildMonthlyTable(rows);
+        if (vendorGrid) vendorGrid.innerHTML = buildPercentTable(groupSum(rows, row => row.vendor), "vendor", 12);
+    }
+
+    function renderEnhancedTable(rows) {
+        const tbody = document.getElementById("checkRegisterTableBody");
+        const count = document.getElementById("checkRegisterTableCount");
+        if (!tbody) return;
+
+        if (count) {
+            count.textContent = `${rows.length.toLocaleString("en-US")} records · ${money(totalAmount(rows))}`;
+        }
+
+        if (!rows.length) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="10" style="text-align:center;padding:2.5rem;color:#94a3b8;">
+                        No checks found for this KPI/filter selection.
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = rows.map(row => {
+            const source = row.source_table && row.source_table !== "manual" ? "Imported" : "Manual";
+            return `
+                <tr>
+                    <td>${safeText(row.check_date || "—")}</td>
+                    <td><span class="check-register-badge ${row.payment_method === "Credit Card" ? "services" : "vendor"}">${safeText(row.payment_method || "Check")}</span></td>
+                    <td style="font-family:var(--font-mono);font-weight:850;color:#0f172a;">${safeText(row.check_number || (row.payment_method === "Credit Card" ? "N/A" : "—"))}</td>
+                    <td><span class="check-register-badge ${safeText(normalize(row.status || "Cleared"))}">${safeText(row.status || "Cleared")}</span></td>
+                    <td><span class="check-register-badge ${safeText(normalize(row.category || "Vendor"))}">${safeText(row.category || "Vendor")}</span></td>
+                    <td style="font-weight:850;">${safeText(row.vendor || "Unknown")}</td>
+                    <td>${safeText(row.reason || row.vendor || "")}</td>
+                    <td style="text-align:right;font-family:var(--font-mono);font-weight:850;">${safeText(money(row.amount))}</td>
+                    <td><span class="check-register-badge ${source === "Imported" ? "imported" : "vendor"}">${safeText(source)}</span></td>
+                    <td>
+                        <button class="btn btn-secondary" onclick="window.jcCheckRegisterEdit('${safeText(row.id)}')">
+                            <i class="fas fa-pen"></i>
+                        </button>
+                        <button class="btn btn-danger" onclick="window.jcCheckRegisterDelete('${safeText(row.id)}')">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join("");
+    }
+
+    function renderAll() {
+        if (!isCheckRegisterOpen()) return;
+
+        injectStyles();
+        ensureToolsToggle();
+        ensureKpiNoteAndChips();
+        ensureInsightGrid();
+        ensureRecordDescription();
+        updateTypeChips();
+
+        const rowsBeforeKpi = baseFilteredRows();
+        const rowsAfterKpi = applyKpiToRows(rowsBeforeKpi);
+
+        renderEnhancedKpis(rowsBeforeKpi, rowsAfterKpi);
+        renderTrendChart(rowsAfterKpi);
+        renderInsightGrids(rowsAfterKpi);
+        renderEnhancedTable(rowsAfterKpi);
+    }
+
+    async function loadKpis() {
+        try {
+            const { data, error } = await supabaseClient
+                .from(KPI_TABLE)
+                .select("id, vendor_name, display_order, is_active, logo_url")
+                .eq("is_active", true)
+                .order("display_order", { ascending: true })
+                .order("vendor_name", { ascending: true });
+
+            if (error) throw error;
+
+            state.kpis = (data || []).length
+                ? data
+                : DEFAULT_KPIS.map((vendor_name, index) => ({ id: vendor_name, vendor_name, display_order: index * 10, logo_url: "" }));
+        } catch (error) {
+            state.kpis = DEFAULT_KPIS.map((vendor_name, index) => ({ id: vendor_name, vendor_name, display_order: index * 10, logo_url: "" }));
+            console.warn("KPI vendor table fallback:", error);
+        }
+    }
+
+    async function loadRows() {
+        const { data, error } = await supabaseClient
+            .from(CHECK_TABLE)
+            .select("id, check_date, check_number, payment_method, payment_reference, vendor, category, reason, amount, status, source_table, source_id, created_at, updated_at")
+            .order("check_date", { ascending: false })
+            .order("created_at", { ascending: false });
+
+        if (error) throw error;
+
+        state.rows = data || [];
+    }
+
+    async function refreshLive(reason) {
+        if (typeof supabaseClient === "undefined") return;
+
+        try {
+            await Promise.all([loadRows(), loadKpis()]);
+            state.lastRefreshAt = Date.now();
+            renderAll();
+
+            const status = document.getElementById("checkRegisterSaveStatus");
+            if (status && reason && reason !== "interval") {
+                status.textContent = `View updated silently · ${reason}`;
+                status.style.color = "#15803d";
+            }
+        } catch (error) {
+            console.error("Live KPI refresh failed:", error);
+        }
+    }
+
+    function scheduleRefresh(reason) {
+        clearTimeout(state.refreshTimer);
+        state.refreshTimer = setTimeout(() => refreshLive(reason || "update"), 350);
+    }
+
+    function selectKpi(kind, value, label) {
+        if (kind === "all") {
+            state.activeKpi = null;
+        } else {
+            state.activeKpi = { kind, value, label: label || value || "Selected KPI" };
+        }
+        renderAll();
+    }
+
+    function clearKpiSelection() {
+        state.activeKpi = null;
+        renderAll();
+    }
+
+    function selectCategoryChip(category) {
+        const filter = document.getElementById("checkFilterCategory");
+        if (filter) filter.value = category || "";
+        state.activeKpi = category ? { kind: "category", value: category, label: category } : null;
+        renderAll();
+    }
+
+    function gridClick(kind, value) {
+        if (kind === "category") {
+            const filter = document.getElementById("checkFilterCategory");
+            if (filter) filter.value = value || "";
+            state.activeKpi = { kind: "category", value, label: value };
+        }
+
+        if (kind === "vendor") {
+            state.activeKpi = { kind: "vendor", value, label: value };
+        }
+
+        if (kind === "month") {
+            const filter = document.getElementById("checkFilterMonth");
+            if (filter) filter.value = value || "";
+        }
+
+        renderAll();
+    }
+
+    function clearFilters() {
+        ["checkFilterSearch", "checkFilterVendor", "checkFilterCategory", "checkFilterQuarter", "checkFilterMonth"].forEach(id => {
+            const input = document.getElementById(id);
+            if (input) input.value = "";
+        });
+        state.activeKpi = null;
+        renderAll();
+    }
+
+    function patchWindowFunctions() {
+        if (window.__jcCheckRegisterKpiLiveV25Patched) return;
+        window.__jcCheckRegisterKpiLiveV25Patched = true;
+
+        const originalApplyFilters = window.jcCheckRegisterApplyFilters;
+        const originalClearFilters = window.jcCheckRegisterClearFilters;
+        const originalLoad = window.jcCheckRegisterLoad;
+        const originalSave = window.jcCheckRegisterSaveNow;
+        const originalDelete = window.jcCheckRegisterDelete;
+        const originalImport = window.jcCheckRegisterImportExistingChecks;
+        const originalAddKpi = window.jcCheckRegisterAddKpiPrompt;
+        const originalUploadLogo = window.jcCheckRegisterUploadKpiLogo;
+
+        window.jcCheckRegisterApplyFilters = function () {
+            if (typeof originalApplyFilters === "function") {
+                try { originalApplyFilters(); } catch (error) { console.warn(error); }
+            }
+            scheduleRefresh("filter");
+        };
+
+        window.jcCheckRegisterClearFilters = function () {
+            if (typeof originalClearFilters === "function") {
+                try { originalClearFilters(); } catch (error) { console.warn(error); }
+            }
+            clearFilters();
+        };
+
+        window.jcCheckRegisterLoad = async function (force) {
+            if (typeof originalLoad === "function") {
+                await originalLoad(force);
+            }
+            await refreshLive("load");
+        };
+
+        window.jcCheckRegisterSaveNow = async function () {
+            let result;
+            if (typeof originalSave === "function") {
+                result = await originalSave();
+            }
+            await refreshLive("save");
+            return result;
+        };
+
+        window.jcCheckRegisterDelete = async function (id) {
+            let result;
+            if (typeof originalDelete === "function") {
+                result = await originalDelete(id);
+            }
+            await refreshLive("delete");
+            return result;
+        };
+
+        window.jcCheckRegisterImportExistingChecks = async function () {
+            let result;
+            if (typeof originalImport === "function") {
+                result = await originalImport();
+            }
+            await refreshLive("import");
+            return result;
+        };
+
+        window.jcCheckRegisterAddKpiPrompt = async function () {
+            let result;
+            if (typeof originalAddKpi === "function") {
+                result = await originalAddKpi();
+            }
+            await refreshLive("kpi");
+            return result;
+        };
+
+        if (typeof originalUploadLogo === "function") {
+            window.jcCheckRegisterUploadKpiLogo = async function (kpiId, file) {
+                const result = await originalUploadLogo(kpiId, file);
+                await refreshLive("logo");
+                return result;
+            };
+        }
+
+        window.jcCheckRegisterToggleTools = toggleTools;
+        window.jcCheckRegisterSelectKpi = selectKpi;
+        window.jcCheckRegisterClearKpiSelection = clearKpiSelection;
+        window.jcCheckRegisterSelectCategoryChip = selectCategoryChip;
+        window.jcCheckRegisterGridClick = gridClick;
+        window.jcCheckRegisterRefreshLiveView = refreshLive;
+    }
+
+    function watchSectionActivation() {
+        const section = document.getElementById("checkRegister");
+        if (!section || section.dataset.v25Observer === "true") return;
+
+        section.dataset.v25Observer = "true";
+        const observer = new MutationObserver(() => {
+            if (isCheckRegisterOpen()) {
+                refreshLive("section");
+            }
+        });
+
+        observer.observe(section, { attributes: true, attributeFilter: ["class"] });
+    }
+
+    function boot() {
+        injectStyles();
+        patchWindowFunctions();
+
+        const runWhenReady = setInterval(() => {
+            if (!document.getElementById("checkRegister")) return;
+            clearInterval(runWhenReady);
+            ensureToolsToggle();
+            ensureKpiNoteAndChips();
+            ensureInsightGrid();
+            ensureRecordDescription();
+            watchSectionActivation();
+            refreshLive("boot");
+        }, 350);
+
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden && isCheckRegisterOpen()) refreshLive("visibility");
+        });
+
+        window.addEventListener("focus", () => {
+            if (isCheckRegisterOpen()) refreshLive("focus");
+        });
+
+        setInterval(() => {
+            if (isCheckRegisterOpen()) refreshLive("interval");
+        }, 10000);
     }
 
     if (document.readyState === "loading") {
