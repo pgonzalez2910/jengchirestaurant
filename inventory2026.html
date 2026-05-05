@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.05.v26-add-check-toggle-kpi-description';
+        var VERSION = '2026.05.05.v27-category-kpi-logo-actions';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -61209,6 +61209,1174 @@ document.addEventListener('change', function(event) {
     }
 })();
 </script>
+
+
+<!-- ========== JC CHECK REGISTER V27: CATEGORY KPI VISIBILITY + LARGE LOGOS + COMPACT ICON ACTIONS ========== -->
+<script id="jc-check-register-v27-category-kpi-logo-actions">
+(function () {
+    "use strict";
+
+    const CHECK_TABLE = "check_register";
+    const KPI_TABLE = "check_register_kpi_vendors";
+    const LOGO_BUCKET = "check-register-kpi-logos";
+
+    const DEFAULT_KPIS = [
+        "RESTAURANT DEPOT",
+        "SYSCO",
+        "BAKEMARK",
+        "FORMOSA FOODS",
+        "PACIFIC PLUS",
+        "NORTH FOOD GROUP",
+        "AUTOCHLOR",
+        "GOOD FORTUNE - PRODUCE",
+        "GOOD FORTUNE - MEAT",
+        "VENTHOOD"
+    ];
+
+    const FALLBACK_LOGOS = {
+        "FORMOSA FOODS": "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/formosa.jpg",
+        "PACIFIC PLUS": "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/pacific.jpg",
+        "NORTH FOOD GROUP": "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/northfoodgroup.jpg",
+        "GOOD FORTUNE - PRODUCE": "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/fortune.jpg",
+        "GOOD FORTUNE - MEAT": "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/fortune.jpg"
+    };
+
+    const state = {
+        rows: [],
+        kpis: [],
+        activeKpi: null,
+        activeCategory: "",
+        trendChart: null,
+        refreshTimer: null,
+        renderTimer: null,
+        isRendering: false,
+        isDraggingId: null,
+        observer: null
+    };
+
+    function safeText(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function normalize(value) {
+        return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+    }
+
+    function upperClean(value) {
+        return String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
+    }
+
+    function money(value) {
+        const number = Number.parseFloat(value || 0);
+        return "$" + number.toLocaleString("en-US", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function getMonthKey(dateString) {
+        return dateString ? String(dateString).slice(0, 7) : "";
+    }
+
+    function getDayKey(dateString) {
+        return dateString ? String(dateString).slice(0, 10) : "";
+    }
+
+    function getQuarterFromDate(dateString) {
+        if (!dateString) return "";
+        const date = new Date(String(dateString).slice(0, 10) + "T00:00:00");
+        if (Number.isNaN(date.getTime())) return "";
+        return "Q" + Math.ceil((date.getMonth() + 1) / 3);
+    }
+
+    function isOpen() {
+        const section = document.getElementById("checkRegister");
+        return Boolean(section && section.classList.contains("active"));
+    }
+
+    function totalAmount(rows) {
+        return rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    }
+
+    function groupSum(rows, keyFn) {
+        return rows.reduce((acc, row) => {
+            const key = keyFn(row) || "Unknown";
+            acc[key] = (acc[key] || 0) + Number(row.amount || 0);
+            return acc;
+        }, {});
+    }
+
+    function normalizeFileKey(value) {
+        return String(value || "")
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "");
+    }
+
+    function baseFilteredRows() {
+        const search = normalize(document.getElementById("checkFilterSearch")?.value);
+        const vendor = document.getElementById("checkFilterVendor")?.value || "";
+        const formCategory = document.getElementById("checkFilterCategory")?.value || "";
+        const quarter = document.getElementById("checkFilterQuarter")?.value || "";
+        const month = document.getElementById("checkFilterMonth")?.value || "";
+
+        return state.rows.filter(row => {
+            const haystack = normalize([
+                row.check_date,
+                row.check_number,
+                row.payment_method,
+                row.vendor,
+                row.category,
+                row.reason,
+                row.status,
+                row.source_table
+            ].join(" "));
+
+            if (search && !haystack.includes(search)) return false;
+            if (vendor && row.vendor !== vendor) return false;
+            if (formCategory && row.category !== formCategory) return false;
+            if (state.activeCategory && row.category !== state.activeCategory) return false;
+            if (quarter && getQuarterFromDate(row.check_date) !== quarter) return false;
+            if (month && getMonthKey(row.check_date) !== month) return false;
+            return true;
+        });
+    }
+
+    function applyKpiRows(rows) {
+        const kpi = state.activeKpi;
+        if (!kpi) return rows;
+
+        if (kpi.kind === "category") {
+            return rows.filter(row => row.category === kpi.value);
+        }
+
+        if (kpi.kind === "vendor") {
+            const key = normalize(kpi.value);
+            return rows.filter(row => normalize(row.vendor).includes(key));
+        }
+
+        if (kpi.kind === "status") {
+            return rows.filter(row => row.status === kpi.value);
+        }
+
+        if (kpi.kind === "payment") {
+            return rows.filter(row => row.payment_method === kpi.value);
+        }
+
+        return rows;
+    }
+
+    function visibleKpiVendorRows(vendorName, rowsBeforeKpi) {
+        const vendorKey = normalize(vendorName);
+        return rowsBeforeKpi.filter(row => normalize(row.vendor).includes(vendorKey));
+    }
+
+    function injectStyles() {
+        if (document.getElementById("jc-check-register-v27-style")) return;
+
+        const style = document.createElement("style");
+        style.id = "jc-check-register-v27-style";
+        style.textContent = `
+            #checkRegisterKpis {
+                align-items: stretch;
+            }
+
+            #checkRegisterKpis .check-register-kpi {
+                position: relative;
+                min-height: 156px;
+                overflow: hidden;
+            }
+
+            #checkRegisterKpis .check-register-kpi.v27-vendor-kpi {
+                min-height: 230px;
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+            }
+
+            #checkRegisterKpis .check-register-kpi.kpi-active {
+                border: 2px solid #2563c8 !important;
+                box-shadow: 0 0 0 4px rgba(37, 99, 200, 0.12), 0 16px 32px rgba(15, 23, 42, 0.14) !important;
+            }
+
+            .v27-kpi-logo-large {
+                width: 116px;
+                height: 92px;
+                border-radius: 16px;
+                border: 1px solid #dbe4ef;
+                background: #ffffff;
+                box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.03);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                margin: 0.35rem auto 0.8rem;
+                overflow: hidden;
+            }
+
+            .v27-kpi-logo-large img {
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+                padding: 0.45rem;
+                background: #ffffff;
+            }
+
+            .v27-kpi-logo-placeholder {
+                color: #94a3b8;
+                font-size: 0.68rem;
+                font-weight: 900;
+                line-height: 1.1;
+                letter-spacing: 0.05em;
+                text-align: center;
+                text-transform: uppercase;
+            }
+
+            .v27-kpi-icon-actions {
+                position: absolute;
+                top: 0.62rem;
+                right: 0.62rem;
+                display: flex;
+                gap: 0.28rem;
+                z-index: 6;
+            }
+
+            .v27-kpi-icon-btn,
+            .v27-kpi-icon-label {
+                width: 26px;
+                height: 26px;
+                border-radius: 999px;
+                border: 1px solid #cbd5e1;
+                background: rgba(255, 255, 255, 0.94);
+                color: #1a3a5c;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 0.72rem;
+                cursor: pointer;
+                box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
+                transition: transform 120ms ease, background 120ms ease;
+            }
+
+            .v27-kpi-icon-btn:hover,
+            .v27-kpi-icon-label:hover {
+                transform: translateY(-1px);
+                background: #eff6ff;
+            }
+
+            .v27-kpi-icon-label input {
+                display: none;
+            }
+
+            .v27-kpi-drag {
+                cursor: grab;
+            }
+
+            .v27-kpi-hidden-count {
+                grid-column: 1 / -1;
+                background: #f8fafc;
+                border: 1px dashed #cbd5e1;
+                color: #64748b;
+                border-radius: 12px;
+                padding: 0.75rem 1rem;
+                font-size: 0.75rem;
+                font-weight: 800;
+            }
+
+            .v27-kpi-category-context {
+                grid-column: 1 / -1;
+                background: #ecfeff;
+                color: #134e4a;
+                border: 1px solid #99f6e4;
+                border-left: 5px solid #14b8a6;
+                border-radius: 12px;
+                padding: 0.8rem 1rem;
+                display: flex;
+                justify-content: space-between;
+                gap: 1rem;
+                align-items: center;
+                font-size: 0.78rem;
+                font-weight: 800;
+            }
+
+            .v27-kpi-category-context .btn {
+                white-space: nowrap;
+            }
+
+            .v27-kpi-card-content {
+                text-align: left;
+            }
+
+            .v27-vendor-kpi .check-register-kpi-label {
+                min-height: 26px;
+            }
+
+            .v27-kpi-dragging {
+                opacity: 0.56;
+                transform: scale(0.98);
+            }
+
+            .v27-kpi-drop-target {
+                outline: 3px dashed #14b8a6 !important;
+                outline-offset: -6px;
+            }
+
+            @media (max-width: 900px) {
+                .v27-kpi-logo-large {
+                    width: 96px;
+                    height: 78px;
+                }
+
+                #checkRegisterKpis .check-register-kpi.v27-vendor-kpi {
+                    min-height: 210px;
+                }
+            }
+        `;
+
+        document.head.appendChild(style);
+    }
+
+    async function loadRows() {
+        const { data, error } = await supabaseClient
+            .from(CHECK_TABLE)
+            .select("id, check_date, check_number, payment_method, payment_reference, vendor, category, reason, amount, status, source_table, source_id, created_at, updated_at")
+            .order("check_date", { ascending: false })
+            .order("created_at", { ascending: false });
+
+        if (error) throw error;
+        state.rows = data || [];
+    }
+
+    async function loadKpis() {
+        try {
+            const { data, error } = await supabaseClient
+                .from(KPI_TABLE)
+                .select("id, vendor_name, display_order, is_active, logo_url, logo_storage_path")
+                .eq("is_active", true)
+                .order("display_order", { ascending: true })
+                .order("vendor_name", { ascending: true });
+
+            if (error) throw error;
+
+            state.kpis = (data || []).length
+                ? data
+                : DEFAULT_KPIS.map((vendor_name, index) => ({
+                    id: vendor_name,
+                    vendor_name,
+                    display_order: (index + 1) * 10,
+                    logo_url: FALLBACK_LOGOS[upperClean(vendor_name)] || ""
+                }));
+        } catch (error) {
+            state.kpis = DEFAULT_KPIS.map((vendor_name, index) => ({
+                id: vendor_name,
+                vendor_name,
+                display_order: (index + 1) * 10,
+                logo_url: FALLBACK_LOGOS[upperClean(vendor_name)] || ""
+            }));
+            console.warn("V27 KPI fallback:", error);
+        }
+    }
+
+    function logoHtml(kpi) {
+        const logoUrl = kpi.logo_url || FALLBACK_LOGOS[upperClean(kpi.vendor_name)] || "";
+
+        if (logoUrl) {
+            return `
+                <div class="v27-kpi-logo-large">
+                    <img src="${safeText(logoUrl)}" alt="${safeText(kpi.vendor_name)} logo" loading="lazy">
+                </div>
+            `;
+        }
+
+        return `
+            <div class="v27-kpi-logo-large">
+                <div class="v27-kpi-logo-placeholder">Pending<br>Logo</div>
+            </div>
+        `;
+    }
+
+    function kpiActionsHtml(kpi) {
+        return `
+            <div class="v27-kpi-icon-actions" onclick="event.stopPropagation()">
+                <button class="v27-kpi-icon-btn v27-kpi-drag"
+                        title="Drag KPI"
+                        draggable="true"
+                        ondragstart="window.jcCheckRegisterV27DragStart(event, '${safeText(kpi.id)}')">
+                    <i class="fas fa-grip-vertical"></i>
+                </button>
+                <label class="v27-kpi-icon-label" title="Upload logo">
+                    <i class="fas fa-cloud-arrow-up"></i>
+                    <input type="file"
+                           accept="image/png,image/jpeg,image/webp,image/gif"
+                           onchange="window.jcCheckRegisterV27UploadLogo('${safeText(kpi.id)}', this.files[0])">
+                </label>
+                <button class="v27-kpi-icon-btn"
+                        title="Edit KPI name"
+                        onclick="window.jcCheckRegisterV27EditKpi('${safeText(kpi.id)}')">
+                    <i class="fas fa-pen"></i>
+                </button>
+                <button class="v27-kpi-icon-btn"
+                        title="Hide KPI"
+                        onclick="window.jcCheckRegisterV27HideKpi('${safeText(kpi.id)}')">
+                    <i class="fas fa-eye-slash"></i>
+                </button>
+            </div>
+        `;
+    }
+
+    function summaryCard(card, rowsAfterKpi) {
+        const active = state.activeKpi &&
+            state.activeKpi.kind === card.kind &&
+            normalize(state.activeKpi.value) === normalize(card.value);
+
+        return `
+            <div class="check-register-kpi ${active ? "kpi-active" : ""}"
+                 onclick="window.jcCheckRegisterV27SelectKpi('${safeText(card.kind)}', '${safeText(card.value)}', '${safeText(card.label)}')">
+                <div class="check-register-kpi-label">${safeText(card.label)}</div>
+                <div class="check-register-kpi-value">${safeText(card.amount)}</div>
+                <div class="check-register-kpi-sub">${safeText(card.sub)}</div>
+            </div>
+        `;
+    }
+
+    function vendorCard(kpi, rowsBeforeKpi) {
+        const vendorRows = visibleKpiVendorRows(kpi.vendor_name, rowsBeforeKpi);
+        const total = totalAmount(vendorRows);
+        const active = state.activeKpi &&
+            state.activeKpi.kind === "vendor" &&
+            normalize(state.activeKpi.value) === normalize(kpi.vendor_name);
+
+        return `
+            <div class="check-register-kpi v27-vendor-kpi ${active ? "kpi-active" : ""}"
+                 draggable="true"
+                 data-v27-kpi-id="${safeText(kpi.id)}"
+                 ondragover="window.jcCheckRegisterV27DragOver(event)"
+                 ondragleave="window.jcCheckRegisterV27DragLeave(event)"
+                 ondrop="window.jcCheckRegisterV27Drop(event, '${safeText(kpi.id)}')"
+                 ondragend="window.jcCheckRegisterV27DragEnd(event)"
+                 onclick="window.jcCheckRegisterV27SelectKpi('vendor', '${safeText(kpi.vendor_name)}', '${safeText(kpi.vendor_name)}')">
+                ${kpiActionsHtml(kpi)}
+                ${logoHtml(kpi)}
+                <div class="v27-kpi-card-content">
+                    <div class="check-register-kpi-label">${safeText(kpi.vendor_name)}</div>
+                    <div class="check-register-kpi-value">${safeText(money(total))}</div>
+                    <div class="check-register-kpi-sub">
+                        ${safeText(vendorRows.length.toLocaleString("en-US"))} checks${state.activeCategory ? " · " + safeText(state.activeCategory) : ""}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderKpis(rowsBeforeKpi, rowsAfterKpi) {
+        const grid = document.getElementById("checkRegisterKpis");
+        if (!grid) return;
+
+        const allRows = rowsBeforeKpi;
+        const categoryRows = state.activeCategory
+            ? allRows.filter(row => row.category === state.activeCategory)
+            : allRows;
+
+        const summaryCards = [
+            {
+                kind: "all",
+                value: "",
+                label: "Total Checks",
+                amount: categoryRows.length.toLocaleString("en-US"),
+                sub: `${money(totalAmount(categoryRows))} total`
+            },
+            {
+                kind: "category",
+                value: "Vendor",
+                label: "Vendor",
+                amount: money(totalAmount(allRows.filter(row => row.category === "Vendor"))),
+                sub: `${allRows.filter(row => row.category === "Vendor").length} checks`
+            },
+            {
+                kind: "category",
+                value: "Services",
+                label: "Services",
+                amount: money(totalAmount(allRows.filter(row => row.category === "Services"))),
+                sub: `${allRows.filter(row => row.category === "Services").length} checks`
+            },
+            {
+                kind: "category",
+                value: "Misc",
+                label: "Misc",
+                amount: money(totalAmount(allRows.filter(row => row.category === "Misc"))),
+                sub: `${allRows.filter(row => row.category === "Misc").length} checks`
+            },
+            {
+                kind: "payment",
+                value: "Credit Card",
+                label: "Credit Card",
+                amount: money(totalAmount(categoryRows.filter(row => row.payment_method === "Credit Card"))),
+                sub: `${categoryRows.filter(row => row.payment_method === "Credit Card").length} transactions`
+            },
+            {
+                kind: "status",
+                value: "Void",
+                label: "Void Checks",
+                amount: categoryRows.filter(row => row.status === "Void").length.toLocaleString("en-US"),
+                sub: `${money(totalAmount(categoryRows.filter(row => row.status === "Void")))} void total`
+            }
+        ];
+
+        const visibleKpis = state.kpis.filter(kpi => {
+            if (!state.activeCategory) return true;
+            return visibleKpiVendorRows(kpi.vendor_name, rowsBeforeKpi).length > 0;
+        });
+
+        const hiddenCount = state.activeCategory ? Math.max(0, state.kpis.length - visibleKpis.length) : 0;
+
+        const categoryContext = state.activeCategory ? `
+            <div class="v27-kpi-category-context">
+                <span>
+                    <i class="fas fa-filter"></i>
+                    Showing only KPI vendors with <strong>${safeText(state.activeCategory)}</strong> checks.
+                    ${hiddenCount ? `${hiddenCount} KPI vendor${hiddenCount === 1 ? "" : "s"} hidden because they do not belong to this category.` : "All visible KPI vendors have checks in this category."}
+                </span>
+                <button class="btn btn-secondary" onclick="window.jcCheckRegisterV27ClearCategory()">
+                    <i class="fas fa-layer-group"></i> Show All KPI
+                </button>
+            </div>
+        ` : "";
+
+        grid.innerHTML = categoryContext
+            + summaryCards.map(card => summaryCard(card, rowsAfterKpi)).join("")
+            + visibleKpis.map(kpi => vendorCard(kpi, rowsBeforeKpi)).join("");
+
+        updateRecordDescription(rowsAfterKpi);
+    }
+
+    function buildPercentTable(grouped, kind, limit) {
+        const entries = Object.entries(grouped)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, limit || 12);
+        const total = entries.reduce((sum, item) => sum + item[1], 0);
+
+        if (!entries.length) {
+            return `<div style="padding:1.5rem;text-align:center;color:#94a3b8;">No data</div>`;
+        }
+
+        return `
+            <table class="check-register-mini-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th style="text-align:right;">Total</th>
+                        <th style="text-align:right;">%</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${entries.map(([label, value]) => {
+                        const pct = total ? (value / total) * 100 : 0;
+                        return `
+                            <tr onclick="window.jcCheckRegisterV27GridClick('${safeText(kind)}', '${safeText(label)}')">
+                                <td>
+                                    <strong>${safeText(label)}</strong>
+                                    <div class="check-register-percent-bar">
+                                        <div class="check-register-percent-fill" style="width:${Math.min(100, pct).toFixed(2)}%;"></div>
+                                    </div>
+                                </td>
+                                <td style="text-align:right;font-family:var(--font-mono);font-weight:850;">${safeText(money(value))}</td>
+                                <td style="text-align:right;font-family:var(--font-mono);">${pct.toFixed(1)}%</td>
+                            </tr>
+                        `;
+                    }).join("")}
+                </tbody>
+            </table>
+        `;
+    }
+
+    function buildMonthlyTable(rows) {
+        const grouped = groupSum(rows, row => getMonthKey(row.check_date));
+        const entries = Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0]));
+
+        if (!entries.length) {
+            return `<div style="padding:1.5rem;text-align:center;color:#94a3b8;">No data</div>`;
+        }
+
+        return `
+            <table class="check-register-mini-table">
+                <thead>
+                    <tr>
+                        <th>Month</th>
+                        <th style="text-align:right;">Checks</th>
+                        <th style="text-align:right;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${entries.map(([month, value]) => {
+                        const count = rows.filter(row => getMonthKey(row.check_date) === month).length;
+                        return `
+                            <tr onclick="window.jcCheckRegisterV27MonthClick('${safeText(month)}')">
+                                <td><strong>${safeText(month)}</strong></td>
+                                <td style="text-align:right;">${count.toLocaleString("en-US")}</td>
+                                <td style="text-align:right;font-family:var(--font-mono);font-weight:850;">${safeText(money(value))}</td>
+                            </tr>
+                        `;
+                    }).join("")}
+                </tbody>
+            </table>
+        `;
+    }
+
+    function renderInsightGrids(rows) {
+        const typeGrid = document.getElementById("checkRegisterTypePercentGrid");
+        const monthGrid = document.getElementById("checkRegisterMonthlyTrendGrid");
+        const vendorGrid = document.getElementById("checkRegisterVendorPercentGrid");
+
+        const typeTotal = document.getElementById("checkRegisterTypeTotal");
+        const monthTotal = document.getElementById("checkRegisterMonthTotal");
+        const vendorTotal = document.getElementById("checkRegisterVendorTotal");
+
+        if (typeTotal) typeTotal.textContent = money(totalAmount(rows));
+        if (monthTotal) monthTotal.textContent = `${rows.length} checks`;
+        if (vendorTotal) vendorTotal.textContent = money(totalAmount(rows));
+
+        if (typeGrid) typeGrid.innerHTML = buildPercentTable(groupSum(rows, row => row.category), "category", 10);
+        if (monthGrid) monthGrid.innerHTML = buildMonthlyTable(rows);
+        if (vendorGrid) vendorGrid.innerHTML = buildPercentTable(groupSum(rows, row => row.vendor), "vendor", 12);
+    }
+
+    function renderTrendChart(rows) {
+        const canvas = document.getElementById("checkRegisterSelectedTrendChart");
+        if (!canvas || typeof Chart === "undefined") return;
+
+        const existingChart = Chart.getChart(canvas);
+        if (existingChart) existingChart.destroy();
+
+        const month = document.getElementById("checkFilterMonth")?.value || "";
+        const quarter = document.getElementById("checkFilterQuarter")?.value || "";
+        const title = state.activeKpi ? state.activeKpi.label : (state.activeCategory || "All Checks");
+        const keyFn = month ? getDayKey : getMonthKey;
+        const grouped = groupSum(rows, row => keyFn(row.check_date));
+        const labels = Object.keys(grouped).sort();
+        const values = labels.map(label => grouped[label]);
+
+        const titleEl = document.getElementById("checkRegisterTrendTitle");
+        const totalEl = document.getElementById("checkRegisterTrendTotal");
+
+        if (titleEl) {
+            titleEl.textContent = `${title} Spend Trend${month ? " · Daily" : quarter ? " · Quarter" : ""}`;
+        }
+
+        if (totalEl) totalEl.textContent = money(totalAmount(rows));
+
+        state.trendChart = new Chart(canvas, {
+            type: "bar",
+            data: {
+                labels,
+                datasets: [{ label: title, data: values }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: context => money(context.raw)
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        ticks: {
+                            callback: value => money(value)
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    function renderTable(rows) {
+        const tbody = document.getElementById("checkRegisterTableBody");
+        const count = document.getElementById("checkRegisterTableCount");
+        if (!tbody) return;
+
+        if (count) {
+            count.textContent = `${rows.length.toLocaleString("en-US")} records · ${money(totalAmount(rows))}`;
+        }
+
+        if (!rows.length) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="10" style="text-align:center;padding:2.5rem;color:#94a3b8;">
+                        No checks found for this KPI/filter selection.
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = rows.map(row => {
+            const source = row.source_table && row.source_table !== "manual" ? "Imported" : "Manual";
+
+            return `
+                <tr>
+                    <td>${safeText(row.check_date || "—")}</td>
+                    <td><span class="check-register-badge ${row.payment_method === "Credit Card" ? "services" : "vendor"}">${safeText(row.payment_method || "Check")}</span></td>
+                    <td style="font-family:var(--font-mono);font-weight:850;color:#0f172a;">${safeText(row.check_number || (row.payment_method === "Credit Card" ? "N/A" : "—"))}</td>
+                    <td><span class="check-register-badge ${safeText(normalize(row.status || "Cleared"))}">${safeText(row.status || "Cleared")}</span></td>
+                    <td><span class="check-register-badge ${safeText(normalize(row.category || "Vendor"))}">${safeText(row.category || "Vendor")}</span></td>
+                    <td style="font-weight:850;">${safeText(row.vendor || "Unknown")}</td>
+                    <td>${safeText(row.reason || row.vendor || "")}</td>
+                    <td style="text-align:right;font-family:var(--font-mono);font-weight:850;">${safeText(money(row.amount))}</td>
+                    <td><span class="check-register-badge ${source === "Imported" ? "imported" : "vendor"}">${safeText(source)}</span></td>
+                    <td>
+                        <button class="btn btn-secondary" onclick="window.jcCheckRegisterEdit('${safeText(row.id)}')">
+                            <i class="fas fa-pen"></i>
+                        </button>
+                        <button class="btn btn-danger" onclick="window.jcCheckRegisterDelete('${safeText(row.id)}')">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join("");
+    }
+
+    function updateTypeChips() {
+        document.querySelectorAll("#checkRegisterTypeChips .check-register-type-chip").forEach(chip => {
+            chip.classList.toggle("active", chip.dataset.category === state.activeCategory);
+        });
+    }
+
+    function updateRecordDescription(rows) {
+        const desc = document.getElementById("checkRegisterRecordDescription");
+        if (!desc) return;
+
+        const label = state.activeKpi
+            ? state.activeKpi.label
+            : state.activeCategory
+                ? `${state.activeCategory} checks`
+                : "All Checks";
+
+        desc.innerHTML = `
+            <span>
+                <strong>Check Register Records:</strong>
+                ${safeText(label)} · ${rows.length.toLocaleString("en-US")} checks · ${safeText(money(totalAmount(rows)))}.
+                Click any KPI one time to show every check that belongs to that company, vendor type, service, or misc category.
+                Click another KPI to switch instantly without refreshing.
+            </span>
+            <button class="btn btn-secondary" onclick="window.jcCheckRegisterV27ClearAll()">
+                <i class="fas fa-list"></i> Show All
+            </button>
+        `;
+    }
+
+    function renderAll() {
+        if (!isOpen() || state.isRendering) return;
+
+        state.isRendering = true;
+        injectStyles();
+
+        const rowsBeforeKpi = baseFilteredRows();
+        const rowsAfterKpi = applyKpiRows(rowsBeforeKpi);
+
+        renderKpis(rowsBeforeKpi, rowsAfterKpi);
+        renderTrendChart(rowsAfterKpi);
+        renderInsightGrids(rowsAfterKpi);
+        renderTable(rowsAfterKpi);
+        updateTypeChips();
+
+        window.setTimeout(() => {
+            state.isRendering = false;
+        }, 80);
+    }
+
+    async function refresh(reason) {
+        if (typeof supabaseClient === "undefined" || !isOpen()) return;
+
+        try {
+            await Promise.all([loadRows(), loadKpis()]);
+            renderAll();
+
+            const status = document.getElementById("checkRegisterSaveStatus");
+            if (status && reason && reason !== "interval") {
+                status.textContent = `View updated silently · ${reason}`;
+                status.style.color = "#15803d";
+            }
+        } catch (error) {
+            console.error("V27 refresh failed:", error);
+        }
+    }
+
+    function scheduleRender() {
+        clearTimeout(state.renderTimer);
+        state.renderTimer = setTimeout(renderAll, 120);
+    }
+
+    function scheduleRefresh(reason) {
+        clearTimeout(state.refreshTimer);
+        state.refreshTimer = setTimeout(() => refresh(reason || "update"), 260);
+    }
+
+    function selectKpi(kind, value, label) {
+        if (kind === "all") {
+            state.activeKpi = null;
+            state.activeCategory = "";
+        } else if (kind === "category") {
+            state.activeCategory = value || "";
+            state.activeKpi = { kind, value, label: label || value };
+        } else {
+            state.activeKpi = { kind, value, label: label || value };
+        }
+
+        const categorySelect = document.getElementById("checkFilterCategory");
+        if (categorySelect && kind === "category") {
+            categorySelect.value = "";
+        }
+
+        renderAll();
+    }
+
+    function clearCategory() {
+        state.activeCategory = "";
+        if (state.activeKpi && state.activeKpi.kind === "category") {
+            state.activeKpi = null;
+        }
+        renderAll();
+    }
+
+    function clearAll() {
+        state.activeKpi = null;
+        state.activeCategory = "";
+        renderAll();
+    }
+
+    function gridClick(kind, value) {
+        if (kind === "category") {
+            selectKpi("category", value, value);
+            return;
+        }
+
+        if (kind === "vendor") {
+            selectKpi("vendor", value, value);
+        }
+    }
+
+    function monthClick(month) {
+        const field = document.getElementById("checkFilterMonth");
+        if (field) field.value = month;
+        renderAll();
+    }
+
+    async function editKpi(kpiId) {
+        const kpi = state.kpis.find(item => String(item.id) === String(kpiId));
+        if (!kpi) return;
+
+        const vendorName = prompt("Edit KPI vendor name:", kpi.vendor_name);
+        const cleanName = upperClean(vendorName);
+
+        if (!cleanName || cleanName === upperClean(kpi.vendor_name)) return;
+
+        try {
+            const { error } = await supabaseClient
+                .from(KPI_TABLE)
+                .update({
+                    vendor_name: cleanName,
+                    logo_url: kpi.logo_url || FALLBACK_LOGOS[cleanName] || null
+                })
+                .eq("id", kpiId);
+
+            if (error) throw error;
+
+            await refresh("kpi-name");
+        } catch (error) {
+            alert("Edit KPI failed: " + error.message);
+        }
+    }
+
+    async function hideKpi(kpiId) {
+        const kpi = state.kpis.find(item => String(item.id) === String(kpiId));
+        if (!kpi) return;
+
+        if (!confirm("Hide KPI vendor: " + kpi.vendor_name + "?")) return;
+
+        try {
+            const { error } = await supabaseClient
+                .from(KPI_TABLE)
+                .update({ is_active: false })
+                .eq("id", kpiId);
+
+            if (error) throw error;
+
+            await refresh("hide-kpi");
+        } catch (error) {
+            alert("Hide KPI failed: " + error.message);
+        }
+    }
+
+    async function uploadLogo(kpiId, file) {
+        if (!file) return;
+
+        const kpi = state.kpis.find(item => String(item.id) === String(kpiId));
+        if (!kpi) return;
+
+        const allowedTypes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+        if (!allowedTypes.includes(file.type)) {
+            alert("Please upload PNG, JPG, WEBP, or GIF.");
+            return;
+        }
+
+        if (file.size > 5242880) {
+            alert("Logo file is too large. Maximum size is 5 MB.");
+            return;
+        }
+
+        try {
+            const vendorKey = normalizeFileKey(kpi.vendor_name);
+            const extension = (file.name.split(".").pop() || "png").toLowerCase();
+            const storagePath = `${vendorKey}/${Date.now()}-${vendorKey}.${extension}`;
+
+            const uploadResult = await supabaseClient.storage
+                .from(LOGO_BUCKET)
+                .upload(storagePath, file, {
+                    cacheControl: "3600",
+                    upsert: true
+                });
+
+            if (uploadResult.error) throw uploadResult.error;
+
+            const publicResult = supabaseClient.storage
+                .from(LOGO_BUCKET)
+                .getPublicUrl(storagePath);
+
+            const publicUrl = publicResult.data.publicUrl;
+
+            const { error } = await supabaseClient
+                .from(KPI_TABLE)
+                .update({
+                    logo_url: publicUrl,
+                    logo_storage_path: storagePath
+                })
+                .eq("id", kpiId);
+
+            if (error) throw error;
+
+            await refresh("logo");
+        } catch (error) {
+            alert("Logo upload failed: " + error.message);
+        }
+    }
+
+    function dragStart(event, kpiId) {
+        event.stopPropagation();
+        state.isDraggingId = kpiId;
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", kpiId);
+
+        const card = event.target.closest("[data-v27-kpi-id]");
+        if (card) card.classList.add("v27-kpi-dragging");
+    }
+
+    function dragOver(event) {
+        event.preventDefault();
+        const card = event.currentTarget;
+        if (card) card.classList.add("v27-kpi-drop-target");
+    }
+
+    function dragLeave(event) {
+        const card = event.currentTarget;
+        if (card) card.classList.remove("v27-kpi-drop-target");
+    }
+
+    async function drop(event, targetId) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const draggedId = state.isDraggingId || event.dataTransfer.getData("text/plain");
+        clearDragClasses();
+
+        if (!draggedId || draggedId === targetId) return;
+
+        const draggedIndex = state.kpis.findIndex(kpi => String(kpi.id) === String(draggedId));
+        const targetIndex = state.kpis.findIndex(kpi => String(kpi.id) === String(targetId));
+
+        if (draggedIndex < 0 || targetIndex < 0) return;
+
+        const reordered = [...state.kpis];
+        const [dragged] = reordered.splice(draggedIndex, 1);
+        reordered.splice(targetIndex, 0, dragged);
+
+        state.kpis = reordered.map((kpi, index) => ({
+            ...kpi,
+            display_order: (index + 1) * 10
+        }));
+
+        renderAll();
+
+        try {
+            await Promise.all(state.kpis.map(kpi => {
+                return supabaseClient
+                    .from(KPI_TABLE)
+                    .update({ display_order: kpi.display_order })
+                    .eq("id", kpi.id);
+            }));
+        } catch (error) {
+            alert("KPI order save failed: " + error.message);
+            await refresh("drag-reload");
+        }
+    }
+
+    function clearDragClasses() {
+        document.querySelectorAll("[data-v27-kpi-id]").forEach(card => {
+            card.classList.remove("v27-kpi-dragging", "v27-kpi-drop-target");
+        });
+    }
+
+    function dragEnd() {
+        state.isDraggingId = null;
+        clearDragClasses();
+    }
+
+    function patchGlobals() {
+        if (window.__jcCheckRegisterV27Patched) return;
+        window.__jcCheckRegisterV27Patched = true;
+
+        const originalOpen = window.jcOpenCheckRegister;
+        const originalLoad = window.jcCheckRegisterLoad;
+        const originalSave = window.jcCheckRegisterSaveNow;
+        const originalDelete = window.jcCheckRegisterDelete;
+        const originalImport = window.jcCheckRegisterImportExistingChecks;
+        const originalApply = window.jcCheckRegisterApplyFilters;
+        const originalAddKpi = window.jcCheckRegisterAddKpiPrompt;
+
+        window.jcOpenCheckRegister = function () {
+            const result = typeof originalOpen === "function" ? originalOpen.apply(this, arguments) : null;
+            scheduleRefresh("open");
+            return result;
+        };
+
+        window.jcCheckRegisterLoad = async function () {
+            const result = typeof originalLoad === "function" ? await originalLoad.apply(this, arguments) : null;
+            scheduleRefresh("load");
+            return result;
+        };
+
+        window.jcCheckRegisterSaveNow = async function () {
+            const result = typeof originalSave === "function" ? await originalSave.apply(this, arguments) : null;
+            scheduleRefresh("save");
+            return result;
+        };
+
+        window.jcCheckRegisterDelete = async function () {
+            const result = typeof originalDelete === "function" ? await originalDelete.apply(this, arguments) : null;
+            scheduleRefresh("delete");
+            return result;
+        };
+
+        window.jcCheckRegisterImportExistingChecks = async function () {
+            const result = typeof originalImport === "function" ? await originalImport.apply(this, arguments) : null;
+            scheduleRefresh("import");
+            return result;
+        };
+
+        window.jcCheckRegisterApplyFilters = function () {
+            const result = typeof originalApply === "function" ? originalApply.apply(this, arguments) : null;
+            state.activeCategory = document.getElementById("checkFilterCategory")?.value || state.activeCategory || "";
+            scheduleRender();
+            return result;
+        };
+
+        window.jcCheckRegisterAddKpiPrompt = async function () {
+            const result = typeof originalAddKpi === "function" ? await originalAddKpi.apply(this, arguments) : null;
+            await refresh("add-kpi");
+            return result;
+        };
+
+        window.jcCheckRegisterSelectKpi = selectKpi;
+        window.jcCheckRegisterClearKpiSelection = clearAll;
+        window.jcCheckRegisterSelectCategoryChip = function (category) {
+            selectKpi(category ? "category" : "all", category || "", category || "All Checks");
+        };
+        window.jcCheckRegisterGridClick = gridClick;
+        window.jcCheckRegisterRefreshLiveView = refresh;
+
+        window.jcCheckRegisterV27SelectKpi = selectKpi;
+        window.jcCheckRegisterV27ClearCategory = clearCategory;
+        window.jcCheckRegisterV27ClearAll = clearAll;
+        window.jcCheckRegisterV27GridClick = gridClick;
+        window.jcCheckRegisterV27MonthClick = monthClick;
+        window.jcCheckRegisterV27EditKpi = editKpi;
+        window.jcCheckRegisterV27HideKpi = hideKpi;
+        window.jcCheckRegisterV27UploadLogo = uploadLogo;
+        window.jcCheckRegisterV27DragStart = dragStart;
+        window.jcCheckRegisterV27DragOver = dragOver;
+        window.jcCheckRegisterV27DragLeave = dragLeave;
+        window.jcCheckRegisterV27Drop = drop;
+        window.jcCheckRegisterV27DragEnd = dragEnd;
+    }
+
+    function watchKpiGrid() {
+        const grid = document.getElementById("checkRegisterKpis");
+        if (!grid || grid.dataset.v27Observed === "true") return;
+
+        grid.dataset.v27Observed = "true";
+
+        state.observer = new MutationObserver(() => {
+            if (state.isRendering) return;
+            scheduleRender();
+        });
+
+        state.observer.observe(grid, {
+            childList: true,
+            subtree: false
+        });
+    }
+
+    function boot() {
+        injectStyles();
+        patchGlobals();
+
+        const ready = setInterval(() => {
+            const section = document.getElementById("checkRegister");
+            const grid = document.getElementById("checkRegisterKpis");
+
+            if (!section || !grid) return;
+
+            clearInterval(ready);
+            watchKpiGrid();
+
+            const observer = new MutationObserver(() => {
+                if (isOpen()) scheduleRefresh("section");
+            });
+
+            observer.observe(section, { attributes: true, attributeFilter: ["class"] });
+
+            if (isOpen()) scheduleRefresh("boot");
+        }, 300);
+
+        document.addEventListener("visibilitychange", () => {
+            if (!document.hidden && isOpen()) scheduleRefresh("visibility");
+        });
+
+        window.addEventListener("focus", () => {
+            if (isOpen()) scheduleRefresh("focus");
+        });
+
+        setInterval(() => {
+            if (isOpen()) scheduleRefresh("interval");
+        }, 10000);
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", boot);
+    } else {
+        boot();
+    }
+})();
+</script>
+<!-- ========== END JC CHECK REGISTER V27 ========== -->
 
 </body>
 
