@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.05.v41-two-col-linechart';
+        var VERSION = '2026.05.05.v42-month-week-filter';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -51859,6 +51859,10 @@ document.addEventListener('change', function(event) {
                             <option value="">All Types</option>
                             ${optionsHtml(DEFAULT_CATEGORIES, "")}
                         </select>
+                        <input id="checkFilterMonth" type="month" class="cr4-filter-select" onchange="window.cr4FilterByMonth(this.value)" title="Filter by month">
+                        <select id="cr4WeekFilter" class="cr4-filter-select" onchange="window.cr4FilterByWeek(this.value)" title="Filter by week">
+                            <option value="">All Weeks</option>
+                        </select>
                         <select id="checkFilterQuarter" class="cr4-filter-select" style="display:none;" onchange="window.jcCheckRegisterApplyFilters()">
                             <option value="">All Quarters</option>
                             <option value="Q1">Q1</option>
@@ -51866,7 +51870,6 @@ document.addEventListener('change', function(event) {
                             <option value="Q3">Q3</option>
                             <option value="Q4">Q4</option>
                         </select>
-                        <input id="checkFilterMonth" type="month" class="cr4-filter-select" style="display:none;" onchange="window.jcCheckRegisterApplyFilters()">
                         <button class="cr4-tool-btn" onclick="window.cr4ClearFilters()">
                             <i class="fas fa-xmark"></i> Clear
                         </button>
@@ -63611,12 +63614,14 @@ document.addEventListener('change', function(event) {
     "use strict";
 
     // ── STATE ────────────────────────────────────────────────────
-    var _period      = "Q1";
+    var _period       = "Q1";
     var _activeVendor = null;  // null = all vendors
-    var _lineChart   = null;
-    var _renderTimer = null;
-    var _booted      = false;
-    var _patched     = false;
+    var _activeMonth  = "";    // "2026-04" format
+    var _activeWeek   = "";    // "2026-W14" format
+    var _lineChart    = null;
+    var _renderTimer  = null;
+    var _booted       = false;
+    var _patched      = false;
 
     // ── HELPERS ──────────────────────────────────────────────────
     function $(id) { return document.getElementById(id); }
@@ -63639,8 +63644,51 @@ document.addEventListener('change', function(event) {
         return getAllRows().filter(function(r) {
             if (!inPeriod(r, period)) return false;
             if (vendor && (r.vendor||"").trim() !== vendor) return false;
+            if (_activeMonth) {
+                var k = monthKey(r.check_date);
+                if (k !== _activeMonth) return false;
+            }
+            if (_activeWeek) {
+                var wk = getWeekKey(r.check_date);
+                if (wk !== _activeWeek) return false;
+            }
             return true;
         });
+    }
+
+    function getWeekKey(dateStr) {
+        var d = new Date(dateStr || "");
+        if (isNaN(d)) return null;
+        // ISO week number
+        var jan4 = new Date(d.getFullYear(), 0, 4);
+        var dayOfYear = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000);
+        var weekNum = Math.ceil((dayOfYear + jan4.getDay()) / 7);
+        return d.getFullYear() + "-W" + String(weekNum).padStart(2, "0");
+    }
+
+    function buildWeekOptions(rows) {
+        var sel = document.getElementById("cr4WeekFilter");
+        if (!sel) return;
+        var weeks = {};
+        rows.forEach(function(r) {
+            var wk = getWeekKey(r.check_date);
+            if (!wk) return;
+            if (!weeks[wk]) {
+                var d = new Date(r.check_date);
+                // Find Monday of this week
+                var day = d.getDay() || 7;
+                var mon = new Date(d); mon.setDate(d.getDate() - day + 1);
+                var sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+                var fmt = function(dt) { return (dt.getMonth()+1)+"/"+dt.getDate(); };
+                weeks[wk] = fmt(mon) + " – " + fmt(sun);
+            }
+        });
+        var sortedWeeks = Object.keys(weeks).sort();
+        var currentVal = sel.value;
+        sel.innerHTML = '<option value="">All Weeks</option>' +
+            sortedWeeks.map(function(wk) {
+                return '<option value="'+wk+'"'+(wk===currentVal?" selected":"")+'>'+wk+' ('+weeks[wk]+')</option>';
+            }).join("");
     }
 
     function monthKey(dateStr) {
@@ -63866,10 +63914,13 @@ document.addEventListener('change', function(event) {
 
     // ── FILTER TABLE ──────────────────────────────────────────────
     function applyTableFilter() {
-        // Set the hidden quarter filter and trigger existing filter system
         var qSel = $("checkFilterQuarter");
         if (qSel && _period !== "ALL") qSel.value = _period;
-        else if (qSel && _period === "ALL") qSel.value = "";
+        else if (qSel) qSel.value = "";
+
+        // Month filter: sync with hidden month input
+        var mSel = $("checkFilterMonth");
+        if (mSel) mSel.value = _activeMonth || "";
 
         var vendorSel = $("checkFilterVendor");
         var searchEl  = $("checkFilterSearch");
@@ -63890,9 +63941,12 @@ document.addEventListener('change', function(event) {
         else if (typeof window.jcCheckRegisterApplyFilters === "function")
             window.jcCheckRegisterApplyFilters();
 
-        // Update active filter label
+        // Active filter label — show most specific filter active
         var af = $("cr4ActiveFilter");
-        if (af) af.textContent = _activeVendor || (_period !== "ALL" ? _period : "");
+        if (af) {
+            var label = _activeVendor || _activeWeek || _activeMonth || (_period !== "ALL" ? _period : "");
+            af.textContent = label;
+        }
     }
 
     // ── MAIN RENDER ───────────────────────────────────────────────
@@ -63902,6 +63956,9 @@ document.addEventListener('change', function(event) {
         renderVendorGrid(periodRows);
         renderLineChart();
         applyTableFilter();
+        // Build week options from current period rows (unfiltered by month/week)
+        var allPeriodRows = getAllRows().filter(function(r){ return inPeriod(r, _period); });
+        buildWeekOptions(allPeriodRows);
     }
 
     function scheduleRender() {
@@ -63929,9 +63986,28 @@ document.addEventListener('change', function(event) {
         scheduleRender();
     };
 
+    window.cr4FilterByMonth = function(val) {
+        _activeMonth = val || "";
+        _activeWeek  = "";  // clear week when month changes
+        var wkSel = $("cr4WeekFilter"); if (wkSel) wkSel.value = "";
+        // Rebuild week options for this month
+        var rows = getAllRows().filter(function(r) {
+            return !val || monthKey(r.check_date) === val;
+        });
+        buildWeekOptions(rows);
+        scheduleRender();
+    };
+
+    window.cr4FilterByWeek = function(val) {
+        _activeWeek = val || "";
+        scheduleRender();
+    };
+
     window.cr4ClearFilters = function() {
         _activeVendor = null;
-        ["checkFilterSearch","checkFilterVendor","checkFilterCategory","checkFilterQuarter","checkFilterMonth"]
+        _activeMonth  = "";
+        _activeWeek   = "";
+        ["checkFilterSearch","checkFilterVendor","checkFilterCategory","checkFilterQuarter","checkFilterMonth","cr4WeekFilter"]
             .forEach(function(id){ var el=$(id); if(el) el.value=""; });
         scheduleRender();
     };
