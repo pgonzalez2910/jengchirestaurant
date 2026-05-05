@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.04.v17-void-duplicate-save-void-kpi';
+        var VERSION = '2026.05.04.v41-check-register-v19-open-existing-reports';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -55597,7 +55597,7 @@ document.addEventListener('change', function(event) {
 <!-- ========== END JC CHECK REGISTER ROBUST DUPLICATE WARNING V16 ========== -->
 
 
-<!-- ========== JC CHECK REGISTER VOID DUPLICATE SAVE + VOID KPI V17 ========== -->
+<!-- ========== JC CHECK REGISTER VOID DUPLICATE SAVE + VOID KPI V17 / EDIT SELF DUPLICATE FIX V18 ========== -->
 <script id="jc-check-register-void-duplicate-save-void-kpi-v17">
 (function () {
     "use strict";
@@ -55613,7 +55613,9 @@ document.addEventListener('change', function(event) {
         originalLoad: null,
         originalApplyFilters: null,
         originalNew: null,
+        originalEdit: null,
         lastDuplicate: null,
+        editingId: null,
         renderingVoidKpi: false
     };
 
@@ -55833,7 +55835,11 @@ document.addEventListener('change', function(event) {
             return null;
         }
 
-        const match = (data || []).find(row => normalizeCheck(row.check_number) === normalized);
+        const match = (data || []).find(row => {
+            if (state.editingId && row.id === state.editingId) return false;
+            return normalizeCheck(row.check_number) === normalized;
+        });
+
         return match ? { ...match, source: "check_register" } : null;
     }
 
@@ -56186,6 +56192,16 @@ document.addEventListener('change', function(event) {
         state.originalLoad = window.jcCheckRegisterLoad;
         state.originalApplyFilters = window.jcCheckRegisterApplyFilters;
         state.originalNew = window.jcCheckRegisterNew;
+        state.originalEdit = window.jcCheckRegisterEdit;
+
+        window.jcCheckRegisterEdit = function (id) {
+            state.editingId = id || null;
+            clearDuplicateBox();
+
+            return typeof state.originalEdit === "function"
+                ? state.originalEdit.apply(window, arguments)
+                : undefined;
+        };
 
         window.jcCheckRegisterSaveNow = async function () {
             const data = getFormData();
@@ -56254,6 +56270,7 @@ document.addEventListener('change', function(event) {
         };
 
         window.jcCheckRegisterNew = function () {
+            state.editingId = null;
             clearDuplicateBox();
 
             const result = typeof state.originalNew === "function"
@@ -56319,7 +56336,661 @@ document.addEventListener('change', function(event) {
     }
 })();
 </script>
-<!-- ========== END JC CHECK REGISTER VOID DUPLICATE SAVE + VOID KPI V17 ========== -->
+<!-- ========== END JC CHECK REGISTER VOID DUPLICATE SAVE + VOID KPI V17 / EDIT SELF DUPLICATE FIX V18 ========== -->
+
+
+<!-- ========== JC CHECK REGISTER REPORTS + OPEN EXISTING FIX V19 ========== -->
+<script id="jc-check-register-reports-open-existing-v19">
+(function () {
+    "use strict";
+
+    const CHECK_TABLE = "check_register";
+    const INVOICE_TABLE = "invoices";
+
+    const state = {
+        previousEdit: null,
+        previousLoad: null,
+        reportsReady: false
+    };
+
+    function safeText(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function normalize(value) {
+        return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+    }
+
+    function normalizeCheck(value) {
+        return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    }
+
+    function money(value) {
+        const number = Number.parseFloat(value || 0);
+        return "$" + number.toLocaleString("en-US", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function showStatus(message, tone) {
+        const status = document.getElementById("checkRegisterSaveStatus");
+        if (!status) return;
+
+        status.textContent = message;
+        status.style.color = tone === "error" ? "#b91c1c" : tone === "success" ? "#15803d" : "#64748b";
+    }
+
+    function setValue(id, value) {
+        const input = document.getElementById(id);
+        if (input) input.value = value ?? "";
+    }
+
+    function ensureOption(selectId, value) {
+        const select = document.getElementById(selectId);
+        const cleanValue = String(value || "").trim();
+
+        if (!select || !cleanValue) return;
+
+        const exists = Array.from(select.options).some(option => option.value === cleanValue);
+
+        if (!exists) {
+            const option = document.createElement("option");
+            option.value = cleanValue;
+            option.textContent = cleanValue;
+            select.insertBefore(option, select.querySelector('option[value="__ADD_NEW__"]') || null);
+        }
+
+        select.value = cleanValue;
+    }
+
+    function populateFormFromRow(row) {
+        if (!row) return;
+
+        const title = document.getElementById("checkRegisterFormTitle");
+        if (title) {
+            title.innerHTML = `<i class="fas fa-pen-to-square"></i> Editing Check ${safeText(row.check_number || "")}`;
+        }
+
+        ensureOption("checkFormVendor", row.vendor || "");
+        setValue("checkFormDate", row.check_date || new Date().toISOString().slice(0, 10));
+        setValue("checkFormNumber", row.check_number || "");
+        setValue("checkFormVendor", row.vendor || "");
+        setValue("checkFormCategory", row.category || "Vendor");
+        setValue("checkFormReason", row.reason || row.vendor || "");
+        setValue("checkFormAmount", Number(row.amount || 0).toFixed(2));
+        setValue("checkFormStatus", row.status || "Cleared");
+
+        const warning = document.getElementById("checkRegisterDuplicateBox");
+        if (warning) {
+            warning.className = "check-register-duplicate-box";
+            warning.innerHTML = "";
+        }
+
+        const input = document.getElementById("checkFormNumber");
+        if (input) {
+            input.classList.remove("v16-duplicate-input", "cross-table-duplicate");
+            input.focus();
+        }
+
+        const saveButton = document.getElementById("checkRegisterSaveButton");
+        if (saveButton) {
+            saveButton.disabled = false;
+            saveButton.style.opacity = "1";
+            saveButton.title = "";
+        }
+
+        showStatus("Existing check opened for editing", "success");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    async function fetchCheckById(id) {
+        const { data, error } = await supabaseClient
+            .from(CHECK_TABLE)
+            .select("id, check_date, check_number, vendor, category, reason, amount, status, notes, source_table, source_id")
+            .eq("id", id)
+            .single();
+
+        if (error) throw error;
+        return data;
+    }
+
+    async function openExistingCheck(id) {
+        if (!id) return null;
+
+        try {
+            showStatus("Opening existing check...", "neutral");
+
+            if (typeof state.previousLoad === "function") {
+                await state.previousLoad(true, true);
+            }
+
+            if (typeof state.previousEdit === "function") {
+                state.previousEdit(id);
+            }
+
+            const currentNumber = document.getElementById("checkFormNumber")?.value || "";
+
+            if (!currentNumber) {
+                const row = await fetchCheckById(id);
+                populateFormFromRow(row);
+            } else {
+                showStatus("Existing check opened for editing", "success");
+            }
+
+            return true;
+        } catch (error) {
+            console.error("Open existing check failed:", error);
+            alert("Open Existing failed: " + error.message);
+            showStatus("Open Existing failed", "error");
+            return false;
+        }
+    }
+
+    function injectStyles() {
+        if (document.getElementById("jc-check-register-report-style-v19")) return;
+
+        const style = document.createElement("style");
+        style.id = "jc-check-register-report-style-v19";
+        style.textContent = `
+            .check-register-report-panel {
+                display: none;
+                background: white;
+                border: 1px solid #dbe4ef;
+                border-radius: 16px;
+                box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+                margin: 1rem 0;
+                overflow: hidden;
+            }
+
+            .check-register-report-panel.active {
+                display: block;
+            }
+
+            .check-register-report-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 1rem;
+                padding: 1rem;
+                border-bottom: 1px solid #e2e8f0;
+                background: linear-gradient(180deg, #ffffff, #f8fafc);
+            }
+
+            .check-register-report-header h3 {
+                margin: 0;
+                color: #0f172a;
+                font-size: 0.95rem;
+                font-weight: 850;
+            }
+
+            .check-register-report-meta {
+                font-family: var(--font-mono);
+                font-size: 0.72rem;
+                color: #64748b;
+            }
+
+            .check-register-report-body {
+                overflow: auto;
+                max-height: 430px;
+            }
+
+            .check-register-report-table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 0.72rem;
+            }
+
+            .check-register-report-table th {
+                position: sticky;
+                top: 0;
+                z-index: 2;
+                background: #f1f5f9;
+                color: #475569;
+                text-align: left;
+                padding: 0.65rem 0.75rem;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                font-size: 0.62rem;
+                border-bottom: 1px solid #cbd5e1;
+            }
+
+            .check-register-report-table td {
+                padding: 0.65rem 0.75rem;
+                border-bottom: 1px solid #eef2f7;
+                color: #334155;
+                vertical-align: top;
+            }
+
+            .check-register-report-table tr:hover {
+                background: #f8fafc;
+            }
+
+            .check-register-source-pill {
+                display: inline-flex;
+                align-items: center;
+                border-radius: 999px;
+                padding: 0.15rem 0.5rem;
+                font-size: 0.6rem;
+                font-weight: 850;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                background: #dbeafe;
+                color: #1d4ed8;
+            }
+
+            .check-register-source-pill.invoice {
+                background: #fef3c7;
+                color: #92400e;
+            }
+
+            .check-register-source-pill.void {
+                background: #e5e7eb;
+                color: #374151;
+            }
+
+            .check-register-report-empty {
+                padding: 2rem;
+                text-align: center;
+                color: #94a3b8;
+                font-weight: 700;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function ensureReportsUi() {
+        if (state.reportsReady) return;
+        state.reportsReady = true;
+
+        const tableWrap = document.querySelector("#checkRegister .check-register-table-wrap");
+        if (tableWrap && !document.getElementById("checkRegisterReportsArea")) {
+            tableWrap.insertAdjacentHTML("beforebegin", `
+                <div id="checkRegisterReportsArea">
+                    <div id="checkRegisterDuplicateReportPanel" class="check-register-report-panel">
+                        <div class="check-register-report-header">
+                            <h3><i class="fas fa-copy"></i> Duplicate Check Report</h3>
+                            <div>
+                                <span id="checkRegisterDuplicateReportMeta" class="check-register-report-meta">Ready</span>
+                                <button class="btn btn-secondary" type="button" onclick="window.jcCheckRegisterLoadDuplicateReport(true)">
+                                    <i class="fas fa-rotate"></i> Refresh
+                                </button>
+                                <button class="btn btn-secondary" type="button" onclick="window.jcCheckRegisterToggleDuplicateReport(false)">
+                                    <i class="fas fa-xmark"></i> Close
+                                </button>
+                            </div>
+                        </div>
+                        <div id="checkRegisterDuplicateReportBody" class="check-register-report-body"></div>
+                    </div>
+
+                    <div id="checkRegisterVoidReportPanel" class="check-register-report-panel">
+                        <div class="check-register-report-header">
+                            <h3><i class="fas fa-ban"></i> Void Checks Report</h3>
+                            <div>
+                                <span id="checkRegisterVoidReportMeta" class="check-register-report-meta">Ready</span>
+                                <button class="btn btn-secondary" type="button" onclick="window.jcCheckRegisterLoadVoidReport(true)">
+                                    <i class="fas fa-rotate"></i> Refresh
+                                </button>
+                                <button class="btn btn-secondary" type="button" onclick="window.jcCheckRegisterToggleVoidReport(false)">
+                                    <i class="fas fa-xmark"></i> Close
+                                </button>
+                            </div>
+                        </div>
+                        <div id="checkRegisterVoidReportBody" class="check-register-report-body"></div>
+                    </div>
+                </div>
+            `);
+        }
+
+        const actions = document.querySelector("#checkRegister .check-register-actions");
+        if (actions && !document.getElementById("checkRegisterDuplicateReportBtn")) {
+            const duplicateButton = document.createElement("button");
+            duplicateButton.id = "checkRegisterDuplicateReportBtn";
+            duplicateButton.type = "button";
+            duplicateButton.className = "btn btn-secondary";
+            duplicateButton.innerHTML = `<i class="fas fa-copy"></i> Duplicate Report`;
+            duplicateButton.onclick = function () {
+                window.jcCheckRegisterToggleDuplicateReport(true);
+            };
+
+            const voidButton = document.createElement("button");
+            voidButton.id = "checkRegisterVoidReportBtn";
+            voidButton.type = "button";
+            voidButton.className = "btn btn-secondary";
+            voidButton.innerHTML = `<i class="fas fa-ban"></i> Void Report`;
+            voidButton.onclick = function () {
+                window.jcCheckRegisterToggleVoidReport(true);
+            };
+
+            actions.appendChild(duplicateButton);
+            actions.appendChild(voidButton);
+        }
+    }
+
+    async function loadCheckRows() {
+        const { data, error } = await supabaseClient
+            .from(CHECK_TABLE)
+            .select("id, check_date, check_number, vendor, category, reason, amount, status, source_table, source_id")
+            .order("check_date", { ascending: false });
+
+        if (error) throw error;
+        return data || [];
+    }
+
+    async function loadInvoiceRows() {
+        const { data, error } = await supabaseClient
+            .from(INVOICE_TABLE)
+            .select("id, vendor, invoice_date, created_at, invoice_number, check_number, total, amount, notes")
+            .not("check_number", "is", null)
+            .limit(15000);
+
+        if (error) throw error;
+        return (data || []).filter(row => normalizeCheck(row.check_number));
+    }
+
+    function renderDuplicateRows(groups) {
+        const body = document.getElementById("checkRegisterDuplicateReportBody");
+        const meta = document.getElementById("checkRegisterDuplicateReportMeta");
+        if (!body) return;
+
+        const rows = [];
+
+        groups.forEach(group => {
+            group.entries.forEach(entry => {
+                rows.push(`
+                    <tr>
+                        <td style="font-family:var(--font-mono);font-weight:850;">${safeText(group.checkNumber)}</td>
+                        <td><span class="check-register-source-pill ${entry.source === "Invoice Tracking" ? "invoice" : ""}">${safeText(entry.source)}</span></td>
+                        <td>${safeText(entry.vendor || "Unknown")}</td>
+                        <td>${safeText(entry.date || "—")}</td>
+                        <td>${safeText(entry.invoice || "—")}</td>
+                        <td style="text-align:right;font-family:var(--font-mono);font-weight:850;">${safeText(money(entry.amount))}</td>
+                        <td>${safeText(entry.status || "—")}</td>
+                        <td>
+                            ${entry.source === "Check Register" && entry.id
+                                ? `<button class="btn btn-secondary" type="button" onclick="window.jcCheckRegisterOpenExisting('${safeText(entry.id)}')">
+                                       <i class="fas fa-folder-open"></i> Open
+                                   </button>`
+                                : "—"
+                            }
+                        </td>
+                    </tr>
+                `);
+            });
+        });
+
+        if (meta) {
+            meta.textContent = `${groups.length.toLocaleString("en-US")} duplicate check numbers`;
+        }
+
+        if (!rows.length) {
+            body.innerHTML = `<div class="check-register-report-empty">No duplicate checks found.</div>`;
+            return;
+        }
+
+        body.innerHTML = `
+            <table class="check-register-report-table">
+                <thead>
+                    <tr>
+                        <th>Check #</th>
+                        <th>Source</th>
+                        <th>Vendor</th>
+                        <th>Date</th>
+                        <th>Invoice #</th>
+                        <th style="text-align:right;">Amount</th>
+                        <th>Status</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>${rows.join("")}</tbody>
+            </table>
+        `;
+    }
+
+    async function loadDuplicateReport() {
+        const body = document.getElementById("checkRegisterDuplicateReportBody");
+        const meta = document.getElementById("checkRegisterDuplicateReportMeta");
+
+        if (body) {
+            body.innerHTML = `<div class="check-register-report-empty"><i class="fas fa-circle-notch fa-spin"></i> Loading duplicate report...</div>`;
+        }
+        if (meta) meta.textContent = "Loading...";
+
+        try {
+            const [checks, invoices] = await Promise.all([
+                loadCheckRows(),
+                loadInvoiceRows()
+            ]);
+
+            const grouped = new Map();
+
+            function addEntry(checkNumber, entry) {
+                const key = normalizeCheck(checkNumber);
+                if (!key) return;
+
+                if (!grouped.has(key)) {
+                    grouped.set(key, {
+                        key,
+                        checkNumber: String(checkNumber || "").trim(),
+                        entries: []
+                    });
+                }
+
+                grouped.get(key).entries.push(entry);
+            }
+
+            checks.forEach(row => {
+                addEntry(row.check_number, {
+                    id: row.id,
+                    source: "Check Register",
+                    vendor: row.vendor,
+                    date: row.check_date,
+                    invoice: row.source_table === "invoices" ? row.source_id : "",
+                    amount: row.amount,
+                    status: row.status
+                });
+            });
+
+            invoices.forEach(row => {
+                addEntry(row.check_number, {
+                    id: row.id,
+                    source: "Invoice Tracking",
+                    vendor: row.vendor,
+                    date: row.invoice_date || String(row.created_at || "").slice(0, 10),
+                    invoice: row.invoice_number,
+                    amount: Number(row.total || row.amount || 0),
+                    status: "Invoice"
+                });
+            });
+
+            const duplicates = Array.from(grouped.values())
+                .filter(group => {
+                    if (group.entries.length > 1) return true;
+
+                    const sources = new Set(group.entries.map(entry => entry.source));
+                    return sources.size > 1;
+                })
+                .sort((a, b) => String(a.checkNumber).localeCompare(String(b.checkNumber), undefined, { numeric: true }));
+
+            renderDuplicateRows(duplicates);
+        } catch (error) {
+            console.error("Duplicate report failed:", error);
+            if (body) {
+                body.innerHTML = `<div class="check-register-report-empty" style="color:#991b1b;">Duplicate report failed: ${safeText(error.message)}</div>`;
+            }
+            if (meta) meta.textContent = "Failed";
+        }
+    }
+
+    function renderVoidRows(rows) {
+        const body = document.getElementById("checkRegisterVoidReportBody");
+        const meta = document.getElementById("checkRegisterVoidReportMeta");
+        if (!body) return;
+
+        const total = rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+
+        if (meta) {
+            meta.textContent = `${rows.length.toLocaleString("en-US")} void checks · ${money(total)}`;
+        }
+
+        if (!rows.length) {
+            body.innerHTML = `<div class="check-register-report-empty">No void checks found.</div>`;
+            return;
+        }
+
+        body.innerHTML = `
+            <table class="check-register-report-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Check #</th>
+                        <th>Vendor</th>
+                        <th>Reason</th>
+                        <th style="text-align:right;">Amount</th>
+                        <th>Source</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows.map(row => `
+                        <tr>
+                            <td>${safeText(row.check_date || "—")}</td>
+                            <td style="font-family:var(--font-mono);font-weight:850;">${safeText(row.check_number || "—")}</td>
+                            <td>${safeText(row.vendor || "Unknown")}</td>
+                            <td>${safeText(row.reason || "")}</td>
+                            <td style="text-align:right;font-family:var(--font-mono);font-weight:850;">${safeText(money(row.amount))}</td>
+                            <td><span class="check-register-source-pill void">${safeText(row.source_table || "manual")}</span></td>
+                            <td>
+                                <button class="btn btn-secondary" type="button" onclick="window.jcCheckRegisterOpenExisting('${safeText(row.id)}')">
+                                    <i class="fas fa-folder-open"></i> Open
+                                </button>
+                            </td>
+                        </tr>
+                    `).join("")}
+                </tbody>
+            </table>
+        `;
+    }
+
+    async function loadVoidReport() {
+        const body = document.getElementById("checkRegisterVoidReportBody");
+        const meta = document.getElementById("checkRegisterVoidReportMeta");
+
+        if (body) {
+            body.innerHTML = `<div class="check-register-report-empty"><i class="fas fa-circle-notch fa-spin"></i> Loading void checks...</div>`;
+        }
+        if (meta) meta.textContent = "Loading...";
+
+        try {
+            const rows = await loadCheckRows();
+            const voidRows = rows
+                .filter(row => normalize(row.status) === "void")
+                .sort((a, b) => String(b.check_date || "").localeCompare(String(a.check_date || "")));
+
+            renderVoidRows(voidRows);
+        } catch (error) {
+            console.error("Void report failed:", error);
+            if (body) {
+                body.innerHTML = `<div class="check-register-report-empty" style="color:#991b1b;">Void report failed: ${safeText(error.message)}</div>`;
+            }
+            if (meta) meta.textContent = "Failed";
+        }
+    }
+
+    function toggleDuplicateReport(show) {
+        ensureReportsUi();
+
+        const panel = document.getElementById("checkRegisterDuplicateReportPanel");
+        if (!panel) return;
+
+        panel.classList.toggle("active", Boolean(show));
+
+        if (show) {
+            const voidPanel = document.getElementById("checkRegisterVoidReportPanel");
+            if (voidPanel) voidPanel.classList.remove("active");
+
+            loadDuplicateReport();
+            panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+    }
+
+    function toggleVoidReport(show) {
+        ensureReportsUi();
+
+        const panel = document.getElementById("checkRegisterVoidReportPanel");
+        if (!panel) return;
+
+        panel.classList.toggle("active", Boolean(show));
+
+        if (show) {
+            const duplicatePanel = document.getElementById("checkRegisterDuplicateReportPanel");
+            if (duplicatePanel) duplicatePanel.classList.remove("active");
+
+            loadVoidReport();
+            panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+    }
+
+    function patchFunctions() {
+        if (window.__jcCheckRegisterReportsOpenExistingV19Patched) return;
+        window.__jcCheckRegisterReportsOpenExistingV19Patched = true;
+
+        state.previousEdit = window.jcCheckRegisterEdit;
+        state.previousLoad = window.jcCheckRegisterLoad;
+
+        window.jcCheckRegisterOpenExisting = openExistingCheck;
+
+        window.jcCheckRegisterEdit = function (id) {
+            return openExistingCheck(id);
+        };
+
+        window.jcCheckRegisterToggleDuplicateReport = toggleDuplicateReport;
+        window.jcCheckRegisterLoadDuplicateReport = loadDuplicateReport;
+        window.jcCheckRegisterToggleVoidReport = toggleVoidReport;
+        window.jcCheckRegisterLoadVoidReport = loadVoidReport;
+
+        const previousOpen = window.jcOpenCheckRegister;
+        window.jcOpenCheckRegister = function () {
+            const result = typeof previousOpen === "function"
+                ? previousOpen.apply(window, arguments)
+                : undefined;
+
+            setTimeout(function () {
+                ensureReportsUi();
+            }, 500);
+
+            return result;
+        };
+    }
+
+    function boot() {
+        injectStyles();
+        patchFunctions();
+
+        const observer = new MutationObserver(function () {
+            ensureReportsUi();
+        });
+
+        if (document.body) {
+            observer.observe(document.body, { childList: true, subtree: true });
+        }
+
+        setTimeout(ensureReportsUi, 700);
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", boot);
+    } else {
+        boot();
+    }
+})();
+</script>
+<!-- ========== END JC CHECK REGISTER REPORTS + OPEN EXISTING FIX V19 ========== -->
 
 </body>
 
