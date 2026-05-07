@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.07.v90-rony-placeorder-global-one-grid';
+        var VERSION = '2026.05.07.v100-rony-placeorder-global-one-grid';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -53903,7 +53903,7 @@ document.addEventListener('change', function(event) {
 
 
 <!-- ========== JC ENTERPRISE CHECK REGISTER PERMANENT KPI + LOGO MANAGER V9 ========== -->
-<script id="jc-check-register-kpi-vendor-logo-manager-v9">
+<script id="jc-check-register-kpi-vendor-logo-manager-v10">
 (function () {
     "use strict";
 
@@ -53982,10 +53982,10 @@ document.addEventListener('change', function(event) {
     }
 
     function injectStyles() {
-        if (document.getElementById("jc-check-register-kpi-logo-style-v9")) return;
+        if (document.getElementById("jc-check-register-kpi-logo-style-v10")) return;
 
         const style = document.createElement("style");
-        style.id = "jc-check-register-kpi-logo-style-v9";
+        style.id = "jc-check-register-kpi-logo-style-v10";
         style.textContent = `
             .check-register-kpi.logo-enabled {
                 min-height: 188px;
@@ -62465,7 +62465,7 @@ document.addEventListener('change', function(event) {
 </script>
 
 <!-- PATCH: RONY PLACEORDER ONLY - fixed placement, no nested script -->
-<script id="jc-placeorder-rony-only-final-v8">
+<script id="jc-placeorder-rony-only-final-v10">
 (function () {
     "use strict";
 
@@ -62478,6 +62478,8 @@ document.addEventListener('change', function(event) {
     let refreshTimer = 0;
     let savingPositions = false;
     let hydratingImages = false;
+    let lastPriceInventorySignature = "";
+    let manualSortGuardUntil = 0;
 
     function db() {
         if (typeof getSupabaseClient === "function") {
@@ -62622,16 +62624,6 @@ document.addEventListener('change', function(event) {
     async function loadRonyPositions() {
         positionMap.clear();
 
-        const localPositions = getStoredLocalPositions();
-        Object.keys(localPositions).forEach(key => {
-            const position = Number(localPositions[key]);
-            const productName = key.includes("|||") ? key.split("|||").slice(1).join("|||") : key;
-
-            if (Number.isFinite(position) && position > 0) {
-                setPosition(productName, RONY_GROUP, position);
-            }
-        });
-
         try {
             const { data, error } = await db()
                 .from(POSITION_TABLE)
@@ -62644,11 +62636,22 @@ document.addEventListener('change', function(event) {
             (data || []).forEach(row => {
                 setPosition(row.product_name, RONY_GROUP, Number(row.position || 0));
             });
-
-            saveLocalPositions();
         } catch (error) {
-            console.warn("[RONY PO SORT] Using local global positions only:", error.message);
+            console.warn("[RONY PO SORT] Supabase positions unavailable; using local positions:", error.message);
         }
+
+        const localPositions = getStoredLocalPositions();
+
+        Object.keys(localPositions).forEach(key => {
+            const position = Number(localPositions[key]);
+            const productName = key.includes("|||") ? key.split("|||").slice(1).join("|||") : key;
+
+            if (Number.isFinite(position) && position > 0) {
+                setPosition(productName, RONY_GROUP, position);
+            }
+        });
+
+        saveLocalPositions();
     }
 
     function getGlobalItems() {
@@ -62684,6 +62687,7 @@ document.addEventListener('change', function(event) {
 
     async function persistSequentialPositions(items) {
         saveLocalPositions();
+        localStorage.setItem("jc_rony_placeorder_positions_saved_at", new Date().toISOString());
 
         const rows = items.map((item, index) => ({
             product_name: item.productName,
@@ -62701,7 +62705,7 @@ document.addEventListener('change', function(event) {
 
             if (error) throw error;
         } catch (error) {
-            console.warn("[RONY PO SORT] Global position save failed:", error.message);
+            console.warn("[RONY PO SORT] Supabase save failed; local permanent order was kept:", error.message);
         }
     }
 
@@ -62788,7 +62792,7 @@ document.addEventListener('change', function(event) {
     }
 
     async function normalizeAndSaveDefaultNumbers() {
-        if (savingPositions) return;
+        if (savingPositions || Date.now() < manualSortGuardUntil) return;
 
         const items = getGlobalItems();
         if (!items.length) return;
@@ -62820,6 +62824,8 @@ document.addEventListener('change', function(event) {
     }
 
     async function saveRonyPlaceOrderPosition(input) {
+        if (input.dataset.saveBusy === "1") return;
+
         const productName = input.dataset.product;
         const requestedPosition = Number.parseInt(input.value, 10);
 
@@ -62838,35 +62844,43 @@ document.addEventListener('change', function(event) {
         const targetIndex = Math.min(Math.max(requestedPosition - 1, 0), items.length);
         items.splice(targetIndex, 0, movedItem);
 
+        manualSortGuardUntil = Date.now() + 5000;
+        savingPositions = true;
+        input.dataset.saveBusy = "1";
+        input.style.borderColor = "#d97706";
+
         renumberSequentially(items);
+        saveLocalPositions();
         sortRonyCards();
         updateSortInputs();
-
-        input.style.borderColor = "#d97706";
-        savingPositions = true;
 
         try {
             await persistSequentialPositions(items);
             input.style.borderColor = "#16a34a";
 
             if (typeof showAlert === "function") {
-                showAlert(`✅ Rony PlaceOrder saved. ${productName} is now #${targetIndex + 1}.`, "success");
+                showAlert(`✅ Saved. ${productName} is now #${targetIndex + 1}; all Rony products were renumbered.`, "success");
             }
         } catch (error) {
             input.style.borderColor = "#dc2626";
-            if (typeof showAlert === "function") showAlert("Error saving sort #: " + error.message, "error");
+            if (typeof showAlert === "function") {
+                showAlert("Saved locally, but Supabase save failed: " + error.message, "error");
+            }
         } finally {
             savingPositions = false;
+            input.dataset.saveBusy = "0";
+            manualSortGuardUntil = Date.now() + 3000;
         }
     }
 
     function addRonySortNumbers() {
         getRonyCards().forEach(card => {
             const productName = getProductName(card);
-            const groupName = getCardGroup(card);
+            const groupName = RONY_GROUP;
             if (!productName) return;
 
             card.style.position = "relative";
+            card.style.paddingTop = "44px";
             card.dataset.ronyPlaceorderPosition = String(getPosition(productName, groupName));
 
             let box = card.querySelector(".jc-rony-sort-box");
@@ -62876,8 +62890,8 @@ document.addEventListener('change', function(event) {
                 box.className = "jc-rony-sort-box";
                 box.style.cssText = [
                     "position:absolute",
-                    "top:6px",
-                    "left:6px",
+                    "top:8px",
+                    "left:8px",
                     "z-index:100",
                     "display:flex",
                     "align-items:center",
@@ -62892,7 +62906,7 @@ document.addEventListener('change', function(event) {
 
                 box.innerHTML = [
                     '<span style="font-weight:900;font-size:12px;">#</span>',
-                    '<input class="jc-rony-sort-input" type="number" min="1" step="1" inputmode="numeric" autocomplete="off" style="width:48px;border:2px solid #94a3b8;border-radius:5px;padding:2px 4px;font-size:12px;font-weight:900;text-align:center;background:white;color:#111827;">'
+                    '<input class="jc-rony-sort-input" type="number" min="1" step="1" inputmode="numeric" autocomplete="off" style="width:52px;border:2px solid #94a3b8;border-radius:5px;padding:3px 5px;font-size:13px;font-weight:900;text-align:center;background:white;color:#111827;">'
                 ].join("");
 
                 box.addEventListener("pointerdown", event => event.stopPropagation());
@@ -62911,7 +62925,7 @@ document.addEventListener('change', function(event) {
 
                     if (event.key === "Enter") {
                         event.preventDefault();
-                        this.blur();
+                        window.saveRonyPlaceOrderPosition(this);
                     }
 
                     if (event.key === "Escape") {
@@ -62923,6 +62937,10 @@ document.addEventListener('change', function(event) {
 
                 input.addEventListener("input", function (event) {
                     event.stopPropagation();
+                    clearTimeout(this._ronySaveTimer);
+                    this._ronySaveTimer = setTimeout(() => {
+                        window.saveRonyPlaceOrderPosition(this);
+                    }, 700);
                 });
 
                 input.addEventListener("change", function () {
@@ -62930,6 +62948,7 @@ document.addEventListener('change', function(event) {
                 });
 
                 input.addEventListener("blur", function () {
+                    clearTimeout(this._ronySaveTimer);
                     if (this.value !== this.dataset.beforeEdit) {
                         window.saveRonyPlaceOrderPosition(this);
                     }
@@ -62940,16 +62959,16 @@ document.addEventListener('change', function(event) {
 
             const input = box.querySelector(".jc-rony-sort-input");
             input.dataset.product = productName;
-            input.dataset.group = groupName;
+            input.dataset.group = RONY_GROUP;
 
             if (!input.matches(":focus")) {
-                const position = getPosition(productName, groupName);
+                const position = getPosition(productName, RONY_GROUP);
                 input.value = position === 999999 ? "" : String(position);
             }
         });
     }
 
-    function restoreBlankRonyVendorSelections() {
+        function restoreBlankRonyVendorSelections() {
         getRonyCards().forEach(card => {
             const productName = getProductName(card);
             const select = card.querySelector('select[id^="vendor-"], select[data-vendor-select], select');
@@ -62983,11 +63002,15 @@ document.addEventListener('change', function(event) {
         });
     }
 
-    async function renderRonyPriceInventory() {
+    async function renderRonyPriceInventory(forceRefresh = false) {
         addRonyPriceInventoryShells();
 
         const productNames = [...new Set(getRonyCards().map(getProductName).filter(Boolean))];
         if (!productNames.length) return;
+
+        const signature = productNames.join("|");
+        if (!forceRefresh && signature === lastPriceInventorySignature) return;
+        lastPriceInventorySignature = signature;
 
         try {
             const { data, error } = await db()
@@ -63390,31 +63413,50 @@ document.addEventListener('change', function(event) {
         }
     }
 
+    let fullRefreshPromise = null;
+    let lastPositionLoadAt = 0;
+
     async function refreshRonyPlaceOrderPatch() {
-        await loadRonyPositions();
-        addRonySortNumbers();
-        await normalizeAndSaveDefaultNumbers();
-        restoreBlankRonyVendorSelections();
-        verifyRonyPlaceOrderImages();
-        await renderRonyPriceInventory();
-    }
+        if (fullRefreshPromise) return fullRefreshPromise;
 
-    function scheduleLightRefresh() {
-        clearTimeout(refreshTimer);
-        refreshTimer = setTimeout(() => {
-            if (!getRonySection()) return;
+        fullRefreshPromise = (async () => {
+            const now = Date.now();
 
-            const focusedSortInput = document.querySelector(".jc-rony-sort-input:focus");
+            if (now - lastPositionLoadAt > 30000) {
+                await loadRonyPositions();
+                lastPositionLoadAt = now;
+            }
 
             addRonySortNumbers();
 
-            if (!focusedSortInput) {
-                normalizeAndSaveDefaultNumbers();
+            if (!localStorage.getItem(LOCAL_POSITION_KEY)) {
+                await normalizeAndSaveDefaultNumbers();
+            } else {
+                sortRonyCards();
+                updateSortInputs();
             }
 
+            restoreBlankRonyVendorSelections();
             verifyRonyPlaceOrderImages();
-            renderRonyPriceInventory();
-        }, 300);
+            await renderRonyPriceInventory(false);
+        })();
+
+        try {
+            await fullRefreshPromise;
+        } finally {
+            fullRefreshPromise = null;
+        }
+    }
+
+        function scheduleLightRefresh() {
+        clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(() => {
+            if (!getRonySection() || savingPositions || Date.now() < manualSortGuardUntil) return;
+
+            addRonySortNumbers();
+            updateSortInputs();
+            verifyRonyPlaceOrderImages();
+        }, 500);
     }
 
     function patchExistingPlaceOrderFunctions() {
@@ -63426,7 +63468,7 @@ document.addEventListener('change', function(event) {
 
                 setTimeout(() => {
                     restoreBlankRonyVendorSelections();
-                    renderRonyPriceInventory();
+                    renderRonyPriceInventory(false);
                 }, 250);
 
                 return result;
@@ -63511,7 +63553,7 @@ document.addEventListener('change', function(event) {
 
         observer.observe(document.body, { childList: true, subtree: true });
 
-        console.log("[RONY PO SORT] v5 loaded: sequential editable permanent numbers enabled.");
+        console.log("[RONY PO SORT] v10 loaded: stable manual order, no overlap, single-load enabled.");
     }
 
     if (document.readyState === "loading") {
