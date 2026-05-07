@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.06.v67-order-refresh-images-safe';
+        var VERSION = '2026.05.06.v70-quarter-ranges-ach-dashboard';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -51163,6 +51163,35 @@ document.addEventListener('change', function(event) {
         return normalize(value).replace(/\s+/g, "");
     }
 
+    function isAchCheckValue(value) {
+        const key = normalize(value);
+        return key === "ach" || key.includes("ach payment") || key.startsWith("ach-");
+    }
+
+    function cleanCheckKeyPart(value, fallback) {
+        return String(value || fallback || "invoice")
+            .trim()
+            .toUpperCase()
+            .replace(/[^A-Z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .slice(0, 36) || String(fallback || "INVOICE").toUpperCase();
+    }
+
+    function achInvoiceCheckNumber(invoice) {
+        const datePart = cleanCheckKeyPart(invoiceDate(invoice).replace(/-/g, ""), "DATE");
+        const vendorPart = cleanCheckKeyPart(invoice.vendor, "VENDOR").slice(0, 18);
+        const invoicePart = cleanCheckKeyPart(invoice.invoice_number || invoice.id, "INVOICE");
+        return `ACH-${datePart}-${vendorPart}-${invoicePart}`;
+    }
+
+    function checkDisplayLabel(row) {
+        if (isAchCheckValue(row?.check_number) || normalize(row?.status) === "ach") {
+            return "ACH Payment";
+        }
+
+        return row?.check_number || "—";
+    }
+
     function todayValue() {
         return new Date().toISOString().slice(0, 10);
     }
@@ -51743,8 +51772,8 @@ document.addEventListener('change', function(event) {
                         </div>
 
                         <div class="check-register-field">
-                            <label>Check #</label>
-                            <input id="checkFormNumber" class="check-register-input" placeholder="Example: 10452" oninput="window.jcCheckRegisterCheckDuplicate(); window.jcCheckRegisterAutoSave();">
+                            <label>Check # / ACH</label>
+                            <input id="checkFormNumber" class="check-register-input" placeholder="Example: 10452 or ACH" oninput="window.jcCheckRegisterCheckDuplicate(); window.jcCheckRegisterAutoSave();">
                         </div>
 
                         <div class="check-register-field">
@@ -51800,7 +51829,7 @@ document.addEventListener('change', function(event) {
                 <div class="check-register-filter-panel">
                     <div class="check-register-filter">
                         <label>Search</label>
-                        <input id="checkFilterSearch" class="check-register-input" placeholder="Search vendor, check #, reason..." oninput="window.jcCheckRegisterApplyFilters()">
+                        <input id="checkFilterSearch" class="check-register-input" placeholder="Search vendor, payment, reason..." oninput="window.jcCheckRegisterApplyFilters()">
                     </div>
 
                     <div class="check-register-filter">
@@ -51874,7 +51903,7 @@ document.addEventListener('change', function(event) {
                         <thead>
                             <tr>
                                 <th>Date</th>
-                                <th>Check #</th>
+                                <th>Payment</th>
                                 <th>Status</th>
                                 <th>Type</th>
                                 <th>Vendor</th>
@@ -51962,7 +51991,7 @@ document.addEventListener('change', function(event) {
 
     function findDuplicateCheck(checkNumber) {
         const key = normalizeCheck(checkNumber);
-        if (!key) return null;
+        if (!key || isAchCheckValue(checkNumber)) return null;
 
         return state.rows.find(row => {
             if (state.editingId && row.id === state.editingId) return false;
@@ -51994,7 +52023,7 @@ document.addEventListener('change', function(event) {
         box.innerHTML = `
             <div>
                 <i class="fas fa-triangle-exclamation"></i>
-                Check # <strong>${safeText(state.duplicate.check_number)}</strong> already exists:
+                Payment <strong>${safeText(checkDisplayLabel(state.duplicate))}</strong> already exists:
                 ${safeText(state.duplicate.vendor)} · ${safeText(state.duplicate.check_date || "")} · ${safeText(money(state.duplicate.amount))}
             </div>
             <button class="btn btn-secondary" onclick="window.jcCheckRegisterEdit('${safeText(state.duplicate.id)}')">
@@ -52014,7 +52043,7 @@ document.addEventListener('change', function(event) {
         const localDuplicate = findDuplicateCheck(checkNumber);
         if (localDuplicate) return localDuplicate;
 
-        if (!checkNumber || !window.supabaseClient) return null;
+        if (!checkNumber || !window.supabaseClient || isAchCheckValue(checkNumber)) return null;
 
         const normalized = normalizeCheck(checkNumber);
 
@@ -52178,7 +52207,7 @@ document.addEventListener('change', function(event) {
         state.duplicate = null;
 
         const title = document.getElementById("checkRegisterFormTitle");
-        if (title) title.innerHTML = `<i class="fas fa-pen-to-square"></i> Editing Check ${safeText(row.check_number)}`;
+        if (title) title.innerHTML = `<i class="fas fa-pen-to-square"></i> Editing ${safeText(checkDisplayLabel(row))}`;
 
         addVendorOption(row.vendor);
 
@@ -52198,7 +52227,7 @@ document.addEventListener('change', function(event) {
 
     async function deleteCheck(id) {
         const row = state.rows.find(item => item.id === id);
-        const label = row ? `${row.check_number} - ${row.vendor}` : "this check";
+        const label = row ? `${checkDisplayLabel(row)} - ${row.vendor}` : "this payment";
 
         if (!confirm(`Delete ${label}?`)) return;
 
@@ -52459,7 +52488,7 @@ document.addEventListener('change', function(event) {
             return `
                 <tr>
                     <td>${safeText(row.check_date || "—")}</td>
-                    <td style="font-family:var(--font-mono);font-weight:850;color:#0f172a;">${safeText(row.check_number || "—")}</td>
+                    <td style="font-family:var(--font-mono);font-weight:850;color:#0f172a;">${safeText(checkDisplayLabel(row))}</td>
                     <td><span class="check-register-badge ${safeText(normalize(row.status || "Cleared"))}">${safeText(row.status || "Cleared")}</span></td>
                     <td><span class="check-register-badge ${safeText(normalize(row.category || "Vendor"))}">${safeText(row.category || "Vendor")}</span></td>
                     <td style="font-weight:850;">${safeText(row.vendor || "Unknown")}</td>
@@ -52490,6 +52519,7 @@ document.addEventListener('change', function(event) {
             const haystack = normalize([
                 row.check_date,
                 row.check_number,
+                checkDisplayLabel(row),
                 row.vendor,
                 row.category,
                 row.reason,
@@ -52565,7 +52595,7 @@ document.addEventListener('change', function(event) {
 
     async function importExistingChecks() {
         const status = document.getElementById("checkRegisterImportStatus");
-        if (status) status.textContent = "Scanning invoices for existing check numbers...";
+        if (status) status.textContent = "Scanning invoices for existing checks and ACH payments...";
 
         try {
             await fetchCheckRows();
@@ -52589,7 +52619,11 @@ document.addEventListener('change', function(event) {
             (data || [])
                 .filter(invoice => isRealCheckNumber(invoice.check_number))
                 .forEach(invoice => {
-                    const normalizedCheck = normalizeCheck(invoice.check_number);
+                    const isAchPayment = isAchCheckValue(invoice.check_number);
+                    const checkNumber = isAchPayment
+                        ? achInvoiceCheckNumber(invoice)
+                        : String(invoice.check_number || "").trim();
+                    const normalizedCheck = normalizeCheck(checkNumber);
 
                     if (!normalizedCheck || existingChecks.has(normalizedCheck)) {
                         return;
@@ -52602,12 +52636,12 @@ document.addEventListener('change', function(event) {
                     if (!groupedByCheck.has(normalizedCheck)) {
                         groupedByCheck.set(normalizedCheck, {
                             check_date: invoiceDate(invoice),
-                            check_number: String(invoice.check_number || "").trim(),
+                            check_number: checkNumber,
                             vendor,
                             category: inferCategoryFromInvoice(invoice),
                             reason: vendor,
                             amount: 0,
-                            status: normalize(invoice.check_number).includes("ach") ? "ACH" : "Cleared",
+                            status: isAchPayment ? "ACH" : "Cleared",
                             notes: "",
                             source_table: IMPORT_TABLE,
                             source_id: String(invoice.id || ""),
@@ -52651,8 +52685,8 @@ document.addEventListener('change', function(event) {
             });
 
             if (!importRows.length) {
-                if (status) status.textContent = "No new checks to import. Existing check numbers are already protected.";
-                showMessage("No new checks to import.", "success");
+                if (status) status.textContent = "No new checks or ACH payments to import. Existing payment references are already protected.";
+                showMessage("No new checks or ACH payments to import.", "success");
                 return 0;
             }
 
@@ -52679,11 +52713,11 @@ document.addEventListener('change', function(event) {
             }
 
             if (status) {
-                status.textContent = `Imported ${importedCount} checks. Skipped ${duplicateCount} duplicate check numbers.`;
+                status.textContent = `Imported ${importedCount} payments. Skipped ${duplicateCount} duplicate payment references.`;
             }
 
             await loadChecks(true, true);
-            showMessage(`Imported ${importedCount} checks. Skipped ${duplicateCount} duplicates.`, "success");
+            showMessage(`Imported ${importedCount} payments. Skipped ${duplicateCount} duplicates.`, "success");
 
             return importedCount;
         } catch (error) {
@@ -59621,7 +59655,7 @@ document.addEventListener('change', function(event) {
 (function () {
     "use strict";
 
-    var VERSION_KEY = "2026.05.06.v64-main-financial-fast-nav-stable";
+    var VERSION_KEY = "2026.05.07.v69-ach-dashboard-monthly-fix";
     var FINANCIAL_SECTION = "checkRegister";
     var FILTER_KEY = "jc_option_e_v45_filters";
     var chartInstance = null;
@@ -59704,7 +59738,144 @@ document.addEventListener('change', function(event) {
         return Number(row.amount || row.total || 0) || 0;
     }
 
+    function isAchValue(value) {
+        var key = normalize(value);
+        return key === "ACH" || key.indexOf("ACH PAYMENT") >= 0 || key.indexOf("ACH-") === 0;
+    }
+
+    function isAchVendorName(vendor) {
+        var key = normalize(vendor);
+        return key.indexOf("AUTOCHLOR") >= 0 || key === "SYSCO" || key.indexOf("SYSCO") >= 0;
+    }
+
+    function invoiceAmount(row) {
+        return Number(row.total || row.amount || 0) || 0;
+    }
+
+    function invoiceDate(row) {
+        return safeDate(row.invoice_date || row.date || row.created_at);
+    }
+
+    function cleanRefPart(value, fallback) {
+        return String(value || fallback || "INVOICE")
+            .trim()
+            .toUpperCase()
+            .replace(/[^A-Z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .slice(0, 36) || String(fallback || "INVOICE").toUpperCase();
+    }
+
+    function invoiceAchReference(invoice) {
+        return [
+            "ACH",
+            cleanRefPart(invoiceDate(invoice).replace(/-/g, ""), "DATE"),
+            cleanRefPart(invoice.vendor, "VENDOR").slice(0, 18),
+            cleanRefPart(invoice.invoice_number || invoice.id, "INVOICE")
+        ].join("-");
+    }
+
+    function isAchInvoice(invoice) {
+        return isAchValue(invoice.check_number) || isAchVendorName(invoice.vendor);
+    }
+
+    function invoiceToFinancialRow(invoice) {
+        var vendor = String(invoice.vendor || "UNKNOWN").trim().toUpperCase();
+        var ref = invoiceAchReference(invoice);
+
+        return {
+            id: "invoice-ach-" + String(invoice.id || ref),
+            check_date: invoiceDate(invoice),
+            check_number: ref,
+            payment_reference: ref,
+            payment_method: "ACH",
+            vendor: vendor,
+            category: "Vendor",
+            reason: vendor,
+            amount: invoiceAmount(invoice),
+            status: "ACH",
+            notes: invoice.invoice_number ? "ACH invoice " + invoice.invoice_number : "ACH invoice",
+            source_table: "invoices",
+            source_id: String(invoice.id || ""),
+            __invoiceAch: true
+        };
+    }
+
+    function isAggregatedAchRegisterRow(row, invoiceVendors) {
+        if (!isAchValue(row.check_number) && !isAchValue(row.status) && !isAchValue(row.payment_method)) {
+            return false;
+        }
+
+        var vendorKey = normalize(row.vendor || row.vendor_name);
+        if (!invoiceVendors[vendorKey]) {
+            return false;
+        }
+
+        var checkKey = normalize(row.check_number);
+        return checkKey === "ACH" || checkKey === "ACH PAYMENT" || !String(row.source_id || "").trim();
+    }
+
+    function mergeAchInvoicesWithRegisterRows(registerRows, invoiceRows) {
+        var achInvoices = (invoiceRows || []).filter(function (invoice) {
+            var date = invoiceDate(invoice);
+            var range = getDateRange();
+            return date >= range.start && date <= range.end && isAchInvoice(invoice) && invoiceAmount(invoice) > 0;
+        });
+
+        if (!achInvoices.length) {
+            return registerRows || [];
+        }
+
+        var invoiceVendors = Object.create(null);
+        achInvoices.forEach(function (invoice) {
+            invoiceVendors[normalize(invoice.vendor)] = true;
+        });
+
+        var existingInvoiceSources = Object.create(null);
+        (registerRows || []).forEach(function (row) {
+            if (row.source_table === "invoices" && row.source_id) {
+                existingInvoiceSources[String(row.source_id)] = true;
+            }
+        });
+
+        var cleanedRegisterRows = (registerRows || []).filter(function (row) {
+            return !isAggregatedAchRegisterRow(row, invoiceVendors);
+        });
+
+        var syntheticRows = achInvoices
+            .filter(function (invoice) {
+                return !existingInvoiceSources[String(invoice.id || "")];
+            })
+            .map(invoiceToFinancialRow);
+
+        return cleanedRegisterRows.concat(syntheticRows);
+    }
+
+    function paymentRefLabel(row) {
+        if (isAchValue(row.check_number) || isAchValue(row.status) || isAchValue(row.payment_method)) {
+            return "ACH Payment";
+        }
+
+        return row.check_number || row.payment_reference || "—";
+    }
+
+    function vendorCountLabel(item) {
+        return item.count + (item.count === 1 ? " payment" : " payments");
+    }
+
+    var QUARTER_RANGES_V70 = {
+        Q1: { start: "2026-01-01", end: "2026-03-31", months: ["2026-01", "2026-02", "2026-03"], label: "Q1", note: "Jan • Feb • Mar" },
+        Q2: { start: "2026-04-01", end: "2026-06-30", months: ["2026-04", "2026-05", "2026-06"], label: "Q2", note: "Apr • May • Jun" },
+        Q3: { start: "2026-07-01", end: "2026-09-30", months: ["2026-07", "2026-08", "2026-09"], label: "Q3", note: "Jul • Aug • Sep" },
+        Q4: { start: "2026-10-01", end: "2026-12-31", months: ["2026-10", "2026-11", "2026-12"], label: "Q4", note: "Oct • Nov • Dec" }
+    };
+
+    function quarterRange(quarter) {
+        return QUARTER_RANGES_V70[quarter] || QUARTER_RANGES_V70.Q1;
+    }
+
     function defaultFilters() {
+        var range = quarterRange("Q1");
+
         return {
             quarter: "Q1",
             year: "2026",
@@ -59712,8 +59883,8 @@ document.addEventListener('change', function(event) {
             week: "",
             vendor: "",
             category: "",
-            startDate: "2026-01-01",
-            endDate: "2026-03-31"
+            startDate: range.start,
+            endDate: range.end
         };
     }
 
@@ -59723,29 +59894,63 @@ document.addEventListener('change', function(event) {
 
         try { filters = raw ? JSON.parse(raw) : null; } catch (error) { filters = null; }
 
-        if (!filters || filters.quarter !== "Q1") {
+        if (!filters || !QUARTER_RANGES_V70[filters.quarter]) {
             filters = defaultFilters();
-            saveFilters(filters);
         }
 
-        filters.startDate = "2026-01-01";
-        filters.endDate = "2026-03-31";
         filters.year = "2026";
-        filters.quarter = "Q1";
+        filters.quarter = QUARTER_RANGES_V70[filters.quarter] ? filters.quarter : "Q1";
+
+        var range = quarterRange(filters.quarter);
+        filters.startDate = range.start;
+        filters.endDate = range.end;
 
         return filters;
     }
 
     function saveFilters(filters) {
-        localStorage.setItem(FILTER_KEY, JSON.stringify(filters));
-        localStorage.setItem("jc_default_financial_period", "Q1-2026");
+        var safeFilters = filters || defaultFilters();
+        var range = quarterRange(safeFilters.quarter);
+
+        safeFilters.year = "2026";
+        safeFilters.startDate = range.start;
+        safeFilters.endDate = range.end;
+
+        localStorage.setItem(FILTER_KEY, JSON.stringify(safeFilters));
+        localStorage.setItem("jc_default_financial_period", safeFilters.quarter + "-2026");
     }
 
     function getDateRange() {
+        var filters = readFilters();
+        var range = quarterRange(filters.quarter);
+
         return {
-            start: "2026-01-01",
-            end: "2026-03-31"
+            start: range.start,
+            end: range.end,
+            quarter: filters.quarter,
+            note: range.note,
+            months: range.months.slice()
         };
+    }
+
+    function monthShortLabel(monthKey) {
+        var parts = String(monthKey || "").split("-");
+        var date = new Date(Number(parts[0]), Number(parts[1]) - 1, 1);
+
+        if (Number.isNaN(date.getTime())) {
+            return monthKey || "";
+        }
+
+        return date.toLocaleString("en-US", { month: "short" }) + " " + String(parts[0]).slice(2);
+    }
+
+    function quarterMonthlyTotalsTemplate() {
+        return getDateRange().months.map(function (month) {
+            return {
+                label: monthShortLabel(month),
+                amount: 0
+            };
+        });
     }
 
     function ensureFinancialSection() {
@@ -59780,11 +59985,7 @@ document.addEventListener('change', function(event) {
             activeRows: [],
             voidRows: [],
             vendorTotals: [],
-            monthlyTotals: [
-                { label: "Jan 26", amount: 0 },
-                { label: "Feb 26", amount: 0 },
-                { label: "Mar 26", amount: 0 }
-            ]
+            monthlyTotals: quarterMonthlyTotalsTemplate()
         };
     }
 
@@ -59853,14 +60054,14 @@ document.addEventListener('change', function(event) {
             };
         }).sort(function (a, b) { return b.amount - a.amount; });
 
-        var months = ["2026-01", "2026-02", "2026-03"];
+        var months = getDateRange().months;
         var monthlyTotals = months.map(function (month) {
             var monthRows = activeRows.filter(function (row) {
                 return safeDate(row.check_date || row.date || row.created_at).slice(0, 7) === month;
             });
 
             return {
-                label: month === "2026-01" ? "Jan 26" : month === "2026-02" ? "Feb 26" : "Mar 26",
+                label: monthShortLabel(month),
                 amount: monthRows.reduce(function (sum, row) { return sum + amountOf(row); }, 0)
             };
         });
@@ -59880,6 +60081,12 @@ document.addEventListener('change', function(event) {
             vendorTotals: vendorTotals,
             monthlyTotals: monthlyTotals
         };
+    }
+
+    function quarterButtonHtml(quarter, activeQuarter) {
+        var activeClass = quarter === activeQuarter ? " active" : "";
+
+        return '<button type="button" class="jcfd64-quarter' + activeClass + '" onclick="window.jcFinancialSetQuarterV70(\'' + quarter + '\')">' + quarter + '</button>';
     }
 
     function renderShell(statusMessage) {
@@ -59905,10 +60112,10 @@ document.addEventListener('change', function(event) {
                         '<div class="jcfd64-field">',
                             '<label>Quick Quarter</label>',
                             '<div class="jcfd64-quarter-row">',
-                                '<button type="button" class="jcfd64-quarter active" onclick="window.jcFinancialSetQ1V64()">Q1</button>',
-                                '<button type="button" class="jcfd64-quarter" disabled>Q2</button>',
-                                '<button type="button" class="jcfd64-quarter" disabled>Q3</button>',
-                                '<button type="button" class="jcfd64-quarter" disabled>Q4</button>',
+                                quarterButtonHtml("Q1", range.quarter),
+                                quarterButtonHtml("Q2", range.quarter),
+                                quarterButtonHtml("Q3", range.quarter),
+                                quarterButtonHtml("Q4", range.quarter),
                             '</div>',
                         '</div>',
                         '<div class="jcfd64-field"><label>Year</label><select id="jcfd64Year"><option value="2026">2026</option></select></div>',
@@ -59916,7 +60123,7 @@ document.addEventListener('change', function(event) {
                         '<div class="jcfd64-field"><label>Week</label><select id="jcfd64Week"><option value="">All Weeks</option></select></div>',
                         '<div class="jcfd64-field"><label>Vendor</label><select id="jcfd64Vendor"><option value="">All Vendors</option></select></div>',
                         '<div class="jcfd64-field"><label>Category</label><select id="jcfd64Category"><option value="">All Categories</option><option value="Vendor">Vendor</option><option value="Services">Services</option></select></div>',
-                        '<div class="jcfd64-note"><strong>Active filters:</strong> Q1 • 2026</div>',
+                        '<div class="jcfd64-note"><strong>Active filters:</strong> ', range.quarter, ' • 2026 • ', escapeHtml(range.note), '</div>',
                     '</div>',
                     '<div class="jcfd64-kpis" id="jcfd64Kpis"></div>',
                     '<div class="jcfd64-main-grid">',
@@ -60015,9 +60222,9 @@ document.addEventListener('change', function(event) {
 
         if (kpis) {
             kpis.innerHTML = [
-                kpiHtml("Total Amount", money(data.totalAmount), data.activeRows.length + " checks", "fa-dollar-sign", ""),
+                kpiHtml("Total Amount", money(data.totalAmount), data.activeRows.length + " payments", "fa-dollar-sign", ""),
                 kpiHtml("Vendor Spend", money(data.vendorSpend), Math.round((data.vendorSpend / (data.totalAmount || 1)) * 1000) / 10 + "%", "fa-users", ""),
-                kpiHtml("Services", money(data.servicesSpend), data.activeRows.filter(function (r) { return categoryOf(r) === "Services"; }).length + " checks", "fa-wrench", ""),
+                kpiHtml("Services", money(data.servicesSpend), data.activeRows.filter(function (r) { return categoryOf(r) === "Services"; }).length + " payments", "fa-wrench", ""),
                 kpiHtml("ACH", money(data.achSpend), data.activeRows.filter(function (r) { return normalize(paymentOf(r)) === "ACH"; }).length + " transactions", "fa-building-columns", ""),
                 kpiHtml("Credit Card", money(data.creditCardSpend), data.activeRows.filter(function (r) { return normalize(paymentOf(r)) === "CREDIT CARD"; }).length + " transactions", "fa-credit-card", ""),
                 kpiHtml("Check", money(data.checkSpend), data.activeRows.filter(function (r) { return normalize(paymentOf(r)) === "CHECK"; }).length + " checks", "fa-money-check-dollar", ""),
@@ -60033,11 +60240,11 @@ document.addEventListener('change', function(event) {
                 return [
                     '<button class="jcfd64-vendor-row" type="button" data-vendor-name="' + escapeHtml(item.vendor) + '">',
                         '<span class="jcfd64-vendor-logo">', logoFor(item.vendor), '</span>',
-                        '<span><span class="jcfd64-vendor-name">', escapeHtml(item.vendor), '</span><br><span class="jcfd64-vendor-amount">', money(item.amount), '</span><br><span class="jcfd64-vendor-count">', item.count, ' checks</span></span>',
+                        '<span><span class="jcfd64-vendor-name">', escapeHtml(item.vendor), '</span><br><span class="jcfd64-vendor-amount">', money(item.amount), '</span><br><span class="jcfd64-vendor-count">', vendorCountLabel(item), '</span></span>',
                         '<span class="jcfd64-vendor-share">', item.share.toFixed(1), '%</span>',
                     '</button>'
                 ].join("");
-            }).join("") || '<div style="padding:1rem;color:#64748b;font-weight:900;">No Q1 vendor spend found.</div>';
+            }).join("") || '<div style="padding:1rem;color:#64748b;font-weight:900;">No vendor spend found for the selected quarter.</div>';
 
             vendorList.querySelectorAll(".jcfd64-vendor-row").forEach(function (button) {
                 button.addEventListener("click", function () {
@@ -60082,7 +60289,7 @@ document.addEventListener('change', function(event) {
         });
 
         if (rowsBody) {
-            rowsBody.innerHTML = tableRows.slice(0, 250).map(rowHtml).join("") || '<tr><td colspan="9" style="padding:1rem;color:#64748b;font-weight:900;">No records found for Q1 2026.</td></tr>';
+            rowsBody.innerHTML = tableRows.slice(0, 250).map(rowHtml).join("") || '<tr><td colspan="9" style="padding:1rem;color:#64748b;font-weight:900;">No records found for the selected quarter.</td></tr>';
         }
 
         renderChart(data);
@@ -60105,7 +60312,7 @@ document.addEventListener('change', function(event) {
         var status = normalize(row.status);
         var badgeClass = status.includes("VOID") ? "void" : status.includes("CLEAR") ? "clear" : "";
         var id = row.id || row.source_id || row.check_number || "";
-        var ref = row.check_number || row.payment_reference || "—";
+        var ref = paymentRefLabel(row);
 
         return [
             '<tr>',
@@ -60176,16 +60383,25 @@ document.addEventListener('change', function(event) {
         }
 
         try {
+            var range = getDateRange();
             var result = await client
                 .from("check_register")
                 .select("*")
-                .gte("check_date", "2026-01-01")
-                .lte("check_date", "2026-03-31")
+                .gte("check_date", range.start)
+                .lte("check_date", range.end)
                 .order("check_date", { ascending: false });
 
             if (result.error) throw result.error;
 
-            rowsCache = result.data || [];
+            var invoiceResult = await client
+                .from("invoices")
+                .select("id, vendor, invoice_date, created_at, invoice_number, check_number, total, amount")
+                .not("check_number", "is", null)
+                .gte("invoice_date", range.start)
+                .lte("invoice_date", range.end)
+                .limit(15000);
+
+            rowsCache = mergeAchInvoicesWithRegisterRows(result.data || [], invoiceResult.error ? [] : (invoiceResult.data || []));
             await loadVendorLogos();
             renderData();
         } catch (error) {
@@ -60219,7 +60435,7 @@ document.addEventListener('change', function(event) {
     function openFinancialDashboard(reason) {
         currentSection = FINANCIAL_SECTION;
         selectedVendor = "";
-        saveFilters(defaultFilters());
+        saveFilters(readFilters());
 
         document.querySelectorAll(".content-section").forEach(function (section) {
             var active = section.id === FINANCIAL_SECTION;
@@ -60236,7 +60452,7 @@ document.addEventListener('change', function(event) {
         section.style.opacity = "1";
 
         markNav(FINANCIAL_SECTION, "Financial Dashboard");
-        renderShell("Loading Q1 financial data...");
+        renderShell("Loading " + getDateRange().quarter + " financial data...");
         loadFinancialData(false);
     }
 
@@ -60533,10 +60749,24 @@ document.addEventListener('change', function(event) {
         loadFinancialData(!!force);
     };
 
-    window.jcFinancialSetQ1V64 = function () {
+    window.jcFinancialSetQuarterV70 = function (quarter) {
+        var filters = readFilters();
+        var range = quarterRange(quarter);
+
         selectedVendor = "";
-        saveFilters(defaultFilters());
-        renderData();
+        filters.quarter = QUARTER_RANGES_V70[quarter] ? quarter : "Q1";
+        filters.month = "";
+        filters.week = "";
+        filters.startDate = range.start;
+        filters.endDate = range.end;
+        saveFilters(filters);
+        rowsCache = [];
+        renderShell("Loading " + filters.quarter + " financial data...");
+        loadFinancialData(true);
+    };
+
+    window.jcFinancialSetQ1V64 = function () {
+        window.jcFinancialSetQuarterV70("Q1");
     };
 
     window.jcfd64SelectVendor = function (vendor) {
@@ -60789,7 +61019,7 @@ document.addEventListener('change', function(event) {
     "use strict";
 
     const REFRESH_MS = 15 * 60 * 1000;
-    const VERSION_KEY = "2026.05.06.v67-order-refresh-images-safe";
+    const VERSION_KEY = "2026.05.07.v69-ach-dashboard-monthly-fix";
 
     function getActiveOrderView() {
         if (document.querySelector("#ronyOrders.active")) return "rony";
