@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.06.v70-quarter-ranges-ach-dashboard';
+        var VERSION = '2026.05.06.v74-ach-monthly-chart-source-fix';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -52673,7 +52673,7 @@ document.addEventListener('change', function(event) {
                             check_number: checkNumber,
                             vendor,
                             category: inferCategoryFromInvoice(invoice),
-                            reason: vendor,
+                            reason: invoice.invoice_number ? vendor + " Invoice " + invoice.invoice_number : vendor,
                             amount: 0,
                             status: isAchPayment ? "ACH" : isCreditCardPayment ? "Credit Card" : "Cleared",
                             notes: "",
@@ -60069,6 +60069,39 @@ document.addEventListener('change', function(event) {
         return map;
     }
 
+    function removeRegisterDuplicatesWhenInvoicePaymentsExist(rows) {
+        var invoicePaymentVendors = Object.create(null);
+
+        (rows || []).forEach(function (row) {
+            var vendorKey = normalize(row.vendor || row.vendor_name || row.reason);
+            if (!vendorKey) return;
+
+            if (row.__invoicePayment && (isAchVendorName(vendorKey) || isCreditCardVendorName(vendorKey))) {
+                invoicePaymentVendors[vendorKey] = true;
+            }
+        });
+
+        return (rows || []).filter(function (row) {
+            var vendorKey = normalize(row.vendor || row.vendor_name || row.reason);
+            if (!invoicePaymentVendors[vendorKey]) return true;
+            if (row.__invoicePayment) return true;
+
+            var invoicePaymentVendor = isAchVendorName(vendorKey) || isCreditCardVendorName(vendorKey);
+            var paymentLooksImported = isAchValue(row.check_number)
+                || isAchValue(row.payment_reference)
+                || isAchValue(row.payment_method)
+                || isAchValue(row.status)
+                || isCreditCardValue(row.check_number)
+                || isCreditCardValue(row.payment_reference)
+                || isCreditCardValue(row.payment_method)
+                || isCreditCardValue(row.status)
+                || normalize(row.source_table) === "INVOICES"
+                || !!String(row.source_id || "").trim();
+
+            return !(invoicePaymentVendor || paymentLooksImported);
+        });
+    }
+
     function calculateData() {
         var filters = readFilters();
         var start = filters.startDate;
@@ -60090,6 +60123,7 @@ document.addEventListener('change', function(event) {
             return true;
         });
 
+        rows = removeRegisterDuplicatesWhenInvoicePaymentsExist(rows);
         filteredRows = rows;
 
         var activeRows = rows.filter(function (row) { return !isVoid(row); });
@@ -60464,7 +60498,6 @@ document.addEventListener('change', function(event) {
             var invoiceResult = await client
                 .from("invoices")
                 .select("id, vendor, invoice_date, created_at, invoice_number, check_number, total, amount")
-                .not("check_number", "is", null)
                 .gte("invoice_date", range.start)
                 .lte("invoice_date", range.end)
                 .limit(15000);
