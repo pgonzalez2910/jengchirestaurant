@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.06.v74-ach-monthly-chart-source-fix';
+        var VERSION = '2026.05.07.v84-match-rony-orders-placeorder';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -28622,6 +28622,169 @@ function renderEmptyOrderState(dateISO) {
 
 
 
+
+// ========== RONY PLACEORDER ⇄ RONY ORDERS RECONCILIATION ==========
+// Source of truth for Rony PlaceOrder: the same inventory_management rows visible in Rony's Orders.
+async function _poBuildRonyOrdersSourceRows(mgmtData, dateISO) {
+    const rows = [];
+    const stockByName = new Map();
+
+    try {
+        const { data: stockRows, error: stockError } = await supabaseClient
+            .from('current_stock')
+            .select('product_name, quantity_in_stock')
+            .eq('stock_date', dateISO);
+
+        if (stockError) {
+            console.warn('[RONY PO MATCH] current_stock lookup failed:', stockError.message);
+        }
+
+        (stockRows || []).forEach(row => {
+            const key = String(row.product_name || '').trim().toLowerCase();
+            if (key) stockByName.set(key, parseFloat(row.quantity_in_stock ?? 0) || 0);
+        });
+    } catch (error) {
+        console.warn('[RONY PO MATCH] current_stock source skipped:', error);
+    }
+
+    (mgmtData || []).forEach(item => {
+        const productName = String(item.product_name || '').trim();
+        if (!productName || item.is_hidden === true) return;
+
+        const assigned = typeof parseAssignedTo === 'function'
+            ? parseAssignedTo(item.assigned_to)
+            : String(item.assigned_to || '').toLowerCase().split(/[,;|]/).map(value => value.trim());
+
+        const isRonyAssigned = assigned.some(value => String(value || '').toLowerCase().includes('rony'));
+        if (!isRonyAssigned) return;
+
+        const key = productName.toLowerCase();
+        rows.push({
+            id: null,
+            product_name: productName,
+            user: 'rony',
+            inventory_item_id: item.id || null,
+            on_hand: stockByName.has(key) ? stockByName.get(key) : 0,
+            target: parseFloat(item.par ?? 0) || 0,
+            tentative: null,
+            image_url: item.image_url || null,
+            par: parseFloat(item.par ?? 0) || 0,
+            position: item.position || null,
+            category: item.category || 'Uncategorized',
+            item_code: item.item_code || null,
+            vendor: item.vendors || null,
+            selected_vendor: item.vendors || null,
+            _fromRonyOrdersSource: true
+        });
+    });
+
+    return rows;
+}
+
+function _poMergeRonyOrdersSourceRows(ronyData, ronyOrderRows) {
+    const byName = new Map();
+    (ronyData || []).forEach(row => {
+        const key = String(row.product_name || '').trim().toLowerCase();
+        if (key && !byName.has(key)) byName.set(key, row);
+    });
+
+    const added = [];
+    const updated = [];
+
+    (ronyOrderRows || []).forEach(source => {
+        const key = String(source.product_name || '').trim().toLowerCase();
+        if (!key) return;
+
+        if (!byName.has(key)) {
+            ronyData.push({ ...source });
+            byName.set(key, source);
+            added.push(source.product_name);
+            return;
+        }
+
+        const existing = byName.get(key);
+        existing.user = 'rony';
+        existing.inventory_item_id = existing.inventory_item_id || source.inventory_item_id || null;
+        existing.image_url = existing.image_url || source.image_url || null;
+        existing.par = parseFloat(existing.par ?? source.par ?? 0) || parseFloat(source.par ?? 0) || 0;
+        existing.target = parseFloat(existing.target ?? source.target ?? existing.par ?? 0) || parseFloat(source.target ?? 0) || 0;
+        existing.on_hand = existing.on_hand !== null && existing.on_hand !== undefined
+            ? parseFloat(existing.on_hand || 0)
+            : parseFloat(source.on_hand || 0);
+        existing.position = existing.position || source.position || null;
+        existing.category = existing.category || source.category || 'Uncategorized';
+        existing.item_code = existing.item_code || source.item_code || null;
+        existing.vendor = existing.vendor || source.vendor || null;
+        existing.selected_vendor = existing.selected_vendor || source.selected_vendor || existing.vendor || null;
+        existing._matchedRonyOrdersSource = true;
+        updated.push(source.product_name);
+    });
+
+    const afterNames = new Set(ronyData.map(row => String(row.product_name || '').trim().toLowerCase()).filter(Boolean));
+    const missing = (ronyOrderRows || [])
+        .map(row => String(row.product_name || '').trim())
+        .filter(name => name && !afterNames.has(name.toLowerCase()));
+
+    return {
+        expected: (ronyOrderRows || []).length,
+        before: byName.size - added.length,
+        after: ronyData.length,
+        added,
+        updated,
+        missing
+    };
+}
+
+async function _poEnsureRonyPlaceOrderMatchesRonyOrders(ronyData, mgmtData, dateISO) {
+    const ronyOrderRows = await _poBuildRonyOrdersSourceRows(mgmtData, dateISO);
+    const result = _poMergeRonyOrdersSourceRows(ronyData, ronyOrderRows);
+
+    window._lastRonyPlaceOrderMatch = {
+        ...result,
+        checkedAt: new Date().toISOString()
+    };
+
+    console.log('[RONY PO MATCH] Rony Orders → PlaceOrder', window._lastRonyPlaceOrderMatch);
+    return result;
+}
+
+async function poMatchRonyOrdersToPlaceOrder() {
+    try {
+        showLoading(true);
+
+        const dateISO = document.getElementById('createOrderDate')?.value || todayYMD();
+        const { data: mgmtData, error: mgmtError } = await supabaseClient
+            .from('inventory_management')
+            .select('id, product_name, image_url, par, position, category, item_code, assigned_to, is_hidden, custom_group, vendors')
+            .order('product_name');
+
+        if (mgmtError) throw mgmtError;
+
+        window._placeOrderCache = window._placeOrderCache || { rony: [], julio: [], office: [] };
+        const result = await _poEnsureRonyPlaceOrderMatchesRonyOrders(
+            window._placeOrderCache.rony,
+            mgmtData || [],
+            dateISO
+        );
+
+        window._placeOrderFilters = window._placeOrderFilters || {};
+        window._placeOrderFilters.rony = { vendor: '', category: '', group: '' };
+
+        await _rerenderPlaceOrderSections();
+
+        showAlert(
+            `Rony PlaceOrder matched with Rony Orders. Added ${result.added.length} missing item(s). Total: ${window._placeOrderCache.rony.length}.`,
+            'success'
+        );
+    } catch (error) {
+        console.error('[RONY PO MATCH] failed:', error);
+        showAlert('Could not match Rony Orders to PlaceOrder. Check console for details.', 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+
 // ========== LOAD ENHANCED CREATE ORDER (COMPLETE VERSION) ==========
 
 // ========== FIXED: Load Enhanced Create Order WITH IMAGES ==========
@@ -28724,7 +28887,7 @@ async function loadEnhancedCreateOrder() {
 
             .from('inventory_management')
 
-            .select('id, product_name, image_url, par, position, category, item_code')
+            .select('id, product_name, image_url, par, position, category, item_code, assigned_to, is_hidden, custom_group, vendors')
 
             .order('product_name');
 
@@ -28784,10 +28947,152 @@ async function loadEnhancedCreateOrder() {
                 position: mgmt?.position || null,
 
                 category: mgmt?.category || 'Uncategorized',
+                vendor: row.vendor || row.selected_vendor || mgmt?.vendors || null,
+                item_code: row.item_code || mgmt?.item_code || null,
 
             };
 
         });
+
+        // ✅ Rony PlaceOrder source of truth:
+        // Show every item assigned to Rony, even when inventory_check did not create a row yet.
+        // This does not affect Julio.
+        const ronyExistingNames = new Set(
+            ronyData.map(row => String(row.product_name || '').trim().toLowerCase()).filter(Boolean)
+        );
+
+        (mgmtData || []).forEach(item => {
+            const assigned = typeof parseAssignedTo === 'function'
+                ? parseAssignedTo(item.assigned_to)
+                : String(item.assigned_to || '').toLowerCase().split(/[,;|]/).map(v => v.trim());
+
+            const vendorsText = String(item.vendors || '').toLowerCase();
+            const categoryText = String(item.category || '').toLowerCase();
+            const nameText = String(item.product_name || '').toLowerCase();
+            const isRonyAssigned = assigned.some(value => String(value || '').toLowerCase().includes('rony'));
+            const isAutochlorCatalogItem = _poIsAutochlorDishChemicalName(nameText, vendorsText);
+
+            // Rony PlaceOrder must always show Autochlor/Dish Machine chemicals, even if
+            // an old hidden toggle or old assignment/category setup exists.
+            if ((!isRonyAssigned && !isAutochlorCatalogItem) || (item.is_hidden === true && !isAutochlorCatalogItem) || !item.product_name) return;
+
+            const key = String(item.product_name).trim().toLowerCase();
+            if (ronyExistingNames.has(key)) return;
+
+            ronyExistingNames.add(key);
+            ronyData.push({
+                id: null,
+                product_name: item.product_name,
+                user: 'rony',
+                inventory_item_id: item.id || null,
+                on_hand: 0,
+                target: item.par || 0,
+                tentative: null,
+                image_url: item.image_url || null,
+                par: item.par || 0,
+                position: item.position || null,
+                category: isAutochlorCatalogItem ? '🧴 Autochlor / Dish Machine Chemicals' : (item.category || 'Uncategorized'),
+                item_code: item.item_code || null,
+                vendor: isAutochlorCatalogItem ? 'Autochlor' : (item.vendors || null),
+                _fromInventoryManagementOnly: true
+            });
+        });
+
+        // ✅ Match PlaceOrder with the same products visible in Rony's Orders.
+        // This is the main safety net: if Rony's Orders has an item, Rony PlaceOrder gets it too.
+        await _poEnsureRonyPlaceOrderMatchesRonyOrders(ronyData, mgmtData || [], dateISO);
+
+        // ✅ Force every Autochlor invoice item into Rony PlaceOrder, even when it was never assigned.
+        // Handles vendor spellings: Autochlor, Auto-Chlor, Auto Chlor.
+        try {
+            const { data: autochlorInvoices, error: autochlorInvError } = await supabaseClient
+                .from('invoices')
+                .select('id, vendor, invoice_date')
+                .or('vendor.ilike.%autochlor%,vendor.ilike.%auto-chlor%,vendor.ilike.%auto chlor%')
+                .order('invoice_date', { ascending: false })
+                .limit(250);
+
+            if (autochlorInvError) {
+                console.warn('[RONY PO] Autochlor invoice lookup failed:', autochlorInvError.message);
+            }
+
+            const autochlorInvoiceIds = (autochlorInvoices || []).map(inv => inv.id).filter(Boolean);
+
+            if (autochlorInvoiceIds.length > 0) {
+                const { data: autochlorItems, error: autochlorItemError } = await supabaseClient
+                    .from('invoice_items')
+                    .select('*')
+                    .in('invoice_id', autochlorInvoiceIds)
+                    .limit(1000);
+
+                if (autochlorItemError) {
+                    console.warn('[RONY PO] Autochlor invoice_items lookup failed:', autochlorItemError.message);
+                }
+
+                (autochlorItems || []).forEach(item => {
+                    const itemName = item.product_name || item.description || item.name || '';
+                    if (!_poIsAutochlorDishChemicalName(itemName, 'Autochlor')) return;
+
+                    const mgmt = findMgmt({ product_name: itemName, item_code: item.item_code || item.code || item.item_number }) || {};
+                    _poAddMissingRonyRow(ronyData, ronyExistingNames, {
+                        ...item,
+                        product_name: itemName,
+                        vendor: 'Autochlor',
+                        image_url: mgmt.image_url || item.image_path || item.image_url || null,
+                        par: mgmt.par || 0,
+                        inventory_item_id: mgmt.id || null,
+                        item_code: item.item_code || item.code || item.item_number || mgmt.item_code || null
+                    });
+                });
+            }
+        } catch (autochlorSourceError) {
+            console.warn('[RONY PO] Autochlor invoice source skipped:', autochlorSourceError);
+        }
+
+        // ✅ Direct invoice_items safety net: some databases store Autochlor product rows without a reliable invoice join.
+        try {
+            const { data: directAutochlorItems, error: directAutochlorError } = await supabaseClient
+                .from('invoice_items')
+                .select('*')
+                .or('product_name.ilike.%pan blaster%,product_name.ilike.%rinse aid%,product_name.ilike.%low temp%,product_name.ilike.%detergent%,product_name.ilike.%solution cl%,product_name.ilike.%multi prp%,product_name.ilike.%delimer%,product_name.ilike.%sanitizer%')
+                .limit(500);
+
+            if (directAutochlorError) {
+                console.warn('[RONY PO] Direct Autochlor invoice_items lookup failed:', directAutochlorError.message);
+            }
+
+            (directAutochlorItems || []).forEach(item => {
+                const itemName = item.product_name || item.description || item.name || '';
+                if (!_poIsAutochlorDishChemicalName(itemName, 'Autochlor')) return;
+
+                const mgmt = findMgmt({ product_name: itemName, item_code: item.item_code || item.code || item.item_number }) || {};
+                _poAddMissingRonyRow(ronyData, ronyExistingNames, {
+                    ...item,
+                    product_name: itemName,
+                    vendor: 'Autochlor',
+                    image_url: mgmt.image_url || item.image_path || item.image_url || null,
+                    par: mgmt.par || 0,
+                    inventory_item_id: mgmt.id || null,
+                    item_code: item.item_code || item.code || item.item_number || mgmt.item_code || null
+                });
+            });
+        } catch (directAutochlorSourceError) {
+            console.warn('[RONY PO] Direct Autochlor source skipped:', directAutochlorSourceError);
+        }
+
+        // ✅ Last safety net: show known Autochlor chemicals even if they are missing from both
+        // inventory_management and invoice_items.
+        RONY_AUTOCHLOR_FALLBACK_PRODUCTS.forEach(item => {
+            _poAddMissingRonyRow(ronyData, ronyExistingNames, {
+                ...item,
+                vendor: 'Autochlor',
+                category: '🧴 Autochlor / Dish Machine Chemicals'
+            });
+        });
+
+        console.log('[RONY PO] Autochlor / Dish Machine rows:', ronyData
+            .filter(row => _poIsAutochlorDishChemicalName(row.product_name, row.vendor || row.selected_vendor))
+            .map(row => row.product_name));
 
         
 
@@ -29059,6 +29364,9 @@ function _buildSectionFilters(section, allRows, accentColor) {
 
         ${(f.vendor||f.category||f.group)?`<button onclick="applyPlaceOrderFilter('${section}','vendor','');applyPlaceOrderFilter('${section}','category','');applyPlaceOrderFilter('${section}','group','')" style="padding:0.4rem 0.75rem;border-radius:6px;border:none;background:rgba(255,255,255,0.25);color:white;font-size:0.8125rem;font-weight:600;cursor:pointer;">✕ Clear</button>`:''}
 
+        ${section === 'rony' ? `<button onclick="poRestoreAutochlorDishProducts()" title="Unhide and show Autochlor / Dish Machine chemicals" style="padding:0.4rem 0.75rem;border-radius:6px;border:none;background:#0284c7;color:white;font-size:0.8125rem;font-weight:800;cursor:pointer;">🧴 Show Autochlor</button>` : ''}
+        ${section === 'rony' ? `<button onclick="poMatchRonyOrdersToPlaceOrder()" title="Add any product that exists in Rony's Orders but is missing from PlaceOrder" style="padding:0.4rem 0.75rem;border-radius:6px;border:none;background:#16a34a;color:white;font-size:0.8125rem;font-weight:800;cursor:pointer;">🔁 Match Rony Orders</button>` : ''}
+
       </div>`;
 
 }
@@ -29068,7 +29376,12 @@ function _buildSectionFilters(section, allRows, accentColor) {
 function _filterRows(rows, section) {
     const f = window._placeOrderFilters[section] || { vendor:'', category:'', group:'' };
     return rows.filter(r => {
-        if (window._hiddenProducts && window._hiddenProducts.has(r.product_name)) return false;
+        const isForcedRonyAutochlor = section === 'rony'
+            && typeof _poIsAutochlorDishChemicalName === 'function'
+            && _poIsAutochlorDishChemicalName(r.product_name, _poEffectiveVendor(r) || r.vendor || r.selected_vendor);
+
+        // Hidden toggle can hide normal products, but it must not hide Rony Autochlor/Dish Machine chemicals.
+        if (!isForcedRonyAutochlor && window._hiddenProducts && window._hiddenProducts.has(r.product_name)) return false;
         if (f.vendor   && r.vendor   !== f.vendor)   return false;
         if (f.category && (r.category||'Other') !== f.category) return false;
         if (f.group && (window._placeOrderGroupMap[r.product_name]||'') !== f.group) return false;
@@ -29268,6 +29581,19 @@ function _groupByCustomGroup(rows) {
     const ungrouped     = [];
 
     rows.forEach(r => {
+        const isAutochlorDish = _poIsAutochlorDishChemicalName(
+            r.product_name,
+            _poEffectiveVendor(r) || r.vendor || r.selected_vendor
+        );
+        if (isAutochlorDish) {
+            r.vendor = 'Autochlor';
+            r.selected_vendor = 'Autochlor';
+            r.category = '🧴 Autochlor / Dish Machine Chemicals';
+            r._forceVisibleRonyAutochlor = true;
+            ungrouped.push(r);
+            return;
+        }
+
         const g = grpMap[r.product_name];
         if (g) {
             if (!customBuckets[g]) customBuckets[g] = [];
@@ -29531,135 +29857,496 @@ async function _rerenderPlaceOrderSections() {
 
 
 
+
+
+function _poText(value) {
+    return String(value || '').toLowerCase().replace(/[_\-\/]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function _poIsAutochlorDishChemicalName(name, vendor = '') {
+    const n = _poText(name);
+    const v = _poText(vendor);
+    return v.includes('autochlor') || v.includes('auto chlor') ||
+        n.includes('autochlor') || n.includes('auto chlor') ||
+        n.includes('pan blaster') || n.includes('pan blast') || n.includes('panblast') ||
+        n.includes('rinse aid') || n.includes('rinse') ||
+        n.includes('low temp detergent') || n.includes('low temp') ||
+        n.includes('detergent') ||
+        n.includes('solution cl') || n.includes('solution') ||
+        n.includes('multi prp') || n.includes('ntrl multi prp') ||
+        n.includes('neutral multi') || n.includes('multi purpose') ||
+        n.includes('dish machine') || n.includes('dishmachine') || n.includes('dish cleaning') ||
+        n.includes('warewash') || n.includes('ware wash') ||
+        n.includes('delimer') || n.includes('delime') ||
+        n.includes('sanitizer') || n.includes('sanitiser');
+}
+
+const RONY_AUTOCHLOR_FALLBACK_PRODUCTS = [
+    { product_name: 'Pan Blaster Pro', item_code: 'PANBLASTER', par: 1 },
+    { product_name: 'Rinse Aid Kitchen', item_code: 'RINSE-AID-KITCHEN', par: 1 },
+    { product_name: 'Rinse Aid Bar', item_code: 'RINSE-AID-BAR', par: 1 },
+    { product_name: 'Low Temp Detergent', item_code: 'LOW-TEMP-DETERGENT', par: 1 },
+    { product_name: 'Solution CL', item_code: 'SOLUTION-CL', par: 1 },
+    { product_name: 'NTRL Multi PRP', item_code: 'NTRL-MULTI-PRP', par: 1 },
+    { product_name: 'Multi PRP', item_code: 'MULTI-PRP', par: 1 },
+    { product_name: 'Autochlor Delimer', item_code: 'DELIMER', par: 1 },
+    { product_name: 'Autochlor Sanitizer', item_code: 'SANITIZER', par: 1 },
+    { product_name: 'Dish Machine Detergent', item_code: 'DISH-DETERGENT', par: 1 },
+    { product_name: 'Dish Machine Rinse Aid', item_code: 'DISH-RINSE-AID', par: 1 },
+    { product_name: 'Dish Machine Sanitizer', item_code: 'DISH-SANITIZER', par: 1 },
+    { product_name: 'Dish Cleaning Detergent', item_code: 'DISH-CLEANING-DETERGENT', par: 1 },
+    { product_name: 'Dish Cleaning Rinse Aid', item_code: 'DISH-CLEANING-RINSE-AID', par: 1 },
+    { product_name: 'Dish Cleaning Sanitizer', item_code: 'DISH-CLEANING-SANITIZER', par: 1 }
+];
+
+function _poSyntheticRonyId(prefix, productName) {
+    return `${prefix}-${String(productName || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')}`;
+}
+
+function _poAddMissingRonyRow(ronyData, existingNames, item) {
+    const productName = String(item.product_name || item.name || item.description || '').trim();
+    if (!productName) return false;
+
+    const key = productName.toLowerCase();
+    const code = item.item_code || item.code || item.item_number || item.sku || null;
+    const imageUrl = item.image_url || item.image_path || item.product_image || null;
+
+    if (existingNames.has(key)) {
+        const existing = ronyData.find(row => String(row.product_name || '').trim().toLowerCase() === key);
+        if (!existing) return false;
+
+        existing.vendor = 'Autochlor';
+        existing.selected_vendor = 'Autochlor';
+        existing.position = 'Autochlor / Dish Machine Chemicals';
+        existing.category = '🧴 Autochlor / Dish Machine Chemicals';
+        existing._forceVisibleRonyAutochlor = true;
+
+        if (!existing.item_code && code) existing.item_code = code;
+        if (!existing.image_url && imageUrl) existing.image_url = imageUrl;
+        if (!existing.par && item.par) existing.par = parseFloat(item.par) || 0;
+        if (!existing.target && item.target) existing.target = parseFloat(item.target) || 0;
+
+        if (window._hiddenProducts && window._hiddenProducts.has(existing.product_name)) {
+            window._hiddenProducts.delete(existing.product_name);
+        }
+
+        return true;
+    }
+
+    const syntheticId = _poSyntheticRonyId('autochlor-rony', `${productName}-${code || ''}`);
+
+    existingNames.add(key);
+    ronyData.push({
+        id: item.id || syntheticId,
+        product_name: productName,
+        user: 'rony',
+        inventory_item_id: item.inventory_item_id || item.inventory_id || null,
+        on_hand: 0,
+        target: parseFloat(item.par ?? item.target ?? 0) || 0,
+        tentative: null,
+        image_url: imageUrl,
+        par: parseFloat(item.par ?? item.target ?? 0) || 0,
+        position: 'Autochlor / Dish Machine Chemicals',
+        category: '🧴 Autochlor / Dish Machine Chemicals',
+        item_code: code,
+        vendor: 'Autochlor',
+        selected_vendor: 'Autochlor',
+        _fromAutochlorFallback: true,
+        _clientOnlyAutochlor: !item.id,
+        _forceVisibleRonyAutochlor: true
+    });
+    return true;
+}
+
+
+function _poEnsureAutochlorRowsInRonyCache() {
+    window._placeOrderCache = window._placeOrderCache || { rony: [], julio: [], office: [] };
+    window._placeOrderCache.rony = Array.isArray(window._placeOrderCache.rony) ? window._placeOrderCache.rony : [];
+
+    const existingNames = new Set(
+        window._placeOrderCache.rony
+            .map(row => String(row.product_name || '').trim().toLowerCase())
+            .filter(Boolean)
+    );
+
+    RONY_AUTOCHLOR_FALLBACK_PRODUCTS.forEach(item => {
+        _poAddMissingRonyRow(window._placeOrderCache.rony, existingNames, {
+            ...item,
+            vendor: 'Autochlor',
+            selected_vendor: 'Autochlor',
+            category: '🧴 Autochlor / Dish Machine Chemicals',
+            position: 'Autochlor / Dish Machine Chemicals',
+            par: item.par ?? 0,
+            target: item.target ?? item.par ?? 0
+        });
+    });
+
+    window._placeOrderCache.rony.forEach(row => {
+        if (_poIsAutochlorDishChemicalName(row.product_name, _poEffectiveVendor(row) || row.vendor || row.selected_vendor)) {
+            row.user = 'rony';
+            row.vendor = 'Autochlor';
+            row.selected_vendor = 'Autochlor';
+            row.position = 'Autochlor / Dish Machine Chemicals';
+            row.category = '🧴 Autochlor / Dish Machine Chemicals';
+            row._forceVisibleRonyAutochlor = true;
+            if (window._hiddenProducts) window._hiddenProducts.delete(row.product_name);
+        }
+    });
+
+    return window._placeOrderCache.rony.filter(row =>
+        _poIsAutochlorDishChemicalName(row.product_name, _poEffectiveVendor(row) || row.vendor || row.selected_vendor)
+    );
+}
+
+
+
+async function poRestoreAutochlorDishProducts() {
+    try {
+        window._placeOrderFilters = window._placeOrderFilters || {};
+        window._placeOrderFilters.rony = { vendor: '', category: '', group: '' };
+
+        const restoredRows = _poEnsureAutochlorRowsInRonyCache();
+        const namesToUnhide = new Set(restoredRows.map(row => row.product_name).filter(Boolean));
+        (window._placeOrderCache?.rony || []).forEach(row => {
+            if (_poIsAutochlorDishChemicalName(row.product_name, _poEffectiveVendor(row) || row.vendor || row.selected_vendor)) {
+                namesToUnhide.add(row.product_name);
+                row.vendor = 'Autochlor';
+                row.selected_vendor = 'Autochlor';
+                row.position = 'Autochlor / Dish Machine Chemicals';
+                row.category = '🧴 Autochlor / Dish Machine Chemicals';
+                row._forceVisibleRonyAutochlor = true;
+            }
+        });
+
+        RONY_AUTOCHLOR_FALLBACK_PRODUCTS.forEach(item => namesToUnhide.add(item.product_name));
+
+        if (window._hiddenProducts) {
+            namesToUnhide.forEach(name => window._hiddenProducts.delete(name));
+        }
+
+        try {
+            await invSB()
+                .from('inventory_management')
+                .update({ is_hidden: false })
+                .or([
+                    'vendors.ilike.%autochlor%',
+                    'product_name.ilike.%autochlor%',
+                    'product_name.ilike.%pan blaster%',
+                    'product_name.ilike.%rinse aid%',
+                    'product_name.ilike.%low temp%',
+                    'product_name.ilike.%detergent%',
+                    'product_name.ilike.%solution cl%',
+                    'product_name.ilike.%multi prp%',
+                    'product_name.ilike.%delimer%',
+                    'product_name.ilike.%sanitizer%',
+                    'product_name.ilike.%dish machine%'
+                ].join(','));
+        } catch (dbError) {
+            console.warn('[RONY PO] Autochlor unhide DB update skipped:', dbError?.message || dbError);
+        }
+
+        await _rerenderPlaceOrderSections();
+
+        setTimeout(() => {
+            const headers = [...document.querySelectorAll('[data-po-group-wrapper]')];
+            const target = headers.find(el => /autochlor|dish machine/i.test(el.textContent || ''));
+            if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 120);
+
+        showAlert('Autochlor / Dish Machine products are visible for Rony PlaceOrder.', 'success');
+    } catch (error) {
+        console.error('[RONY PO] Restore Autochlor failed:', error);
+        showAlert('Could not restore Autochlor products. Check console for details.', 'error');
+    }
+}
+
+
+
 const RONY_PLACE_ORDER_GROUPS = [
     {
-        cat: '🧴 Chemicals / Autochlor / Dish Machine',
+        cat: '🧴 Autochlor / Dish Machine Chemicals',
         color: '#0284c7',
-        test: (n, v, c) => v.includes('autochlor') || v.includes('auto chlor') ||
-            c.includes('autochlor') || c.includes('auto chlor') || c.includes('chemical') ||
-            c.includes('cleaning') || n.includes('autochlor') || n.includes('auto chlor') ||
-            n.includes('pan blast') || n.includes('rinse aid') || n.includes('dish machine') ||
-            n.includes('detergent') || n.includes('sanitizer') || n.includes('sanitiser') ||
+        test: (n, v, c) => _poIsAutochlorDishChemicalName(n, v)
+    },
+    {
+        cat: '🧪 Cleaning Chemicals',
+        color: '#9333ea',
+        test: (n, v, c) => (
             n.includes('degreaser') || n.includes('bleach') || n.includes('clorox') ||
-            n.includes('soap') || n.includes('chemical') || n.includes('cleaner') ||
-            n.includes('floor care') || n.includes('floor cleaner') || n.includes('glass cleaner') ||
-            n.includes('oven cleaner') || n.includes('grill cleaner') || n.includes('pot & pan') ||
-            n.includes('pot and pan') || n.includes('delimer') || n.includes('delime') ||
-            n.includes('lime away') || n.includes('descaler') || n.includes('quat') ||
-            n.includes('peroxide') || n.includes('disinfect') || n.includes('dispenser')
+            n.includes('sanitizer') || n.includes('sanitiser') || n.includes('disinfect') ||
+            n.includes('fabuloso') || n.includes('oven cleaner') || n.includes('grill cleaner') ||
+            n.includes('floor cleaner') || n.includes('glass cleaner') || n.includes('hand soap') ||
+            n.includes('soap refill') || n.includes('pot & pan') || n.includes('pot and pan') ||
+            n.includes('delimer') || n.includes('delime') || n.includes('descaler') ||
+            n.includes('lime away') || n.includes('quat') || n.includes('peroxide') ||
+            (n.includes('cleaner') && !n.includes('screen'))
+        )
+    },
+    {
+        cat: '🧹 Cleaning Tools',
+        color: '#8b5cf6',
+        test: (n, v, c) => (
+            n.includes('scrubbing') || n.includes('scrubber') || n.includes('scrub') ||
+            n.includes('scour') || n.includes('steel wool') || n.includes('sponge') ||
+            n.includes('mop') || n.includes('broom') || n.includes('brush') ||
+            n.includes('hand pad') || n.includes('green pad') || n.includes('wiper') ||
+            n.includes('squeegee') || n.includes('bucket') || n.includes('dust pan') ||
+            n.includes('wet floor')
+        )
+    },
+    {
+        cat: '🚻 Restroom Supplies',
+        color: '#64748b',
+        test: (n, v, c) => (
+            n.includes('toilet tissue') || n.includes('toilet paper') ||
+            n.includes('bath tissue') || n.includes('seat cover') ||
+            n.includes('seat covers') || n.includes('koala paper liner') ||
+            n.includes('restroom') || n.includes('urinal screen') || n.includes('urinal')
+        )
+    },
+    {
+        cat: '🧻 Napkins / Paper Towels',
+        color: '#0369a1',
+        test: (n, v, c) => (
+            n.includes('napkin') || n.includes('paper towel') ||
+            n.includes('hand towel') || n.includes('hardwound roll') ||
+            n.includes('hardwood roll') || n.includes('towel roll') ||
+            n.includes('receipt paper') || n.includes('thermal paper')
+        )
+    },
+    {
+        cat: '🧤 Gloves',
+        color: '#7c3aed',
+        test: (n, v, c) => (
+            n.includes('glove') || n.includes('nitrile') ||
+            n.includes('poly glove') || n.includes('vinyl glove') || n.includes('latex glove')
+        )
+    },
+    {
+        cat: '🥤 Heavy Duty Cups 8oz / 16oz / 32oz',
+        color: '#0891b2',
+        test: (n, v, c) => (
+            n.includes('heavy duty') && (n.includes('cup') || n.includes('8 oz') || n.includes('16 oz') || n.includes('32 oz') || n.includes('8oz') || n.includes('16oz') || n.includes('32oz'))
+        )
+    },
+    {
+        cat: '🥣 Portion Cups & Lids',
+        color: '#0ea5e9',
+        test: (n, v, c) => (
+            n.includes('portion cup') || n.includes('portion lid') ||
+            n.includes('portion') || n.includes('souffle') ||
+            n.includes('soufflé') || n.includes('1 oz') || n.includes('1oz') ||
+            n.includes('2 oz') || n.includes('2oz')
+        )
+    },
+    {
+        cat: '🥤 Beverage Cups / Lids / Straws',
+        color: '#06b6d4',
+        test: (n, v, c) => (
+            n.includes('pet clear cup') || n.includes('clear cup') ||
+            n.includes('paper cup') || n.includes('hot cup') || n.includes('cold cup') ||
+            n.includes('flat straw') || n.includes('straw slot') || n.includes('jumbo straw') ||
+            n.includes('straw') || n.includes('sipper') || n.includes('drink lid') ||
+            n.includes('cup lid') || (n.includes('cup') && !n.includes('portion') && !n.includes('heavy duty'))
+        )
+    },
+    {
+        cat: '🥡 To-Go Containers / Boxes / Bowls',
+        color: '#ea580c',
+        test: (n, v, c) => (
+            n.includes('container') || n.includes('to go') || n.includes('togo') ||
+            n.includes('take out') || n.includes('takeout') ||
+            n.includes('clamshell') || n.includes('hinged') ||
+            n.includes('foam box') || n.includes('lunch box') ||
+            n.includes('deli') || n.includes('soup bowl') ||
+            n.includes('rice bowl') || n.includes('bowl') ||
+            n.includes('plate') || n.includes('platter')
+        )
+    },
+    {
+        cat: '🍱 Trays / Steam Pans / Aluminum Pans',
+        color: '#d97706',
+        test: (n, v, c) => (
+            n.includes('tray') || n.includes('steam pan') ||
+            n.includes('half pan') || n.includes('full pan') ||
+            n.includes('alum pan') || n.includes('aluminum pan') ||
+            n.includes('oblong') || n.includes('hotel pan') ||
+            n.includes('sheet pan')
+        )
+    },
+    {
+        cat: '🎁 Foil / Film / Wraps',
+        color: '#6b7280',
+        test: (n, v, c) => (
+            n.includes('foil') || n.includes('film') ||
+            n.includes('plastic wrap') || n.includes('saran') ||
+            n.includes('parchment') || n.includes('wax paper') ||
+            n.includes('cutter box') || (n.includes('wrap') && !n.includes('wrapped straw'))
+        )
+    },
+    {
+        cat: '🛍️ Plastic T-Shirt Bags',
+        color: '#16a34a',
+        test: (n, v, c) => (
+            n.includes('plastic t bag') || n.includes('t-shirt bag') ||
+            n.includes('t shirt bag') || n.includes('[ l ] plastic t') ||
+            n.includes('[ m ] plastic t') || n.includes('[ s ] plastic t')
+        )
+    },
+    {
+        cat: '🗑️ Trash Bags & Can Liners',
+        color: '#15803d',
+        test: (n, v, c) => (
+            n.includes('trash bag') || n.includes('trash can liner') ||
+            n.includes('can liner') || n.includes('garbage bag') ||
+            n.includes('kcl04') || n.includes('liner 60')
+        )
+    },
+    {
+        cat: '🛍️ Food Bags / Zip Bags',
+        color: '#22c55e',
+        test: (n, v, c) => (
+            n.includes('ziplock') || n.includes('zip lock') ||
+            n.includes('ziploc') || n.includes('food bag') ||
+            n.includes('sandwich bag') || n.includes('freezer bag') ||
+            (n.includes('bag') && !n.includes('trash') && !n.includes('liner') && !n.includes('plastic t'))
+        )
+    },
+    {
+        cat: '🍴 Utensils / Cutlery / Chopsticks',
+        color: '#dc2626',
+        test: (n, v, c) => (
+            n.includes('fork') || n.includes('spoon') ||
+            n.includes('knife') || n.includes('chopstick') ||
+            n.includes('cutlery') || n.includes('utensil') ||
+            n.includes('spork')
+        )
+    },
+    {
+        cat: '🦺 PPE / Aprons / Masks',
+        color: '#a855f7',
+        test: (n, v, c) => (
+            n.includes('hair net') || n.includes('hairnet') ||
+            n.includes('mask') || n.includes('apron') ||
+            n.includes('sleeve') || n.includes('ppe')
+        )
     },
     {
         cat: '🥫 Canned Goods',
         color: '#b45309',
-        test: (n, v, c) => c.includes('canned') || n.includes('can ') || n.includes('cans ') ||
-            n.includes('canned') || n.includes('#10') || n.includes('tomato paste') ||
-            n.includes('tomato sauce') || n.includes('bamboo shoot') || n.includes('water chestnut') ||
-            n.includes('baby corn') || n.includes('corn can') || n.includes('mushroom can') ||
-            n.includes('pineapple can') || n.includes('lychee can')
+        test: (n, v, c) => (
+            !n.includes('trash can') && !n.includes('can liner') &&
+            (n.includes('bamboo shoot') || n.includes('water chestnut') ||
+            n.includes('baby corn') || n.includes('mushroom can') ||
+            n.includes('whole sliced mushroom') || n.includes('pineapple can') ||
+            n.includes('lychee can') || n.includes('tomato sauce') ||
+            n.includes('tomato paste') || /\b#10\b/.test(n) ||
+            /\bcan(?:ned)?\b/.test(n))
+        )
     },
     {
-        cat: '🥡 To-Go Containers, Cups, Lids & Trays',
-        color: '#ea580c',
-        test: (n, v, c) => c.includes('to-go') || c.includes('to go') || c.includes('packaging') ||
-            c.includes('disposable') || c.includes('container') || c.includes('cups') ||
-            n.includes('container') || n.includes('to go') || n.includes('togo') ||
-            n.includes('take out') || n.includes('takeout') || n.includes('tray') ||
-            n.includes('clamshell') || n.includes('foam box') || n.includes('hinged') ||
-            n.includes('oblong') || n.includes('steam pan') || n.includes('half pan') ||
-            n.includes('full pan') || n.includes('alum pan') || n.includes('aluminum pan') ||
-            n.includes('lid') || n.includes('cup') || n.includes('straw') || n.includes('sipper') ||
-            n.includes('portion cup') || n.includes('soup cup') || n.includes('deli cup') ||
-            n.includes('bowl') || n.includes('plate')
+        cat: '🌶️ Spices / Dry Condiments',
+        color: '#c2410c',
+        test: (n, v, c) => (
+            n.includes('dried sichuan') || n.includes('sichuan') ||
+            n.includes('szechuan') || n.includes('prickly ash') ||
+            n.includes('peppercorn') || n.includes('spice') ||
+            n.includes('seasoning') || n.includes('msg')
+        )
     },
     {
-        cat: '🛍️ Bags & Liners',
-        color: '#16a34a',
-        test: (n, v, c) => c.includes('bags') || c.includes('liners') || n.includes('bag') ||
-            n.includes('liner') || n.includes('ziplock') || n.includes('zip lock') ||
-            n.includes('t-shirt') || n.includes('trash bag') || n.includes('can liner')
+        cat: '🫙 Sauces / Oils / Condiments',
+        color: '#b91c1c',
+        test: (n, v, c) => (
+            n.includes('bean sauce') || n.includes('sauce') ||
+            n.includes('oil') || n.includes('vinegar') || n.includes('soy') ||
+            n.includes('oyster') || n.includes('sesame') ||
+            n.includes('ketchup') || n.includes('mustard') ||
+            n.includes('mayo') || n.includes('chili') ||
+            n.includes('curry') || n.includes('paste') ||
+            n.includes('hoisin') || n.includes('teriyaki')
+        )
     },
     {
-        cat: '🧤 Gloves & PPE',
-        color: '#7c3aed',
-        test: (n, v, c) => c.includes('gloves') || c.includes('ppe') || n.includes('glove') ||
-            n.includes('hair net') || n.includes('hairnet') || n.includes('mask') ||
-            n.includes('apron') || n.includes('sleeve')
-    },
-    {
-        cat: '🧻 Paper, Napkins & Towels',
-        color: '#0369a1',
-        test: (n, v, c) => c.includes('paper') || n.includes('napkin') || n.includes('paper towel') ||
-            n.includes('toilet paper') || n.includes('hand towel') || n.includes('tissue') ||
-            n.includes('receipt paper') || n.includes('thermal paper')
-    },
-    {
-        cat: '🎁 Foil, Wraps & Film',
-        color: '#6b7280',
-        test: (n, v, c) => c.includes('foil') || c.includes('wrap') || n.includes('foil') ||
-            n.includes('film') || n.includes('wrap') || n.includes('parchment') ||
-            n.includes('wax paper') || n.includes('plastic wrap')
-    },
-    {
-        cat: '🧹 Cleaning Tools',
-        color: '#9333ea',
-        test: (n, v, c) => n.includes('mop') || n.includes('broom') || n.includes('sponge') ||
-            n.includes('scrub') || n.includes('scour') || n.includes('steel wool') ||
-            n.includes('brush') || n.includes('pad') || n.includes('dust pan') ||
-            n.includes('bucket') || n.includes('wet floor')
-    },
-    {
-        cat: '🌾 Dry Goods, Rice & Noodles',
+        cat: '🌾 Dry Goods / Rice / Noodles',
         color: '#f59e0b',
-        test: (n, v, c) => c.includes('dry') || n.includes('rice') || n.includes('noodle') ||
-            n.includes('flour') || n.includes('starch') || n.includes('sugar') || n.includes('salt') ||
-            n.includes('corn starch') || n.includes('bread crumb') || n.includes('panko') ||
+        test: (n, v, c) => (
+            n.includes('rice') || n.includes('noodle') ||
+            n.includes('flour') || n.includes('starch') ||
+            n.includes('sugar') || n.includes('salt') ||
+            n.includes('bread crumb') || n.includes('panko') ||
             n.includes('bean thread') || n.includes('vermicelli')
-    },
-    {
-        cat: '🫙 Sauces, Oils & Condiments',
-        color: '#dc2626',
-        test: (n, v, c) => c.includes('sauce') || c.includes('condiment') || n.includes('sauce') ||
-            n.includes('oil') || n.includes('vinegar') || n.includes('soy') || n.includes('oyster') ||
-            n.includes('sesame') || n.includes('ketchup') || n.includes('mustard') ||
-            n.includes('mayo') || n.includes('chili') || n.includes('curry') ||
-            n.includes('paste') || n.includes('hoisin') || n.includes('teriyaki')
+        )
     },
     {
         cat: '🥬 Produce',
         color: '#16a34a',
-        test: (n, v, c) => c.includes('produce') || c.includes('vegetable') || c.includes('fruit') ||
-            n.includes('lettuce') || n.includes('onion') || n.includes('pepper') || n.includes('garlic') ||
-            n.includes('ginger') || n.includes('mushroom') || n.includes('carrot') ||
-            n.includes('cabbage') || n.includes('broccoli') || n.includes('celery') ||
-            n.includes('scallion') || n.includes('cilantro')
+        test: (n, v, c) => (
+            n.includes('lettuce') || n.includes('onion') ||
+            n.includes('pepper') || n.includes('garlic') ||
+            n.includes('ginger') || n.includes('carrot') ||
+            n.includes('cabbage') || n.includes('broccoli') ||
+            n.includes('celery') || n.includes('scallion') ||
+            n.includes('cilantro')
+        )
     },
     {
         cat: '🥩 Meat & Seafood',
         color: '#dc2626',
-        test: (n, v, c) => c.includes('meat') || c.includes('seafood') || c.includes('beef') ||
-            c.includes('pork') || c.includes('chicken') || n.includes('beef') || n.includes('pork') ||
-            n.includes('chicken') || n.includes('shrimp') || n.includes('fish') ||
-            n.includes('seafood') || n.includes('rib') || n.includes('loin')
+        test: (n, v, c) => (
+            n.includes('beef') || n.includes('pork') ||
+            n.includes('chicken') || n.includes('shrimp') ||
+            n.includes('fish') || n.includes('seafood') ||
+            n.includes('rib') || n.includes('loin')
+        )
     },
     {
         cat: '🥛 Dairy & Eggs',
         color: '#3b82f6',
-        test: (n, v, c) => c.includes('dairy') || c.includes('eggs') || n.includes('egg') ||
-            n.includes('milk') || n.includes('cream') || n.includes('cheese') || n.includes('butter')
+        test: (n, v, c) => (
+            n.includes('egg') || n.includes('milk') ||
+            n.includes('cream') || n.includes('cheese') ||
+            n.includes('butter')
+        )
     },
     {
         cat: '❄️ Frozen',
         color: '#0ea5e9',
-        test: (n, v, c) => c.includes('frozen') || n.includes('frozen')
+        test: (n, v, c) => n.includes('frozen')
     },
     {
         cat: '🥤 Beverages',
         color: '#ec4899',
-        test: (n, v, c) => c.includes('beverage') || n.includes('soda') || n.includes('tea') ||
-            n.includes('juice') || n.includes('water') || n.includes('drink') ||
-            n.includes('lemonade') || n.includes('coffee')
+        test: (n, v, c) => (
+            n.includes('soda') || n.includes('tea') ||
+            n.includes('juice') || n.includes('water') ||
+            n.includes('drink') || n.includes('lemonade') ||
+            n.includes('coffee')
+        )
     }
 ];
+
+function _poFindLatestInvoiceForProduct(productName) {
+    const target = String(productName || '').trim().toLowerCase();
+    if (!target || !Array.isArray(window.inventoryData)) return null;
+
+    const matches = window.inventoryData
+        .filter(row => String(row.product_name || '').trim().toLowerCase() === target)
+        .sort((a, b) => new Date(b.purchase_date || b.invoice_date || b.created_at || 0) - new Date(a.purchase_date || a.invoice_date || a.created_at || 0));
+
+    return matches[0] || null;
+}
+
+function _poEffectiveVendor(row) {
+    const direct = String(row.vendor || row.selected_vendor || row.vendors || '').trim();
+    if (direct) return direct;
+
+    const latest = _poFindLatestInvoiceForProduct(row.product_name);
+    return String(latest?.vendor || latest?.supplier || '').trim();
+}
 
 function _ronyExtractSizeSortKey(name) {
     const raw = String(name || '').toLowerCase().replace(/\s+/g, ' ');
@@ -29691,21 +30378,24 @@ function _ronyProductFamilyKey(name) {
         .replace(/\b\d+(?:\.\d+)?oz\b/g, ' ')
         .replace(/\b\d+\s*x\s*\d+(?:\.\d+)?\b/g, ' ')
         .replace(/\b(?:white|black|clear|natural|red|green|blue|yellow|heavy|medium|small|large|xl|xxl)\b/g, ' ')
-        .replace(/[#()/.,-]/g, ' ')
+        .replace(/[#()/.,\[\]-]/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
 }
 
 function _ronySubSortPriority(row) {
     const n = String(row.product_name || '').toLowerCase();
-    const c = String(row.category || '').toLowerCase();
 
-    if (n.includes('degreaser') || n.includes('detergent') || n.includes('rinse') || n.includes('sanitizer')) return 10;
-    if (n.includes('soap') || n.includes('cleaner') || n.includes('bleach')) return 20;
-    if (n.includes('8oz') || n.includes('8 oz') || n.includes('16oz') || n.includes('16 oz') || n.includes('32oz') || n.includes('32 oz')) return 30;
-    if (n.includes('container') || n.includes('cup') || n.includes('lid')) return 40;
-    if (n.includes('tray') || n.includes('pan')) return 50;
-    if (c.includes('chemical') || c.includes('cleaning')) return 60;
+    if (n.includes('autochlor') || n.includes('pan blast') || n.includes('detergent') || n.includes('rinse')) return 5;
+    if (n.includes('degreaser') || n.includes('sanitizer') || n.includes('bleach') || n.includes('cleaner')) return 10;
+    if (n.includes('soap') || n.includes('fabuloso')) return 20;
+    if (n.includes('8oz') || n.includes('8 oz')) return 30;
+    if (n.includes('16oz') || n.includes('16 oz')) return 31;
+    if (n.includes('32oz') || n.includes('32 oz')) return 32;
+    if (n.includes('lid')) return 40;
+    if (n.includes('cup')) return 41;
+    if (n.includes('container') || n.includes('box') || n.includes('bowl')) return 50;
+    if (n.includes('tray') || n.includes('pan')) return 60;
     return 100;
 }
 
@@ -29730,12 +30420,20 @@ function _groupRonyByGeneralCategory(rows) {
 
     const otherRows = [];
     rows.forEach(row => {
-        const n = String(row.product_name || '').toLowerCase();
-        const v = String(row.vendor || '').toLowerCase();
-        const c = String(row.category || '').toLowerCase();
+        const n = _poText(row.product_name);
+        const v = _poText(_poEffectiveVendor(row));
+        const c = ''; // Rony PlaceOrder intentionally ignores old saved categories.
+
         const match = RONY_PLACE_ORDER_GROUPS.find(group => group.test(n, v, c));
-        if (match) buckets.get(match.cat).rows.push(row);
-        else otherRows.push(row);
+        if (match) {
+            row._rony_general_category = match.cat;
+            row.category = match.cat; // keep the card label aligned with the new Rony grouping
+            buckets.get(match.cat).rows.push(row);
+        } else {
+            row._rony_general_category = '❓ Other / Needs Review';
+            row.category = '❓ Other / Needs Review';
+            otherRows.push(row);
+        }
     });
 
     const result = [];
@@ -29752,7 +30450,7 @@ function _groupRonyByGeneralCategory(rows) {
 
     if (otherRows.length) {
         result.push({
-            cat: '❓ Other',
+            cat: '❓ Other / Needs Review',
             rows: otherRows.sort(_sortRonyPlaceOrderRows),
             _groupColor: '#64748b'
         });
@@ -29799,6 +30497,10 @@ function _buildPlaceOrderHTML(ronyData, julioData, officeData, userFilter) {
             </div>
 
             ${_buildSectionFilters('rony', ronyData, 'rgba(255,255,255,0.6)')}
+            ${window._lastRonyPlaceOrderMatch ? `
+              <div style="margin-top:0.5rem;font-size:0.75rem;color:rgba(255,255,255,0.88);font-weight:700;">
+                Rony Orders matched: ${window._lastRonyPlaceOrderMatch.expected} expected · ${window._lastRonyPlaceOrderMatch.added.length} added · ${window._lastRonyPlaceOrderMatch.missing.length} missing
+              </div>` : ''}
 
           </div>
 
@@ -29969,6 +30671,19 @@ async function renderEnhancedOrderCards(ronyData, julioData, officeData = []) {
 
     ronyData = ronyData.filter(r => (r.user||'').toLowerCase().trim() === 'rony');
 
+    const ronyExistingNames = new Set(
+        ronyData.map(row => String(row.product_name || '').trim().toLowerCase()).filter(Boolean)
+    );
+    RONY_AUTOCHLOR_FALLBACK_PRODUCTS.forEach(item => {
+        _poAddMissingRonyRow(ronyData, ronyExistingNames, {
+            ...item,
+            vendor: 'Autochlor',
+            selected_vendor: 'Autochlor',
+            category: '🧴 Autochlor / Dish Machine Chemicals',
+            position: 'Autochlor / Dish Machine Chemicals'
+        });
+    });
+
 
 
     // NOTE: Per-group drag order is applied AFTER render via _poApplyDragOrder()
@@ -30094,6 +30809,17 @@ function renderEnhancedCard(row, userType) {
     const isAssignedToJulio  = currentUser === 'julio';
     const isAssignedToOffice = currentUser === 'office';
 
+    const ronyGeneralCategory = isRony ? (row._rony_general_category || row.category || 'Other / Needs Review') : '';
+    const displayGroupLabel = isRony
+        ? ronyGeneralCategory
+        : ((window._placeOrderGroupMap && window._placeOrderGroupMap[productName]) || '<span style="opacity:.6;">Assign Group…</span>');
+    const groupBarColor = isRony
+        ? 'var(--accent-500)'
+        : (window._placeOrderGroupMap?.[productName] ? 'var(--accent-500)' : 'var(--neutral-500)');
+    const groupBarTitle = isRony
+        ? 'Rony general category is auto-built from product name/vendor'
+        : 'Click to assign or change group';
+
     const productPrices = inventoryData.filter(i => i.product_name === productName);
     const prices = productPrices.map(i => parseFloat(i.unit_price || 0));
     let bestPrice    = { price: 0, vendor: 'N/A', date: 'N/A' };
@@ -30144,12 +30870,12 @@ function renderEnhancedCard(row, userType) {
 
   <!-- GROUP BAR: Assign group (like RonyDashboard) -->
   <div style="position:relative;">
-    <div onclick="poToggleGroupPicker(this,${JSON.stringify(productName).replace(/"/g,'&quot;')})"
-         style="background:${window._placeOrderGroupMap?.[productName]?'var(--accent-500)':'var(--neutral-500)'};color:white;font-size:9.5px;font-weight:700;padding:4px 10px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:5px;min-height:22px;"
-         title="Click to assign or change group">
+    <div onclick="${isRony ? '' : `poToggleGroupPicker(this,${JSON.stringify(productName).replace(/"/g,'&quot;')})`}"
+         style="background:${groupBarColor};color:white;font-size:9.5px;font-weight:700;padding:4px 10px;cursor:${isRony ? 'default' : 'pointer'};user-select:none;display:flex;align-items:center;gap:5px;min-height:22px;"
+         title="${groupBarTitle}">
       <i class="fas fa-layer-group" style="opacity:.8;font-size:9px;flex-shrink:0;"></i>
       <span id="po-grplabel-${productId}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">
-        ${ (window._placeOrderGroupMap && window._placeOrderGroupMap[productName]) ? window._placeOrderGroupMap[productName] : '<span style="opacity:.6;">Assign Group…</span>' }
+        ${displayGroupLabel}
       </span>
       <i class="fas fa-chevron-down" style="font-size:7px;opacity:.6;flex-shrink:0;"></i>
     </div>
