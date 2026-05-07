@@ -16068,17 +16068,24 @@ function setDashBudget() {
 function isDashAchVendor(invoice) {
     const vendor = String(invoice?.vendor || '').trim().toLowerCase();
     const check = String(invoice?.check_number || '').trim().toLowerCase();
-    return vendor.includes('autochlor') || check === 'ach' || check.includes('ach');
+    return vendor.includes('autochlor') || vendor.includes('sysco') || check === 'ach' || check.includes('ach');
+}
+
+function isDashCreditCardVendor(invoice) {
+    const vendor = String(invoice?.vendor || '').trim().toLowerCase();
+    const check = String(invoice?.check_number || '').trim().toLowerCase();
+    return vendor.includes('restaurant depot') || check === 'credit card' || check === 'cc' || check.includes('credit card');
 }
 
 function isDashInvoiceMissingCheck(invoice) {
     const check = String(invoice?.check_number || '').trim();
-    if (isDashAchVendor(invoice)) return false;
+    if (isDashAchVendor(invoice) || isDashCreditCardVendor(invoice)) return false;
     return check === '' || check === 'CHK-12345' || check.toLowerCase() === 'pending';
 }
 
 function dashInvoicePaymentStatus(invoice) {
     if (isDashAchVendor(invoice)) return 'ACH';
+    if (isDashCreditCardVendor(invoice)) return 'Credit Card';
     if (isDashInvoiceMissingCheck(invoice)) return 'Needs Check #';
     return 'Has Check #';
 }
@@ -16719,7 +16726,7 @@ function _renderDashExtraCharts(ctx) {
         100
     );
 
-    const statusOrder = ['Has Check #', 'ACH', 'Needs Check #'];
+    const statusOrder = ['Has Check #', 'ACH', 'Credit Card', 'Needs Check #'];
     const statusRows = statusOrder
         .filter(status => paymentStatusCount[status])
         .map(status => ({
@@ -51168,6 +51175,20 @@ document.addEventListener('change', function(event) {
         return key === "ach" || key.includes("ach payment") || key.startsWith("ach-");
     }
 
+    function isCreditCardCheckValue(value) {
+        const key = normalize(value);
+        return key === "cc" || key === "credit card" || key.includes("credit card") || key.startsWith("cc-");
+    }
+
+    function isAchVendorName(vendor) {
+        const key = normalize(vendor);
+        return key.includes("autochlor") || key.includes("sysco");
+    }
+
+    function isCreditCardVendorName(vendor) {
+        return normalize(vendor).includes("restaurant depot");
+    }
+
     function cleanCheckKeyPart(value, fallback) {
         return String(value || fallback || "invoice")
             .trim()
@@ -51184,9 +51205,20 @@ document.addEventListener('change', function(event) {
         return `ACH-${datePart}-${vendorPart}-${invoicePart}`;
     }
 
+    function creditCardInvoiceCheckNumber(invoice) {
+        const datePart = cleanCheckKeyPart(invoiceDate(invoice).replace(/-/g, ""), "DATE");
+        const vendorPart = cleanCheckKeyPart(invoice.vendor, "VENDOR").slice(0, 18);
+        const invoicePart = cleanCheckKeyPart(invoice.invoice_number || invoice.id, "INVOICE");
+        return `CC-${datePart}-${vendorPart}-${invoicePart}`;
+    }
+
     function checkDisplayLabel(row) {
-        if (isAchCheckValue(row?.check_number) || normalize(row?.status) === "ach") {
+        if (isAchCheckValue(row?.check_number) || isAchVendorName(row?.vendor) || normalize(row?.status) === "ach") {
             return "ACH Payment";
+        }
+
+        if (isCreditCardCheckValue(row?.check_number) || isCreditCardVendorName(row?.vendor) || normalize(row?.status) === "credit card") {
+            return "Credit Card";
         }
 
         return row?.check_number || "—";
@@ -52609,7 +52641,6 @@ document.addEventListener('change', function(event) {
             const { data, error } = await supabaseClient
                 .from(IMPORT_TABLE)
                 .select("id, vendor, invoice_date, created_at, invoice_number, check_number, total, amount, notes")
-                .not("check_number", "is", null)
                 .limit(15000);
 
             if (error) throw error;
@@ -52617,12 +52648,15 @@ document.addEventListener('change', function(event) {
             const groupedByCheck = new Map();
 
             (data || [])
-                .filter(invoice => isRealCheckNumber(invoice.check_number))
+                .filter(invoice => isRealCheckNumber(invoice.check_number) || isAchVendorName(invoice.vendor) || isCreditCardVendorName(invoice.vendor))
                 .forEach(invoice => {
-                    const isAchPayment = isAchCheckValue(invoice.check_number);
+                    const isAchPayment = isAchCheckValue(invoice.check_number) || isAchVendorName(invoice.vendor);
+                    const isCreditCardPayment = isCreditCardCheckValue(invoice.check_number) || isCreditCardVendorName(invoice.vendor);
                     const checkNumber = isAchPayment
                         ? achInvoiceCheckNumber(invoice)
-                        : String(invoice.check_number || "").trim();
+                        : isCreditCardPayment
+                            ? creditCardInvoiceCheckNumber(invoice)
+                            : String(invoice.check_number || "").trim();
                     const normalizedCheck = normalizeCheck(checkNumber);
 
                     if (!normalizedCheck || existingChecks.has(normalizedCheck)) {
@@ -52641,7 +52675,7 @@ document.addEventListener('change', function(event) {
                             category: inferCategoryFromInvoice(invoice),
                             reason: vendor,
                             amount: 0,
-                            status: isAchPayment ? "ACH" : "Cleared",
+                            status: isAchPayment ? "ACH" : isCreditCardPayment ? "Credit Card" : "Cleared",
                             notes: "",
                             source_table: IMPORT_TABLE,
                             source_id: String(invoice.id || ""),
@@ -59730,6 +59764,14 @@ document.addEventListener('change', function(event) {
     }
 
     function paymentOf(row) {
+        if (isAchVendorName(row.vendor || row.vendor_name || row.reason) || isAchValue(row.check_number) || isAchValue(row.status)) {
+            return "ACH";
+        }
+
+        if (isCreditCardVendorName(row.vendor || row.vendor_name || row.reason) || isCreditCardValue(row.check_number) || isCreditCardValue(row.status)) {
+            return "Credit Card";
+        }
+
         var payment = String(row.payment_method || row.payment || "Check").trim();
         return payment || "Check";
     }
@@ -59743,9 +59785,18 @@ document.addEventListener('change', function(event) {
         return key === "ACH" || key.indexOf("ACH PAYMENT") >= 0 || key.indexOf("ACH-") === 0;
     }
 
+    function isCreditCardValue(value) {
+        var key = normalize(value);
+        return key === "CC" || key === "CREDIT CARD" || key.indexOf("CREDIT CARD") >= 0 || key.indexOf("CC-") === 0;
+    }
+
     function isAchVendorName(vendor) {
         var key = normalize(vendor);
         return key.indexOf("AUTOCHLOR") >= 0 || key === "SYSCO" || key.indexOf("SYSCO") >= 0;
+    }
+
+    function isCreditCardVendorName(vendor) {
+        return normalize(vendor).indexOf("RESTAURANT DEPOT") >= 0;
     }
 
     function invoiceAmount(row) {
@@ -59774,51 +59825,73 @@ document.addEventListener('change', function(event) {
         ].join("-");
     }
 
+    function invoiceCreditCardReference(invoice) {
+        return [
+            "CC",
+            cleanRefPart(invoiceDate(invoice).replace(/-/g, ""), "DATE"),
+            cleanRefPart(invoice.vendor, "VENDOR").slice(0, 18),
+            cleanRefPart(invoice.invoice_number || invoice.id, "INVOICE")
+        ].join("-");
+    }
+
     function isAchInvoice(invoice) {
         return isAchValue(invoice.check_number) || isAchVendorName(invoice.vendor);
     }
 
+    function isCreditCardInvoice(invoice) {
+        return isCreditCardValue(invoice.check_number) || isCreditCardVendorName(invoice.vendor);
+    }
+
+    function isInvoiceLevelPayment(invoice) {
+        return isAchInvoice(invoice) || isCreditCardInvoice(invoice);
+    }
+
     function invoiceToFinancialRow(invoice) {
         var vendor = String(invoice.vendor || "UNKNOWN").trim().toUpperCase();
-        var ref = invoiceAchReference(invoice);
+        var isCreditCard = isCreditCardInvoice(invoice);
+        var ref = isCreditCard ? invoiceCreditCardReference(invoice) : invoiceAchReference(invoice);
+        var method = isCreditCard ? "Credit Card" : "ACH";
 
         return {
-            id: "invoice-ach-" + String(invoice.id || ref),
+            id: "invoice-payment-" + String(invoice.id || ref),
             check_date: invoiceDate(invoice),
             check_number: ref,
             payment_reference: ref,
-            payment_method: "ACH",
+            payment_method: method,
             vendor: vendor,
             category: "Vendor",
             reason: vendor,
             amount: invoiceAmount(invoice),
-            status: "ACH",
-            notes: invoice.invoice_number ? "ACH invoice " + invoice.invoice_number : "ACH invoice",
+            status: method,
+            notes: invoice.invoice_number ? method + " invoice " + invoice.invoice_number : method + " invoice",
             source_table: "invoices",
             source_id: String(invoice.id || ""),
-            __invoiceAch: true
+            __invoicePayment: true
         };
     }
 
     function isAggregatedAchRegisterRow(row, invoiceVendors) {
-        if (!isAchValue(row.check_number) && !isAchValue(row.status) && !isAchValue(row.payment_method)) {
-            return false;
-        }
-
         var vendorKey = normalize(row.vendor || row.vendor_name);
         if (!invoiceVendors[vendorKey]) {
             return false;
         }
 
+        var rowIsAch = isAchValue(row.check_number) || isAchValue(row.status) || isAchValue(row.payment_method);
+        var rowIsCreditCard = isCreditCardValue(row.check_number) || isCreditCardValue(row.status) || isCreditCardValue(row.payment_method);
+
+        if (!rowIsAch && !rowIsCreditCard) {
+            return false;
+        }
+
         var checkKey = normalize(row.check_number);
-        return checkKey === "ACH" || checkKey === "ACH PAYMENT" || !String(row.source_id || "").trim();
+        return checkKey === "ACH" || checkKey === "ACH PAYMENT" || checkKey === "CREDIT CARD" || checkKey === "CC" || !String(row.source_id || "").trim();
     }
 
     function mergeAchInvoicesWithRegisterRows(registerRows, invoiceRows) {
         var achInvoices = (invoiceRows || []).filter(function (invoice) {
             var date = invoiceDate(invoice);
             var range = getDateRange();
-            return date >= range.start && date <= range.end && isAchInvoice(invoice) && invoiceAmount(invoice) > 0;
+            return date >= range.start && date <= range.end && isInvoiceLevelPayment(invoice) && invoiceAmount(invoice) > 0;
         });
 
         if (!achInvoices.length) {
@@ -59851,8 +59924,12 @@ document.addEventListener('change', function(event) {
     }
 
     function paymentRefLabel(row) {
-        if (isAchValue(row.check_number) || isAchValue(row.status) || isAchValue(row.payment_method)) {
+        if (isAchVendorName(row.vendor || row.vendor_name || row.reason) || isAchValue(row.check_number) || isAchValue(row.status) || isAchValue(row.payment_method)) {
             return "ACH Payment";
+        }
+
+        if (isCreditCardVendorName(row.vendor || row.vendor_name || row.reason) || isCreditCardValue(row.check_number) || isCreditCardValue(row.status) || isCreditCardValue(row.payment_method)) {
+            return "Credit Card";
         }
 
         return row.check_number || row.payment_reference || "—";
