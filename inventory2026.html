@@ -59689,7 +59689,7 @@ document.addEventListener('change', function(event) {
 (function () {
     "use strict";
 
-    var VERSION_KEY = "2026.05.07.v69-ach-dashboard-monthly-fix";
+    var VERSION_KEY = "2026.05.07.v72-edit-popup-vendor-methods";
     var FINANCIAL_SECTION = "checkRegister";
     var FILTER_KEY = "jc_option_e_v45_filters";
     var chartInstance = null;
@@ -59870,21 +59870,23 @@ document.addEventListener('change', function(event) {
         };
     }
 
-    function isAggregatedAchRegisterRow(row, invoiceVendors) {
-        var vendorKey = normalize(row.vendor || row.vendor_name);
+    function isInvoiceVendorRegisterRow(row, invoiceVendors) {
+        var vendorKey = normalize(row.vendor || row.vendor_name || row.reason);
         if (!invoiceVendors[vendorKey]) {
             return false;
         }
 
-        var rowIsAch = isAchValue(row.check_number) || isAchValue(row.status) || isAchValue(row.payment_method);
-        var rowIsCreditCard = isCreditCardValue(row.check_number) || isCreditCardValue(row.status) || isCreditCardValue(row.payment_method);
+        var vendorUsesInvoicePayments = isAchVendorName(row.vendor || row.vendor_name || row.reason)
+            || isCreditCardVendorName(row.vendor || row.vendor_name || row.reason);
+        var rowUsesInvoicePayment = isAchValue(row.check_number)
+            || isAchValue(row.status)
+            || isAchValue(row.payment_method)
+            || isCreditCardValue(row.check_number)
+            || isCreditCardValue(row.status)
+            || isCreditCardValue(row.payment_method);
+        var rowFromInvoiceImport = normalize(row.source_table) === "INVOICES" || !!String(row.source_id || "").trim();
 
-        if (!rowIsAch && !rowIsCreditCard) {
-            return false;
-        }
-
-        var checkKey = normalize(row.check_number);
-        return checkKey === "ACH" || checkKey === "ACH PAYMENT" || checkKey === "CREDIT CARD" || checkKey === "CC" || !String(row.source_id || "").trim();
+        return vendorUsesInvoicePayments || rowUsesInvoicePayment || rowFromInvoiceImport;
     }
 
     function mergeAchInvoicesWithRegisterRows(registerRows, invoiceRows) {
@@ -59903,22 +59905,11 @@ document.addEventListener('change', function(event) {
             invoiceVendors[normalize(invoice.vendor)] = true;
         });
 
-        var existingInvoiceSources = Object.create(null);
-        (registerRows || []).forEach(function (row) {
-            if (row.source_table === "invoices" && row.source_id) {
-                existingInvoiceSources[String(row.source_id)] = true;
-            }
-        });
-
         var cleanedRegisterRows = (registerRows || []).filter(function (row) {
-            return !isAggregatedAchRegisterRow(row, invoiceVendors);
+            return !isInvoiceVendorRegisterRow(row, invoiceVendors);
         });
 
-        var syntheticRows = achInvoices
-            .filter(function (invoice) {
-                return !existingInvoiceSources[String(invoice.id || "")];
-            })
-            .map(invoiceToFinancialRow);
+        var syntheticRows = achInvoices.map(invoiceToFinancialRow);
 
         return cleanedRegisterRows.concat(syntheticRows);
     }
@@ -60881,13 +60872,213 @@ document.addEventListener('change', function(event) {
         alert("Add Check form is not connected in this build yet.");
     };
 
-    window.jcFinancialEditCheckV64 = function (id) {
-        if (typeof window.jcCheckRegisterEdit === "function") {
-            window.jcCheckRegisterEdit(id);
+    function findFinancialRowById(id) {
+        var key = String(id || "");
+        return rowsCache.find(function (row) {
+            return String(row.id || "") === key
+                || String(row.source_id || "") === key
+                || String(row.check_number || "") === key
+                || String(row.payment_reference || "") === key;
+        }) || null;
+    }
+
+    function financialEditModalOptions(values, selected) {
+        return values.map(function (value) {
+            return '<option value="' + escapeHtml(value) + '"' + (String(value) === String(selected || "") ? " selected" : "") + '>' + escapeHtml(value) + '</option>';
+        }).join("");
+    }
+
+    function ensureFinancialEditModal() {
+        var existing = byId("jcfd72EditOverlay");
+        if (existing) return existing;
+
+        var overlay = document.createElement("div");
+        overlay.id = "jcfd72EditOverlay";
+        overlay.innerHTML = [
+            '<div id="jcfd72EditBackdrop" style="position:fixed;inset:0;background:rgba(15,23,42,.62);z-index:9998;"></div>',
+            '<div role="dialog" aria-modal="true" style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(720px,calc(100vw - 28px));max-height:92vh;overflow:auto;background:#fff;border-radius:18px;box-shadow:0 28px 80px rgba(0,0,0,.35);z-index:9999;">',
+                '<div style="background:#17284b;color:#fff;padding:1.1rem 1.25rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;">',
+                    '<div><div style="font-size:1rem;font-weight:950;letter-spacing:.04em;text-transform:uppercase;">Edit Payment Record</div><div id="jcfd72EditSource" style="font-size:.72rem;font-weight:800;opacity:.82;margin-top:.2rem;"></div></div>',
+                    '<button type="button" id="jcfd72EditClose" style="border:0;background:#fff;color:#17284b;border-radius:999px;font-weight:950;padding:.55rem .85rem;cursor:pointer;">Close</button>',
+                '</div>',
+                '<form id="jcfd72EditForm" style="padding:1.25rem;">',
+                    '<input type="hidden" id="jcfd72EditId">',
+                    '<input type="hidden" id="jcfd72EditSourceTable">',
+                    '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.9rem;">',
+                        '<label style="font-weight:900;color:#334155;">Date<br><input id="jcfd72Date" type="date" required style="width:100%;padding:.75rem;border:1px solid #cbd5e1;border-radius:10px;font-weight:800;"></label>',
+                        '<label style="font-weight:900;color:#334155;">Payment Method<br><select id="jcfd72Method" style="width:100%;padding:.75rem;border:1px solid #cbd5e1;border-radius:10px;font-weight:800;">',
+                            financialEditModalOptions(["Check", "ACH", "Credit Card"], "Check"),
+                        '</select></label>',
+                        '<label style="font-weight:900;color:#334155;">Check / Ref<br><input id="jcfd72Ref" style="width:100%;padding:.75rem;border:1px solid #cbd5e1;border-radius:10px;font-weight:800;"></label>',
+                        '<label style="font-weight:900;color:#334155;">Status<br><select id="jcfd72Status" style="width:100%;padding:.75rem;border:1px solid #cbd5e1;border-radius:10px;font-weight:800;">',
+                            financialEditModalOptions(["Cleared", "Pending", "ACH", "Credit Card", "Void"], "Cleared"),
+                        '</select></label>',
+                        '<label style="font-weight:900;color:#334155;">Type<br><select id="jcfd72Category" style="width:100%;padding:.75rem;border:1px solid #cbd5e1;border-radius:10px;font-weight:800;">',
+                            financialEditModalOptions(["Vendor", "Services", "Misc"], "Vendor"),
+                        '</select></label>',
+                        '<label style="font-weight:900;color:#334155;">Amount<br><input id="jcfd72Amount" type="number" step="0.01" min="0" required style="width:100%;padding:.75rem;border:1px solid #cbd5e1;border-radius:10px;font-weight:800;"></label>',
+                    '</div>',
+                    '<label style="display:block;font-weight:900;color:#334155;margin-top:.9rem;">Vendor<br><input id="jcfd72Vendor" required style="width:100%;padding:.75rem;border:1px solid #cbd5e1;border-radius:10px;font-weight:800;text-transform:uppercase;"></label>',
+                    '<label style="display:block;font-weight:900;color:#334155;margin-top:.9rem;">Reason / Notes<br><textarea id="jcfd72Reason" rows="3" style="width:100%;padding:.75rem;border:1px solid #cbd5e1;border-radius:10px;font-weight:800;"></textarea></label>',
+                    '<div id="jcfd72SaveMessage" style="display:none;margin-top:1rem;padding:.8rem;border-radius:10px;font-weight:900;"></div>',
+                    '<div style="display:flex;justify-content:flex-end;gap:.75rem;margin-top:1.25rem;border-top:1px solid #e2e8f0;padding-top:1rem;">',
+                        '<button type="button" id="jcfd72Cancel" style="border:1px solid #cbd5e1;background:#fff;color:#17284b;border-radius:999px;font-weight:950;padding:.75rem 1.2rem;cursor:pointer;">Cancel</button>',
+                        '<button type="submit" style="border:0;background:#17284b;color:#fff;border-radius:999px;font-weight:950;padding:.75rem 1.2rem;cursor:pointer;">Save Changes</button>',
+                    '</div>',
+                '</form>',
+            '</div>'
+        ].join("");
+
+        overlay.style.display = "none";
+        document.body.appendChild(overlay);
+
+        byId("jcfd72EditClose").addEventListener("click", closeFinancialEditModal);
+        byId("jcfd72Cancel").addEventListener("click", closeFinancialEditModal);
+        byId("jcfd72EditBackdrop").addEventListener("click", closeFinancialEditModal);
+        byId("jcfd72Method").addEventListener("change", syncFinancialEditPaymentMethod);
+        byId("jcfd72EditForm").addEventListener("submit", saveFinancialEditModal);
+
+        return overlay;
+    }
+
+    function showFinancialEditMessage(message, type) {
+        var box = byId("jcfd72SaveMessage");
+        if (!box) return;
+
+        box.style.display = "block";
+        box.style.background = type === "error" ? "#fee2e2" : "#dcfce7";
+        box.style.color = type === "error" ? "#991b1b" : "#166534";
+        box.textContent = message;
+    }
+
+    function syncFinancialEditPaymentMethod() {
+        var method = byId("jcfd72Method") ? byId("jcfd72Method").value : "Check";
+        var ref = byId("jcfd72Ref");
+        var status = byId("jcfd72Status");
+
+        if (method === "ACH") {
+            if (ref && (!ref.value || normalize(ref.value) === "CHECK")) ref.value = "ACH";
+            if (status) status.value = "ACH";
+        } else if (method === "Credit Card") {
+            if (ref && (!ref.value || normalize(ref.value) === "CHECK" || normalize(ref.value) === "ACH")) ref.value = "Credit Card";
+            if (status) status.value = "Credit Card";
+        } else {
+            if (status && (normalize(status.value) === "ACH" || normalize(status.value) === "CREDIT CARD")) status.value = "Cleared";
+            if (ref && (normalize(ref.value) === "ACH" || normalize(ref.value) === "CREDIT CARD")) ref.value = "";
+        }
+    }
+
+    function openFinancialEditModal(row) {
+        var overlay = ensureFinancialEditModal();
+        var method = paymentOf(row);
+        var ref = paymentRefLabel(row);
+        var sourceIsInvoice = !!row.__invoicePayment;
+
+        byId("jcfd72EditId").value = String(sourceIsInvoice ? row.source_id : row.id || "");
+        byId("jcfd72EditSourceTable").value = sourceIsInvoice ? "invoices" : "check_register";
+        byId("jcfd72Date").value = safeDate(row.check_date || row.invoice_date || row.date || row.created_at);
+        byId("jcfd72Method").value = method === "Credit Card" ? "Credit Card" : method === "ACH" ? "ACH" : "Check";
+        byId("jcfd72Ref").value = ref === "ACH Payment" ? "ACH" : ref === "Credit Card" ? "Credit Card" : (row.check_number || row.payment_reference || "");
+        byId("jcfd72Status").value = row.status || (method === "ACH" ? "ACH" : method === "Credit Card" ? "Credit Card" : "Cleared");
+        byId("jcfd72Category").value = categoryOf(row);
+        byId("jcfd72Vendor").value = String(row.vendor || row.vendor_name || "").toUpperCase();
+        byId("jcfd72Reason").value = row.reason || row.notes || row.vendor || "";
+        byId("jcfd72Amount").value = Number(amountOf(row)).toFixed(2);
+        byId("jcfd72EditSource").textContent = sourceIsInvoice ? "Editing invoice-level ACH / Credit Card payment" : "Editing check_register record";
+
+        var box = byId("jcfd72SaveMessage");
+        if (box) box.style.display = "none";
+
+        overlay.style.display = "block";
+        byId("jcfd72Date").focus();
+    }
+
+    function closeFinancialEditModal() {
+        var overlay = byId("jcfd72EditOverlay");
+        if (overlay) overlay.style.display = "none";
+    }
+
+    async function saveFinancialEditModal(event) {
+        event.preventDefault();
+
+        var client = getSupabase();
+        if (!client) {
+            showFinancialEditMessage("Supabase is not connected.", "error");
             return;
         }
 
-        alert("Edit popup is not connected in this build yet. Check ID: " + id);
+        var id = byId("jcfd72EditId").value;
+        var sourceTable = byId("jcfd72EditSourceTable").value;
+        var date = byId("jcfd72Date").value;
+        var method = byId("jcfd72Method").value;
+        var vendor = byId("jcfd72Vendor").value.trim().toUpperCase();
+        var ref = byId("jcfd72Ref").value.trim();
+        var category = byId("jcfd72Category").value || "Vendor";
+        var reason = byId("jcfd72Reason").value.trim() || vendor;
+        var amount = Number(byId("jcfd72Amount").value || 0);
+
+        if (!date || !vendor || amount <= 0) {
+            showFinancialEditMessage("Date, vendor, and amount are required.", "error");
+            return;
+        }
+
+        if (method === "ACH" && !ref) ref = "ACH";
+        if (method === "Credit Card" && !ref) ref = "Credit Card";
+
+        try {
+            var result;
+
+            if (sourceTable === "invoices") {
+                result = await client
+                    .from("invoices")
+                    .update({
+                        invoice_date: date,
+                        vendor: vendor,
+                        check_number: ref || method,
+                        total: amount,
+                        amount: amount
+                    })
+                    .eq("id", id)
+                    .select()
+                    .single();
+            } else {
+                result = await client
+                    .from("check_register")
+                    .update({
+                        check_date: date,
+                        check_number: ref,
+                        vendor: vendor,
+                        category: category,
+                        reason: reason,
+                        amount: amount,
+                        status: method === "ACH" ? "ACH" : method === "Credit Card" ? "Credit Card" : byId("jcfd72Status").value || "Cleared",
+                        notes: ""
+                    })
+                    .eq("id", id)
+                    .select()
+                    .single();
+            }
+
+            if (result.error) throw result.error;
+
+            showFinancialEditMessage("Saved successfully.", "success");
+            await loadFinancialData(true);
+            window.setTimeout(closeFinancialEditModal, 450);
+        } catch (error) {
+            console.error("[V72] Financial edit save failed:", error);
+            showFinancialEditMessage("Save failed: " + (error.message || error), "error");
+        }
+    }
+
+    window.jcFinancialEditCheckV64 = function (id) {
+        var row = findFinancialRowById(id);
+
+        if (!row) {
+            alert("I could not find this payment row. Refresh the Financial Register and try again.");
+            return;
+        }
+
+        openFinancialEditModal(row);
     };
 
     document.addEventListener("click", function (event) {
@@ -61096,7 +61287,7 @@ document.addEventListener('change', function(event) {
     "use strict";
 
     const REFRESH_MS = 15 * 60 * 1000;
-    const VERSION_KEY = "2026.05.07.v69-ach-dashboard-monthly-fix";
+    const VERSION_KEY = "2026.05.07.v72-edit-popup-vendor-methods";
 
     function getActiveOrderView() {
         if (document.querySelector("#ronyOrders.active")) return "rony";
