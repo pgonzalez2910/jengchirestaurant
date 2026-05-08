@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.07.v101-rony-placeorder-show-all-once';
+        var VERSION = '2026.05.08.v102-financial-timeframe-from-to';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -60915,6 +60915,29 @@ document.addEventListener('change', function(event) {
         return QUARTER_RANGES_V70[quarter] || QUARTER_RANGES_V70.Q1;
     }
 
+    function jcfd64MonthKeysBetween(startDate, endDate) {
+        var start = new Date(String(startDate || "") + "T00:00:00");
+        var end = new Date(String(endDate || "") + "T00:00:00");
+        var months = [];
+
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return months;
+        if (start > end) {
+            var tmp = start;
+            start = end;
+            end = tmp;
+        }
+
+        var cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+        var stop = new Date(end.getFullYear(), end.getMonth(), 1);
+
+        while (cursor <= stop) {
+            months.push(cursor.getFullYear() + "-" + String(cursor.getMonth() + 1).padStart(2, "0"));
+            cursor.setMonth(cursor.getMonth() + 1);
+        }
+
+        return months;
+    }
+
     function defaultFilters() {
         var range = quarterRange("Q1");
 
@@ -60942,10 +60965,14 @@ document.addEventListener('change', function(event) {
 
         filters.year = "2026";
         filters.quarter = QUARTER_RANGES_V70[filters.quarter] ? filters.quarter : "Q1";
+        filters.month = filters.month || "";
+        filters.week = "";
+        filters.vendor = filters.vendor || "";
+        filters.category = filters.category || "";
 
         var range = quarterRange(filters.quarter);
-        filters.startDate = range.start;
-        filters.endDate = range.end;
+        filters.startDate = filters.startDate || range.start;
+        filters.endDate = filters.endDate || range.end;
 
         return filters;
     }
@@ -60955,8 +60982,19 @@ document.addEventListener('change', function(event) {
         var range = quarterRange(safeFilters.quarter);
 
         safeFilters.year = "2026";
-        safeFilters.startDate = range.start;
-        safeFilters.endDate = range.end;
+        safeFilters.quarter = QUARTER_RANGES_V70[safeFilters.quarter] ? safeFilters.quarter : "Q1";
+        safeFilters.month = safeFilters.month || "";
+        safeFilters.week = "";
+        safeFilters.vendor = safeFilters.vendor || "";
+        safeFilters.category = safeFilters.category || "";
+        safeFilters.startDate = safeFilters.startDate || range.start;
+        safeFilters.endDate = safeFilters.endDate || range.end;
+
+        if (safeFilters.startDate > safeFilters.endDate) {
+            var tmp = safeFilters.startDate;
+            safeFilters.startDate = safeFilters.endDate;
+            safeFilters.endDate = tmp;
+        }
 
         localStorage.setItem(FILTER_KEY, JSON.stringify(safeFilters));
         localStorage.setItem("jc_default_financial_period", safeFilters.quarter + "-2026");
@@ -60965,13 +61003,14 @@ document.addEventListener('change', function(event) {
     function getDateRange() {
         var filters = readFilters();
         var range = quarterRange(filters.quarter);
+        var months = jcfd64MonthKeysBetween(filters.startDate, filters.endDate);
 
         return {
-            start: range.start,
-            end: range.end,
+            start: filters.startDate,
+            end: filters.endDate,
             quarter: filters.quarter,
             note: range.note,
-            months: range.months.slice()
+            months: months.length ? months : range.months.slice()
         };
     }
 
@@ -61087,7 +61126,6 @@ document.addEventListener('change', function(event) {
 
     if (filters.month && date.slice(0, 7) !== filters.month) return false;
 
-    if (filters.week && jcfd64WeekKey(date) !== filters.week) return false;
 
             if (filters.vendor && normalize(row.vendor || row.vendor_name) !== normalize(filters.vendor)) return false;
 
@@ -61200,10 +61238,11 @@ document.addEventListener('change', function(event) {
                         '</div>',
                         '<div class="jcfd64-field"><label>Year</label><select id="jcfd64Year"><option value="2026">2026</option></select></div>',
                         '<div class="jcfd64-field"><label>Month</label><select id="jcfd64Month"><option value="">All Months</option></select></div>',
-                        '<div class="jcfd64-field"><label>Week</label><select id="jcfd64Week"><option value="">All Weeks</option></select></div>',
+                        '<div class="jcfd64-field"><label>Time Frame From</label><input type="date" id="jcfd64StartDate"></div>',
+                        '<div class="jcfd64-field"><label>Time Frame To</label><input type="date" id="jcfd64EndDate"></div>',
                         '<div class="jcfd64-field"><label>Vendor</label><select id="jcfd64Vendor"><option value="">All Vendors</option></select></div>',
                         '<div class="jcfd64-field"><label>Category</label><select id="jcfd64Category"><option value="">All Categories</option><option value="Vendor">Vendor</option><option value="Services">Services</option></select></div>',
-                        '<div class="jcfd64-note"><strong>Active filters:</strong> ', range.quarter, ' • 2026 • ', escapeHtml(range.note), '</div>',
+                        '<div class="jcfd64-note"><strong>Active filters:</strong> ', range.quarter, ' • 2026 • ', escapeHtml(range.start), ' to ', escapeHtml(range.end), '</div>',
                     '</div>',
                     '<div class="jcfd64-kpis" id="jcfd64Kpis"></div>',
                     '<div class="jcfd64-main-grid">',
@@ -61272,7 +61311,8 @@ function jcfd64PopulateMonthAndWeekFilters() {
     var range = getDateRange();
 
     var monthSelect = byId("jcfd64Month");
-    var weekSelect = byId("jcfd64Week");
+    var startInput = byId("jcfd64StartDate");
+    var endInput = byId("jcfd64EndDate");
 
     if (monthSelect) {
         var currentMonth = filters.month || "";
@@ -61294,47 +61334,17 @@ function jcfd64PopulateMonthAndWeekFilters() {
         }
     }
 
-    if (weekSelect) {
-        var currentWeek = filters.week || "";
-        var start = new Date((filters.month || range.start) + (filters.month ? "-01T00:00:00" : "T00:00:00"));
-        var end = filters.month
-            ? new Date(start.getFullYear(), start.getMonth() + 1, 0)
-            : new Date(range.end + "T00:00:00");
-
-        var weeks = [];
-        var seen = {};
-
-        for (var d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-            var key = jcfd64WeekKey(d.toISOString().slice(0, 10));
-            if (key && !seen[key]) {
-                seen[key] = true;
-                weeks.push(key);
-            }
-        }
-
-        weekSelect.innerHTML =
-            '<option value="">All Weeks</option>' +
-            weeks.map(function (weekKey) {
-                return '<option value="' + escapeHtml(weekKey) + '">' +
-                    escapeHtml(jcfd64WeekOptionLabel(weekKey)) +
-                '</option>';
-            }).join("");
-
-        if (weeks.includes(currentWeek)) {
-            weekSelect.value = currentWeek;
-        } else {
-            weekSelect.value = "";
-            filters.week = "";
-            saveFilters(filters);
-        }
-    }
+    if (startInput) startInput.value = filters.startDate || range.start || "";
+    if (endInput) endInput.value = filters.endDate || range.end || "";
 }
+
 
  function bindDashboardControls() {
     jcfd64PopulateMonthAndWeekFilters();
 
     var monthSelect = byId("jcfd64Month");
-    var weekSelect = byId("jcfd64Week");
+    var startInput = byId("jcfd64StartDate");
+    var endInput = byId("jcfd64EndDate");
     var vendorSelect = byId("jcfd64Vendor");
     var categorySelect = byId("jcfd64Category");
     var searchInput = byId("jcfd64Search");
@@ -61345,20 +61355,47 @@ function jcfd64PopulateMonthAndWeekFilters() {
         monthSelect.addEventListener("change", function () {
             var filters = readFilters();
             filters.month = this.value || "";
-            filters.week = ""; // reset week because weeks depend on selected month
+            filters.week = "";
+
+            if (filters.month) {
+                filters.startDate = filters.month + "-01";
+                var parts = filters.month.split("-");
+                filters.endDate = new Date(Number(parts[0]), Number(parts[1]), 0).toISOString().slice(0, 10);
+            } else {
+                var range = quarterRange(filters.quarter);
+                filters.startDate = range.start;
+                filters.endDate = range.end;
+            }
+
             saveFilters(filters);
             jcfd64PopulateMonthAndWeekFilters();
-            renderData();
+            loadFinancialData(true);
         });
     }
 
-    if (weekSelect && weekSelect.dataset.bound !== "true") {
-        weekSelect.dataset.bound = "true";
-        weekSelect.addEventListener("change", function () {
+    if (startInput && startInput.dataset.bound !== "true") {
+        startInput.dataset.bound = "true";
+        startInput.addEventListener("change", function () {
             var filters = readFilters();
-            filters.week = this.value || "";
+            filters.startDate = this.value || filters.startDate;
+            filters.month = "";
+            filters.week = "";
             saveFilters(filters);
-            renderData();
+            jcfd64PopulateMonthAndWeekFilters();
+            loadFinancialData(true);
+        });
+    }
+
+    if (endInput && endInput.dataset.bound !== "true") {
+        endInput.dataset.bound = "true";
+        endInput.addEventListener("change", function () {
+            var filters = readFilters();
+            filters.endDate = this.value || filters.endDate;
+            filters.month = "";
+            filters.week = "";
+            saveFilters(filters);
+            jcfd64PopulateMonthAndWeekFilters();
+            loadFinancialData(true);
         });
     }
 
