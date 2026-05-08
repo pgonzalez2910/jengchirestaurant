@@ -1,8 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-
     <meta charset="UTF-8">
     <!-- ── Apply kiosk-mode BEFORE first paint so nav never flashes ── -->
     <script>
@@ -14,17 +12,11 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.08.v102-financial-timeframe-from-to';
-        var stored = localStorage.getItem('jc_inv_version');
-        if (stored && stored !== VERSION) {
-            localStorage.setItem('jc_inv_version', VERSION);
-            location.reload(true);
-        } else {
-            localStorage.setItem('jc_inv_version', VERSION);
-        }
+        var VERSION = '2026.05.08.v112-zero-qty-no-warning';
+        // ── Just stamp the version. Never hard-reload — the page IS already the new code. ──
+        localStorage.setItem('jc_inv_version', VERSION);
     })();
     </script>
-
 
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
@@ -45,7 +37,6 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 
     <style>
-
         :root {
 
             /* ── Jeng Chi Enterprise Palette — Professional Slate / Sky Blue ── */
@@ -115,13 +106,11 @@
             --neutral-50:  #f9fafb;
 
             
-
             --font-display: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
 
             --font-mono: 'JetBrains Mono', 'Courier New', monospace;
 
             
-
             --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
 
             --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, 0.1), 0 2px 4px -1px rgba(15, 23, 42, 0.06);
@@ -139,8 +128,7 @@
             --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
 
         }
-
-        
+       
 
         * {
 
@@ -12110,10 +12098,6 @@ async function initializeApp() {
         
 
         await loadAllData();
-
-        await loadJulioOrders();
-
-        await loadRonyOrders();
 
         renderInventoryTable();
 
@@ -28972,9 +28956,9 @@ async function loadEnhancedCreateOrder() {
             const isRonyAssigned = assigned.some(value => String(value || '').toLowerCase().includes('rony'));
             const isAutochlorCatalogItem = _poIsAutochlorDishChemicalName(nameText, vendorsText);
 
-            // Rony PlaceOrder must always show Autochlor/Dish Machine chemicals, even if
-            // an old hidden toggle or old assignment/category setup exists.
-            if ((!isRonyAssigned && !isAutochlorCatalogItem) || (item.is_hidden === true && !isAutochlorCatalogItem) || !item.product_name) return;
+            // Hidden products must stay hidden permanently, including Autochlor/Dish Machine chemicals.
+            if ((!isRonyAssigned && !isAutochlorCatalogItem) || item.is_hidden === true || !item.product_name) return;
+            if (typeof _poIsPermanentHiddenPlaceOrderProduct === 'function' && _poIsPermanentHiddenPlaceOrderProduct(item.product_name)) return;
 
             const key = String(item.product_name).trim().toLowerCase();
             if (ronyExistingNames.has(key)) return;
@@ -29083,6 +29067,7 @@ async function loadEnhancedCreateOrder() {
         // ✅ Last safety net: show known Autochlor chemicals even if they are missing from both
         // inventory_management and invoice_items.
         RONY_AUTOCHLOR_FALLBACK_PRODUCTS.forEach(item => {
+            if (typeof _poIsPermanentHiddenPlaceOrderProduct === 'function' && _poIsPermanentHiddenPlaceOrderProduct(item.product_name)) return;
             _poAddMissingRonyRow(ronyData, ronyExistingNames, {
                 ...item,
                 vendor: 'Autochlor',
@@ -29257,6 +29242,10 @@ async function loadEnhancedCreateOrder() {
 
         await renderEnhancedOrderCards(ronyData, julioData, officeData);
 
+        // ── Stamp cache timestamp so fast-path can reuse data within 90 s ──
+        window._placeOrderCacheTs = Date.now();
+        if (window._placeOrderCache) window._placeOrderCache._loadedDate = dateISO;
+
         
 
         // ✅ STEP 10: Batch-load ALL vendor prices in 2 queries instead of N*2 queries
@@ -29373,6 +29362,38 @@ function _buildSectionFilters(section, allRows, accentColor) {
 
 
 
+
+function _poNormalizePermanentHiddenName(value) {
+    return String(value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toUpperCase();
+}
+
+function _poPermanentHiddenPlaceOrderSet() {
+    return new Set([
+        'AUTOCHLOR DELIMER',
+        'AUTOCHLOR SANITIZER',
+        'DISH CLEANING DETERGENT',
+        'DISH CLEANING SANITIZER',
+        'DISH MACHINE DETERGENT',
+        'DISH MACHINE SANITIZER',
+        'LOW TEMP DETERGENT',
+        'MACHINE CHARGES',
+        'MULTI PRP',
+        'NTRL MULTI PRP',
+        'NTRL MULTI PRP CLN 4X1',
+        'WHOLE LYCHEES IN SYRUP 24X20',
+        'PURELL HAND SANITIZER',
+        'PURELL LIQUID SANITIZER',
+        'SERVICE CHARGE'
+    ]);
+}
+
+function _poIsPermanentHiddenPlaceOrderProduct(productName) {
+    return _poPermanentHiddenPlaceOrderSet().has(_poNormalizePermanentHiddenName(productName));
+}
+
 function _filterRows(rows, section) {
     const f = window._placeOrderFilters[section] || { vendor:'', category:'', group:'' };
     return rows.filter(r => {
@@ -29380,8 +29401,9 @@ function _filterRows(rows, section) {
             && typeof _poIsAutochlorDishChemicalName === 'function'
             && _poIsAutochlorDishChemicalName(r.product_name, _poEffectiveVendor(r) || r.vendor || r.selected_vendor);
 
-        // Hidden toggle can hide normal products, but it must not hide Rony Autochlor/Dish Machine chemicals.
-        if (!isForcedRonyAutochlor && window._hiddenProducts && window._hiddenProducts.has(r.product_name)) return false;
+        // Hidden toggle must hide every product, including Rony Autochlor/Dish Machine chemicals.
+        if (typeof _poIsPermanentHiddenPlaceOrderProduct === 'function' && _poIsPermanentHiddenPlaceOrderProduct(r.product_name)) return false;
+        if (window._hiddenProducts && window._hiddenProducts.has(r.product_name)) return false;
         if (f.vendor   && r.vendor   !== f.vendor)   return false;
         if (f.category && (r.category||'Other') !== f.category) return false;
         if (f.group && (window._placeOrderGroupMap[r.product_name]||'') !== f.group) return false;
@@ -29866,19 +29888,23 @@ function _poText(value) {
 function _poIsAutochlorDishChemicalName(name, vendor = '') {
     const n = _poText(name);
     const v = _poText(vendor);
+    // ── Exact-name exclusions: "Low Temp Detergent Kitchen" and "Low Temp Detergent Bar"
+    //    are Rony manual-order products, NOT Autochlor service items. ──
+    if (n === 'low temp detergent kitchen' || n === 'low temp detergent bar') return false;
     return v.includes('autochlor') || v.includes('auto chlor') ||
         n.includes('autochlor') || n.includes('auto chlor') ||
         n.includes('pan blaster') || n.includes('pan blast') || n.includes('panblast') ||
-        n.includes('rinse aid') || n.includes('rinse') ||
-        n.includes('low temp detergent') || n.includes('low temp') ||
-        n.includes('detergent') ||
-        n.includes('solution cl') || n.includes('solution') ||
-        n.includes('multi prp') || n.includes('ntrl multi prp') ||
-        n.includes('neutral multi') || n.includes('multi purpose') ||
+        n.includes('rinse aid') ||
+        // "low temp detergent" alone = Autochlor; "low temp detergent kitchen/bar" excluded above
+        n === 'low temp detergent' ||
         n.includes('dish machine') || n.includes('dishmachine') || n.includes('dish cleaning') ||
+        n.includes('solution cl') ||
+        n.includes('multi prp') || n.includes('ntrl multi prp') ||
+        n.includes('neutral multi') ||
         n.includes('warewash') || n.includes('ware wash') ||
         n.includes('delimer') || n.includes('delime') ||
-        n.includes('sanitizer') || n.includes('sanitiser');
+        // Only match "sanitizer" when vendor is Autochlor — too generic otherwise
+        ((v.includes('autochlor') || v.includes('auto chlor')) && (n.includes('sanitizer') || n.includes('sanitiser')));
 }
 
 const RONY_AUTOCHLOR_FALLBACK_PRODUCTS = [
@@ -29909,6 +29935,8 @@ function _poSyntheticRonyId(prefix, productName) {
 function _poAddMissingRonyRow(ronyData, existingNames, item) {
     const productName = String(item.product_name || item.name || item.description || '').trim();
     if (!productName) return false;
+    if (typeof _poIsPermanentHiddenPlaceOrderProduct === 'function' && _poIsPermanentHiddenPlaceOrderProduct(productName)) return false;
+    if (window._hiddenProducts && window._hiddenProducts.has(productName)) return false;
 
     const key = productName.toLowerCase();
     const code = item.item_code || item.code || item.item_number || item.sku || null;
@@ -29929,10 +29957,7 @@ function _poAddMissingRonyRow(ronyData, existingNames, item) {
         if (!existing.par && item.par) existing.par = parseFloat(item.par) || 0;
         if (!existing.target && item.target) existing.target = parseFloat(item.target) || 0;
 
-        if (window._hiddenProducts && window._hiddenProducts.has(existing.product_name)) {
-            window._hiddenProducts.delete(existing.product_name);
-        }
-
+        // Do not remove hidden status here. Hidden products must stay hidden.
         return true;
     }
 
@@ -30800,6 +30825,27 @@ function renderEnhancedCard(row, userType) {
 
     const defaultQty = (tentative !== null && tentative !== undefined && tentative !== 0) ? tentative : '';
 
+    // ── Compute cheapest price FIRST so we can use it for default vendor ──
+    const productPrices = inventoryData.filter(i => i.product_name === productName);
+    const prices = productPrices.map(i => parseFloat(i.unit_price || 0)).filter(p => p > 0);
+    let bestPrice    = { price: 0, vendor: 'N/A', itemCode: '', date: 'N/A' };
+    let highestPrice = { price: 0, vendor: 'N/A', date: 'N/A' };
+    if (prices.length > 0) {
+        const minPrice = Math.min(...prices);
+        const maxPrice = Math.max(...prices);
+        const minItem  = productPrices.find(i => parseFloat(i.unit_price) === minPrice);
+        const maxItem  = productPrices.find(i => parseFloat(i.unit_price) === maxPrice);
+        bestPrice    = { price: minPrice, vendor: minItem?.vendor || 'N/A', itemCode: minItem?.item_code || '', date: minItem?.purchase_date || 'N/A' };
+        highestPrice = { price: maxPrice, vendor: maxItem?.vendor || 'N/A', date: maxItem?.purchase_date || 'N/A' };
+    }
+
+    // ── Default vendor: cheapest if no saved order; item code: from row or cheapest vendor ──
+    const cheapestVendor   = (bestPrice.vendor && bestPrice.vendor !== 'N/A') ? bestPrice.vendor : '';
+    const cheapestItemCode = bestPrice.itemCode || '';
+    const formVendor   = row.vendor || row.selected_vendor || cheapestVendor;
+    // ── Pre-fill item code from saved row first, then cheapest vendor's code as default ──
+    const formItemCode = row.item_code || cheapestItemCode;
+
     const conversion  = window.conversionMap?.get(productName) || { units_per_case: 1, unit_type: 'unit' };
     const hasCase     = conversion.units_per_case > 1;
     const caseSizeText = hasCase ? `${conversion.units_per_case} ${conversion.unit_type}/case` : 'N/A';
@@ -30819,19 +30865,6 @@ function renderEnhancedCard(row, userType) {
     const groupBarTitle = isRony
         ? 'Rony general category is auto-built from product name/vendor'
         : 'Click to assign or change group';
-
-    const productPrices = inventoryData.filter(i => i.product_name === productName);
-    const prices = productPrices.map(i => parseFloat(i.unit_price || 0));
-    let bestPrice    = { price: 0, vendor: 'N/A', date: 'N/A' };
-    let highestPrice = { price: 0, vendor: 'N/A', date: 'N/A' };
-    if (prices.length > 0) {
-        const minPrice = Math.min(...prices);
-        const maxPrice = Math.max(...prices);
-        const minItem  = productPrices.find(i => parseFloat(i.unit_price) === minPrice);
-        const maxItem  = productPrices.find(i => parseFloat(i.unit_price) === maxPrice);
-        bestPrice    = { price: minPrice, vendor: minItem?.vendor || 'N/A', date: minItem?.purchase_date || 'N/A' };
-        highestPrice = { price: maxPrice, vendor: maxItem?.vendor || 'N/A', date: maxItem?.purchase_date || 'N/A' };
-    }
 
     return `
 <div class="enhanced-order-card" data-product="${escapedProductName}" data-user="${userType}" data-id="${escapedItemId}"
@@ -31039,32 +31072,32 @@ function renderEnhancedCard(row, userType) {
   <div style="padding:0.6rem 0.75rem;background:var(--neutral-50);">
     <div style="display:flex;flex-direction:column;gap:0.5rem;">
       <div>
-        <label style="display:block;font-size:0.65rem;font-weight:700;color:var(--neutral-700);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.25rem;">Select Vendor</label>
+        <label style="display:block;font-size:0.65rem;font-weight:700;color:var(--neutral-700);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.25rem;">Select Vendor ${bestPrice.price > 0 ? `<span style="background:#dcfce7;color:#15803d;border-radius:4px;padding:1px 5px;font-size:0.6rem;font-weight:700;text-transform:none;">💚 Best: $${bestPrice.price.toFixed(2)} @ ${bestPrice.vendor}</span>` : ''}</label>
         <select id="vendor-${productId}"
                 data-row-id="${escapedItemId}"
                 onchange="selectVendorAndUpdateItemCode(this.dataset.rowId,'${escapedProductName}',this.value)"
                 class="search-input" style="width:100%;font-size:0.8rem;padding:0.3rem 0.5rem;">
           <option value="">-- Choose Vendor --</option>
-          <option value="Pacific Plus"         ${row.vendor==='Pacific Plus'         ?'selected':''}>Pacific Plus</option>
-          <option value="Formosa Foods"         ${row.vendor==='Formosa Foods'         ?'selected':''}>Formosa Foods</option>
-          <option value="North Food Group"      ${row.vendor==='North Food Group'      ?'selected':''}>North Food Group</option>
-          <option value="BakeMark"              ${row.vendor==='BakeMark'              ?'selected':''}>BakeMark</option>
-          <option value="Autochlor"             ${row.vendor==='Autochlor'             ?'selected':''}>Autochlor</option>
-          <option value="Delta Office Products" ${row.vendor==='Delta Office Products' ?'selected':''}>Delta Office Products</option>
-          <option value="HMart"                 ${row.vendor==='HMart'                 ?'selected':''}>HMart</option>
-          <option value="SAMS Club"             ${row.vendor==='SAMS Club'             ?'selected':''}>SAMS Club</option>
-          <option value="Home Depot"            ${row.vendor==='Home Depot'            ?'selected':''}>Home Depot</option>
-          <option value="Costco"                ${row.vendor==='Costco'                ?'selected':''}>Costco</option>
-          <option value="Restaurant Depot"      ${row.vendor==='Restaurant Depot'      ?'selected':''}>Restaurant Depot</option>
+          <option value="Pacific Plus"         ${formVendor==='Pacific Plus'         ?'selected':''}>Pacific Plus</option>
+          <option value="Formosa Foods"         ${formVendor==='Formosa Foods'         ?'selected':''}>Formosa Foods</option>
+          <option value="North Food Group"      ${formVendor==='North Food Group'      ?'selected':''}>North Food Group</option>
+          <option value="BakeMark"              ${formVendor==='BakeMark'              ?'selected':''}>BakeMark</option>
+          <option value="Autochlor"             ${formVendor==='Autochlor'             ?'selected':''}>Autochlor</option>
+          <option value="Delta Office Products" ${formVendor==='Delta Office Products' ?'selected':''}>Delta Office Products</option>
+          <option value="HMart"                 ${formVendor==='HMart'                 ?'selected':''}>HMart</option>
+          <option value="SAMS Club"             ${formVendor==='SAMS Club'             ?'selected':''}>SAMS Club</option>
+          <option value="Home Depot"            ${formVendor==='Home Depot'            ?'selected':''}>Home Depot</option>
+          <option value="Costco"                ${formVendor==='Costco'                ?'selected':''}>Costco</option>
+          <option value="Restaurant Depot"      ${formVendor==='Restaurant Depot'      ?'selected':''}>Restaurant Depot</option>
         </select>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;">
         <div>
           <label style="display:block;font-size:0.65rem;font-weight:700;color:var(--neutral-700);text-transform:uppercase;margin-bottom:0.25rem;">Item Code</label>
-          <input type="text" id="itemcode-input-${productId}" value="${row.item_code || ''}"
+          <input type="text" id="itemcode-input-${productId}" value="${formItemCode}"
                  data-row-id="${escapedItemId}"
                  onblur="updateItemCode(this.dataset.rowId,this.value)"
-                 placeholder="Auto-fills" class="search-input"
+                 placeholder="Manual / optional" class="search-input"
                  style="font-family:var(--font-mono);font-weight:600;font-size:0.8rem;padding:0.3rem 0.5rem;">
         </div>
         <div>
@@ -31702,12 +31735,19 @@ async function _batchLoadAllVendorPrices(rows) {
             });
         }
 
+        // ── Collect item codes in ORIGINAL case for DB queries (PostgreSQL is case-sensitive).
+        //    _poCleanCode lowercases, which breaks .in('item_code', ['pgre86']) when DB has 'PGRE86'. ──
+        const _poRawCode = v => {
+            const s = String(v || '').trim();
+            return ['', 'not set', 'n/a', 'na', 'none', 'null', 'auto-fills'].includes(s.toLowerCase()) ? '' : s;
+        };
+
         const rowCodesWithoutAliases = displayRows
             .filter(row => {
                 const aliases = aliasesByInventoryId.get(row._resolved_inventory_item_id) || [];
                 return aliases.length === 0;
             })
-            .map(row => _poCleanCode(row.item_code || row.selected_item_code || row.vendor_item_code))
+            .map(row => _poRawCode(row.item_code || row.selected_item_code || row.vendor_item_code))
             .filter(Boolean);
 
         const rowNamesWithoutAliases = displayRows
@@ -31719,7 +31759,13 @@ async function _batchLoadAllVendorPrices(rows) {
             .filter(Boolean);
 
         const searchNames = [...new Set([...aliasNames, ...rowNamesWithoutAliases])];
-        const searchCodes = [...new Set([...aliasCodes, ...rowCodesWithoutAliases])];
+        // searchCodes: original case for DB, plus uppercase/lowercase variants to cover any casing
+        const rawCodes  = [...new Set([...aliasCodes, ...rowCodesWithoutAliases])];
+        const searchCodes = [...new Set([
+            ...rawCodes,
+            ...rawCodes.map(c => c.toUpperCase()),
+            ...rawCodes.map(c => c.toLowerCase())
+        ])].filter(Boolean);
 
         const invoiceItemsByKey = new Map();
         const mergeByInvoiceItemKey = items => {
@@ -31755,6 +31801,26 @@ async function _batchLoadAllVendorPrices(rows) {
             mergeByInvoiceItemKey(data);
         }
 
+        // ── Partial-name fallback: for products that still got zero invoice_items hits,
+        //    try ilike on the first N-1 words (minimum 2 words, 8 chars) to avoid
+        //    single-word false matches like "%Low%" matching "Yellow" ──
+        const foundNames = new Set(Array.from(invoiceItemsByKey.values()).map(i => i.product_name));
+        const notFoundNames = searchNames.filter(n => !foundNames.has(n));
+        for (const name of notFoundNames) {
+            const words = String(name).trim().split(/\s+/);
+            if (words.length < 2) continue;
+            const prefix = words.slice(0, -1).join(' ');
+            if (prefix.length < 8) continue;
+            try {
+                const { data } = await supabaseClient
+                    .from('invoice_items')
+                    .select('product_name, item_code, unit_price, price_per_unit, has_weight, invoice_id, vendor')
+                    .ilike('product_name', `%${prefix}%`)
+                    .limit(40);
+                mergeByInvoiceItemKey(data);
+            } catch (_) { /* best-effort */ }
+        }
+
         const invoiceItems = Array.from(invoiceItemsByKey.values());
         const invoiceIds = [...new Set(invoiceItems.map(item => item.invoice_id).filter(Boolean))];
         const invoiceInfoById = new Map();
@@ -31774,6 +31840,31 @@ async function _batchLoadAllVendorPrices(rows) {
                     vendor: inv.vendor
                 });
             });
+        }
+
+        // ── Fallback: for invoice items whose invoice wasn't in current year,
+        //    fetch the invoice without the date filter so we still get the price ──
+        const missingInvoiceIds = [...new Set(
+            invoiceItems
+                .map(item => item.invoice_id)
+                .filter(id => id && !invoiceInfoById.has(id))
+        )];
+
+        if (missingInvoiceIds.length > 0) {
+            for (const idChunk of chunkArray(missingInvoiceIds)) {
+                const { data } = await supabaseClient
+                    .from('invoices')
+                    .select('id, invoice_date, vendor')
+                    .in('id', idChunk);
+
+                (data || []).forEach(inv => {
+                    invoiceInfoById.set(inv.id, {
+                        date: inv.invoice_date,
+                        vendor: inv.vendor,
+                        _priorYear: true   // flag so UI can note it's an older price
+                    });
+                });
+            }
         }
 
         const aliasMatchesItem = (alias, item, invoiceVendor) => {
@@ -31840,7 +31931,8 @@ async function _batchLoadAllVendorPrices(rows) {
                     item_code: item.item_code || 'N/A',
                     price,
                     date,
-                    source: 'invoice'
+                    source: 'invoice',
+                    _priorYear: !!(invInfo._priorYear)
                 });
             }
         });
@@ -31988,8 +32080,9 @@ async function _batchLoadAllVendorPrices(rows) {
                         <span style="font-weight:600;color:var(--primary-700);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                             ${info.vendor}
                             <span style="color:var(--neutral-400);font-size:0.68rem;font-weight:600;margin-left:5px;">${_poShortDate(info.date)}</span>
+                            ${info._priorYear ? '<span style="background:#fff3cd;color:#856404;font-size:0.6rem;font-weight:700;border-radius:3px;padding:1px 4px;margin-left:3px;">Prior yr</span>' : ''}
                         </span>
-                        <span style="font-family:var(--font-mono);color:var(--success-600);font-weight:700;white-space:nowrap;">$${info.price.toFixed(2)}</span>
+                        <span style="font-family:var(--font-mono);color:${info._priorYear ? 'var(--warning-600)' : 'var(--success-600)'};font-weight:700;white-space:nowrap;">$${info.price.toFixed(2)}</span>
                         <span style="color:var(--neutral-400);font-size:0.7rem;white-space:nowrap;">${info.item_code}</span>
                     </div>`)
                 .join('');
@@ -32007,28 +32100,9 @@ async function _batchLoadAllVendorPrices(rows) {
                 `;
             }
 
-            if (recommendedRow) {
-                const vendorSelect = document.getElementById(`vendor-${productId}`);
-                const itemCodeInput = document.getElementById(`itemcode-input-${productId}`);
-                const qtyInput = document.getElementById(`qty-${productId}`);
-                const hasTodayOrder = Number.isFinite(parseFloat(qtyInput?.value)) && parseFloat(qtyInput?.value) > 0;
-
-                if (vendorSelect && !hasTodayOrder) {
-                    if (![...vendorSelect.options].some(option => option.value === recommendedRow.vendor)) {
-                        vendorSelect.add(new Option(recommendedRow.vendor, recommendedRow.vendor));
-                    }
-                    vendorSelect.value = recommendedRow.vendor;
-                    localStorage.setItem(
-                        `placeOrder_vendor_${selectedOrderDate}_${name}`,
-                        recommendedRow.vendor
-                    );
-                }
-
-                if (itemCodeInput && !hasTodayOrder && _poCleanCode(recommendedRow.item_code)) {
-                    itemCodeInput.value = recommendedRow.item_code;
-                    updateItemCode(itemCodeInput.dataset.rowId, recommendedRow.item_code);
-                }
-            }
+            // ✅ Intentional: vendor prices are informational only.
+            // Do NOT auto-select the cheapest/recommended vendor and do NOT auto-fill/update item code.
+            // The manager must choose the vendor manually before placing the order.
         });
     } catch (e) {
         console.error('[BatchVendorPrices] error:', e);
@@ -39521,18 +39595,17 @@ function collectVisiblePlaceOrderItems() {
         const itemCode = String(codeInput?.value || '').trim();
         const productName = String(card.dataset.product || '').trim();
         const user = normalizePlaceOrderUserForDb(card.dataset.user);
-        const isRony = String(user).toLowerCase() === 'rony';
 
         return {
             order_date: document.getElementById('createOrderDate')?.value || todayYMD(),
             product_name: productName,
             user,
             tentative: qty,
-            vendor: vendor || null,
+            // ── Rule: if qty = 0, treat as "not ordering" — don't save vendor,
+            //    so it never appears as "⚠ Needs vendor" in order review. ──
+            vendor: qty > 0 ? (vendor || null) : null,
             item_code: itemCode || null,
-            _activeOrderRow: isRony
-                ? qty > 0
-                : (qty > 0 || !!vendor || !!itemCode),
+            _activeOrderRow: qty > 0,   // only qty>0 = an actual order
         };
     }).filter(row => row.product_name);
 }
@@ -41860,14 +41933,12 @@ async function loadEditOrder() {
             image_url: imageMap.get(row.product_name)?.image_url || row.image_url || null
         }));
 
-        // ✅ Items with qty>0 AND vendor = fully submitted
-        // Items with ONLY vendor (no qty) = vendor set but qty missing
-        // Items with ONLY qty>0 (no vendor) = qty set but vendor missing
-        // Items with neither = not touched
-        const submitted   = enriched.filter(r => (parseFloat(r.tentative) > 0) || r.vendor);
-        const unsubmitted = enriched.filter(r => !(parseFloat(r.tentative) > 0) && !r.vendor);
+        // ── Rule: qty = 0 → "not ordering" → hidden from review entirely.
+        //    Only items with qty > 0 appear; "⚠ Needs vendor" flags the ones missing a vendor. ──
+        const submitted   = enriched.filter(r => parseFloat(r.tentative) > 0);
+        const unsubmitted = enriched.filter(r => !(parseFloat(r.tentative) > 0) && r.vendor);
 
-        // Sort submitted: complete first (has both qty + vendor), then partial
+        // Sort submitted: complete first (has both qty + vendor), then needs-vendor
         submitted.sort((a, b) => {
             const aComplete = (parseFloat(a.tentative) > 0) && a.vendor ? 0 : 1;
             const bComplete = (parseFloat(b.tentative) > 0) && b.vendor ? 0 : 1;
@@ -41944,11 +42015,9 @@ function renderEditOrderTable(tbodyId, rows) {
                         <span style="color:var(--neutral-500);">${row.user||''}</span>
                         ${(parseFloat(row.tentative)>0 && row.vendor)
                             ? '<span style="background:#dcfce7;color:#15803d;padding:1px 6px;border-radius:10px;font-size:0.65rem;font-weight:700;">✓ Complete</span>'
-                            : (parseFloat(row.tentative)>0)
+                            : (parseFloat(row.tentative)>0 && !row.vendor)
                                 ? '<span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:10px;font-size:0.65rem;font-weight:700;">⚠ Needs vendor</span>'
-                                : (row.vendor)
-                                    ? '<span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:10px;font-size:0.65rem;font-weight:700;">⚠ Needs qty</span>'
-                                    : ''
+                                : ''
                         }
                     </div>
                 </td>
@@ -43156,7 +43225,22 @@ async function initializeEnhancedPlaceOrder() {
 
     document.getElementById('createVendorFilter').innerHTML = '<option value="">— All Vendors —</option>' + vendorOptions;
 
-
+    // ── Fast path: if PlaceOrder cache is fresh (< 90 s), skip full sync & re-render from cache ──
+    const CACHE_TTL_MS = 90_000;
+    const now = Date.now();
+    const cacheDate = window._placeOrderCache?._loadedDate || '';
+    const cacheAge  = now - (window._placeOrderCacheTs || 0);
+    if (
+        window._placeOrderCache &&
+        Array.isArray(window._placeOrderCache.rony) &&
+        cacheDate === today &&
+        cacheAge < CACHE_TTL_MS
+    ) {
+        console.log('[PO CACHE] Reusing PlaceOrder cache (' + Math.round(cacheAge/1000) + 's old). Skipping full sync.');
+        if (typeof _loadHiddenProducts === 'function') await _loadHiddenProducts();
+        await _rerenderPlaceOrderSections();
+        return;
+    }
 
     await buildVendorCodeMap();
 
@@ -43195,12 +43279,8 @@ function _preloadPlaceOrderFromLocalStorage() {
                     qtyInput.value = localStorage.getItem(key);
                 }
             } else if (key.startsWith(prefix_ven)) {
-                const productName = key.slice(prefix_ven.length);
-                const productId = productName.replace(/[^a-zA-Z0-9]/g, '_');
-                const vendorSelect = document.getElementById(`vendor-${productId}`);
-                if (vendorSelect && !vendorSelect.value) {
-                    vendorSelect.value = localStorage.getItem(key);
-                }
+                // ✅ Vendor preloading disabled. Vendor must be selected manually.
+                continue;
             }
         }
         console.log('✅ Place Order localStorage state restored');
@@ -43372,6 +43452,9 @@ document.addEventListener('change', (e) => {
     if (e.target && e.target.id === 'createOrderDate') {
 
         const dateISO = e.target.value;
+
+        // Invalidate cache so full sync runs for the new date
+        window._placeOrderCacheTs = 0;
 
         syncAndLoad(dateISO);
 
@@ -51694,11 +51777,7 @@ window.corpNav = function(tabName) {
         }, 300);
     });
 
-    window.addEventListener("load", () => {
-        setTimeout(() => {
-            if (!jcIsKioskMode()) window.jcLoadDashboardHome();
-        }, 650);
-    });
+    // ── window.load duplicate trigger removed — jcStartDashboard has a once-guard ──
 })();
 </script>
 
@@ -51900,12 +51979,15 @@ document.addEventListener('change', function(event) {
 
   window.jcForceCurrentMonthDashboardLoad = forceCurrentMonthDashboardLoad;
 
+  // ── Single-fire: DOMContentLoaded only. window.load duplicate removed.
+  //    jcStartDashboard's once-guard prevents double-init if both paths race. ──
   document.addEventListener("DOMContentLoaded", function () {
-    setTimeout(forceCurrentMonthDashboardLoad, 600);
-  });
-
-  window.addEventListener("load", function () {
-    setTimeout(forceCurrentMonthDashboardLoad, 1000);
+    setTimeout(function() {
+        // Only run if jcStartDashboard hasn't already fired (it's faster)
+        if (!window.__jcDashboardStartedOnce) {
+            forceCurrentMonthDashboardLoad();
+        }
+    }, 600);
   });
 })();
 </script>
@@ -51993,6 +52075,13 @@ document.addEventListener('change', function(event) {
             return;
         }
 
+        // ── Only fire once per page load — all duplicate triggers are no-ops ──
+        if (window.__jcDashboardStartedOnce) {
+            console.log('[Dashboard] Startup guard: skipping duplicate call.');
+            return;
+        }
+        window.__jcDashboardStartedOnce = true;
+
         try {
             localStorage.removeItem("jengchi_active_tab");
         } catch (error) {}
@@ -52045,9 +52134,7 @@ document.addEventListener('change', function(event) {
         jcStartDashboard();
     };
 
-    window.addEventListener("load", () => {
-        window.setTimeout(jcStartDashboard, 300);
-    });
+    // ── window.load duplicate trigger removed — jcStartDashboard has a once-guard ──
 })();
 </script>
 
@@ -60684,7 +60771,22 @@ document.addEventListener('change', function(event) {
         "RICE MARTIN LONG GRAIN",
         "RINSE AID",
         "WHITE SHRIMP 26/30",
-        "SHRIMP 26/30"
+        "SHRIMP 26/30",
+        "AUTOCHLOR DELIMER",
+        "AUTOCHLOR SANITIZER",
+        "DISH CLEANING DETERGENT",
+        "DISH CLEANING SANITIZER",
+        "DISH MACHINE DETERGENT",
+        "DISH MACHINE SANITIZER",
+        "LOW TEMP DETERGENT",
+        "MACHINE CHARGES",
+        "MULTI PRP",
+        "NTRL MULTI PRP",
+        "NTRL MULTI PRP CLN 4X1",
+        "WHOLE LYCHEES IN SYRUP 24X20",
+        "PURELL HAND SANITIZER",
+        "PURELL LIQUID SANITIZER",
+        "SERVICE CHARGE"
     ];
 
     function byId(id) {
@@ -61745,6 +61847,17 @@ function jcfd64PopulateMonthAndWeekFilters() {
     }
 
     function openFinancialDashboard(reason) {
+        // ── Startup cooldown: collapse rapid duplicate calls during page init ──
+        var now = Date.now();
+        var timeSinceBoot = now - (window.__jcV64FirstOpen || 0);
+        if (!window.__jcV64FirstOpen) {
+            window.__jcV64FirstOpen = now;
+        } else if (timeSinceBoot < 1500 && window.__jcV64OpenCount > 1) {
+            console.log('[V64] Dashboard open skipped (startup cooldown):', reason);
+            return;
+        }
+        window.__jcV64OpenCount = (window.__jcV64OpenCount || 0) + 1;
+
         currentSection = FINANCIAL_SECTION;
         selectedVendor = "";
         saveFilters(readFilters());
@@ -62016,11 +62129,16 @@ function jcfd64PopulateMonthAndWeekFilters() {
         if (window.__jcV64ObserverInstalled) return;
         window.__jcV64ObserverInstalled = true;
 
+        var startTime = Date.now();
+
         new MutationObserver(function () {
             clearTimeout(window.__jcV64ObserverTimer);
             window.__jcV64ObserverTimer = setTimeout(function () {
                 hideVendorAssistant();
                 removeExtraCheckRegisterNav();
+
+                // ── Skip section enforcement during the first 3s of page load ──
+                if (Date.now() - startTime < 3000) return;
 
                 if (currentSection !== FINANCIAL_SECTION) {
                     clearFinancialState();
@@ -62043,6 +62161,9 @@ function jcfd64PopulateMonthAndWeekFilters() {
     }
 
     function boot() {
+        if (window.__jcV64BootDone) return;
+        window.__jcV64BootDone = true;
+
         localStorage.setItem("jc_inv_version", VERSION_KEY);
         saveFilters(defaultFilters());
 
@@ -62051,10 +62172,8 @@ function jcfd64PopulateMonthAndWeekFilters() {
         hideVendorAssistant();
         observeSafety();
 
+        // ── Single startup open: one call only, no 800ms repeat ──
         setTimeout(function () { openFinancialDashboard("boot"); }, 80);
-        setTimeout(function () {
-            if (currentSection === FINANCIAL_SECTION) openFinancialDashboard("boot confirm");
-        }, 800);
     }
 
     window.jcFinancialDashboardReloadV64 = function (force) {
@@ -62715,15 +62834,19 @@ function jcfd64PopulateMonthAndWeekFilters() {
     }
 
     function getCardItemCode(card) {
-        const explicit = card?.dataset?.itemCode
-            || card?.querySelector("[data-item-code]")?.dataset?.itemCode
-            || card?.querySelector('input[id^="item-code-"], input[name*="code" i], input[placeholder*="code" i]')?.value;
+        // Primary: the item code input field (id="itemcode-input-*")
+        const inp = card?.querySelector('input[id^="itemcode-input-"]');
+        if (inp && inp.value && !['not set', 'n/a', 'manual / optional', ''].includes(inp.value.trim().toLowerCase())) {
+            return inp.value.trim();
+        }
 
-        if (explicit) return String(explicit).trim();
+        // Secondary: the display span (id="itemcode-display-*")
+        const disp = card?.querySelector('[id^="itemcode-display-"]');
+        if (disp && disp.textContent && !['not set', 'n/a', ''].includes(disp.textContent.trim().toLowerCase())) {
+            return disp.textContent.trim();
+        }
 
-        const text = card?.textContent || "";
-        const match = text.match(/Code:\s*([^\s]+)/i);
-        return match ? match[1].trim() : "";
+        return '';
     }
 
 
@@ -63167,34 +63290,185 @@ function jcfd64PopulateMonthAndWeekFilters() {
     async function renderRonyPriceInventory(forceRefresh = false) {
         addRonyPriceInventoryShells();
 
-        const productNames = [...new Set(getRonyCards().map(getProductName).filter(Boolean))];
+        // Build map: productName → itemCode from each card
+        const cards = getRonyCards();
+        const codeByName = new Map();
+        cards.forEach(card => {
+            const name = getProductName(card);
+            const code = getCardItemCode(card);
+            if (name) codeByName.set(name, code || '');
+        });
+
+        const productNames = [...new Set([...codeByName.keys()].filter(Boolean))];
         if (!productNames.length) return;
 
         const signature = productNames.join("|");
         if (!forceRefresh && signature === lastPriceInventorySignature) return;
         lastPriceInventorySignature = signature;
 
+        // Helper: raw code for DB (preserve case)
+        const rawCode = v => {
+            const s = String(v || '').trim();
+            return ['', 'not set', 'n/a', 'na', 'none', 'null'].includes(s.toLowerCase()) ? '' : s;
+        };
+
         try {
-            const { data, error } = await db()
-                .from("vendor_prices")
-                .select("product_name, vendor, item_code, unit_price, last_updated")
-                .in("product_name", productNames)
-                .order("unit_price", { ascending: true });
+            const chunk = (arr, n = 80) => { const r = []; for (let i = 0; i < arr.length; i += n) r.push(arr.slice(i, i + n)); return r; };
 
-            if (error) throw error;
+            // Collect item codes that exist
+            const codesWithName = [...codeByName.entries()]
+                .filter(([, code]) => rawCode(code))
+                .map(([name, code]) => ({ name, code: rawCode(code) }));
 
+            const allCodes = [...new Set(codesWithName.flatMap(({ code }) => [code, code.toUpperCase(), code.toLowerCase()]))].filter(Boolean);
+            const nameToCode = new Map(codesWithName.map(({ name, code }) => [name, code]));
+
+            // ── Step 1A: search invoice_items by item_code (most accurate) ──
+            const invoiceItemsByCode = new Map(); // code.toUpperCase() → [{vendor, price, date, item_code}]
+            if (allCodes.length > 0) {
+                for (const codes of chunk(allCodes)) {
+                    const { data } = await db()
+                        .from("invoice_items")
+                        .select("product_name, vendor, item_code, unit_price, price_per_unit, has_weight, invoice_id")
+                        .in("item_code", codes);
+
+                    (data || []).forEach(row => {
+                        const key = String(row.item_code || '').toUpperCase();
+                        if (!invoiceItemsByCode.has(key)) invoiceItemsByCode.set(key, []);
+                        invoiceItemsByCode.get(key).push(row);
+                    });
+                }
+            }
+
+            // ── Step 1B: search invoice_items by product name (for products without code) ──
+            const namesWithoutCode = productNames.filter(n => !rawCode(codeByName.get(n)));
+            const invoiceItemsByName = new Map(); // product_name → [rows]
+            if (namesWithoutCode.length > 0) {
+                for (const names of chunk(namesWithoutCode)) {
+                    const { data } = await db()
+                        .from("invoice_items")
+                        .select("product_name, vendor, item_code, unit_price, price_per_unit, has_weight, invoice_id")
+                        .in("product_name", names);
+                    (data || []).forEach(row => {
+                        if (!invoiceItemsByName.has(row.product_name)) invoiceItemsByName.set(row.product_name, []);
+                        invoiceItemsByName.get(row.product_name).push(row);
+                    });
+                }
+            }
+
+            // Fetch invoice dates/vendors for all found rows
+            const allInvoiceRows = [
+                ...Array.from(invoiceItemsByCode.values()).flat(),
+                ...Array.from(invoiceItemsByName.values()).flat()
+            ];
+            const invoiceIds = [...new Set(allInvoiceRows.map(r => r.invoice_id).filter(Boolean))];
+            const invDateMap = new Map();
+            const invVendorMap = new Map();
+            if (invoiceIds.length > 0) {
+                for (const ids of chunk(invoiceIds)) {
+                    const { data: invData } = await db()
+                        .from("invoices")
+                        .select("id, invoice_date, vendor")
+                        .in("id", ids)
+                        .order("invoice_date", { ascending: false });
+                    (invData || []).forEach(inv => {
+                        invDateMap.set(inv.id, inv.invoice_date);
+                        invVendorMap.set(inv.id, inv.vendor);
+                    });
+                }
+            }
+
+            // Build byProduct: productName → Map<vendor, {vendor, item_code, unit_price, date}>
             const byProduct = new Map();
 
-            (data || []).forEach(row => {
-                if (!byProduct.has(row.product_name)) byProduct.set(row.product_name, []);
-                byProduct.get(row.product_name).push(row);
+            const mergeRow = (productName, row) => {
+                const vendor = row.vendor || invVendorMap.get(row.invoice_id) || 'Unknown';
+                const date   = invDateMap.get(row.invoice_id) || null;
+                const price  = row.has_weight
+                    ? parseFloat(row.price_per_unit || row.unit_price || 0)
+                    : parseFloat(row.unit_price || row.price_per_unit || 0);
+                if (!price || !vendor) return;
+
+                if (!byProduct.has(productName)) byProduct.set(productName, new Map());
+                const vm = byProduct.get(productName);
+                const ex = vm.get(vendor);
+                if (!ex || (date && (!ex.date || date > ex.date))) {
+                    vm.set(vendor, { vendor, item_code: row.item_code || '—', unit_price: price, date });
+                }
+            };
+
+            // Map code results back to product names
+            codesWithName.forEach(({ name, code }) => {
+                const rows = invoiceItemsByCode.get(code.toUpperCase()) || [];
+                rows.forEach(row => mergeRow(name, row));
             });
 
+            // Map name results
+            invoiceItemsByName.forEach((rows, pName) => {
+                rows.forEach(row => mergeRow(pName, row));
+            });
+
+            // ── Step 2: ilike prefix fallback for products still with no data ──
+            const stillMissing = productNames.filter(n => !byProduct.has(n) || byProduct.get(n).size === 0);
+            for (const name of stillMissing) {
+                const words = String(name).trim().split(/\s+/);
+                if (words.length < 2) continue;
+                const prefix = words.slice(0, -1).join(' ');
+                if (prefix.length < 8) continue;
+                try {
+                    const { data: likeData } = await db()
+                        .from("invoice_items")
+                        .select("product_name, vendor, item_code, unit_price, price_per_unit, has_weight, invoice_id")
+                        .ilike("product_name", `%${prefix}%`)
+                        .limit(50);
+
+                    const likeIds = [...new Set((likeData || []).map(r => r.invoice_id).filter(Boolean))];
+                    if (likeIds.length) {
+                        const { data: likeInvs } = await db().from("invoices").select("id,invoice_date,vendor").in("id", likeIds);
+                        (likeInvs || []).forEach(inv => { invDateMap.set(inv.id, inv.invoice_date); invVendorMap.set(inv.id, inv.vendor); });
+                    }
+                    (likeData || []).forEach(row => {
+                        const vendor = row.vendor || invVendorMap.get(row.invoice_id) || 'Unknown';
+                        const date   = invDateMap.get(row.invoice_id) || null;
+                        const price  = row.has_weight ? parseFloat(row.price_per_unit || row.unit_price || 0) : parseFloat(row.unit_price || row.price_per_unit || 0);
+                        if (!price || !vendor) return;
+                        if (!byProduct.has(name)) byProduct.set(name, new Map());
+                        const vm = byProduct.get(name);
+                        const ex = vm.get(vendor);
+                        if (!ex || (date && (!ex.date || date > ex.date))) {
+                            vm.set(vendor, { vendor, item_code: row.item_code || '—', unit_price: price, date, _partialMatch: row.product_name !== name ? row.product_name : null });
+                        }
+                    });
+                } catch (_) {}
+            }
+
+            // ── Step 3: vendor_prices LAST RESORT for products with zero invoice data ──
+            const noInvoice = productNames.filter(n => !byProduct.has(n) || byProduct.get(n).size === 0);
+            if (noInvoice.length > 0) {
+                const { data: vpData } = await db()
+                    .from("vendor_prices")
+                    .select("product_name, vendor, item_code, unit_price")
+                    .in("product_name", noInvoice);
+                (vpData || []).forEach(row => {
+                    const price = parseFloat(row.unit_price || 0);
+                    if (!price) return;
+                    if (!byProduct.has(row.product_name)) byProduct.set(row.product_name, new Map());
+                    const vm = byProduct.get(row.product_name);
+                    if (!vm.has(row.vendor)) {
+                        vm.set(row.vendor, { vendor: row.vendor, item_code: row.item_code || '—', unit_price: price, date: null, _fromVendorPrices: true });
+                    }
+                });
+            }
+
+            // ── Render ──
             productNames.forEach(productName => {
                 const shell = document.getElementById("jc-rony-price-inventory-" + safeKey(productName));
                 if (!shell) return;
 
-                const prices = byProduct.get(productName) || [];
+                const vendorMap = byProduct.get(productName);
+                const prices = vendorMap
+                    ? Array.from(vendorMap.values()).sort((a, b) => a.unit_price - b.unit_price)
+                    : [];
 
                 if (!prices.length) {
                     shell.innerHTML = [
@@ -63209,16 +63483,17 @@ function jcfd64PopulateMonthAndWeekFilters() {
                     '<table style="width:100%;border-collapse:collapse;font-size:11px;">',
                     '<thead><tr style="background:#eff6ff;color:#334155;"><th style="padding:5px;text-align:left;">Vendor</th><th style="padding:5px;text-align:left;">Code</th><th style="padding:5px;text-align:right;">Price</th></tr></thead>',
                     '<tbody>',
-                    prices.map(price => [
+                    prices.map(p => [
                         '<tr>',
-                        `<td style="padding:5px;border-top:1px solid #e2e8f0;font-weight:800;">${escapeHtml(price.vendor)}</td>`,
-                        `<td style="padding:5px;border-top:1px solid #e2e8f0;font-family:monospace;">${escapeHtml(price.item_code || "—")}</td>`,
-                        `<td style="padding:5px;border-top:1px solid #e2e8f0;text-align:right;font-family:monospace;font-weight:900;">${money(price.unit_price)}</td>`,
+                        `<td style="padding:5px;border-top:1px solid #e2e8f0;font-weight:800;">${escapeHtml(p.vendor)}${p._partialMatch ? ` <span style="color:#6b7280;font-size:9px;">(as: ${escapeHtml(p._partialMatch)})</span>` : ''}</td>`,
+                        `<td style="padding:5px;border-top:1px solid #e2e8f0;font-family:monospace;">${escapeHtml(p.item_code || "—")}</td>`,
+                        `<td style="padding:5px;border-top:1px solid #e2e8f0;text-align:right;font-family:monospace;font-weight:900;color:${p._fromVendorPrices ? '#94a3b8' : '#0f766e'};">${money(p.unit_price)}</td>`,
                         '</tr>'
                     ].join("")).join(""),
                     '</tbody></table>'
                 ].join("");
             });
+
         } catch (error) {
             console.warn("[RONY PRICE INVENTORY] Load failed:", error.message);
         }
@@ -63798,7 +64073,15 @@ function jcfd64PopulateMonthAndWeekFilters() {
 
         window._filterRows = function ronyShowAllWhenNoRealFilter(rows, section) {
             if (section === "rony") {
-                return applyVendorCategoryGroupFilters(rows || [], section);
+                // ── Always respect hidden products (user-hidden and permanent-hidden) ──
+                const visibleRows = (rows || []).filter(row => {
+                    const name = String(row?.product_name || row?.name || row?.item_name || "").trim();
+                    if (typeof window.jcIsPermanentHiddenPlaceOrderProduct === "function" && window.jcIsPermanentHiddenPlaceOrderProduct(name)) return false;
+                    if (typeof window._poIsPermanentHiddenPlaceOrderProduct === "function" && window._poIsPermanentHiddenPlaceOrderProduct(name)) return false;
+                    if (window._hiddenProducts && window._hiddenProducts.has(name)) return false;
+                    return true;
+                });
+                return applyVendorCategoryGroupFilters(visibleRows, section);
             }
 
             if (typeof previousFilterRows === "function") {
@@ -63879,5 +64162,247 @@ function jcfd64PopulateMonthAndWeekFilters() {
 })();
 </script>
 
+
+
+<script id="jc-global-single-tab-load-guard-v1">
+(function () {
+    "use strict";
+
+    if (window.__jcGlobalSingleTabLoadGuardV1) return;
+    window.__jcGlobalSingleTabLoadGuardV1 = true;
+
+    const TAB_LOAD_COOLDOWN_MS = 2500;
+    const lastTabLoad = {};
+
+    function now() { return Date.now(); }
+
+    function allowLoad(key) {
+        const current = now();
+        const last = lastTabLoad[key] || 0;
+        if (current - last < TAB_LOAD_COOLDOWN_MS) {
+            console.warn("[JC LOAD GUARD] Blocked duplicate load:", key);
+            return false;
+        }
+        lastTabLoad[key] = current;
+        return true;
+    }
+
+    function patchFunction(name, keyBuilder) {
+        const original = window[name];
+        if (typeof original !== "function") return;
+        if (original.__jcLoadGuardPatched) return;
+
+        const patched = function () {
+            const key = typeof keyBuilder === "function" ? keyBuilder.apply(this, arguments) : name;
+            if (!allowLoad(key)) return;
+            return original.apply(this, arguments);
+        };
+        patched.__jcLoadGuardPatched = true;
+        patched.__jcOriginal = original;
+        window[name] = patched;
+    }
+
+    function patchAll() {
+        patchFunction("jcLoadDashboardHome", function () { return "dashboard-home"; });
+        patchFunction("initExecDashboard", function () { return "exec-dashboard"; });
+        patchFunction("loadFinancialData", function () { return "financial-dashboard"; });
+        patchFunction("loadEnhancedCreateOrder", function () {
+            const date = document.getElementById("createOrderDate")?.value || "";
+            const user = document.getElementById("createUserFilter")?.value || "all";
+            return "place-order-" + date + "-" + user;
+        });
+        patchFunction("initializeEnhancedPlaceOrder", function () { return "place-order-init"; });
+        patchFunction("loadChecks", function () { return "check-register"; });
+        patchFunction("loadInventoryData", function () { return "inventory-data"; });
+        patchFunction("loadInventory", function () { return "inventory"; });
+        patchFunction("loadRonyOrders", function () { return "rony-orders"; });
+        patchFunction("loadJulioOrders", function () { return "julio-orders"; });
+        patchFunction("loadOfficeOrders", function () { return "office-orders"; });
+        patchFunction("loadStockAlerts", function () { return "stock-alerts"; });
+        patchFunction("loadVendorSpendingAnalysis", function () { return "vendor-spending-analysis"; });
+    }
+
+    patchAll();
+    document.addEventListener("DOMContentLoaded", function () {
+        setTimeout(patchAll, 100);
+        setTimeout(patchAll, 500);
+        setTimeout(patchAll, 1200);
+    });
+    window.addEventListener("load", function () {
+        setTimeout(patchAll, 100);
+        setTimeout(patchAll, 500);
+    });
+
+    console.log("[JC LOAD GUARD] Active. Duplicate tab loads blocked.");
+})();
+</script>
+
+<script id="jc-placeorder-permanent-hidden-no-autofill-v1">
+(function () {
+    "use strict";
+
+    if (window.__jcPlaceOrderPermanentHiddenNoAutofillV1) return;
+    window.__jcPlaceOrderPermanentHiddenNoAutofillV1 = true;
+
+    const PERMANENT_HIDDEN = [
+        "Autochlor Delimer",
+        "Autochlor Sanitizer",
+        "Dish Cleaning Detergent",
+        "Dish Cleaning Sanitizer",
+        "Dish Machine Detergent",
+        "Dish Machine Sanitizer",
+        "Low Temp Detergent",
+        "Machine Charges",
+        "Multi PRP",
+        "NTRL Multi PRP",
+        "NTRL Multi PRP CLN 4X1",
+        "Whole Lychees in Syrup 24x20",
+        "PURELL HAND SANITIZER",
+        "PURELL LIQUID SANITIZER",
+        "Service Charge"
+    ];
+
+    function norm(value) {
+        return String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
+    }
+
+    const hiddenSet = new Set(PERMANENT_HIDDEN.map(norm));
+
+    function isPermanentHidden(productName) {
+        return hiddenSet.has(norm(productName));
+    }
+
+    window.JC_PLACEORDER_PERMANENT_HIDDEN_PRODUCTS = PERMANENT_HIDDEN.slice();
+    window.jcIsPermanentHiddenPlaceOrderProduct = isPermanentHidden;
+
+    function ensureHiddenCache() {
+        if (!window._hiddenProducts || typeof window._hiddenProducts.add !== "function") {
+            window._hiddenProducts = new Set();
+        }
+        PERMANENT_HIDDEN.forEach(name => window._hiddenProducts.add(name));
+    }
+
+    function clearAutoVendorLocalStorage() {
+        try {
+            const keys = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith("placeOrder_vendor_")) keys.push(key);
+            }
+            keys.forEach(key => localStorage.removeItem(key));
+        } catch (error) {
+            console.warn("[JC PO] vendor localStorage cleanup skipped:", error);
+        }
+    }
+
+    function cardProductName(card) {
+        return card.getAttribute("data-product") || card.getAttribute("data-product-name") || "";
+    }
+
+    function applyPermanentHiddenToDom() {
+        ensureHiddenCache();
+        document.querySelectorAll(".enhanced-order-card, .order-card, .product-card, [data-product], [data-product-name]").forEach(card => {
+            const productName = cardProductName(card);
+            // ── Exact name match ONLY. Never use card.textContent substring —
+            //    that wrongly hides "Low Temp Detergent Kitchen" because it
+            //    contains "Low Temp Detergent" as a substring. ──
+            const shouldHide = isPermanentHidden(productName);
+            if (shouldHide) {
+                card.classList.add("jc-po-permanent-hidden");
+                card.style.display = "none";
+                card.setAttribute("data-jc-permanent-hidden", "true");
+            }
+        });
+    }
+
+    function resetUnorderedAutoVendorSelections() {
+        document.querySelectorAll(".enhanced-order-card").forEach(card => {
+            if (card.getAttribute("data-jc-permanent-hidden") === "true") return;
+            const qty = card.querySelector("input[id^='qty-']");
+            const qtyValue = parseFloat(qty?.value || "0") || 0;
+            if (qtyValue > 0) return;
+
+            const vendor = card.querySelector("select[id^='vendor-']");
+            if (vendor && vendor.value) vendor.value = "";
+        });
+    }
+
+    async function savePermanentHiddenToDatabase() {
+        try {
+            const client = (typeof invSB === "function" && invSB())
+                || (typeof getSupabaseClient === "function" && getSupabaseClient())
+                || window.supabaseClient
+                || null;
+            if (!client || !client.from) return;
+
+            await client
+                .from("inventory_management")
+                .update({ is_hidden: true })
+                .in("product_name", PERMANENT_HIDDEN);
+        } catch (error) {
+            console.warn("[JC PO] Permanent hide DB save skipped:", error.message || error);
+        }
+    }
+
+    function patchHiddenLoader() {
+        if (typeof window._loadHiddenProducts !== "function" || window._loadHiddenProducts.__jcPermanentHiddenPatched) return;
+        const original = window._loadHiddenProducts;
+        window._loadHiddenProducts = async function patchedLoadHiddenProducts() {
+            const result = await original.apply(this, arguments);
+            ensureHiddenCache();
+            applyPermanentHiddenToDom();
+            return result;
+        };
+        window._loadHiddenProducts.__jcPermanentHiddenPatched = true;
+    }
+
+    function patchRerender() {
+        if (typeof window._rerenderPlaceOrderSections !== "function" || window._rerenderPlaceOrderSections.__jcPermanentHiddenPatched) return;
+        const original = window._rerenderPlaceOrderSections;
+        window._rerenderPlaceOrderSections = async function patchedRerenderPlaceOrderSections() {
+            ensureHiddenCache();
+            const result = await original.apply(this, arguments);
+            applyPermanentHiddenToDom();
+            resetUnorderedAutoVendorSelections();
+            return result;
+        };
+        window._rerenderPlaceOrderSections.__jcPermanentHiddenPatched = true;
+    }
+
+    function boot() {
+        ensureHiddenCache();
+        clearAutoVendorLocalStorage();
+        patchHiddenLoader();
+        patchRerender();
+        applyPermanentHiddenToDom();
+        resetUnorderedAutoVendorSelections();
+    }
+
+    boot();
+    document.addEventListener("DOMContentLoaded", boot);
+    window.addEventListener("load", function () {
+        boot();
+        setTimeout(boot, 500);
+        setTimeout(savePermanentHiddenToDatabase, 1200);
+    });
+
+    const observer = new MutationObserver(function () {
+        clearTimeout(window.__jcPoPermanentHiddenTimer);
+        window.__jcPoPermanentHiddenTimer = setTimeout(function () {
+            boot();
+        }, 120);
+    });
+
+    if (document.body) {
+        observer.observe(document.body, { childList: true, subtree: true });
+    } else {
+        document.addEventListener("DOMContentLoaded", function () {
+            observer.observe(document.body, { childList: true, subtree: true });
+        });
+    }
+
+    console.log("[JC PO] Permanent hidden products active; auto vendor preload disabled.");
+})();
+</script>
 </body>
 </html>
