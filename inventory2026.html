@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.07.v100-rony-placeorder-global-one-grid';
+        var VERSION = '2026.05.07.v101-rony-placeorder-show-all-once';
         var stored = localStorage.getItem('jc_inv_version');
         if (stored && stored !== VERSION) {
             localStorage.setItem('jc_inv_version', VERSION);
@@ -61081,9 +61081,13 @@ document.addEventListener('change', function(event) {
         var start = filters.startDate;
         var end = filters.endDate;
 
-        var rows = rowsCache.filter(function (row) {
-            var date = safeDate(row.check_date || row.date || row.created_at);
-            if (date < start || date > end) return false;
+      var rows = rowsCache.filter(function (row) {
+    var date = safeDate(row.check_date || row.date || row.created_at);
+    if (date < start || date > end) return false;
+
+    if (filters.month && date.slice(0, 7) !== filters.month) return false;
+
+    if (filters.week && jcfd64WeekKey(date) !== filters.week) return false;
 
             if (filters.vendor && normalize(row.vendor || row.vendor_name) !== normalize(filters.vendor)) return false;
 
@@ -61235,37 +61239,158 @@ document.addEventListener('change', function(event) {
         renderData();
     }
 
-    function bindDashboardControls() {
-        var vendorSelect = byId("jcfd64Vendor");
-        var categorySelect = byId("jcfd64Category");
-        var searchInput = byId("jcfd64Search");
-        var statusSelect = byId("jcfd64Status");
 
-        if (vendorSelect && vendorSelect.dataset.bound !== "true") {
-            vendorSelect.dataset.bound = "true";
-            vendorSelect.addEventListener("change", function () {
-                selectedVendor = this.value;
-                renderData();
-            });
+
+
+    function jcfd64MonthOptionLabel(monthKey) {
+    var parts = String(monthKey || "").split("-");
+    var year = Number(parts[0]);
+    var month = Number(parts[1]);
+
+    if (!year || !month) return monthKey || "";
+
+    var date = new Date(year, month - 1, 1);
+    return date.toLocaleString("en-US", { month: "long" }) + " " + year;
+}
+
+function jcfd64WeekKey(dateValue) {
+    var d = new Date(dateValue + "T00:00:00");
+    if (Number.isNaN(d.getTime())) return "";
+
+    var jan1 = new Date(d.getFullYear(), 0, 1);
+    var week = Math.ceil(((d - jan1) / 86400000 + jan1.getDay() + 1) / 7);
+
+    return d.getFullYear() + "-W" + String(week).padStart(2, "0");
+}
+
+function jcfd64WeekOptionLabel(weekKey) {
+    return "Week " + String(weekKey || "").split("-W")[1];
+}
+
+function jcfd64PopulateMonthAndWeekFilters() {
+    var filters = readFilters();
+    var range = getDateRange();
+
+    var monthSelect = byId("jcfd64Month");
+    var weekSelect = byId("jcfd64Week");
+
+    if (monthSelect) {
+        var currentMonth = filters.month || "";
+
+        monthSelect.innerHTML =
+            '<option value="">All Months</option>' +
+            range.months.map(function (monthKey) {
+                return '<option value="' + escapeHtml(monthKey) + '">' +
+                    escapeHtml(jcfd64MonthOptionLabel(monthKey)) +
+                '</option>';
+            }).join("");
+
+        if (range.months.includes(currentMonth)) {
+            monthSelect.value = currentMonth;
+        } else {
+            monthSelect.value = "";
+            filters.month = "";
+            saveFilters(filters);
+        }
+    }
+
+    if (weekSelect) {
+        var currentWeek = filters.week || "";
+        var start = new Date((filters.month || range.start) + (filters.month ? "-01T00:00:00" : "T00:00:00"));
+        var end = filters.month
+            ? new Date(start.getFullYear(), start.getMonth() + 1, 0)
+            : new Date(range.end + "T00:00:00");
+
+        var weeks = [];
+        var seen = {};
+
+        for (var d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+            var key = jcfd64WeekKey(d.toISOString().slice(0, 10));
+            if (key && !seen[key]) {
+                seen[key] = true;
+                weeks.push(key);
+            }
         }
 
-        if (categorySelect && categorySelect.dataset.bound !== "true") {
-            categorySelect.dataset.bound = "true";
-            categorySelect.addEventListener("change", function () {
-                var filters = readFilters();
-                filters.category = this.value;
-                saveFilters(filters);
-                renderData();
-            });
-        }
+        weekSelect.innerHTML =
+            '<option value="">All Weeks</option>' +
+            weeks.map(function (weekKey) {
+                return '<option value="' + escapeHtml(weekKey) + '">' +
+                    escapeHtml(jcfd64WeekOptionLabel(weekKey)) +
+                '</option>';
+            }).join("");
 
-        [searchInput, statusSelect].forEach(function (element) {
-            if (!element || element.dataset.bound === "true") return;
-            element.dataset.bound = "true";
-            element.addEventListener("input", renderData);
-            element.addEventListener("change", renderData);
+        if (weeks.includes(currentWeek)) {
+            weekSelect.value = currentWeek;
+        } else {
+            weekSelect.value = "";
+            filters.week = "";
+            saveFilters(filters);
+        }
+    }
+}
+
+ function bindDashboardControls() {
+    jcfd64PopulateMonthAndWeekFilters();
+
+    var monthSelect = byId("jcfd64Month");
+    var weekSelect = byId("jcfd64Week");
+    var vendorSelect = byId("jcfd64Vendor");
+    var categorySelect = byId("jcfd64Category");
+    var searchInput = byId("jcfd64Search");
+    var statusSelect = byId("jcfd64Status");
+
+    if (monthSelect && monthSelect.dataset.bound !== "true") {
+        monthSelect.dataset.bound = "true";
+        monthSelect.addEventListener("change", function () {
+            var filters = readFilters();
+            filters.month = this.value || "";
+            filters.week = ""; // reset week because weeks depend on selected month
+            saveFilters(filters);
+            jcfd64PopulateMonthAndWeekFilters();
+            renderData();
         });
     }
+
+    if (weekSelect && weekSelect.dataset.bound !== "true") {
+        weekSelect.dataset.bound = "true";
+        weekSelect.addEventListener("change", function () {
+            var filters = readFilters();
+            filters.week = this.value || "";
+            saveFilters(filters);
+            renderData();
+        });
+    }
+
+    if (vendorSelect && vendorSelect.dataset.bound !== "true") {
+        vendorSelect.dataset.bound = "true";
+        vendorSelect.addEventListener("change", function () {
+            selectedVendor = this.value;
+            renderData();
+        });
+    }
+
+    if (categorySelect && categorySelect.dataset.bound !== "true") {
+        categorySelect.dataset.bound = "true";
+        categorySelect.addEventListener("change", function () {
+            var filters = readFilters();
+            filters.category = this.value;
+            saveFilters(filters);
+            renderData();
+        });
+    }
+
+    [searchInput, statusSelect].forEach(function (element) {
+        if (!element || element.dataset.bound === "true") return;
+        element.dataset.bound = "true";
+        element.addEventListener("input", renderData);
+        element.addEventListener("change", renderData);
+    });
+}
+
+
+
+
 
     function renderVendorOptions(data) {
         var select = byId("jcfd64Vendor");
@@ -63565,6 +63690,157 @@ document.addEventListener('change', function(event) {
 </script>
 
 
+
+
+<!-- PATCH: RONY PLACEORDER SHOW ALL + SINGLE LOAD V11 -->
+<script id="jc-placeorder-rony-show-all-single-load-v11">
+(function () {
+    "use strict";
+
+    function productName(row) {
+        return String(row?.product_name || row?.name || row?.item_name || "").trim();
+    }
+
+    function getFilters(section) {
+        return window._placeOrderFilters?.[section] || { vendor: "", category: "", group: "" };
+    }
+
+    function groupFor(product) {
+        return (window._placeOrderGroupMap || {})[product] || "";
+    }
+
+    function applyVendorCategoryGroupFilters(rows, section) {
+        const filters = getFilters(section);
+
+        return (rows || []).filter(row => {
+            const name = productName(row);
+
+            if (filters.vendor && row.vendor !== filters.vendor) return false;
+            if (filters.category && (row.category || "Other") !== filters.category) return false;
+            if (filters.group && groupFor(name) !== filters.group) return false;
+
+            return true;
+        });
+    }
+
+    function forceRonyCountLabel() {
+        const section = document.querySelector('#placeOrder [data-po-section="rony"]');
+        if (!section) return;
+
+        const cards = section.querySelectorAll(".enhanced-order-card").length;
+        const badges = Array.from(section.querySelectorAll("span, div")).filter(el => {
+            return /^\s*\d+\s*\/\s*\d+\s*$/.test(el.textContent || "");
+        });
+
+        badges.forEach(badge => {
+            const match = (badge.textContent || "").match(/\/\s*(\d+)/);
+            const total = match ? Number(match[1]) : cards;
+            if (total && cards) badge.textContent = `${cards} / ${Math.max(total, cards)}`;
+        });
+    }
+
+    function stopPlaceOrderRepeatedRefresh() {
+        try {
+            if (typeof window.stopPlaceOrderAutoRefresh === "function") {
+                window.stopPlaceOrderAutoRefresh();
+            }
+        } catch (error) {
+            console.warn("[RONY PO V11] Could not stop old refresh:", error.message);
+        }
+
+        window.startPlaceOrderAutoRefresh = function startPlaceOrderAutoRefreshOnceOnly() {
+            const countdown = document.getElementById("placeOrderCountdown");
+            if (countdown) countdown.textContent = "Loaded once";
+
+            console.log("[RONY PO V11] Auto-refresh disabled. PlaceOrder loads once per entry.");
+        };
+    }
+
+    function patchFilterRows() {
+        const previousFilterRows = window._filterRows;
+
+        window._filterRows = function ronyShowAllWhenNoRealFilter(rows, section) {
+            if (section === "rony") {
+                return applyVendorCategoryGroupFilters(rows || [], section);
+            }
+
+            if (typeof previousFilterRows === "function") {
+                return previousFilterRows(rows, section);
+            }
+
+            return rows || [];
+        };
+    }
+
+    function patchVisibilityToggles() {
+        window.jcShowHidden = function jcShowHiddenAlwaysForRonyPlaceOrder() {
+            return true;
+        };
+
+        window.jcShowAutochlor = function jcShowAutochlorAlwaysForRonyPlaceOrder() {
+            return true;
+        };
+
+        const hiddenToggle = document.getElementById("jcShowHiddenProductsToggle");
+        if (hiddenToggle) hiddenToggle.checked = true;
+
+        const autochlorToggle = document.getElementById("jcShowAutochlorToggle");
+        if (autochlorToggle) autochlorToggle.checked = true;
+
+        document.querySelectorAll("#jcPlaceOrderVisibilityBar span").forEach(span => {
+            if ((span.textContent || "").includes("Autochlor is hidden")) {
+                span.textContent = "All Rony PlaceOrder products are visible by default. Use Vendor, Category, or Group filters only when needed.";
+            }
+        });
+    }
+
+    async function reloadPlaceOrderOnce() {
+        if (window.__jcRonyV11ReloadedOnce) return;
+        window.__jcRonyV11ReloadedOnce = true;
+
+        if (!document.getElementById("placeOrder")?.classList.contains("active")) return;
+
+        try {
+            if (typeof window.loadEnhancedCreateOrder === "function") {
+                await window.loadEnhancedCreateOrder();
+            } else if (typeof window.initializeEnhancedPlaceOrder === "function") {
+                await window.initializeEnhancedPlaceOrder();
+            }
+
+            forceRonyCountLabel();
+        } catch (error) {
+            console.warn("[RONY PO V11] One-time reload failed:", error.message);
+        }
+    }
+
+    function boot() {
+        stopPlaceOrderRepeatedRefresh();
+        patchFilterRows();
+        patchVisibilityToggles();
+
+        setTimeout(patchVisibilityToggles, 500);
+        setTimeout(forceRonyCountLabel, 1000);
+        setTimeout(reloadPlaceOrderOnce, 1200);
+
+        const observer = new MutationObserver(() => {
+            clearTimeout(window.__jcRonyV11UiTimer);
+            window.__jcRonyV11UiTimer = setTimeout(() => {
+                patchVisibilityToggles();
+                forceRonyCountLabel();
+            }, 250);
+        });
+
+        observer.observe(document.body, { childList: true, subtree: true });
+        console.log("[RONY PO V11] Show all 166 by default + single-load patch active.");
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", boot);
+    } else {
+        boot();
+    }
+})();
+</script>
 
 </body>
 </html>
