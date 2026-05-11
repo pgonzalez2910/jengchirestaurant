@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.08.v112-zero-qty-no-warning';
+        var VERSION = '2026.05.11.v114-julio-direct-render-fix';
         // ── Just stamp the version. Never hard-reload — the page IS already the new code. ──
         localStorage.setItem('jc_inv_version', VERSION);
     })();
@@ -26283,7 +26283,7 @@ async function loadJulioOrders() {
 
 
 
-        const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id))];
+        const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id).filter(Boolean))];
 
         let invoiceDates = new Map();
 
@@ -31267,7 +31267,7 @@ async function selectVendorAndUpdateItemCode(rowId, productName, vendor) {
 
         if (invoiceItems && invoiceItems.length > 0) {
 
-            const invoiceIds = [...new Set(invoiceItems.map(i => i.invoice_id))];
+            const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id).filter(Boolean))];
 
             const { data: invoices } = await supabaseClient
 
@@ -32167,7 +32167,7 @@ async function loadVendorPricesForProduct(productName, productId) {
 
         // 2. Fetch invoice dates for those invoice_ids
 
-        const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id))];
+        const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id).filter(Boolean))];
 
         const invoiceDatesMap = new Map();
 
@@ -64409,6 +64409,332 @@ function jcfd64PopulateMonthAndWeekFilters() {
     }
 
     console.log("[JC PO] Permanent hidden products active; auto vendor preload disabled.");
+})();
+</script>
+
+
+
+<!-- V113: JULIO ORDER PRODUCTS HARD FIX - assigned_to parser + safe render -->
+
+
+
+<script id="jc-v114-julio-direct-render-fix">
+(function () {
+    "use strict";
+
+    const VERSION_KEY = "2026.05.11.v114-julio-direct-render-fix";
+    localStorage.setItem("jc_inv_version", VERSION_KEY);
+
+    function jcClient() {
+        if (typeof supabaseClient !== "undefined" && supabaseClient) return supabaseClient;
+        if (window.supabaseClient) return window.supabaseClient;
+        if (typeof getSupabaseClient === "function") return getSupabaseClient();
+        throw new Error("Supabase client not found");
+    }
+
+    function jcTodayYMD() {
+        if (typeof todayYMD === "function") return todayYMD();
+        const now = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Chicago" }));
+        return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    }
+
+    function jcEscapeHtml(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+    }
+
+    function jcSafeId(value) {
+        return String(value || "product").replace(/[^a-zA-Z0-9]/g, "_");
+    }
+
+    function jcImage(url) {
+        if (typeof resolveImage === "function") {
+            try { return resolveImage(url); } catch (e) {}
+        }
+        if (!url) return (typeof PLACEHOLDER_IMAGE !== "undefined" ? PLACEHOLDER_IMAGE : "https://via.placeholder.com/120?text=No+Image");
+        const raw = String(url).trim();
+        if (/^https?:\/\//i.test(raw)) return raw;
+        return "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/" + encodeURIComponent(raw);
+    }
+
+    function jcAssignedArray(raw) {
+        if (!raw) return [];
+        if (Array.isArray(raw)) {
+            return raw.map(x => String(x).toLowerCase().trim()).filter(Boolean);
+        }
+        if (typeof raw !== "string") return [];
+        const s = raw.trim();
+        if (!s || s === "null" || s === "[]" || s === "{}") return [];
+
+        // IMPORTANT: your database has assigned_to like {Julio}. This must be handled before JSON parsing.
+        if (s.startsWith("{") && s.endsWith("}")) {
+            return s.slice(1, -1)
+                .split(",")
+                .map(x => x.trim().replace(/^['\"]|['\"]$/g, "").toLowerCase())
+                .filter(Boolean);
+        }
+
+        try {
+            const parsed = JSON.parse(s);
+            if (Array.isArray(parsed)) return parsed.map(x => String(x).toLowerCase().trim()).filter(Boolean);
+            return [String(parsed).toLowerCase().trim()].filter(Boolean);
+        } catch (e) {
+            return [s.toLowerCase().trim()].filter(Boolean);
+        }
+    }
+
+    function jcCategoryIcon(category) {
+        const c = String(category || "").toLowerCase();
+        if (c.includes("produce")) return "🥬";
+        if (c.includes("beef") || c.includes("lamb") || c.includes("pork") || c.includes("poultry")) return "🥩";
+        if (c.includes("seafood")) return "🦐";
+        if (c.includes("dairy") || c.includes("egg")) return "🥚";
+        if (c.includes("flour") || c.includes("baking")) return "🌾";
+        if (c.includes("frozen")) return "❄️";
+        return "📦";
+    }
+
+    function jcCategoryStyle(category) {
+        const c = String(category || "").toLowerCase();
+        if (c.includes("produce")) return { bg: "#dcfce7", border: "#16a34a", text: "#15803d" };
+        if (c.includes("beef") || c.includes("lamb") || c.includes("pork") || c.includes("poultry")) return { bg: "#fee2e2", border: "#dc2626", text: "#991b1b" };
+        if (c.includes("seafood")) return { bg: "#e0f2fe", border: "#0284c7", text: "#075985" };
+        if (c.includes("dairy") || c.includes("egg")) return { bg: "#dbeafe", border: "#2563eb", text: "#1d4ed8" };
+        if (c.includes("flour") || c.includes("baking")) return { bg: "#f8fafc", border: "#64748b", text: "#334155" };
+        if (c.includes("frozen")) return { bg: "#ecfeff", border: "#0891b2", text: "#0e7490" };
+        return { bg: "#f1f5f9", border: "#64748b", text: "#475569" };
+    }
+
+    function jcNormalizeCategory(product) {
+        const name = String(product.product_name || "").toLowerCase();
+        let cat = product.category || "Uncategorized";
+        if (name.includes("ajinomoto") || name.includes("msg") || name.includes("korean wheat flour") || name.includes("corn starch") || name.includes("flour")) cat = "Flour / Baking";
+        return cat;
+    }
+
+    function jcGetProductsArray() {
+        try {
+            if (typeof julioTargetsMap !== "undefined" && julioTargetsMap instanceof Map) {
+                return Array.from(julioTargetsMap.values());
+            }
+        } catch (e) {}
+        if (window.julioTargetsMap instanceof Map) return Array.from(window.julioTargetsMap.values());
+        return [];
+    }
+
+    function jcSetJulioMap(map) {
+        try { julioTargetsMap = map; } catch (e) {}
+        window.julioTargetsMap = map;
+    }
+
+    function jcRenderJulioProductsV114() {
+        const container = document.getElementById("julioProductGrid");
+        if (!container) return;
+
+        const search = String(document.getElementById("julioSearchInput")?.value || "").toLowerCase().trim();
+        let products = jcGetProductsArray().filter(p => !search || String(p.product_name || "").toLowerCase().includes(search));
+
+        const countEl = document.getElementById("julioProductCount");
+        if (countEl) countEl.textContent = `${products.length} products`;
+
+        const total = products.length;
+        const setCount = products.filter(p => Number(p.target_quantity || 0) > 0).length;
+        const pct = total ? Math.round((setCount / total) * 100) : 0;
+        const progressBar = document.getElementById("julioProgress");
+        const progressPercent = document.getElementById("julioProgressPercent");
+        const productsSetEl = document.getElementById("julioProductsSet");
+        const totalProductsEl = document.getElementById("julioTotalProducts");
+        if (progressBar) progressBar.style.width = pct + "%";
+        if (progressPercent) progressPercent.textContent = pct + "%";
+        if (productsSetEl) productsSetEl.textContent = setCount;
+        if (totalProductsEl) totalProductsEl.textContent = total;
+
+        if (!products.length) {
+            container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">📦</div><h3>No Products Found</h3><p style="color:#6b7280;font-size:.85rem;margin-top:.5rem;">Julio loader returned 0 products. Check Console for [JC V114].</p></div>`;
+            return;
+        }
+
+        const groups = new Map();
+        products.forEach(p => {
+            const cat = jcNormalizeCategory(p);
+            p.category = cat;
+            if (!groups.has(cat)) groups.set(cat, []);
+            groups.get(cat).push(p);
+        });
+
+        const cats = Array.from(groups.keys()).sort((a, b) => a.localeCompare(b));
+        container.innerHTML = cats.map(cat => {
+            const list = groups.get(cat).sort((a, b) => String(a.product_name || "").localeCompare(String(b.product_name || "")));
+            const st = jcCategoryStyle(cat);
+            return `
+                <div style="margin-bottom:2rem;grid-column:1/-1;">
+                    <div style="background:linear-gradient(135deg,${st.bg},#fff);padding:1rem 1.5rem;border-radius:12px;border-left:6px solid ${st.border};margin-bottom:1rem;box-shadow:0 1px 3px rgba(0,0,0,.08);">
+                        <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+                            <h3 style="font-size:1.15rem;font-weight:800;color:${st.text};margin:0;display:flex;align-items:center;gap:.65rem;">${jcCategoryIcon(cat)} ${jcEscapeHtml(cat)}</h3>
+                            <span style="background:${st.border};color:white;padding:.3rem .8rem;border-radius:999px;font-size:.8rem;font-weight:800;font-family:var(--font-mono);">${list.length}</span>
+                        </div>
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:1rem;">
+                        ${list.map(p => jcRenderJulioCard(p, st)).join("")}
+                    </div>
+                </div>`;
+        }).join("");
+    }
+
+    function jcRenderJulioCard(product, st) {
+        const name = String(product.product_name || "");
+        const safeName = jcEscapeHtml(name);
+        const safeAttr = jcEscapeHtml(name);
+        const safeId = jcSafeId(name);
+        const qty = Number(product.target_quantity || 0);
+        const hasQty = qty > 0;
+        const img = jcEscapeHtml(jcImage(product.image_url));
+        const placeholder = jcEscapeHtml(typeof PLACEHOLDER_IMAGE !== "undefined" ? PLACEHOLDER_IMAGE : "https://via.placeholder.com/120?text=No+Image");
+        return `
+            <div class="julio-corporate-card" style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08);border:${hasQty ? "3px solid #16a34a" : "2px solid " + st.border};display:flex;flex-direction:column;position:relative;">
+                ${hasQty ? `<div style="position:absolute;top:8px;right:8px;background:#16a34a;color:white;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-weight:900;z-index:2;">✓</div>` : ""}
+                <div style="background:linear-gradient(135deg,#f9fafb,#fff);padding:.75rem;border-bottom:2px solid ${st.border};text-align:center;">
+                    <img src="${img}" alt="${safeAttr}" onerror="this.src='${placeholder}'" style="width:62px;height:62px;object-fit:contain;border-radius:6px;margin:0 auto .5rem;display:block;background:white;padding:.25rem;border:1px solid #d1d5db;">
+                    <h3 style="font-size:.72rem;font-weight:800;color:#111827;margin:0;line-height:1.2;min-height:1.9rem;display:flex;align-items:center;justify-content:center;">${safeName}</h3>
+                </div>
+                <div style="padding:.75rem;background:${hasQty ? "rgba(22,163,74,.08)" : st.bg};flex-grow:1;border-bottom:2px solid ${hasQty ? "#16a34a" : st.border};">
+                    <label style="display:block;font-size:.6rem;font-weight:900;color:${hasQty ? "#15803d" : st.text};text-transform:uppercase;letter-spacing:.06em;margin-bottom:.4rem;text-align:center;">Target Qty</label>
+                    <input id="julio-qty-${safeId}" type="number" min="0" step="1" value="${hasQty ? qty : ""}" placeholder="0" onchange="setJulioQuantity('${safeAttr}', this.value)" oninput="setJulioQuantity('${safeAttr}', this.value)" style="width:100%;padding:.55rem;text-align:center;border-radius:8px;border:2px solid ${hasQty ? "#16a34a" : st.border};font-size:1rem;font-weight:800;font-family:var(--font-mono);background:white;">
+                </div>
+                <div style="padding:.45rem;background:white;display:grid;grid-template-columns:1fr 1fr;gap:.4rem;">
+                    <button type="button" onclick="updateJulioQuantity('${safeAttr}', -1)" class="btn btn-secondary" style="padding:.35rem;font-size:.7rem;">−</button>
+                    <button type="button" onclick="updateJulioQuantity('${safeAttr}', 1)" class="btn btn-secondary" style="padding:.35rem;font-size:.7rem;">+</button>
+                </div>
+            </div>`;
+    }
+
+    async function jcLoadJulioProductsV114() {
+        console.log("[JC V114] Loading Julio products directly from inventory_management…");
+        const container = document.getElementById("julioProductGrid");
+        if (container) container.innerHTML = `<div style="padding:2rem;color:#475569;font-weight:700;">Loading Julio products…</div>`;
+
+        try {
+            const sb = jcClient();
+            const dateInput = document.getElementById("julioOrderDate");
+            const orderDate = dateInput?.value || jcTodayYMD();
+            if (dateInput && !dateInput.value) dateInput.value = orderDate;
+
+            const { data, error } = await sb
+                .from("inventory_management")
+                .select("product_name,image_url,item_code,assigned_to,category,is_hidden")
+                .order("category", { ascending: true })
+                .order("product_name", { ascending: true });
+
+            if (error) throw error;
+            console.log("[JC V114] inventory_management rows returned:", (data || []).length);
+
+            const map = new Map();
+            (data || []).forEach(row => {
+                const name = String(row.product_name || "").trim();
+                if (!name || row.is_hidden === true) return;
+
+                const assigned = jcAssignedArray(row.assigned_to);
+                const isJulio = assigned.some(x => x === "julio" || x.includes("julio"));
+                if (!isJulio) return;
+
+                const catText = String(row.category || "").toLowerCase();
+                if (catText.includes("office") || catText.includes("stationery") || catText.includes("paper & printing")) return;
+
+                if (!map.has(name)) {
+                    map.set(name, {
+                        product_name: name,
+                        image_url: row.image_url || "",
+                        item_code: row.item_code || "",
+                        assigned_to: row.assigned_to,
+                        category: jcNormalizeCategory(row),
+                        target_quantity: null,
+                        order_needed: null,
+                        vendors: [],
+                        priceData: []
+                    });
+                }
+            });
+
+            console.log("[JC V114] Julio products after assigned_to filter:", map.size);
+
+            // Load saved target quantities, but never block rendering if this table has an issue.
+            try {
+                const { data: targets, error: targetError } = await sb
+                    .from("target_inventory")
+                    .select("product_name,target_quantity")
+                    .eq("order_date", orderDate);
+                if (targetError) throw targetError;
+                (targets || []).forEach(t => {
+                    const name = String(t.product_name || "").trim();
+                    if (map.has(name)) map.get(name).target_quantity = Number(t.target_quantity || 0) || null;
+                });
+            } catch (e) {
+                console.warn("[JC V114] target_inventory skipped:", e);
+            }
+
+            jcSetJulioMap(map);
+            jcRenderJulioProductsV114();
+            return map;
+        } catch (error) {
+            console.error("[JC V114] Julio direct loader error:", error);
+            const countEl = document.getElementById("julioProductCount");
+            if (countEl) countEl.textContent = "Error";
+            if (container) {
+                container.innerHTML = `<div class="empty-state"><div class="empty-state-icon">⚠️</div><h3>Error loading Julio products</h3><p style="color:#b91c1c;font-size:.85rem;">${jcEscapeHtml(error.message || error)}</p></div>`;
+            }
+            return new Map();
+        }
+    }
+
+    function jcPatchJulioV114() {
+        try { loadJulioOrders = jcLoadJulioProductsV114; } catch (e) {}
+        try { renderJulioProducts = jcRenderJulioProductsV114; } catch (e) {}
+        try { filterJulioProducts = jcRenderJulioProductsV114; } catch (e) {}
+        window.loadJulioOrders = jcLoadJulioProductsV114;
+        window.renderJulioProducts = jcRenderJulioProductsV114;
+        window.filterJulioProducts = jcRenderJulioProductsV114;
+        window.jcLoadJulioProductsV114 = jcLoadJulioProductsV114;
+
+        const search = document.getElementById("julioSearchInput");
+        if (search && !search.__jcV114) {
+            search.__jcV114 = true;
+            search.addEventListener("input", jcRenderJulioProductsV114);
+        }
+        const date = document.getElementById("julioOrderDate");
+        if (date && !date.__jcV114) {
+            date.__jcV114 = true;
+            date.addEventListener("change", jcLoadJulioProductsV114);
+        }
+    }
+
+    function jcShouldLoadJulio() {
+        const user = (new URLSearchParams(window.location.search).get("user") || "").toLowerCase();
+        return user === "julio" || document.getElementById("julioOrders")?.classList.contains("active");
+    }
+
+    function boot() {
+        jcPatchJulioV114();
+        if (jcShouldLoadJulio()) {
+            setTimeout(jcLoadJulioProductsV114, 100);
+            setTimeout(jcLoadJulioProductsV114, 1000);
+            setTimeout(function () {
+                const count = document.getElementById("julioProductCount")?.textContent || "";
+                if (count.includes("0 products") || count.includes("Error")) jcLoadJulioProductsV114();
+            }, 2500);
+        }
+    }
+
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+    else boot();
+
+    window.addEventListener("load", function () {
+        jcPatchJulioV114();
+        if (jcShouldLoadJulio()) setTimeout(jcLoadJulioProductsV114, 300);
+    });
 })();
 </script>
 
