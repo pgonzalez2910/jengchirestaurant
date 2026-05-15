@@ -486,6 +486,7 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--tx);min-heig
       <button onclick="deleteAll()" style="padding:8px 14px;border-radius:8px;background:transparent;border:1.5px dashed rgba(200,30,30,.4);color:var(--r);font-size:11px;font-weight:700;cursor:pointer;font-family:Lato,sans-serif;letter-spacing:.04em;transition:all .18s" onmouseover="this.style.background='var(--rb)'" onmouseout="this.style.background='transparent'">🗑  Clear All (Testing)</button>
     </div>
     <div id="sgrid" class="sgrid fu1"></div>
+    <div id="override-panel" class="card fu2" style="padding:16px;margin-bottom:14px"></div>
     <div class="card fu2" style="padding:16px;margin-bottom:14px">
       <div id="ftabs" class="ftabs"></div>
       <div class="tbl-wrap">
@@ -649,6 +650,8 @@ const REQ_TBL  = 'advance_requests';
 const TIP_POS  = ['server','host','cashier','bartender','busser'];
 const PP_ANCHOR = new Date('2024-12-29T00:00:00');
 const ADMIN_EMAIL = 'admin@jengchirestaurant.com';
+const ADVANCE_LIMIT_PER_YEAR = 6;
+const LIMIT_OVERRIDE_STATUS = 'limit_override';
 
 // ✅ SALARY CONSTANTS — 50 hrs/week × 52 weeks = 2,600 hrs/year
 const SAL_HRS_YEAR = 50 * 52; // 2,600
@@ -660,6 +663,7 @@ const sb = createClient(SB_URL, SB_ANON);
 //  STATE
 // ══════════════════════════════════════════════════════════════
 let ME=null, ROLE=null, REQS=[], REV_REQ=null;
+let LOGIN_AT=null;
 let empSigDrawn=false, hrSigDrawn=false;
 let PIN='';
 
@@ -875,6 +879,7 @@ async function doLogin(){
       isHR:HR_USERS.includes((emp.username||'').toUpperCase()),
     };
 
+    LOGIN_AT=new Date();
     PIN='';updDots();$('inp-user').value='';hideMsg();
     await loadReqs();
 
@@ -906,6 +911,16 @@ const CORE_COLS=['employee_id','username','name','department','amount','reason',
 const EXT_COLS=['payroll_period_start','payroll_period_end','next_payday','days_elapsed','worked_hours','tips_amount','earned_amount','max_advance_50pct','is_over_50pct','hr_worked_hours','hr_tips_amount','hr_earned_amount','hr_max_50pct','employee_signature','hr_signature','advance_number_year','emp_job_title','emp_wage','emp_comp_type','emp_employment_type','emp_weekly_hours','emp_has_tips'];
 
 function stripToCore(data){const out={};CORE_COLS.forEach(k=>{if(k in data)out[k]=data[k];});return out;}
+function isOverrideReq(r){return String(r.status||'').toLowerCase()===LIMIT_OVERRIDE_STATUS;}
+function visibleReqs(){return REQS.filter(r=>!isOverrideReq(r));}
+function sameUsername(a,b){return String(a||'').toUpperCase()===String(b||'').toUpperCase();}
+function rowYear(r){try{return new Date(r.submitted_at).getFullYear();}catch(e){return null;}}
+function currentYear(){return getChicagoDate().getFullYear();}
+function overrideAvailableInThisSession(r){
+  if(!LOGIN_AT)return true;
+  if(!r.submitted_at)return true;
+  return new Date(r.submitted_at).getTime() <= LOGIN_AT.getTime();
+}
 
 async function saveReq(data){
   const{data:s,error}=await sb.from(REQ_TBL).insert(data).select().single();
@@ -935,8 +950,32 @@ async function updReq(id,data){
 }
 
 function yearCount(uname){
-  const yr=new Date().getFullYear();
-  return REQS.filter(r=>(r.username||'')===(uname||'')&&new Date(r.submitted_at).getFullYear()===yr&&r.status!=='denied').length;
+  const yr=currentYear();
+  return visibleReqs().filter(r=>sameUsername(r.username,uname)&&rowYear(r)===yr).length;
+}
+function overrideCount(uname,sessionAware=false){
+  const yr=currentYear();
+  return REQS.filter(r=>isOverrideReq(r)&&sameUsername(r.username,uname)&&rowYear(r)===yr&&(!sessionAware||overrideAvailableInThisSession(r))).length;
+}
+function allowedAdvanceCount(uname,sessionAware=false){
+  return ADVANCE_LIMIT_PER_YEAR + overrideCount(uname,sessionAware);
+}
+function remainingAdvanceRequests(uname,sessionAware=false){
+  return Math.max(0, allowedAdvanceCount(uname,sessionAware)-yearCount(uname));
+}
+function limitSummary(uname,sessionAware=false){
+  const used=yearCount(uname);
+  const overrides=overrideCount(uname,sessionAware);
+  const allowed=allowedAdvanceCount(uname,sessionAware);
+  const remaining=Math.max(0,allowed-used);
+  return {used,overrides,allowed,remaining,year:currentYear()};
+}
+function employeeAdvanceLimitMessage(sessionAware=true){
+  const s=limitSummary(ME.username,sessionAware);
+  if(s.remaining<=0){
+    return `You have already used all ${s.allowed} pay advance request${s.allowed===1?'':'s'} available for ${s.year}. Thank you so much.`;
+  }
+  return `This is your ${s.used} of ${s.allowed} pay advance requests used for ${s.year}. You have ${s.remaining} request${s.remaining===1?'':'s'} remaining.`;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1002,7 +1041,7 @@ async function sendAdminEmail(savedReq){
 // ══════════════════════════════════════════════════════════════
 function selectRole(r){ROLE=r;if(r==='emp'){buildEmp();showScreen('s-emp');}else{buildHR();showScreen('s-hr');}}
 function doLogout(){
-  ME=null;ROLE=null;PIN='';REQS=[];REV_REQ=null;updDots();hideMsg();
+  ME=null;ROLE=null;PIN='';REQS=[];REV_REQ=null;LOGIN_AT=null;updDots();hideMsg();
   $('form-area').style.display='block';$('succ-area').style.display='none';
   showScreen('s-login');
 }
@@ -1031,16 +1070,43 @@ function buildEmp(){
   $('disc-period').textContent=`${fShort(pp.start)} – ${fShort(pp.end)}`;
   $('disc-tips-note').style.display=ME.has_tips?'':'none';
   $('max-hint').textContent=isSal&&ME.annual_salary>0?'HR will verify your hours worked and calculate your eligible advance':'HR will verify your hours worked and calculate your eligible advance';
-  buildLimitBar();renderMine();
+  buildLimitBar();
+  renderMine();
+  showAdvanceLimitNotice();
   setTimeout(()=>initCanvas('emp-sig-canvas','emp-sig-ph'),200);
 }
 
 function buildLimitBar(){
-  const used=yearCount(ME.username);
+  const s=limitSummary(ME.username,true);
   let dots='';
-  for(let i=0;i<6;i++)dots+=`<div class="ldot${i<used?' used':''}" title="${i<used?'Used':'Available'}">${i+1}</div>`;
+  for(let i=0;i<s.allowed;i++){
+    dots+=`<div class="ldot${i<s.used?' used':''}" title="${i<s.used?'Used':'Available'}">${i+1}</div>`;
+  }
   $('limit-dots').innerHTML=dots;
-  $('limit-num').textContent=used;
+  const box=document.querySelector('.limit-txt');
+  if(box)box.innerHTML=`<span id="limit-num">${s.used}</span>/${s.allowed} Used`;
+}
+
+function showAdvanceLimitNotice(){
+  const s=limitSummary(ME.username,true);
+  const msg=employeeAdvanceLimitMessage(true);
+  const maxHint=$('max-hint');
+  if(maxHint){
+    maxHint.textContent=msg;
+    maxHint.style.color=s.remaining<=0?'var(--r)':'var(--td)';
+    maxHint.style.fontWeight=s.remaining<=0?'800':'400';
+  }
+  const btn=$('btn-sub');
+  if(btn){
+    if(s.remaining<=0){
+      btn.disabled=true;
+      btn.textContent=`Annual Limit Reached — ${s.used}/${s.allowed} Used`;
+    }else{
+      btn.disabled=false;
+      btn.textContent='Submit Advance Request';
+    }
+  }
+  showToast(msg,s.remaining<=0?'err':'inf',5500);
 }
 
 function checkAmt(){
@@ -1058,8 +1124,16 @@ function checkAmt(){
 function toggleOther(){$('other-f').style.display=$('inp-rsn').value==='Other'?'block':'none';}
 
 async function submitReq(){
-  const used=yearCount(ME.username);
-  if(used>=6){alert('You have reached the maximum of 6 advance requests per year.');return;}
+  await loadReqs();
+  buildLimitBar();
+  const s=limitSummary(ME.username,true);
+  if(s.remaining<=0){
+    const msg=`You have already used all ${s.allowed} pay advance request${s.allowed===1?'':'s'} available for ${s.year}. Thank you so much.`;
+    alert(msg);
+    showToast(msg,'err',7000);
+    showAdvanceLimitNotice();
+    return;
+  }
   const amt=parseFloat($('inp-amt').value)||0;
   const rsn=$('inp-rsn').value;
   if(!amt||amt<=0){alert('Please enter an advance amount.');return;}
@@ -1102,6 +1176,7 @@ async function submitReq(){
       emp_weekly_hours:ME.weekly_hours||null,
       emp_has_tips:ME.has_tips||false,
       email_sent:false,email_sent_at:null,
+      advance_number_year:yearCount(ME.username)+1,
     };
 
     const savedReq=await saveReq(rec);
@@ -1110,7 +1185,9 @@ async function submitReq(){
     $('succ-payday').textContent=fShort(pp.payday);
     $('form-area').style.display='none';
     $('succ-area').style.display='block';
-    renderMine();buildLimitBar();
+    renderMine();
+    buildLimitBar();
+    showAdvanceLimitNotice();
   }catch(e){
     console.error('Submit failed:',e);
     $('sub-err').textContent='Submission failed: '+e.message+'. Please try again or contact HR.';
@@ -1129,7 +1206,7 @@ function resetForm(){
 }
 
 function renderMine(){
-  const mine=REQS.filter(r=>r.username===ME.username);
+  const mine=visibleReqs().filter(r=>sameUsername(r.username,ME.username));
   $('my-list').innerHTML=mine.length?mine.map(r=>`
     <div class="ritem">
       <div class="ritem-top"><span class="ramt">${cur(r.amount)}</span>${badge(r.status)}</div>
@@ -1148,13 +1225,14 @@ function buildHR(){
   $('nav-hr-u').innerHTML=`<div class="nu-name">${ME.first_name} ${ME.last_name}</div><div class="nu-id">${ME.username}</div>`;
   renderHR();
 }
-function renderHR(){renderStats();renderTabs();renderTable();}
+function renderHR(){renderStats();renderOverridePanel();renderTabs();renderTable();}
 function renderStats(){
-  const t=REQS.length,p=REQS.filter(r=>r.status==='pending').length,
-        a=REQS.filter(r=>r.status==='approved').length,
-        d=REQS.filter(r=>r.status==='denied').length,
-        o=REQS.filter(r=>r.is_over_50pct&&r.status==='pending').length,
-        amt=REQS.filter(r=>r.status==='approved').reduce((s,r)=>s+(+r.amount||0),0);
+  const visible=visibleReqs();
+  const t=visible.length,p=visible.filter(r=>r.status==='pending').length,
+        a=visible.filter(r=>r.status==='approved').length,
+        d=visible.filter(r=>r.status==='denied').length,
+        o=visible.filter(r=>r.is_over_50pct&&r.status==='pending').length,
+        amt=visible.filter(r=>r.status==='approved').reduce((s,r)=>s+(+r.amount||0),0);
   $('sgrid').innerHTML=[
     {ico:'📋',v:t,l:'Total',c:''},
     {ico:'⏳',v:p,l:'Pending',c:'color:var(--am)'},
@@ -1164,12 +1242,93 @@ function renderStats(){
   ].map((s,i)=>`<div class="card sc fu" style="animation-delay:${i*.07}s"><div class="sico">${s.ico}</div><div class="sval" style="${s.c}">${s.v}</div><div class="slbl">${s.l}</div></div>`).join('')+
   `<div class="card sc fu" style="animation-delay:.35s"><div class="sico">💰</div><div class="sval acc">${cur(amt)}</div><div class="slbl">Approved $</div></div>`;
 }
+function escHtml(v){return String(v??'').replace(/[&<>'"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[m]));}
+function escAttr(v){return escHtml(v).replace(/`/g,'&#96;');}
+
+function renderOverridePanel(){
+  const panel=$('override-panel');
+  if(!panel)return;
+  const yr=currentYear();
+  const names=new Map();
+  visibleReqs().forEach(r=>{
+    const u=String(r.username||'').toUpperCase();
+    if(u&&!names.has(u))names.set(u,{username:u,name:r.name||u,employee_id:r.employee_id||'',used:yearCount(u),allowed:allowedAdvanceCount(u,false),overrides:overrideCount(u,false)});
+  });
+  const atLimit=[...names.values()].filter(x=>x.used>=x.allowed).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  panel.innerHTML=`
+    <div class="stitle">Manager Override · Annual Request Limit</div>
+    <div class="disc-adv" style="margin-bottom:12px">
+      <h4>➕ Grant One Additional Request</h4>
+      <p>Employees are blocked after their annual limit. HR may grant <strong>one additional request</strong>. The employee must sign out and log in again before the extra request becomes available.</p>
+    </div>
+    <div class="two-col" style="align-items:end">
+      <div class="f" style="margin-bottom:0">
+        <label>Employee Username</label>
+        <input id="override-username" type="text" placeholder="Example: PG9367" style="text-transform:uppercase"/>
+        <div class="hint">Enter the employee username, then click Grant +1.</div>
+      </div>
+      <button class="btn" style="margin-bottom:0" onclick="grantExtraRequestManual()">Grant +1 Request</button>
+    </div>
+    <div style="margin-top:12px;font-size:10px;color:var(--td);font-weight:800;letter-spacing:.08em;text-transform:uppercase">Employees currently at their available limit for ${yr}</div>
+    <div style="margin-top:8px">
+      ${atLimit.length?atLimit.map(x=>`
+        <div class="irow" style="align-items:center">
+          <span class="ik">${escHtml(x.name)}<br><span style="font-size:9px;color:var(--td)">${escHtml(x.username)} · ${x.used}/${x.allowed} used${x.overrides?` · +${x.overrides} override`:''}</span></span>
+          <span class="iv"><button class="btn-sm btn-print" onclick="grantExtraRequestForUser('${escAttr(x.username)}','${escAttr(x.name)}')">Grant +1</button></span>
+        </div>`).join(''):'<div class="empty" style="padding:10px">No employees are currently at their available limit.</div>'}
+    </div>`;
+  const inp=$('override-username');
+  if(inp)inp.addEventListener('input',function(){this.value=this.value.toUpperCase();});
+}
+
+async function grantExtraRequestManual(){
+  const inp=$('override-username');
+  const username=(inp&&inp.value?inp.value.trim().toUpperCase():'');
+  if(!username){alert('Please enter the employee username.');return;}
+  const match=visibleReqs().find(r=>sameUsername(r.username,username));
+  await grantExtraRequestForUser(username,match?(match.name||username):username);
+}
+
+async function grantExtraRequestForUser(username,name){
+  username=String(username||'').toUpperCase();
+  if(!username){alert('Missing employee username.');return;}
+  const s=limitSummary(username,false);
+  const ok=confirm(`Grant one additional pay advance request to ${name||username}?\n\nCurrent usage: ${s.used}/${s.allowed}.\nAfter override: ${s.used}/${s.allowed+1}.\n\nThe employee must sign out and log in again before submitting.`);
+  if(!ok)return;
+  try{
+    const yr=currentYear();
+    const rec={
+      employee_id:'OVERRIDE-'+username+'-'+Date.now(),
+      username:username,
+      name:name||username,
+      department:'HR Override',
+      amount:0,
+      reason:'Manager approved one additional pay advance request for '+yr,
+      status:LIMIT_OVERRIDE_STATUS,
+      submitted_at:new Date().toISOString(),
+      note:`Granted by ${ME?ME.username:'HR'} on ${new Date().toLocaleString()}. Employee must log in again before submitting.`,
+      approved_by:ME?ME.username:null,
+      approved_at:new Date().toISOString(),
+      approval_note:'Annual limit override: +1 request',
+    };
+    const {data,error}=await sb.from(REQ_TBL).insert(rec).select().single();
+    if(error)throw error;
+    REQS.unshift(data||rec);
+    showToast(`✅ One additional request granted to ${name||username}. Employee must log in again.`, 'ok', 7000);
+    renderHR();
+  }catch(e){
+    console.error('Override failed:',e);
+    alert('Override failed: '+(e.message||e));
+  }
+}
+
 function renderTabs(){
-  const c={all:REQS.length,pending:REQS.filter(r=>r.status==='pending').length,approved:REQS.filter(r=>r.status==='approved').length,denied:REQS.filter(r=>r.status==='denied').length};
+  const visible=visibleReqs();
+  const c={all:visible.length,pending:visible.filter(r=>r.status==='pending').length,approved:visible.filter(r=>r.status==='approved').length,denied:visible.filter(r=>r.status==='denied').length};
   $('ftabs').innerHTML=['all','pending','approved','denied'].map(t=>`<button class="ftab${hrFilter===t?' on':''}" onclick="setFilt('${t}')">${t==='all'?`All (${c.all})`:t[0].toUpperCase()+t.slice(1)+` (${c[t]})`}</button>`).join('');
 }
 function setFilt(f){hrFilter=f;renderTable();renderTabs();}
-function getFilt(){return hrFilter==='all'?REQS:REQS.filter(r=>r.status===hrFilter);}
+function getFilt(){const visible=visibleReqs();return hrFilter==='all'?visible:visible.filter(r=>r.status===hrFilter);}
 
 // ✅ FIX 2 — wageStr: salary shows correct hourly equivalent using SAL_HRS_YEAR (2,600)
 function renderTable(){
@@ -1194,6 +1353,7 @@ function renderTable(){
       <td>${badge(r.status)}</td>
       <td style="white-space:nowrap">
         ${r.status==='pending'?`<button class="btn-rev" onclick="openModal('${r.id}')">Review</button>`:`<button class="btn-rev" style="background:var(--p);opacity:.7" onclick="openModal('${r.id}')">View</button>`}
+        ${limitSummary(r.username,false).used>=limitSummary(r.username,false).allowed?`&nbsp;<button class="btn-edit-action" style="background:#B45309" onclick="grantExtraRequestForUser('${String(r.username||'').replace(/'/g,'\\\'')}','${String(r.name||r.username||'').replace(/'/g,'\\\'')}')">+1</button>`:''}
         &nbsp;<button class="btn-edit-action" onclick="openEditModal('${r.id}')">✎ Edit</button>
         &nbsp;<button onclick="regenAndSavePDF('${r.id}')" style="padding:6px 9px;border-radius:6px;background:#064E3B;color:#fff;border:1px solid #065F46;cursor:pointer;font-size:11px;font-weight:700">↻ PDF</button>
         &nbsp;<button onclick="openAndPrint('${r.id}')" style="padding:6px 9px;border-radius:6px;background:#0F2238;color:#C9A96E;border:1px solid #C9A96E;cursor:pointer;font-size:11px;font-weight:700">PDF</button>
@@ -1209,6 +1369,7 @@ function renderTable(){
       <div class="rch-row"><span>${r.emp_wage?wageStr(r):'—'}</span><span style="color:var(--td)">${r.payroll_period_start?fD(r.payroll_period_start)+' – '+fD(r.payroll_period_end):'—'}</span></div>
       <div class="rch-foot" style="display:flex;gap:7px">
         ${r.status==='pending'?`<button class="btn-rev" onclick="openModal('${r.id}')" style="flex:1">Review</button>`:`<button class="btn-rev" style="flex:1;background:var(--p);opacity:.75" onclick="openModal('${r.id}')">View</button>`}
+        ${limitSummary(r.username,false).used>=limitSummary(r.username,false).allowed?`<button onclick="grantExtraRequestForUser('${String(r.username||'').replace(/'/g,'\\\'')}','${String(r.name||r.username||'').replace(/'/g,'\\\'')}')" style="padding:8px 10px;border-radius:7px;background:#B45309;color:#fff;border:none;cursor:pointer;font-size:11px;font-weight:800">+1</button>`:''}
         <button onclick="openEditModal('${r.id}')" style="padding:8px 10px;border-radius:7px;background:var(--p);color:#fff;border:none;cursor:pointer;font-size:11px;font-weight:800">✎</button>
         <button onclick="regenAndSavePDF('${r.id}')" style="padding:8px 10px;border-radius:7px;background:#064E3B;color:#fff;border:none;cursor:pointer;font-size:11px;font-weight:800">↻</button>
         <button onclick="openAndPrint('${r.id}')" style="padding:8px 12px;border-radius:7px;background:#0F2238;color:#C9A96E;border:1.5px solid #C9A96E;cursor:pointer;font-size:11px;font-weight:800">📄</button>
@@ -1226,7 +1387,8 @@ function openModal(id){
   const isPending=r.status==='pending';
   const isSal=(r.emp_comp_type||'').toLowerCase()==='salary';
   const etMap={'FT':'Full-Time','PT':'Part-Time','full_time':'Full-Time','part_time':'Part-Time'};
-  const advsYr=REQS.filter(x=>x.username===r.username&&new Date(x.submitted_at).getFullYear()===new Date().getFullYear()).length;
+  const ls=limitSummary(r.username,false);
+  const advsYr=ls.used;
 
   // ✅ Show salary info box with correct hourly equivalent
   const hrRateForDisplay=isSal&&r.emp_wage>0?r.emp_wage/SAL_HRS_YEAR:parseFloat(r.emp_wage||0);
@@ -1251,7 +1413,7 @@ function openModal(id){
     ['Rate / Salary',wageLabel],
     ['Employment Type',etMap[r.emp_employment_type]||r.emp_employment_type||'—'],
     ['Tips Position',r.emp_has_tips?'Yes 🍽️ (Tips Included)':'No'],
-    ['Advances This Year',`${advsYr} of 6`],
+    ['Advances This Year',`${advsYr} of ${ls.allowed}${ls.overrides?` (+${ls.overrides} manager override${ls.overrides===1?'':'s'})`:''}`],
   ].map(([k,v])=>`<div class="irow"><span class="ik">${k}</span><span class="iv">${v}</span></div>`).join('');
 
   $('m-period-info').innerHTML=[
