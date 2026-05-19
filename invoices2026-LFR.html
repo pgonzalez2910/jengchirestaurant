@@ -424,6 +424,45 @@
             .topbar { flex-direction: column; align-items: flex-start; }
             .nav { overflow-x: auto; }
         }
+
+        .vendor-logo-wrap {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            background: #fffaf6;
+        }
+        .vendor-logo-img {
+            width: 54px;
+            height: 54px;
+            object-fit: contain;
+            border-radius: 12px;
+            border: 1px solid var(--line);
+            background: white;
+            padding: 6px;
+        }
+        .vendor-logo-sm {
+            width: 34px;
+            height: 34px;
+            object-fit: contain;
+            border-radius: 8px;
+            border: 1px solid var(--line);
+            background: white;
+            padding: 4px;
+            vertical-align: middle;
+            margin-right: 8px;
+        }
+        .vendor-name-cell {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .vendor-name-cell > div {
+            min-width: 0;
+        }
+
     </style>
 </head>
 <body>
@@ -523,6 +562,7 @@
                     <table>
                         <thead>
                             <tr>
+                                <th>Logo</th>
                                 <th>Vendor</th>
                                 <th>Docs</th>
                                 <th>Total</th>
@@ -548,9 +588,11 @@
                                 <th>Month</th>
                                 <th>Vendor</th>
                                 <th>Documents</th>
+                                <th>Invoice Dates</th>
                                 <th>Total</th>
                                 <th>Paid</th>
                                 <th>Unpaid</th>
+                                <th>Details</th>
                             </tr>
                         </thead>
                         <tbody id="monthlySummaryBody"></tbody>
@@ -575,6 +617,17 @@
                             <label>Vendor</label>
                             <input id="upVendor" list="vendorList" placeholder="Vendor name">
                             <datalist id="vendorList"></datalist>
+                        </div>
+                        <div>
+                            <label>Vendor Logo</label>
+                            <div class="vendor-logo-wrap">
+                                <img id="upVendorLogoPreview" class="vendor-logo-img" alt="Vendor logo" src="" style="display:none">
+                                <span id="upVendorLogoEmpty" class="muted">Choose a vendor to preload logo/contact info.</span>
+                            </div>
+                        </div>
+                        <div>
+                            <label>Logo URL</label>
+                            <input id="upLogo" placeholder="Vendor logo URL">
                         </div>
                         <div>
                             <label>Document Type</label>
@@ -788,6 +841,7 @@
             <input type="hidden" id="editId">
             <div class="form-grid">
                 <div><label>Vendor</label><input id="editVendor" list="vendorList"></div>
+                <div><label>Logo URL</label><input id="editLogo" placeholder="Vendor logo URL"></div>
                 <div><label>Type</label><select id="editType"><option value="invoice">Invoice</option><option value="check">Check</option><option value="credit">Credit</option><option value="statement">Statement</option><option value="other">Other</option></select></div>
                 <div><label>Date</label><input id="editDate" type="date"></div>
                 <div><label>Amount</label><input id="editAmount" type="number" step="0.01"></div>
@@ -816,7 +870,7 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const SCAN_BUCKET = "invoices2026 - LFR";
 const SCAN_TABLE = "jc_invoice_scans";
 const CONTACT_TABLE = "jc_vendor_contacts";
-const APP_VERSION = "v198-standalone-invoice-portal-employees2025-login";
+const APP_VERSION = "v200-vendor-preload-logo-mmddyyyy";
 
 let sb = null;
 let currentUser = null;
@@ -844,6 +898,42 @@ function cleanDate(v) {
     return String(v).slice(0, 10);
 }
 function docDate(row) { return cleanDate(row.document_date || row.invoice_date || row.created_at); }
+function formatDateMMDDYYYY(value) {
+    const d = cleanDate(value);
+    if (!d || d.length < 10) return "";
+    const [year, month, day] = d.split("-");
+    return `${month}/${day}/${year}`;
+}
+function formatMonthMMYYYY(value) {
+    if (!value || value === "No date") return "No date";
+    if (String(value).length >= 7) {
+        const [year, month] = String(value).split("-");
+        return `${month}/${year}`;
+    }
+    return value;
+}
+function getVendorContact(vendor) {
+    const key = String(vendor || "").trim().toLowerCase();
+    if (!key) return null;
+    return contacts.find(c => String(c.vendor_name || "").trim().toLowerCase() === key) || null;
+}
+function latestScanForVendor(vendor) {
+    const key = String(vendor || "").trim().toLowerCase();
+    if (!key) return null;
+    return scans
+        .filter(r => String(r.vendor_name || "").trim().toLowerCase() === key)
+        .sort((a, b) => String(docDate(b) || b.created_at || "").localeCompare(String(docDate(a) || a.created_at || "")))[0] || null;
+}
+function vendorLogoFor(vendor, row = null) {
+    const contact = getVendorContact(vendor);
+    const latest = latestScanForVendor(vendor);
+    return row?.vendor_logo_url || contact?.vendor_logo_url || latest?.vendor_logo_url || "";
+}
+function vendorLogoMarkup(vendor, row = null, className = "vendor-logo-sm") {
+    const url = vendorLogoFor(vendor, row);
+    if (!url) return "";
+    return `<img class="${className}" src="${esc(url)}" alt="${esc(vendor || "Vendor")} logo" onerror="this.style.display='none'">`;
+}
 function statusOf(row) {
     const s = String(row.payment_status || (row.paid ? "paid" : "unpaid") || "unpaid").toLowerCase();
     return s || "unpaid";
@@ -1005,6 +1095,47 @@ function populateVendors() {
     contacts.forEach(r => r.vendor_name && vendorSet.add(r.vendor_name));
     $("vendorList").innerHTML = Array.from(vendorSet).sort().map(v => `<option value="${esc(v)}"></option>`).join("");
 }
+function preloadVendorInfo(vendor) {
+    const vendorName = String(vendor || "").trim();
+    const contact = getVendorContact(vendorName);
+    const latest = latestScanForVendor(vendorName);
+    const source = contact || latest || {};
+
+    const mappings = [
+        ["upContact", source.contact_name],
+        ["upPhone", source.vendor_phone],
+        ["upEmail", source.vendor_email],
+        ["upTerms", source.payment_terms],
+        ["upLogo", source.vendor_logo_url]
+    ];
+
+    mappings.forEach(([id, value]) => {
+        const el = $(id);
+        if (el && !String(el.value || "").trim() && value) el.value = value;
+    });
+
+    updateUploadVendorLogoPreview();
+    checkDuplicate();
+}
+
+function updateUploadVendorLogoPreview() {
+    const vendor = $("upVendor")?.value || "";
+    const logoUrl = $("upLogo")?.value || vendorLogoFor(vendor);
+    const img = $("upVendorLogoPreview");
+    const empty = $("upVendorLogoEmpty");
+    if (!img || !empty) return;
+
+    if (logoUrl) {
+        img.src = logoUrl;
+        img.style.display = "block";
+        empty.textContent = vendor ? `Loaded for ${vendor}` : "Logo loaded";
+    } else {
+        img.removeAttribute("src");
+        img.style.display = "none";
+        empty.textContent = "Choose a vendor to preload logo/contact info.";
+    }
+}
+
 
 function rowsFiltered() {
     const q = ($("searchInput")?.value || "").toLowerCase().trim();
@@ -1055,7 +1186,9 @@ function renderDashboard() {
 
     $("vendorDashboardBody").innerHTML = Array.from(byVendor.values()).sort((a,b)=>b.total-a.total).map(v => {
         const c = contacts.find(x => String(x.vendor_name).toLowerCase() === String(v.vendor).toLowerCase()) || {};
+        const logo = vendorLogoFor(v.vendor);
         return `<tr>
+            <td>${logo ? vendorLogoMarkup(v.vendor, null, "vendor-logo-sm") : "—"}</td>
             <td><strong>${esc(v.vendor)}</strong></td>
             <td>${v.count}</td>
             <td class="amount">${money(v.total)}</td>
@@ -1070,20 +1203,73 @@ function renderDashboard() {
 
     const byMonth = new Map();
     active.forEach(r => {
-        const monthKey = (docDate(r) || "No date").slice(0, 7);
-        const key = `${monthKey}|${r.vendor_name || "Unknown Vendor"}`;
-        if (!byMonth.has(key)) byMonth.set(key, { month: monthKey, vendor: r.vendor_name || "Unknown Vendor", count: 0, total: 0, paid: 0, unpaid: 0 });
+        const dateValue = docDate(r);
+        const monthKey = (dateValue || "No date").slice(0, 7);
+        const vendorName = r.vendor_name || "Unknown Vendor";
+        const key = `${monthKey}|${vendorName}`;
+        if (!byMonth.has(key)) {
+            byMonth.set(key, {
+                month: monthKey,
+                vendor: vendorName,
+                count: 0,
+                total: 0,
+                paid: 0,
+                unpaid: 0,
+                dates: new Set()
+            });
+        }
         const row = byMonth.get(key);
         row.count++;
         row.total += Number(r.amount || 0);
+        if (dateValue) row.dates.add(dateValue);
         if (statusOf(r) === "paid") row.paid += Number(r.amount || 0);
         if (statusOf(r) === "unpaid") row.unpaid += Number(r.amount || 0);
     });
 
     $("monthlySummaryBody").innerHTML = Array.from(byMonth.values())
         .sort((a,b)=> b.month.localeCompare(a.month) || a.vendor.localeCompare(b.vendor))
-        .map(r => `<tr><td>${esc(r.month)}</td><td><strong>${esc(r.vendor)}</strong></td><td>${r.count}</td><td>${money(r.total)}</td><td>${money(r.paid)}</td><td>${money(r.unpaid)}</td></tr>`)
+        .map(r => {
+            const dates = Array.from(r.dates).sort().reverse();
+            const visibleDates = dates.slice(0, 4).map(formatDateMMDDYYYY).join(", ");
+            const moreDates = dates.length > 4 ? ` +${dates.length - 4} more` : "";
+            return `<tr>
+                <td>${esc(formatMonthMMYYYY(r.month))}</td>
+                <td><span class="vendor-name-cell">${vendorLogoMarkup(r.vendor)}<strong>${esc(r.vendor)}</strong></span></td>
+                <td>${r.count}</td>
+                <td>${esc(visibleDates || "—")}${esc(moreDates)}</td>
+                <td>${money(r.total)}</td>
+                <td>${money(r.paid)}</td>
+                <td>${money(r.unpaid)}</td>
+                <td><button class="btn btn-soft btn-sm" onclick="openVendorMonthDetails('${esc(r.vendor)}','${esc(r.month)}')"><i class="fa-solid fa-list"></i> View invoices</button></td>
+            </tr>`;
+        })
         .join("");
+}
+
+function openVendorMonthDetails(vendor, month) {
+    showTab("history");
+    const search = $("searchInput");
+    const from = $("fromFilter");
+    const to = $("toFilter");
+    const type = $("typeFilter");
+    const status = $("statusFilter");
+
+    search.value = vendor || "";
+    type.value = "";
+    status.value = "";
+
+    if (month && month !== "No date" && month.length === 7) {
+        const [year, monthNumber] = month.split("-").map(Number);
+        const lastDay = new Date(year, monthNumber, 0).getDate();
+        from.value = `${year}-${String(monthNumber).padStart(2, "0")}-01`;
+        to.value = `${year}-${String(monthNumber).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+    } else {
+        from.value = "";
+        to.value = "";
+    }
+
+    renderHistory();
+    window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 async function saveVendorContact(vendor, field, value) {
@@ -1113,8 +1299,8 @@ function renderHistory() {
         const status = statusOf(r);
         return `<tr>
             <td><input type="checkbox" ${checked} onchange="toggleSelected('${r.id}', this.checked)"></td>
-            <td>${esc(docDate(r))}</td>
-            <td><strong>${esc(r.vendor_name || "—")}</strong><br><span class="muted">${esc(r.contact_name || "")}</span></td>
+            <td>${esc(formatDateMMDDYYYY(docDate(r)))}</td>
+            <td><span class="vendor-name-cell">${vendorLogoMarkup(r.vendor_name, r)}<div><strong>${esc(r.vendor_name || "—")}</strong><br><span class="muted">${esc(r.contact_name || "")}</span></div></span></td>
             <td>${esc(r.document_type || "invoice")}</td>
             <td>
                 <select class="inline" onchange="autoSaveField('${r.id}','payment_status',this.value)">
@@ -1155,7 +1341,7 @@ function renderFolders() {
             <div class="folder-title"><i class="fa-solid fa-folder"></i> ${esc(vendor)} / ${esc(month)} <span class="right">${docs.length} · ${money(total)}</span></div>
             ${docs.map(r => `<div class="folder-item">
                 <strong>${esc(r.invoice_number || r.check_number || r.file_name || "Document")}</strong>
-                <div class="muted">${esc(docDate(r))} · ${esc(r.document_type || "invoice")} · ${money(r.amount || 0)}</div>
+                <div class="muted">${esc(formatDateMMDDYYYY(docDate(r)))} · ${esc(r.document_type || "invoice")} · ${money(r.amount || 0)}</div>
                 <div class="actions" style="margin-top:8px">
                     <button class="btn btn-soft btn-sm" onclick="previewRow('${r.id}')">Preview</button>
                     <button class="btn btn-soft btn-sm" onclick="downloadOne('${r.id}')">Download</button>
@@ -1244,6 +1430,7 @@ async function uploadDocument() {
         vendor_phone: $("upPhone").value.trim(),
         vendor_email: $("upEmail").value.trim(),
         payment_terms: $("upTerms").value.trim(),
+        vendor_logo_url: $("upLogo").value.trim(),
         notes: $("upNotes").value.trim(),
         bucket_name: SCAN_BUCKET,
         file_path: path,
@@ -1277,18 +1464,20 @@ async function upsertContactFromForm() {
         vendor_phone: $("upPhone").value.trim(),
         vendor_email: $("upEmail").value.trim(),
         payment_terms: $("upTerms").value.trim(),
+        vendor_logo_url: $("upLogo").value.trim(),
         updated_at: new Date().toISOString()
     }, { onConflict: "vendor_name" });
 }
 
 function clearUploadForm() {
-    ["upVendor","upAmount","upInvoiceNumber","upCheckNumber","upContact","upPhone","upEmail","upTerms","upNotes"].forEach(id => $(id).value = "");
+    ["upVendor","upAmount","upInvoiceNumber","upCheckNumber","upContact","upPhone","upEmail","upTerms","upLogo","upNotes"].forEach(id => $(id).value = "");
     $("upDate").value = new Date().toISOString().slice(0,10);
     $("upType").value = "invoice";
     $("upStatus").value = "unpaid";
     $("upFile").value = "";
     $("uploadPreview").innerHTML = `<div class="muted">Choose a PDF/image to preview it here.</div>`;
     $("duplicateWarning").classList.add("hidden");
+    updateUploadVendorLogoPreview();
 }
 
 function checkDuplicate() {
@@ -1367,6 +1556,7 @@ function openEditModal(id) {
     $("editPhone").value = r.vendor_phone || "";
     $("editEmail").value = r.vendor_email || "";
     $("editTerms").value = r.payment_terms || "";
+    $("editLogo").value = r.vendor_logo_url || vendorLogoFor(r.vendor_name, r) || "";
     $("editNotes").value = r.notes || "";
     $("editFile").value = "";
     $("editStatusText").textContent = "";
@@ -1416,6 +1606,7 @@ async function saveEditModal() {
         vendor_phone: $("editPhone").value.trim(),
         vendor_email: $("editEmail").value.trim(),
         payment_terms: $("editTerms").value.trim(),
+        vendor_logo_url: $("editLogo").value.trim(),
         notes: $("editNotes").value.trim(),
         updated_by_username: currentUser?.username || null,
         ...filePayload
@@ -1433,6 +1624,7 @@ async function saveEditModal() {
         vendor_phone: payload.vendor_phone,
         vendor_email: payload.vendor_email,
         payment_terms: payload.payment_terms,
+        vendor_logo_url: payload.vendor_logo_url,
         updated_at: new Date().toISOString()
     }, { onConflict: "vendor_name" });
 
@@ -1536,7 +1728,11 @@ document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
 
     $("upDate").value = new Date().toISOString().slice(0,10);
-    $("upVendor").addEventListener("input", checkDuplicate);
+    $("upVendor").addEventListener("input", () => {
+        checkDuplicate();
+        preloadVendorInfo($("upVendor").value);
+    });
+    $("upLogo").addEventListener("input", updateUploadVendorLogoPreview);
     $("upInvoiceNumber").addEventListener("input", checkDuplicate);
 
     $("upFile").addEventListener("change", e => {
