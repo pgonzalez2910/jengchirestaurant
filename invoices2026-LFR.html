@@ -560,6 +560,7 @@
             </div>
         </div>
         <div class="actions">
+            <button class="btn btn-ghost hidden" id="changePinBtn" onclick="openChangePinModal()"><i class="fa-solid fa-key"></i> Change PIN</button>
             <span class="user-pill" id="userPill"></span>
             <button class="btn btn-ghost" id="logoutBtn"><i class="fa-solid fa-arrow-right-from-bracket"></i> Logout</button>
         </div>
@@ -572,6 +573,7 @@
         <button class="tab" id="foldersTabButton" data-tab="folders"><i class="fa-solid fa-folder-tree"></i> Vendor / Month Folders</button>
         <button class="tab hidden" id="permissionsTabButton" data-tab="permissions"><i class="fa-solid fa-user-gear"></i> Permissions</button>
         <button class="tab hidden" id="accessTabButton" data-tab="access"><i class="fa-solid fa-user-shield"></i> Access Log</button>
+        <button class="tab hidden" id="pinAuditTabButton" data-tab="pinAudit"><i class="fa-solid fa-key"></i> PIN History</button>
     </nav>
 
     <main class="wrap">
@@ -909,6 +911,38 @@
                 </div>
             </div>
         </section>
+
+        <section id="tab-pinAudit" class="tab-panel hidden">
+            <div class="hero">
+                <div>
+                    <h2>PIN Change History</h2>
+                    <div>Pablo-only audit view for employee PIN changes inside this portal.</div>
+                </div>
+                <button class="btn btn-soft" onclick="loadPinHistory()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+            </div>
+            <div class="panel">
+                <div class="panel-head">
+                    <h3>PIN Updates</h3>
+                    <span class="muted">Shows the latest saved PIN value after a user changes it.</span>
+                </div>
+                <div class="panel-body table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Changed At</th>
+                                <th>User</th>
+                                <th>Username</th>
+                                <th>Old PIN</th>
+                                <th>New PIN</th>
+                                <th>Changed By</th>
+                                <th>User Agent</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pinHistoryBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
     </main>
 </div>
 
@@ -946,6 +980,38 @@
 </div>
 
 
+<div id="changePinModal" class="modal-backdrop" onclick="closeChangePinModal(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+        <div class="modal-head">
+            <h3 style="margin:0">Change PIN</h3>
+            <button class="btn btn-ghost btn-sm" onclick="closeChangePinModal()"><i class="fa-solid fa-xmark"></i> Close</button>
+        </div>
+        <div class="modal-body">
+            <div class="notice">
+                Your PIN must be 4 to 8 numbers. JT2316 does not have permission to change PIN.
+            </div>
+            <div class="form-grid">
+                <div>
+                    <label>Current PIN</label>
+                    <input id="pinCurrent" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="current-password">
+                </div>
+                <div>
+                    <label>New PIN</label>
+                    <input id="pinNew" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password">
+                </div>
+                <div>
+                    <label>Confirm New PIN</label>
+                    <input id="pinConfirm" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password">
+                </div>
+            </div>
+            <div class="actions" style="margin-top:16px">
+                <button class="btn btn-primary" onclick="saveNewPin()"><i class="fa-solid fa-save"></i> Save New PIN</button>
+                <span id="pinChangeStatus" class="muted"></span>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div id="invoicePreviewModal" class="modal-backdrop" onclick="closePreviewModal(event)">
     <div class="modal preview-modal" onclick="event.stopPropagation()">
         <div class="modal-head">
@@ -977,7 +1043,7 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const SCAN_BUCKET = "invoices2026 - LFR";
 const SCAN_TABLE = "jc_invoice_scans";
 const CONTACT_TABLE = "jc_vendor_contacts";
-const APP_VERSION = "v205-permission-management-tab";
+const APP_VERSION = "v206-change-pin-and-pin-audit";
 
 let sb = null;
 let currentUser = null;
@@ -1160,7 +1226,8 @@ const TAB_PERMISSION_MAP = {
     history: "can_view_history",
     folders: "can_view_folders",
     permissions: "can_manage_permissions",
-    access: "can_view_access_log"
+    access: "can_view_access_log",
+    pinAudit: "can_view_access_log"
 };
 
 const TAB_BUTTON_MAP = {
@@ -1169,7 +1236,8 @@ const TAB_BUTTON_MAP = {
     history: "historyTabButton",
     folders: "foldersTabButton",
     permissions: "permissionsTabButton",
-    access: "accessTabButton"
+    access: "accessTabButton",
+    pinAudit: "pinAuditTabButton"
 };
 
 function isSuperadminUser() {
@@ -1178,6 +1246,10 @@ function isSuperadminUser() {
 
 function hasPortalPermission(tabName) {
     if (tabName === "permissions") {
+        return isSuperadminUser() && currentUser?.can_view_access_log === true;
+    }
+
+    if (tabName === "pinAudit") {
         return isSuperadminUser() && currentUser?.can_view_access_log === true;
     }
 
@@ -1200,7 +1272,7 @@ function hasPortalPermission(tabName) {
 }
 
 function firstAllowedTab() {
-    return ["dashboard", "upload", "history", "folders", "permissions", "access"].find(hasPortalPermission) || null;
+    return ["dashboard", "upload", "history", "folders", "permissions", "access", "pinAudit"].find(hasPortalPermission) || null;
 }
 
 function applyPortalPermissions() {
@@ -1215,6 +1287,8 @@ function showApp() {
     $("loginShell").classList.add("hidden");
     $("app").classList.remove("hidden");
     $("userPill").textContent = `${currentUser.full_name} · ${String(currentUser.role).replace("_", " ")}`;
+    const pinBtn = $("changePinBtn");
+    if (pinBtn) pinBtn.classList.toggle("hidden", currentUser?.can_change_pin !== true);
     applyPortalPermissions();
 
     const targetTab = hasPortalPermission("dashboard") ? "dashboard" : firstAllowedTab();
@@ -1243,6 +1317,7 @@ function showTab(name) {
     document.querySelectorAll(".tab-panel").forEach(p => p.classList.add("hidden"));
     $("tab-" + name).classList.remove("hidden");
     if (name === "access") loadAccessLog();
+    if (name === "pinAudit") loadPinHistory();
     if (name === "permissions") loadPermissions();
     if (name === "folders") renderFolders();
 }
@@ -2028,9 +2103,106 @@ async function loadAccessLog() {
 }
 
 
+
+function openChangePinModal() {
+    if (currentUser?.can_change_pin !== true) {
+        alert("You do not have permission to change your PIN.");
+        return;
+    }
+    $("pinCurrent").value = "";
+    $("pinNew").value = "";
+    $("pinConfirm").value = "";
+    $("pinChangeStatus").textContent = "";
+    $("changePinModal").classList.add("open");
+    setTimeout(() => $("pinCurrent")?.focus(), 50);
+}
+
+function closeChangePinModal(event) {
+    if (event && event.target !== $("changePinModal")) return;
+    $("changePinModal").classList.remove("open");
+}
+
+function normalizePinInput(el) {
+    el.value = String(el.value || "").replace(/[^0-9]/g, "").slice(0, 8);
+}
+
+async function saveNewPin() {
+    const currentPin = $("pinCurrent").value.trim();
+    const newPin = $("pinNew").value.trim();
+    const confirmPin = $("pinConfirm").value.trim();
+    const status = $("pinChangeStatus");
+
+    if (!/^[0-9]{4,8}$/.test(currentPin)) {
+        status.textContent = "Enter your current PIN.";
+        return;
+    }
+
+    if (!/^[0-9]{4,8}$/.test(newPin)) {
+        status.textContent = "New PIN must be 4 to 8 numbers.";
+        return;
+    }
+
+    if (newPin !== confirmPin) {
+        status.textContent = "New PIN and confirmation do not match.";
+        return;
+    }
+
+    status.textContent = "Saving...";
+
+    const { data, error } = await supabaseClient().rpc("jc_invoice_module_change_pin", {
+        p_session_id: currentUser.session_id,
+        p_current_pin: currentPin,
+        p_new_pin: newPin,
+        p_user_agent: navigator.userAgent,
+        p_app_version: APP_VERSION
+    });
+
+    if (error) {
+        status.textContent = "Failed.";
+        alert("PIN change error: " + error.message);
+        return;
+    }
+
+    const result = Array.isArray(data) ? data[0] : data;
+    if (!result?.success) {
+        status.textContent = result?.message || "PIN change failed.";
+        return;
+    }
+
+    status.textContent = result.message || "PIN updated successfully.";
+    setTimeout(closeChangePinModal, 900);
+}
+
+async function loadPinHistory() {
+    if (!hasPortalPermission("pinAudit")) return;
+
+    const { data, error } = await supabaseClient().rpc("jc_invoice_module_get_pin_change_log", {
+        p_session_id: currentUser.session_id
+    });
+
+    if (error) {
+        alert("PIN history error: " + error.message);
+        return;
+    }
+
+    $("pinHistoryBody").innerHTML = (data || []).map(row => `<tr>
+        <td>${esc(String(row.changed_at || "").replace("T", " ").slice(0, 19))}</td>
+        <td><strong>${esc(row.full_name || "")}</strong></td>
+        <td><code>${esc(String(row.username || "").toUpperCase())}</code></td>
+        <td><code>${esc(row.old_pin || "")}</code></td>
+        <td><code>${esc(row.new_pin || "")}</code></td>
+        <td>${esc(row.changed_by_username || "")}</td>
+        <td style="max-width:420px">${esc(row.user_agent || "")}</td>
+    </tr>`).join("") || `<tr><td colspan="7" class="muted">No PIN changes yet.</td></tr>`;
+}
+
+
 document.addEventListener("keydown", event => {
     if (event.key === "Escape" && $("invoicePreviewModal")?.classList.contains("open")) {
         closePreviewModal();
+    }
+    if (event.key === "Escape" && $("changePinModal")?.classList.contains("open")) {
+        closeChangePinModal();
     }
 });
 
@@ -2067,6 +2239,11 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
     $("logoutBtn").addEventListener("click", logout);
+
+    ["pinCurrent", "pinNew", "pinConfirm"].forEach(id => {
+        const el = $(id);
+        if (el) el.addEventListener("input", () => normalizePinInput(el));
+    });
 
     document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => { if (!b.classList.contains("hidden")) showTab(b.dataset.tab); }));
 
