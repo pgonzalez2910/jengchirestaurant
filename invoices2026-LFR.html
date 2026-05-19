@@ -566,10 +566,10 @@
     </header>
 
     <nav class="nav">
-        <button class="tab active" data-tab="dashboard"><i class="fa-solid fa-chart-line"></i> Dashboard</button>
-        <button class="tab" data-tab="upload"><i class="fa-solid fa-cloud-arrow-up"></i> Upload</button>
-        <button class="tab" data-tab="history"><i class="fa-solid fa-table-list"></i> History Log</button>
-        <button class="tab" data-tab="folders"><i class="fa-solid fa-folder-tree"></i> Vendor / Month Folders</button>
+        <button class="tab active" id="dashboardTabButton" data-tab="dashboard"><i class="fa-solid fa-chart-line"></i> Dashboard</button>
+        <button class="tab" id="uploadTabButton" data-tab="upload"><i class="fa-solid fa-cloud-arrow-up"></i> Upload</button>
+        <button class="tab" id="historyTabButton" data-tab="history"><i class="fa-solid fa-table-list"></i> History Log</button>
+        <button class="tab" id="foldersTabButton" data-tab="folders"><i class="fa-solid fa-folder-tree"></i> Vendor / Month Folders</button>
         <button class="tab hidden" id="accessTabButton" data-tab="access"><i class="fa-solid fa-user-shield"></i> Access Log</button>
     </nav>
 
@@ -941,7 +941,7 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const SCAN_BUCKET = "invoices2026 - LFR";
 const SCAN_TABLE = "jc_invoice_scans";
 const CONTACT_TABLE = "jc_vendor_contacts";
-const APP_VERSION = "v200-vendor-preload-logo-mmddyyyy";
+const APP_VERSION = "v203-permission-controlled-tabs";
 
 let sb = null;
 let currentUser = null;
@@ -1086,7 +1086,7 @@ async function login() {
     });
 
     if (error) {
-        $("loginError").textContent = "Login setup error. Please run the v198 employees2025 login SQL migration, then try again. Details: " + error.message;
+        $("loginError").textContent = "Login setup error. Please run the v203 employees2025 permissions SQL migration, then try again. Details: " + error.message;
         $("loginError").classList.remove("hidden");
         return;
     }
@@ -1117,15 +1117,85 @@ async function logout() {
     location.reload();
 }
 
+const TAB_PERMISSION_MAP = {
+    dashboard: "can_view_dashboard",
+    upload: "can_view_upload",
+    history: "can_view_history",
+    folders: "can_view_folders",
+    access: "can_view_access_log"
+};
+
+const TAB_BUTTON_MAP = {
+    dashboard: "dashboardTabButton",
+    upload: "uploadTabButton",
+    history: "historyTabButton",
+    folders: "foldersTabButton",
+    access: "accessTabButton"
+};
+
+function isSuperadminUser() {
+    return String(currentUser?.role || "").toLowerCase() === "superadmin";
+}
+
+function hasPortalPermission(tabName) {
+    const key = TAB_PERMISSION_MAP[tabName];
+    if (!key) return false;
+
+    if (isSuperadminUser()) {
+        return true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(currentUser || {}, key)) {
+        return currentUser[key] === true;
+    }
+
+    if (tabName === "access") {
+        return currentUser?.can_view_access_log === true;
+    }
+
+    return String(currentUser?.role || "").toLowerCase() === "account_manager";
+}
+
+function firstAllowedTab() {
+    return ["dashboard", "upload", "history", "folders", "access"].find(hasPortalPermission) || null;
+}
+
+function applyPortalPermissions() {
+    Object.keys(TAB_BUTTON_MAP).forEach(tabName => {
+        const button = $(TAB_BUTTON_MAP[tabName]);
+        if (!button) return;
+        button.classList.toggle("hidden", !hasPortalPermission(tabName));
+    });
+}
+
 function showApp() {
     $("loginShell").classList.add("hidden");
     $("app").classList.remove("hidden");
     $("userPill").textContent = `${currentUser.full_name} · ${String(currentUser.role).replace("_", " ")}`;
-    if (currentUser.can_view_access_log) $("accessTabButton").classList.remove("hidden");
+    applyPortalPermissions();
+
+    const targetTab = hasPortalPermission("dashboard") ? "dashboard" : firstAllowedTab();
+    if (!targetTab) {
+        alert("This account does not have permission to view any Invoice Scanned Portal module. Contact Pablo.");
+        logout();
+        return;
+    }
+
+    showTab(targetTab);
     loadAll();
 }
 
 function showTab(name) {
+    if (!hasPortalPermission(name)) {
+        const fallback = firstAllowedTab();
+        if (fallback && fallback !== name) {
+            showTab(fallback);
+            return;
+        }
+        alert("You do not have permission to view this section.");
+        return;
+    }
+
     document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
     document.querySelectorAll(".tab-panel").forEach(p => p.classList.add("hidden"));
     $("tab-" + name).classList.remove("hidden");
@@ -1857,7 +1927,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     $("logoutBtn").addEventListener("click", logout);
 
-    document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+    document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => { if (!b.classList.contains("hidden")) showTab(b.dataset.tab); }));
 
     $("upDate").value = new Date().toISOString().slice(0,10);
     $("upVendor").addEventListener("input", () => {
