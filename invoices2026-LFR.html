@@ -1937,6 +1937,23 @@ async function autoSaveField(id, field, value) {
     }, 350));
 }
 
+async function notifyNewInvoice(savedInvoice) {
+    if (!savedInvoice?.id) return false;
+
+    try {
+        const { error } = await supabaseClient().functions.invoke("send-new-invoice-email", {
+            body: { invoice_id: savedInvoice.id }
+        });
+
+        if (error) throw error;
+        return true;
+    } catch (error) {
+        console.warn("Invoice notification failed", error);
+        $("uploadStatus").textContent = "Saved, but email notification failed. Check Supabase Edge Function logs.";
+        return false;
+    }
+}
+
 async function uploadDocument() {
     const vendor = $("upVendor").value.trim();
     const date = $("upDate").value || new Date().toISOString().slice(0,10);
@@ -1980,14 +1997,26 @@ async function uploadDocument() {
         updated_by_username: currentUser?.username || null
     };
 
-    const { error } = await supabaseClient().from(SCAN_TABLE).insert(payload);
+    const { data: savedInvoice, error } = await supabaseClient()
+        .from(SCAN_TABLE)
+        .insert(payload)
+        .select("id,vendor_name,document_type,document_date,invoice_number,check_number,amount,payment_status,file_name,created_by_username")
+        .single();
+
     if (error) {
         $("uploadStatus").textContent = "";
         return alert("Save failed: " + error.message);
     }
 
     await upsertContactFromForm();
-    $("uploadStatus").textContent = "Saved.";
+
+    $("uploadStatus").textContent = "Saved. Sending email notification...";
+    const emailSent = await notifyNewInvoice(savedInvoice);
+
+    $("uploadStatus").textContent = emailSent
+        ? "Saved. Email notification sent."
+        : "Saved, but email notification failed. Check Supabase Edge Function logs.";
+
     clearUploadForm();
     await loadAll();
     showTab("history");
