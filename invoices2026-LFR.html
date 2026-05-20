@@ -1043,9 +1043,10 @@
                     </div>
                     <div class="actions" style="margin-top:16px">
                         <button class="btn btn-primary" onclick="saveVendorInformation(true)"><i class="fa-solid fa-save"></i> Save Now</button>
+                        <button class="btn btn-green" onclick="saveVendorInformationAndAddAnother()"><i class="fa-solid fa-plus"></i> Save & Add Another</button>
                         <button class="btn btn-danger hidden" id="vendorInfoDeleteBtn" onclick="deleteVendorInformationFromForm()"><i class="fa-solid fa-trash"></i> Delete Vendor</button>
                         <button class="btn btn-ghost" onclick="startNewVendorInformation()">New Vendor</button>
-                        <span class="muted">Updates save automatically after you stop typing.</span>
+                        <span class="muted">Auto-save keeps the current vendor open. Use Save & Add Another to clear the form for the next vendor.</span>
                     </div>
                 </div>
             </div>
@@ -1087,7 +1088,7 @@
             <div class="hero">
                 <div>
                     <h2>User Permissions</h2>
-                    <div>Pablo-only controls for Dashboard, Upload, History Log, Vendor / Month Folders, Jeng Chi Hours, and Access Log.</div>
+                    <div>Pablo-only controls for Dashboard, Upload, History Log, Vendor / Month Folders, Vendor Information, Jeng Chi Hours, and Access Log.</div>
                 </div>
                 <button class="btn btn-soft" onclick="loadPermissions()"><i class="fa-solid fa-rotate"></i> Refresh</button>
             </div>
@@ -1108,6 +1109,7 @@
                                 <th>Upload</th>
                                 <th>History Log</th>
                                 <th>Vendor / Month Folders</th>
+                                <th>Vendor Information</th>
                                 <th>Jeng Chi Hours</th>
                                 <th>Access Log</th>
                                 <th>Status</th>
@@ -1565,6 +1567,7 @@ async function login() {
     currentUser = result;
     sessionStorage.setItem("jc_invoice_user", JSON.stringify(result));
     sessionStorage.removeItem("jc_invoice_pin");
+    await loadCurrentUserVendorInfoPermission();
     showApp();
 }
 
@@ -1586,7 +1589,7 @@ const TAB_PERMISSION_MAP = {
     upload: "can_view_upload",
     history: "can_view_history",
     folders: "can_view_folders",
-    vendorInfo: "can_view_folders",
+    vendorInfo: "can_view_vendor_info",
     permissions: "can_manage_permissions",
     access: "can_view_access_log",
     pinAudit: "can_view_access_log",
@@ -1645,6 +1648,33 @@ function applyPortalPermissions() {
         if (!button) return;
         button.classList.toggle("hidden", !hasPortalPermission(tabName));
     });
+}
+
+async function loadCurrentUserVendorInfoPermission() {
+    if (!currentUser?.username) return;
+
+    if (isSuperadminUser()) {
+        currentUser.can_view_vendor_info = true;
+        sessionStorage.setItem("jc_invoice_user", JSON.stringify(currentUser));
+        return;
+    }
+
+    const username = String(currentUser.username || "").toUpperCase();
+
+    const { data, error } = await supabaseClient()
+        .from("jc_invoice_vendor_info_permissions")
+        .select("can_view_vendor_info")
+        .eq("username", username)
+        .maybeSingle();
+
+    if (error) {
+        console.warn("Vendor Information permission load failed", error);
+        currentUser.can_view_vendor_info = false;
+        return;
+    }
+
+    currentUser.can_view_vendor_info = data?.can_view_vendor_info === true;
+    sessionStorage.setItem("jc_invoice_user", JSON.stringify(currentUser));
 }
 
 function showApp() {
@@ -2139,7 +2169,7 @@ function vendorInformationPayload() {
     };
 }
 
-async function saveVendorInformation(showAlerts = true) {
+async function saveVendorInformation(showAlerts = true, clearAfterSave = false) {
     let payload;
 
     try {
@@ -2147,7 +2177,7 @@ async function saveVendorInformation(showAlerts = true) {
     } catch (error) {
         setVendorInfoStatus(error.message, "status-error");
         if (showAlerts) alert(error.message);
-        return;
+        return false;
     }
 
     setVendorInfoStatus("Saving automatically...", "status-saving");
@@ -2165,7 +2195,7 @@ async function saveVendorInformation(showAlerts = true) {
     if (error) {
         setVendorInfoStatus("Auto-save failed", "status-error");
         if (showAlerts) alert(error.message);
-        return;
+        return false;
     }
 
     if (!existingId && data?.id) {
@@ -2179,6 +2209,23 @@ async function saveVendorInformation(showAlerts = true) {
 
     const saved = contacts.find(row => String(row.vendor_name || "").trim().toLowerCase() === payload.vendor_name.toLowerCase());
     if (saved) $("vendorInfoId").value = saved.id || $("vendorInfoId").value;
+
+    if (clearAfterSave) {
+        clearVendorInfoForm();
+        setVendorInfoStatus("Vendor saved. Ready to add another vendor.", "status-saved");
+        $("vendorCompanyName")?.focus();
+    }
+
+    return true;
+}
+
+async function saveVendorInformationAndAddAnother() {
+    if (vendorInfoSaveTimer) {
+        clearTimeout(vendorInfoSaveTimer);
+        vendorInfoSaveTimer = null;
+    }
+
+    await saveVendorInformation(true, true);
 }
 
 async function deleteVendorInformation(vendorName) {
@@ -2724,6 +2771,35 @@ async function loadPermissions() {
     }
 
     portalUsers = data || [];
+
+    const usernames = portalUsers
+        .map(user => String(user.username || "").toUpperCase())
+        .filter(Boolean);
+
+    if (usernames.length > 0) {
+        const { data: vendorInfoPermissions, error: vendorInfoError } = await supabaseClient()
+            .from("jc_invoice_vendor_info_permissions")
+            .select("username,can_view_vendor_info")
+            .in("username", usernames);
+
+        if (vendorInfoError) {
+            alert("Vendor Information permission load error: " + vendorInfoError.message);
+            return;
+        }
+
+        const vendorInfoMap = new Map(
+            (vendorInfoPermissions || []).map(item => [
+                String(item.username || "").toUpperCase(),
+                item.can_view_vendor_info === true
+            ])
+        );
+
+        portalUsers = portalUsers.map(user => ({
+            ...user,
+            invoice_can_view_vendor_info: vendorInfoMap.get(String(user.username || "").toUpperCase()) === true
+        }));
+    }
+
     renderPermissions();
 }
 
@@ -2763,11 +2839,12 @@ function renderPermissions() {
             <td>${permissionCheckbox(row, "invoice_can_view_upload")}</td>
             <td>${permissionCheckbox(row, "invoice_can_view_history")}</td>
             <td>${permissionCheckbox(row, "invoice_can_view_folders")}</td>
+            <td>${permissionCheckbox(row, "invoice_can_view_vendor_info")}</td>
             <td>${permissionCheckbox(row, "invoice_can_view_hours")}</td>
             <td>${permissionCheckbox(row, "invoice_can_view_access_log")}</td>
             <td><span class="muted" id="permStatus-${userId}">Ready</span></td>
         </tr>`;
-    }).join("") || `<tr><td colspan="11" class="muted">No portal users found.</td></tr>`;
+    }).join("") || `<tr><td colspan="12" class="muted">No portal users found.</td></tr>`;
 }
 
 async function saveUserPermissions(userId) {
@@ -2780,6 +2857,7 @@ async function saveUserPermissions(userId) {
         const el = row.querySelector(`[data-perm="${field}"]`);
         return el ? el.checked : false;
     };
+    const username = String(row.children[1]?.textContent || "").trim().toUpperCase();
     const roleEl = row.querySelector(`[data-perm="invoice_module_role"]`);
     const statusEl = $(`permStatus-${Number(userId)}`);
 
@@ -2803,6 +2881,27 @@ async function saveUserPermissions(userId) {
         alert("Permission save error: " + error.message);
         await loadPermissions();
         return;
+    }
+
+    const { error: vendorInfoError } = await supabaseClient()
+        .from("jc_invoice_vendor_info_permissions")
+        .upsert({
+            username,
+            can_view_vendor_info: getChecked("invoice_can_view_vendor_info"),
+            updated_by_username: currentUser?.username || null,
+            updated_at: new Date().toISOString()
+        }, { onConflict: "username" });
+
+    if (vendorInfoError) {
+        if (statusEl) statusEl.textContent = "Failed";
+        alert("Vendor Information permission save error: " + vendorInfoError.message);
+        await loadPermissions();
+        return;
+    }
+
+    if (username === String(currentUser?.username || "").toUpperCase()) {
+        await loadCurrentUserVendorInfoPermission();
+        applyPortalPermissions();
     }
 
     if (statusEl) statusEl.textContent = "Saved";
@@ -3177,7 +3276,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const saved = sessionStorage.getItem("jc_invoice_user");
     if (saved) {
         currentUser = JSON.parse(saved);
-        showApp();
+        loadCurrentUserVendorInfoPermission().then(showApp);
     }
 });
 </script>
