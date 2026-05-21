@@ -537,7 +537,7 @@ button.blue{
       <div>
         <h1>Inventory2026 — PAR Management</h1>
         <div class="subtitle">
-          Big Category Layout · Assigned To Detection · Rony · Julio · Office · Category Control · Autosave · CSV Export
+          Big Category Layout · Assigned To Detection · Rony · Julio · Office · Permanent Autosave · Duplicate Row Update
         </div>
       </div>
     </div>
@@ -1161,7 +1161,10 @@ function renderProductCard(item){
 }
 
 /* =========================================================
-   AUTOSAVE
+   PERMANENT AUTOSAVE
+   IMPORTANT:
+   If one visible card represents multiple duplicate rows,
+   this updates ALL related duplicate_ids permanently.
 ========================================================= */
 
 function scheduleSave(id){
@@ -1182,7 +1185,18 @@ async function autoSave(id){
   const parRaw = card.querySelector(".par-input").value;
   const parValue = parRaw === "" ? null : Number(parRaw);
 
-  setCardStatus(id, "saving", "Saving...");
+  setCardStatus(id, "saving", "Saving permanently...");
+  setSystemStatus("Saving Permanently...", "loading");
+
+  const visibleProduct = allProducts.find(x => String(x.id) === String(id));
+
+  const idsToUpdate = visibleProduct && Array.isArray(visibleProduct.duplicate_ids)
+    ? visibleProduct.duplicate_ids
+    : [id];
+
+  const cleanIds = idsToUpdate
+    .filter(Boolean)
+    .map(x => String(x));
 
   const { error } = await supabaseClient
     .from(INVENTORY_TABLE)
@@ -1190,7 +1204,7 @@ async function autoSave(id){
       category: categoryValue,
       par: parValue
     })
-    .eq("id", id);
+    .in("id", cleanIds);
 
   if(error){
     console.error(error);
@@ -1201,26 +1215,37 @@ async function autoSave(id){
     return;
   }
 
-  const product = allProducts.find(x => String(x.id) === String(id));
+  allProducts.forEach(product => {
+    if(cleanIds.includes(String(product.id))){
+      product.category = categoryValue;
+      product.par = parValue;
+    }
 
-  if(product){
-    product.category = categoryValue;
-    product.par = parValue;
-  }
+    if(Array.isArray(product.duplicate_ids)){
+      const hasMatch = product.duplicate_ids
+        .map(x => String(x))
+        .some(dupId => cleanIds.includes(dupId));
 
-  const rawProduct = rawProducts.find(x => String(x.id) === String(id));
+      if(hasMatch){
+        product.category = categoryValue;
+        product.par = parValue;
+      }
+    }
+  });
 
-  if(rawProduct){
-    rawProduct.category = categoryValue;
-    rawProduct.par = parValue;
-  }
+  rawProducts.forEach(product => {
+    if(cleanIds.includes(String(product.id))){
+      product.category = categoryValue;
+      product.par = parValue;
+    }
+  });
 
   categoryList = [
     ...new Set(allProducts.map(x => cleanCategory(x.category)))
   ].sort();
 
-  setCardStatus(id, "saved", "Saved");
-  setSystemStatus("Saved Automatically", "saved");
+  setCardStatus(id, "saved", "Saved Permanently");
+  setSystemStatus("Saved Permanently", "saved");
 
   setTimeout(() => {
     buildFilters();
@@ -1242,6 +1267,7 @@ function exportCSV(){
     "Vendor Purchase Reference",
     "Image URL",
     "Duplicate Count",
+    "Duplicate IDs",
     "Merged Names"
   ]];
 
@@ -1254,6 +1280,7 @@ function exportCSV(){
       getVendorsForProduct(item.product_name).join(" | "),
       item.image_url || "",
       item.duplicate_count || 1,
+      (item.duplicate_ids || [item.id]).join(" | "),
       (item.duplicate_names || []).join(" | ")
     ]);
   });
@@ -1307,7 +1334,8 @@ function mergeDuplicateProducts(products){
       finalProducts.push({
         ...group[0],
         duplicate_count: 1,
-        duplicate_names: [group[0].product_name].filter(Boolean)
+        duplicate_names: [group[0].product_name].filter(Boolean),
+        duplicate_ids: [group[0].id].filter(Boolean)
       });
       return;
     }
@@ -1323,7 +1351,8 @@ function mergeDuplicateProducts(products){
     const merged = {
       ...best,
       duplicate_count: group.length,
-      duplicate_names: group.map(x => x.product_name).filter(Boolean)
+      duplicate_names: group.map(x => x.product_name).filter(Boolean),
+      duplicate_ids: group.map(x => x.id).filter(Boolean)
     };
 
     if(!merged.image_url){
@@ -1443,32 +1472,35 @@ function normalizeProductName(name){
 
 /* =========================================================
    ASSIGNED_TO NORMALIZATION
-   This is the important clue.
-   Handles:
-   ['rony'], ['julio'], ['office']
-   rony, julio, office
-   Rony, Julio, Office
-   "rony,julio"
-   "both"
 ========================================================= */
 
 function normalizeAssigned(value){
+  let rawValues = [];
+
   if(Array.isArray(value)){
-    return value
-      .flatMap(v => splitAssignedValue(v))
-      .map(v => normalizeAssignedName(v))
-      .filter(Boolean)
-      .filter((v, i, arr) => arr.indexOf(v) === i);
+    rawValues = value.flatMap(v => splitAssignedValue(v));
+  }
+  else if(value === null || value === undefined || value === ""){
+    rawValues = [];
+  }
+  else{
+    rawValues = splitAssignedValue(value);
   }
 
-  if(value === null || value === undefined || value === ""){
-    return [];
-  }
+  const finalValues = [];
 
-  return splitAssignedValue(value)
-    .map(v => normalizeAssignedName(v))
-    .filter(Boolean)
-    .filter((v, i, arr) => arr.indexOf(v) === i);
+  rawValues.forEach(v => {
+    const normalized = normalizeAssignedName(v);
+
+    if(Array.isArray(normalized)){
+      normalized.forEach(x => finalValues.push(x));
+    }
+    else if(normalized){
+      finalValues.push(normalized);
+    }
+  });
+
+  return finalValues.filter((v, i, arr) => arr.indexOf(v) === i);
 }
 
 function splitAssignedValue(value){
@@ -1497,11 +1529,11 @@ function normalizeAssignedName(value){
   }
 
   if(v === "both"){
-    return "Rony";
+    return ["Rony", "Julio"];
   }
 
   if(v === "all"){
-    return "Rony";
+    return ["Rony", "Julio", "Office"];
   }
 
   return "";
