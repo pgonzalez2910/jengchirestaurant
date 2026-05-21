@@ -130,6 +130,10 @@ button{
   background:var(--dark);
 }
 
+button:hover{
+  transform:translateY(-1px);
+}
+
 button.blue{
   background:var(--blue);
 }
@@ -138,7 +142,7 @@ button.blue{
 
 .summary{
   display:grid;
-  grid-template-columns:repeat(5,1fr);
+  grid-template-columns:repeat(6,1fr);
   gap:12px;
   margin-bottom:18px;
 }
@@ -169,7 +173,7 @@ button.blue{
 
 .big-category-bar{
   display:grid;
-  grid-template-columns:repeat(4,1fr);
+  grid-template-columns:repeat(5,1fr);
   gap:14px;
   margin-bottom:18px;
 }
@@ -203,6 +207,10 @@ button.blue{
 
 .big-category-card.office{
   border-left-color:var(--office);
+}
+
+.big-category-card.other{
+  border-left-color:var(--other);
 }
 
 .big-category-card.all{
@@ -488,7 +496,7 @@ button.blue{
   font-weight:900;
 }
 
-@media(max-width:1000px){
+@media(max-width:1100px){
   .toolbar{
     grid-template-columns:1fr;
   }
@@ -529,7 +537,7 @@ button.blue{
       <div>
         <h1>Inventory2026 — PAR Management</h1>
         <div class="subtitle">
-          Big Category Layout · Rony · Julio · Office · Category Control · Autosave · CSV Export
+          Big Category Layout · Assigned To Detection · Rony · Julio · Office · Category Control · Autosave · CSV Export
         </div>
       </div>
     </div>
@@ -555,7 +563,7 @@ button.blue{
 
 <section class="summary">
   <div class="summary-card">
-    <label>Total Products Showing</label>
+    <label>Total Showing</label>
     <strong id="totalProducts">0</strong>
   </div>
 
@@ -577,6 +585,11 @@ button.blue{
   <div class="summary-card">
     <label>Duplicates Hidden</label>
     <strong id="duplicatesHidden">0</strong>
+  </div>
+
+  <div class="summary-card">
+    <label>Unassigned / Other</label>
+    <strong id="otherCount">0</strong>
   </div>
 </section>
 
@@ -600,6 +613,11 @@ button.blue{
     <div class="big-title">Office</div>
     <div class="big-count" id="count-Office">0 products</div>
   </div>
+
+  <div class="big-category-card other" id="big-Other" onclick="selectBigCategory('Other')">
+    <div class="big-title">Other / Unassigned</div>
+    <div class="big-count" id="count-Other">0 products</div>
+  </div>
 </section>
 
 <div class="layout">
@@ -616,6 +634,10 @@ button.blue{
 </div>
 
 <script>
+/* =========================================================
+   SUPABASE
+========================================================= */
+
 const SUPABASE_URL = "https://kpldzwlftkvjjntgsqxx.supabase.co";
 
 const SUPABASE_ANON_KEY =
@@ -626,12 +648,20 @@ const supabaseClient = window.supabase.createClient(
   SUPABASE_ANON_KEY
 );
 
+/* =========================================================
+   TABLES
+========================================================= */
+
 const INVENTORY_TABLE = "inventory_management";
 const INVOICE_ITEMS_TABLE = "invoice_items";
 const INVOICES_TABLE = "invoices";
 
 const GITHUB_BASE =
   "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/";
+
+/* =========================================================
+   GLOBALS
+========================================================= */
 
 let rawProducts = [];
 let allProducts = [];
@@ -643,12 +673,20 @@ let activeBigCategory = "";
 let activeCategory = "";
 let duplicatesHiddenCount = 0;
 
+/* =========================================================
+   ELEMENTS
+========================================================= */
+
 const productContent = document.getElementById("productContent");
 const categoryListEl = document.getElementById("categoryList");
 const searchInput = document.getElementById("searchInput");
 const categoryFilter = document.getElementById("categoryFilter");
 const vendorFilter = document.getElementById("vendorFilter");
 const systemStatus = document.getElementById("systemStatus");
+
+/* =========================================================
+   INIT
+========================================================= */
 
 document.addEventListener("DOMContentLoaded", () => {
   loadProducts();
@@ -662,6 +700,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
   vendorFilter.addEventListener("change", renderProducts);
 });
+
+/* =========================================================
+   LOAD PRODUCTS
+========================================================= */
 
 async function loadProducts(){
   setSystemStatus("Loading...", "loading");
@@ -685,7 +727,9 @@ async function loadProducts(){
   }
 
   rawProducts = data || [];
+
   allProducts = mergeDuplicateProducts(rawProducts);
+
   duplicatesHiddenCount = Math.max(0, rawProducts.length - allProducts.length);
 
   categoryList = [
@@ -699,6 +743,10 @@ async function loadProducts(){
 
   setSystemStatus("System Ready", "ready");
 }
+
+/* =========================================================
+   LOAD VENDOR HISTORY
+========================================================= */
 
 async function loadVendorHistory(){
   vendorMap = new Map();
@@ -754,6 +802,10 @@ async function loadVendorHistory(){
   });
 }
 
+/* =========================================================
+   BUILD FILTERS
+========================================================= */
+
 function buildFilters(){
   categoryFilter.innerHTML = `<option value="">All Categories</option>`;
 
@@ -784,6 +836,10 @@ function buildFilters(){
   document.getElementById("duplicatesHidden").textContent = duplicatesHiddenCount;
 }
 
+/* =========================================================
+   BIG CATEGORY SELECTION
+========================================================= */
+
 function selectBigCategory(group){
   activeBigCategory = group;
   activeCategory = "";
@@ -803,6 +859,10 @@ function selectBigCategory(group){
   renderProducts();
 }
 
+/* =========================================================
+   RENDER PRODUCTS
+========================================================= */
+
 function renderProducts(){
   const search = searchInput.value.toLowerCase().trim();
   const selectedVendor = vendorFilter.value;
@@ -815,15 +875,17 @@ function renderProducts(){
 
     return (
       (!search || name.includes(search)) &&
-      (!activeBigCategory || assignedTo.includes(activeBigCategory)) &&
+      matchesBigCategory(assignedTo, activeBigCategory) &&
       (!activeCategory || category === activeCategory) &&
       (!selectedVendor || vendors.includes(selectedVendor))
     );
   });
 
   document.getElementById("totalProducts").textContent = currentFiltered.length;
+
   document.getElementById("missingPhotos").textContent =
     currentFiltered.filter(x => !x.image_url).length;
+
   document.getElementById("duplicatesHidden").textContent = duplicatesHiddenCount;
 
   renderBigCategoryCounts();
@@ -831,27 +893,71 @@ function renderProducts(){
   renderGroupedProducts();
 }
 
+/* =========================================================
+   MATCH BIG CATEGORY
+========================================================= */
+
+function matchesBigCategory(assignedTo, group){
+  if(!group) return true;
+
+  if(group === "Other"){
+    return !assignedTo.includes("Rony") &&
+           !assignedTo.includes("Julio") &&
+           !assignedTo.includes("Office");
+  }
+
+  return assignedTo.includes(group);
+}
+
+/* =========================================================
+   BIG CATEGORY COUNTS
+========================================================= */
+
 function renderBigCategoryCounts(){
   const counts = {
     All: allProducts.length,
     Rony: 0,
     Julio: 0,
-    Office: 0
+    Office: 0,
+    Other: 0
   };
 
   allProducts.forEach(item => {
     const assigned = normalizeAssigned(item.assigned_to);
 
-    if(assigned.includes("Rony")) counts.Rony++;
-    if(assigned.includes("Julio")) counts.Julio++;
-    if(assigned.includes("Office")) counts.Office++;
+    let hasMainAssignment = false;
+
+    if(assigned.includes("Rony")){
+      counts.Rony++;
+      hasMainAssignment = true;
+    }
+
+    if(assigned.includes("Julio")){
+      counts.Julio++;
+      hasMainAssignment = true;
+    }
+
+    if(assigned.includes("Office")){
+      counts.Office++;
+      hasMainAssignment = true;
+    }
+
+    if(!hasMainAssignment){
+      counts.Other++;
+    }
   });
 
   document.getElementById("count-All").textContent = `${counts.All} products`;
   document.getElementById("count-Rony").textContent = `${counts.Rony} products`;
   document.getElementById("count-Julio").textContent = `${counts.Julio} products`;
   document.getElementById("count-Office").textContent = `${counts.Office} products`;
+  document.getElementById("count-Other").textContent = `${counts.Other} products`;
+  document.getElementById("otherCount").textContent = counts.Other;
 }
+
+/* =========================================================
+   CATEGORY SIDEBAR
+========================================================= */
 
 function renderCategorySidebar(){
   const counts = new Map();
@@ -861,7 +967,7 @@ function renderCategorySidebar(){
     const name = String(item.product_name || "").toLowerCase();
     const search = searchInput.value.toLowerCase().trim();
 
-    if(activeBigCategory && !assignedTo.includes(activeBigCategory)) return;
+    if(!matchesBigCategory(assignedTo, activeBigCategory)) return;
     if(search && !name.includes(search)) return;
 
     const cat = cleanCategory(item.category);
@@ -893,6 +999,10 @@ function selectCategory(category){
   renderProducts();
 }
 
+/* =========================================================
+   GROUPED PRODUCT VIEW
+========================================================= */
+
 function renderGroupedProducts(){
   if(!currentFiltered.length){
     productContent.innerHTML = `<div class="empty">No products found.</div>`;
@@ -909,10 +1019,26 @@ function renderGroupedProducts(){
   currentFiltered.forEach(item => {
     const assigned = normalizeAssigned(item.assigned_to);
 
-    if(assigned.includes("Rony")) groups.Rony.push(item);
-    else if(assigned.includes("Julio")) groups.Julio.push(item);
-    else if(assigned.includes("Office")) groups.Office.push(item);
-    else groups.Other.push(item);
+    let placed = false;
+
+    if(assigned.includes("Rony")){
+      groups.Rony.push(item);
+      placed = true;
+    }
+
+    if(assigned.includes("Julio")){
+      groups.Julio.push(item);
+      placed = true;
+    }
+
+    if(assigned.includes("Office")){
+      groups.Office.push(item);
+      placed = true;
+    }
+
+    if(!placed){
+      groups.Other.push(item);
+    }
   });
 
   productContent.innerHTML = "";
@@ -924,7 +1050,11 @@ function renderGroupedProducts(){
 
     items.forEach(item => {
       const cat = cleanCategory(item.category);
-      if(!byCategory[cat]) byCategory[cat] = [];
+
+      if(!byCategory[cat]){
+        byCategory[cat] = [];
+      }
+
       byCategory[cat].push(item);
     });
 
@@ -961,9 +1091,14 @@ function renderGroupedProducts(){
   });
 }
 
+/* =========================================================
+   PRODUCT CARD
+========================================================= */
+
 function renderProductCard(item){
   const vendors = getVendorsForProduct(item.product_name);
-  const assigned = normalizeAssigned(item.assigned_to).join(", ") || "Not Assigned";
+  const assigned = normalizeAssigned(item.assigned_to);
+  const assignedText = assigned.length ? assigned.join(", ") : "Not Assigned";
   const duplicateCount = Number(item.duplicate_count || 1);
 
   return `
@@ -978,7 +1113,7 @@ function renderProductCard(item){
 
         <div>
           <div class="product-title">${escapeHtml(item.product_name || "")}</div>
-          <span class="assigned-badge">${escapeHtml(assigned)}</span>
+          <span class="assigned-badge">${escapeHtml(assignedText)}</span>
 
           ${
             duplicateCount > 1
@@ -1024,6 +1159,10 @@ function renderProductCard(item){
     </div>
   `;
 }
+
+/* =========================================================
+   AUTOSAVE
+========================================================= */
 
 function scheduleSave(id){
   clearTimeout(saveTimers[id]);
@@ -1090,6 +1229,10 @@ async function autoSave(id){
   }, 900);
 }
 
+/* =========================================================
+   CSV EXPORT
+========================================================= */
+
 function exportCSV(){
   const rows = [[
     "Product Name",
@@ -1137,6 +1280,10 @@ function exportCSV(){
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+/* =========================================================
+   DUPLICATE / SIMILAR PRODUCT MERGE
+========================================================= */
 
 function mergeDuplicateProducts(products){
   const grouped = new Map();
@@ -1294,6 +1441,76 @@ function normalizeProductName(name){
   return value;
 }
 
+/* =========================================================
+   ASSIGNED_TO NORMALIZATION
+   This is the important clue.
+   Handles:
+   ['rony'], ['julio'], ['office']
+   rony, julio, office
+   Rony, Julio, Office
+   "rony,julio"
+   "both"
+========================================================= */
+
+function normalizeAssigned(value){
+  if(Array.isArray(value)){
+    return value
+      .flatMap(v => splitAssignedValue(v))
+      .map(v => normalizeAssignedName(v))
+      .filter(Boolean)
+      .filter((v, i, arr) => arr.indexOf(v) === i);
+  }
+
+  if(value === null || value === undefined || value === ""){
+    return [];
+  }
+
+  return splitAssignedValue(value)
+    .map(v => normalizeAssignedName(v))
+    .filter(Boolean)
+    .filter((v, i, arr) => arr.indexOf(v) === i);
+}
+
+function splitAssignedValue(value){
+  return String(value || "")
+    .replace(/[\[\]{}"]/g, "")
+    .split(/[,\|;/]+/)
+    .map(v => v.trim())
+    .filter(Boolean);
+}
+
+function normalizeAssignedName(value){
+  const v = String(value || "")
+    .toLowerCase()
+    .trim();
+
+  if(v === "rony" || v === "ronny" || v === "ronnie"){
+    return "Rony";
+  }
+
+  if(v === "julio" || v === "juilo"){
+    return "Julio";
+  }
+
+  if(v === "office" || v === "oficina"){
+    return "Office";
+  }
+
+  if(v === "both"){
+    return "Rony";
+  }
+
+  if(v === "all"){
+    return "Rony";
+  }
+
+  return "";
+}
+
+/* =========================================================
+   VENDOR LOOKUP
+========================================================= */
+
 function getVendorsForProduct(productName){
   const key = normalizeProductName(productName);
 
@@ -1304,20 +1521,9 @@ function getVendorsForProduct(productName){
   return [];
 }
 
-function normalizeAssigned(value){
-  if(Array.isArray(value)){
-    return value.map(v => String(v).trim()).filter(Boolean);
-  }
-
-  if(!value){
-    return [];
-  }
-
-  return String(value)
-    .split(",")
-    .map(v => v.trim())
-    .filter(Boolean);
-}
+/* =========================================================
+   HELPERS
+========================================================= */
 
 function cleanCategory(value){
   const category = String(value || "").trim();
