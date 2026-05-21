@@ -14,7 +14,7 @@
     <script>
     // ── Silent version check — forces all devices to reload new code ──
     (function() {
-        var VERSION = '2026.05.13.v131-compact-executive-grid-best3';
+        var VERSION = '2026.05.21.v136-final-julio-rest-loader';
         // ── Just stamp the version. Never hard-reload — the page IS already the new code. ──
         localStorage.setItem('jc_inv_version', VERSION);
     })();
@@ -77169,6 +77169,316 @@ function jcfd64PopulateMonthAndWeekFilters() {
     } else {
         setTimeout(init, 2600);
     }
+})();
+</script>
+
+
+
+<!-- JC v136 FINAL JULIO ORDERS HOTFIX — inserted at very end so it wins over all older scripts -->
+<script id="jc-v136-final-julio-orders-hotfix">
+(function () {
+    "use strict";
+
+    const VERSION = "2026.05.21.v136-final-julio-rest-loader";
+    const SUPABASE_URL_V136 = "https://kpldzwlftkvjjntgsqxx.supabase.co";
+    const SUPABASE_ANON_KEY_V136 = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
+    const GITHUB_BASE_V136 = "https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/";
+
+    let julioRowsV136 = [];
+    let julioProductsV136 = [];
+    let julioOrderQtyV136 = new Map();
+    let julioLoadInProgressV136 = false;
+
+    function log() {
+        try { console.log.apply(console, ["[JC v136 Julio]"].concat(Array.from(arguments))); } catch(e) {}
+    }
+
+    function html(value) {
+        return String(value ?? "")
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#039;");
+    }
+
+    function js(value) {
+        return String(value ?? "")
+            .replaceAll("\\", "\\\\")
+            .replaceAll("'", "\\'")
+            .replaceAll('"', '\\"')
+            .replaceAll("\n", " ");
+    }
+
+    function todayYMDLocal() {
+        const d = new Date();
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+    }
+
+    function setDateToToday() {
+        const dateInput = document.getElementById("julioOrderDate");
+        if (dateInput && !dateInput.value) dateInput.value = todayYMDLocal();
+    }
+
+    function setStatus(message, type) {
+        const status = document.querySelector(".status-indicator, #systemStatus");
+        if (!status) return;
+        if (status.id === "systemStatus") {
+            status.textContent = message;
+        } else {
+            const textNode = Array.from(status.childNodes).find(n => n.nodeType === Node.TEXT_NODE);
+            if (textNode) textNode.nodeValue = " " + message;
+        }
+        if (type === "error") {
+            status.style.background = "#fee2e2";
+            status.style.color = "#991b1b";
+        } else if (type === "loading") {
+            status.style.background = "#fff7cc";
+            status.style.color = "#854d0e";
+        } else {
+            status.style.background = "rgba(62,38,38,0.06)";
+            status.style.color = "";
+        }
+    }
+
+    function normalizeAssigned(value) {
+        if (Array.isArray(value)) return value.flatMap(normalizeAssigned);
+        if (value === null || value === undefined || value === "") return [];
+        return String(value)
+            .replace(/[\[\]{}\"]/g, "")
+            .split(/[,|;/]+/)
+            .map(v => v.toLowerCase().trim())
+            .filter(Boolean);
+    }
+
+    function isJulio(value) {
+        const assigned = normalizeAssigned(value);
+        return assigned.some(v => v === "julio" || v.includes("julio") || v === "both" || v === "all");
+    }
+
+    function productKey(name) {
+        return String(name || "")
+            .toLowerCase()
+            .trim()
+            .replace(/&/g, "and")
+            .replace(/\bounces\b/g, "oz")
+            .replace(/\bounce\b/g, "oz")
+            .replace(/\s+/g, "")
+            .replace(/[^a-z0-9#]/g, "");
+    }
+
+    function resolveImageV136(imageUrl, productName) {
+        if (imageUrl) {
+            const src = String(imageUrl).trim();
+            if (src.startsWith("http")) return src;
+            return GITHUB_BASE_V136 + src;
+        }
+        const guess = String(productName || "").toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
+        return guess ? GITHUB_BASE_V136 + guess + ".jpg" : "https://placehold.co/120x120?text=No+Image";
+    }
+
+    window.jcV136JulioImageFallback = function (img, productName) {
+        const guess = String(productName || "").toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
+        if (img.dataset.triedPng !== "1") {
+            img.dataset.triedPng = "1";
+            img.src = GITHUB_BASE_V136 + guess + ".png";
+            return;
+        }
+        if (img.dataset.triedJpeg !== "1") {
+            img.dataset.triedJpeg = "1";
+            img.src = GITHUB_BASE_V136 + guess + ".jpeg";
+            return;
+        }
+        img.src = "https://placehold.co/120x120?text=No+Image";
+    };
+
+    async function restGetInventoryRows() {
+        const url = SUPABASE_URL_V136 + "/rest/v1/inventory_management?select=id,product_name,image_url,item_code,assigned_to,category,par&order=product_name.asc";
+        const response = await fetch(url, {
+            method: "GET",
+            headers: {
+                "apikey": SUPABASE_ANON_KEY_V136,
+                "Authorization": "Bearer " + SUPABASE_ANON_KEY_V136,
+                "Accept": "application/json"
+            }
+        });
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error("REST inventory_management error " + response.status + ": " + text);
+        }
+        return await response.json();
+    }
+
+    function mergeJulioRows(rows) {
+        const map = new Map();
+        rows.forEach(row => {
+            if (!isJulio(row.assigned_to)) return;
+            const name = String(row.product_name || "").trim();
+            if (!name) return;
+            const key = productKey(name);
+            if (!key) return;
+            if (!map.has(key)) {
+                map.set(key, {
+                    id: row.id,
+                    product_name: name,
+                    image_url: row.image_url || "",
+                    item_code: row.item_code || "",
+                    assigned_to: row.assigned_to || "julio",
+                    category: row.category || "Other",
+                    par: row.par ?? null,
+                    duplicate_count: 1,
+                    duplicate_ids: [row.id]
+                });
+            } else {
+                const existing = map.get(key);
+                existing.duplicate_count += 1;
+                existing.duplicate_ids.push(row.id);
+                if (!existing.image_url && row.image_url) existing.image_url = row.image_url;
+                if (!existing.item_code && row.item_code) existing.item_code = row.item_code;
+                if ((existing.par === null || existing.par === undefined || existing.par === "") && row.par !== null && row.par !== undefined && row.par !== "") existing.par = row.par;
+                if ((!existing.category || existing.category === "Other") && row.category) existing.category = row.category;
+            }
+        });
+        return Array.from(map.values()).sort((a, b) => String(a.product_name).localeCompare(String(b.product_name)));
+    }
+
+    function updateCounters(products) {
+        const count = products.length;
+        const countEl = document.getElementById("julioProductCount");
+        if (countEl) countEl.textContent = `${count} products`;
+        const totalEl = document.getElementById("julioTotalProducts");
+        if (totalEl) totalEl.textContent = count;
+        const setEl = document.getElementById("julioProductsSet");
+        const setCount = Array.from(julioOrderQtyV136.values()).filter(v => Number(v) > 0).length;
+        if (setEl) setEl.textContent = setCount;
+        const pct = count ? Math.round((setCount / count) * 100) : 0;
+        const pctEl = document.getElementById("julioProgressPercent");
+        if (pctEl) pctEl.textContent = `${pct}%`;
+        const bar = document.getElementById("julioProgress");
+        if (bar) bar.style.width = `${pct}%`;
+    }
+
+    function renderCard(product) {
+        const qty = julioOrderQtyV136.get(product.id) || "";
+        const duplicateBadge = product.duplicate_count > 1
+            ? `<span style="display:inline-block;margin-top:6px;padding:3px 8px;border-radius:999px;background:#fef3c7;color:#92400e;font-size:10px;font-weight:900;">${product.duplicate_count} merged</span>`
+            : "";
+        return `
+            <div class="julio-corporate-card" style="background:white;border:1px solid #d9dee7;border-radius:14px;padding:1rem;display:flex;flex-direction:column;gap:.75rem;box-shadow:0 4px 12px rgba(15,23,42,.05);">
+                <div style="text-align:center;">
+                    <img src="${html(resolveImageV136(product.image_url, product.product_name))}"
+                        alt="${html(product.product_name)}"
+                        onerror="window.jcV136JulioImageFallback(this, '${js(product.product_name)}')"
+                        style="width:110px;height:110px;object-fit:contain;border:1px solid #e5e7eb;border-radius:12px;padding:6px;background:white;">
+                </div>
+                <div style="font-size:.95rem;line-height:1.3;font-weight:900;color:#111827;min-height:2.4rem;">
+                    ${html(product.product_name)}<br>${duplicateBadge}
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem;">
+                    <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;padding:.6rem;">
+                        <div style="font-size:.65rem;font-weight:900;color:#64748b;text-transform:uppercase;">PAR</div>
+                        <div style="font-weight:900;color:#0c1e35;">${html(product.par ?? "N/A")}</div>
+                    </div>
+                    <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:10px;padding:.6rem;">
+                        <div style="font-size:.65rem;font-weight:900;color:#64748b;text-transform:uppercase;">Item Code</div>
+                        <div style="font-weight:900;color:#0c1e35;">${html(product.item_code || "N/A")}</div>
+                    </div>
+                </div>
+                <label style="font-size:.7rem;color:#64748b;font-weight:900;text-transform:uppercase;">Order Quantity</label>
+                <input type="number" min="0" step="1" value="${html(qty)}" placeholder="0"
+                    oninput="window.jcV136UpdateJulioQty('${js(product.id)}', this.value)"
+                    style="width:100%;padding:.75rem;border:2px solid #d1d5db;border-radius:10px;text-align:center;font-size:1.1rem;font-weight:900;">
+            </div>`;
+    }
+
+    function renderJulioV136() {
+        const grid = document.getElementById("julioProductGrid");
+        if (!grid) return;
+        const search = String(document.getElementById("julioSearchInput")?.value || "").toLowerCase().trim();
+        const products = julioProductsV136.filter(p => !search || String(p.product_name || "").toLowerCase().includes(search));
+        updateCounters(products);
+        if (!products.length) {
+            grid.innerHTML = `<div style="grid-column:1/-1;background:white;border:1px solid #d9dee7;border-radius:14px;padding:2rem;text-align:center;color:#64748b;font-weight:900;">
+                No Julio products found by v136.<br>
+                <span style="font-size:12px;">REST loaded rows: ${julioRowsV136.length}. Julio rows after filter: ${julioProductsV136.length}.</span>
+            </div>`;
+            return;
+        }
+        const groups = new Map();
+        products.forEach(p => {
+            const cat = p.category || "Other";
+            if (!groups.has(cat)) groups.set(cat, []);
+            groups.get(cat).push(p);
+        });
+        const categories = Array.from(groups.keys()).sort((a,b) => (a === "Other") ? 1 : (b === "Other") ? -1 : a.localeCompare(b));
+        grid.innerHTML = categories.map(category => {
+            const items = groups.get(category).sort((a,b) => String(a.product_name).localeCompare(String(b.product_name)));
+            return `<section style="grid-column:1/-1;background:white;border:1px solid #d9dee7;border-radius:16px;overflow:hidden;margin-bottom:1rem;box-shadow:0 8px 20px rgba(15,23,42,.06);">
+                <div style="background:#0c1e35;color:white;padding:1rem 1.25rem;display:flex;justify-content:space-between;align-items:center;">
+                    <div style="font-size:1rem;font-weight:900;">${html(category)}</div>
+                    <div style="font-size:.8rem;font-weight:800;opacity:.9;">${items.length} product(s)</div>
+                </div>
+                <div style="padding:1rem;display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:1rem;">
+                    ${items.map(renderCard).join("")}
+                </div>
+            </section>`;
+        }).join("");
+    }
+
+    window.jcV136UpdateJulioQty = function (id, value) {
+        const qty = value === "" ? "" : Number(value);
+        if (qty === "" || qty <= 0) julioOrderQtyV136.delete(id);
+        else julioOrderQtyV136.set(id, qty);
+        updateCounters(julioProductsV136);
+    };
+
+    async function loadJulioOrdersV136() {
+        if (julioLoadInProgressV136) return;
+        julioLoadInProgressV136 = true;
+        setDateToToday();
+        const grid = document.getElementById("julioProductGrid");
+        if (grid) grid.innerHTML = `<div style="grid-column:1/-1;padding:2rem;text-align:center;font-weight:900;color:#64748b;">Loading Julio products — v136...</div>`;
+        setStatus("Loading Julio Products...", "loading");
+        try {
+            julioRowsV136 = await restGetInventoryRows();
+            julioProductsV136 = mergeJulioRows(julioRowsV136);
+            log("REST rows:", julioRowsV136.length, "Julio products:", julioProductsV136.length, julioProductsV136.slice(0,5));
+            renderJulioV136();
+            setStatus("System Online", "ready");
+        } catch (err) {
+            console.error("[JC v136 Julio] load failed", err);
+            setStatus("Julio Load Error", "error");
+            if (grid) grid.innerHTML = `<div style="grid-column:1/-1;background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:12px;padding:1.5rem;font-weight:900;white-space:pre-wrap;">Julio load error:\n${html(err.message)}</div>`;
+        } finally {
+            julioLoadInProgressV136 = false;
+        }
+    }
+
+    window.loadJulioOrders = loadJulioOrdersV136;
+    window.renderJulioProducts = renderJulioV136;
+    window.jcV136LoadJulioOrders = loadJulioOrdersV136;
+
+    document.addEventListener("input", function (event) {
+        if (event.target && event.target.id === "julioSearchInput") renderJulioV136();
+    });
+
+    function boot() {
+        try { localStorage.setItem("jc_inv_version", VERSION); } catch(e) {}
+        setDateToToday();
+        const isJulioVisible = document.getElementById("julioOrders")?.classList.contains("active") || /user=julio/i.test(location.search);
+        if (isJulioVisible || document.getElementById("julioProductGrid")) {
+            setTimeout(loadJulioOrdersV136, 250);
+            setTimeout(loadJulioOrdersV136, 1250);
+        }
+    }
+
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+    else boot();
+
+    log("hotfix loaded", VERSION);
 })();
 </script>
 
