@@ -449,7 +449,21 @@ input.f-wage:focus, input.f-hours:focus {
   box-shadow: 0 0 0 3px rgba(30,64,175,0.09);
   background: var(--white);
 }
-input.f-wage.just-saved { border-color: var(--green); background: var(--green-lt); }
+input.f-wage.just-saved, input.f-hours.just-saved { border-color: var(--green); background: var(--green-lt); }
+.autosave-status {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+.autosave-status.saving { color: var(--blue); border-color: #bfdbfe; background: #eff6ff; }
+.autosave-status.saved { color: var(--green); border-color: #bbf7d0; background: #f0fdf4; }
+.autosave-status.error { color: var(--red); border-color: #fecaca; background: #fef2f2; }
 input.f-hours:disabled  { background: #f3f4f6; color: #c0c5ce; border-color: var(--line); cursor: not-allowed; }
 
 .ot-toggle { display: flex; align-items: center; gap: 7px; }
@@ -896,6 +910,7 @@ input.f-hours:disabled  { background: #f3f4f6; color: #c0c5ce; border-color: var
     </div>
 
     <div class="spacer"></div>
+    <div class="autosave-status" id="autosaveStatus">Autosave Ready</div>
     <button class="btn btn-outline btn-sm" onclick="prevPeriod()">◀ Prev</button>
     <button class="btn btn-outline btn-sm" onclick="nextPeriod()">Next ▶</button>
     <button class="btn btn-outline btn-sm" onclick="showSqlModal()">🗄️ SQL</button>
@@ -1078,14 +1093,16 @@ input.f-hours:disabled  { background: #f3f4f6; color: #c0c5ce; border-color: var
             <th>Wage</th>
             <th>Reg Hrs</th>
             <th>OT Hrs</th>
+            <th>PTO Hrs</th>
             <th>Reg Pay</th>
             <th>OT Pay</th>
+            <th>PTO Pay</th>
             <th>Total</th>
             <th style="width:80px;text-align:center">Action</th>
           </tr>
         </thead>
         <tbody id="logBody">
-          <tr><td colspan="11" style="text-align:center;padding:32px;color:#aaa">Loading records…</td></tr>
+          <tr><td colspan="13" style="text-align:center;padding:32px;color:#aaa">Loading records…</td></tr>
         </tbody>
       </table>
     </div>
@@ -1352,6 +1369,30 @@ function renderTable() {
 /* ═══════════════════════════════════════════
    CALCULATIONS
 ═══════════════════════════════════════════ */
+let autosaveTimer = null;
+let autosaveBusy = false;
+let autosaveQueued = false;
+
+function setAutosaveStatus(text, state='') {
+  const el = document.getElementById('autosaveStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'autosave-status' + (state ? ' ' + state : '');
+}
+
+function scheduleAutosave(sourceIndex=null) {
+  clearTimeout(autosaveTimer);
+  setAutosaveStatus('Autosave Pending…', 'saving');
+  autosaveTimer = setTimeout(async () => {
+    if (autosaveBusy) { autosaveQueued = true; return; }
+    await savePayroll(true, sourceIndex);
+    if (autosaveQueued) {
+      autosaveQueued = false;
+      await savePayroll(true, sourceIndex);
+    }
+  }, 900);
+}
+
 function calc(i) {
   const wage = roster[i].wage;
   const rh = parseFloat(document.getElementById(`rh${i}`)?.value)||0;
@@ -1367,6 +1408,7 @@ function calc(i) {
   document.getElementById(`pp${i}`).textContent = '$'+pp;
   document.getElementById(`tp${i}`).textContent = '$'+tot;
   recalcSummary();
+  scheduleAutosave(i);
 }
 
 function recalcSummary() {
@@ -1390,6 +1432,7 @@ function toggleOT(i, on) {
   const el = document.getElementById(`oh${i}`);
   el.disabled = !on;
   if (!on) { el.value=''; roster[i].otHours=0; calc(i); }
+  else { scheduleAutosave(i); }
 }
 
 function togglePTO(i, on) {
@@ -1397,9 +1440,10 @@ function togglePTO(i, on) {
   const el = document.getElementById(`ph${i}`);
   el.disabled = !on;
   if (!on) { el.value=''; roster[i].ptoHours=0; calc(i); }
+  else { scheduleAutosave(i); }
 }
 
-function removeRow(i) { roster.splice(i,1); renderTable(); }
+function removeRow(i) { roster.splice(i,1); renderTable(); scheduleAutosave(); }
 
 /* ═══════════════════════════════════════════
    WAGE SAVE
@@ -1422,33 +1466,59 @@ async function saveWage(i, input) {
 /* ═══════════════════════════════════════════
    SAVE PAYROLL
 ═══════════════════════════════════════════ */
-async function savePayroll() {
+async function savePayroll(isAuto=false, sourceIndex=null) {
   const periodStart = document.getElementById('periodStart').value;
   const periodEnd   = document.getElementById('periodEnd').value;
   const payDate     = document.getElementById('payDate').value;
-  if (!periodStart||!periodEnd||!payDate) { toast('⚠️ Period dates and Pay Date are required.','error'); return; }
+  if (!periodStart||!periodEnd||!payDate) {
+    if (!isAuto) toast('⚠️ Period dates and Pay Date are required.','error');
+    setAutosaveStatus('Autosave Blocked', 'error');
+    return;
+  }
+
+  autosaveBusy = true;
+  setAutosaveStatus(isAuto ? 'Autosaving…' : 'Saving…', 'saving');
 
   const rows = roster.map((r,i) => {
     const rh = parseFloat(document.getElementById(`rh${i}`)?.value)||0;
     const oh = parseFloat(document.getElementById(`oh${i}`)?.value)||0;
+    const ph = parseFloat(document.getElementById(`ph${i}`)?.value)||0;
     const rp = parseFloat((rh*r.wage).toFixed(2));
     const op = parseFloat((oh*r.wage).toFixed(2));
+    const pp = parseFloat((ph*r.wage).toFixed(2));
+    const safeDbId = (r.dbId && /^\d+$/.test(String(r.dbId))) ? Number(r.dbId) : null;
     return {
-      employee_db_id:r.dbId, employee_name:r.name, employee_code:r.empId,
-      department:r.dept, job_title:r.title, wage:r.wage,
-      regular_hours:rh, overtime_hours:oh, regular_pay:rp, overtime_pay:op,
-      total_pay:parseFloat((rp+op).toFixed(2)),
-      pay_period_start:periodStart, pay_period_end:periodEnd, pay_date:payDate,
+      employee_db_id:safeDbId,
+      employee_name:r.name,
+      employee_code:r.empId,
+      department:r.dept,
+      job_title:r.title,
+      wage:r.wage,
+      regular_hours:rh,
+      overtime_hours:oh,
+      pto_hours:ph,
+      regular_pay:rp,
+      overtime_pay:op,
+      pto_pay:pp,
+      total_pay:parseFloat((rp+op+pp).toFixed(2)),
+      pay_period_start:periodStart,
+      pay_period_end:periodEnd,
+      pay_date:payDate,
       payment_method:'cash',
     };
-  }).filter(r=>r.regular_hours>0||r.overtime_hours>0);
+  }).filter(r=>r.regular_hours>0||r.overtime_hours>0||r.pto_hours>0);
 
-  if (!rows.length) { toast('⚠️ Enter hours for at least one employee.','error'); return; }
-  toast('⏳ Saving…','info');
+  if (!rows.length) {
+    autosaveBusy = false;
+    setAutosaveStatus('Nothing to Save', '');
+    if (!isAuto) toast('⚠️ Enter hours for at least one employee.','error');
+    return;
+  }
+
+  if (!isAuto) toast('⏳ Saving…','info');
 
   let saved = 0, updated = 0, errMsg = null;
   for (const row of rows) {
-    // Check if a record already exists for this employee + pay period
     const { data: existing, error: fetchErr } = await db.from('cash_payroll')
       .select('id')
       .eq('pay_period_start', row.pay_period_start)
@@ -1459,27 +1529,45 @@ async function savePayroll() {
     if (fetchErr) { errMsg = fetchErr.message; break; }
 
     if (existing && existing.length > 0) {
-      // UPDATE existing record
       const { error: upErr } = await db.from('cash_payroll')
         .update(row)
         .eq('id', existing[0].id);
       if (upErr) { errMsg = upErr.message; break; }
       updated++;
     } else {
-      // INSERT new record
       const { error: insErr } = await db.from('cash_payroll').insert(row);
       if (insErr) { errMsg = insErr.message; break; }
       saved++;
     }
   }
 
-  if (errMsg) toast('❌ '+errMsg,'error');
-  else {
+  autosaveBusy = false;
+
+  if (errMsg) {
+    setAutosaveStatus('Autosave Error', 'error');
+    toast('❌ '+errMsg,'error');
+    return;
+  }
+
+  if (sourceIndex !== null && sourceIndex !== undefined) {
+    [`rh${sourceIndex}`, `oh${sourceIndex}`, `ph${sourceIndex}`].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.classList.add('just-saved');
+        setTimeout(()=>el.classList.remove('just-saved'), 1600);
+      }
+    });
+  }
+
+  setAutosaveStatus('Saved Automatically ✓', 'saved');
+  setTimeout(()=>setAutosaveStatus('Autosave Ready',''), 2200);
+  loadLogBadge();
+
+  if (!isAuto) {
     const parts = [];
     if (saved)   parts.push(`${saved} new record(s) added`);
     if (updated) parts.push(`${updated} record(s) updated`);
-    toast('✅ ' + parts.join(' · '), 'success');
-    loadLogBadge();
+    toast('✅ ' + (parts.join(' · ') || 'Payroll saved'), 'success');
   }
 }
 
@@ -1646,7 +1734,7 @@ async function loadLogBadge() {
 async function loadLog() {
   const filterStart = document.getElementById('logFilterStart')?.value;
   document.getElementById('logBody').innerHTML =
-    `<tr><td colspan="11" style="text-align:center;padding:32px"><div class="spinner"></div><br>Loading…</td></tr>`;
+    `<tr><td colspan="13" style="text-align:center;padding:32px"><div class="spinner"></div><br>Loading…</td></tr>`;
 
   let query = db.from('cash_payroll').select('*').order('pay_date',{ascending:false}).order('employee_name').limit(200);
   if (filterStart) query = query.gte('pay_period_start', filterStart);
@@ -1655,7 +1743,7 @@ async function loadLog() {
 
   if (error) {
     document.getElementById('logBody').innerHTML =
-      `<tr><td colspan="11" style="text-align:center;color:red;padding:20px">${error.message}</td></tr>`;
+      `<tr><td colspan="13" style="text-align:center;color:red;padding:20px">${error.message}</td></tr>`;
     return;
   }
 
@@ -1701,8 +1789,10 @@ function renderLogTable(rows) {
         <td style="font-family:var(--font-mono)">$${parseFloat(r.wage||0).toFixed(2)}</td>
         <td style="font-family:var(--font-mono)">${parseFloat(r.regular_hours||0).toFixed(2)}</td>
         <td style="font-family:var(--font-mono);color:var(--amber)">${parseFloat(r.overtime_hours||0).toFixed(2)}</td>
+        <td style="font-family:var(--font-mono);color:#16a34a">${parseFloat(r.pto_hours||0).toFixed(2)}</td>
         <td style="font-family:var(--font-mono)">$${parseFloat(r.regular_pay||0).toFixed(2)}</td>
         <td style="font-family:var(--font-mono);color:var(--amber)">$${parseFloat(r.overtime_pay||0).toFixed(2)}</td>
+        <td style="font-family:var(--font-mono);color:#16a34a">$${parseFloat(r.pto_pay||0).toFixed(2)}</td>
         <td><strong style="color:var(--navy);font-family:var(--font-mono);font-size:14px">$${parseFloat(r.total_pay||0).toFixed(2)}</strong></td>
         <td style="text-align:center">
           <button class="del-btn" onclick="promptDelete(${r.id},'${(r.employee_name||'').replace(/'/g,'&apos;')}','${fmtDate(r.pay_date)}')">
@@ -1718,6 +1808,7 @@ function renderLogTable(rows) {
 function updateLogSummary(rows) {
   const totReg = rows.reduce((a,r)=>a+parseFloat(r.regular_hours||0),0);
   const totOT  = rows.reduce((a,r)=>a+parseFloat(r.overtime_hours||0),0);
+  const totPTO = rows.reduce((a,r)=>a+parseFloat(r.pto_hours||0),0);
   const totPay = rows.reduce((a,r)=>a+parseFloat(r.total_pay||0),0);
   document.getElementById('logSumCount').textContent = rows.length;
   document.getElementById('logSumReg').textContent   = totReg.toFixed(2);
@@ -1845,24 +1936,26 @@ function toast(msg, type='') {
 ═══════════════════════════════════════════ */
 const SQL = `-- ═══════════════════════════════════════════════════════
 -- CASH PAYROLL TABLE — Run once in Supabase SQL Editor
--- Links to your existing employees2025 table
+-- Includes PTO + updated_at trigger + safe unique period updates
 -- ═══════════════════════════════════════════════════════
-CREATE TABLE public.cash_payroll (
+CREATE TABLE IF NOT EXISTS public.cash_payroll (
   id                serial          PRIMARY KEY,
 
-  -- Link to employees2025
-  employee_db_id    integer         REFERENCES public.employees2025(id) ON DELETE SET NULL,
+  -- Link / identity
+  employee_db_id    integer,
   employee_code     text,
   employee_name     text            NOT NULL,
   department        text,
   job_title         text,
 
   -- Pay details
-  wage              numeric(10,2)   NOT NULL,
+  wage              numeric(10,2)   NOT NULL DEFAULT 0,
   regular_hours     numeric(10,2)   NOT NULL DEFAULT 0,
   overtime_hours    numeric(10,2)   NOT NULL DEFAULT 0,
+  pto_hours         numeric(10,2)   NOT NULL DEFAULT 0,
   regular_pay       numeric(10,2)   NOT NULL DEFAULT 0,
   overtime_pay      numeric(10,2)   NOT NULL DEFAULT 0,
+  pto_pay           numeric(10,2)   NOT NULL DEFAULT 0,
   total_pay         numeric(10,2)   NOT NULL DEFAULT 0,
 
   -- Period
@@ -1876,13 +1969,43 @@ CREATE TABLE public.cash_payroll (
   updated_at        timestamptz     NOT NULL DEFAULT now()
 );
 
+-- Upgrade old table if it already exists
+ALTER TABLE public.cash_payroll ADD COLUMN IF NOT EXISTS employee_db_id integer;
+ALTER TABLE public.cash_payroll ADD COLUMN IF NOT EXISTS employee_code text;
+ALTER TABLE public.cash_payroll ADD COLUMN IF NOT EXISTS department text;
+ALTER TABLE public.cash_payroll ADD COLUMN IF NOT EXISTS job_title text;
+ALTER TABLE public.cash_payroll ADD COLUMN IF NOT EXISTS pto_hours numeric(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE public.cash_payroll ADD COLUMN IF NOT EXISTS pto_pay numeric(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE public.cash_payroll ADD COLUMN IF NOT EXISTS notes text;
+ALTER TABLE public.cash_payroll ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+
+-- Prevent duplicate rows for the same employee + period
+CREATE UNIQUE INDEX IF NOT EXISTS ux_cash_payroll_employee_period
+ON public.cash_payroll (employee_name, pay_period_start, pay_period_end);
+
 -- Indexes
-CREATE INDEX idx_cash_payroll_emp    ON public.cash_payroll (employee_db_id);
-CREATE INDEX idx_cash_payroll_date   ON public.cash_payroll (pay_date DESC);
-CREATE INDEX idx_cash_payroll_period ON public.cash_payroll (pay_period_start, pay_period_end);
+CREATE INDEX IF NOT EXISTS idx_cash_payroll_emp    ON public.cash_payroll (employee_db_id);
+CREATE INDEX IF NOT EXISTS idx_cash_payroll_date   ON public.cash_payroll (pay_date DESC);
+CREATE INDEX IF NOT EXISTS idx_cash_payroll_period ON public.cash_payroll (pay_period_start, pay_period_end);
+
+-- Auto update timestamp
+CREATE OR REPLACE FUNCTION public.set_cash_payroll_updated_at()
+RETURNS trigger AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_cash_payroll_updated_at ON public.cash_payroll;
+CREATE TRIGGER trg_cash_payroll_updated_at
+BEFORE UPDATE ON public.cash_payroll
+FOR EACH ROW
+EXECUTE FUNCTION public.set_cash_payroll_updated_at();
 
 -- Row Level Security
 ALTER TABLE public.cash_payroll ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all" ON public.cash_payroll;
 CREATE POLICY "Allow all" ON public.cash_payroll
   FOR ALL USING (true) WITH CHECK (true);`;
 
