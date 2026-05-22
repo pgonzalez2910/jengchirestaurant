@@ -1234,8 +1234,14 @@ function applyPeriod(offset) {
   }
 }
 
-function prevPeriod() { applyPeriod(currentPeriodOffset - 1); }
-function nextPeriod() { applyPeriod(currentPeriodOffset + 1); }
+async function prevPeriod() {
+  applyPeriod(currentPeriodOffset - 1);
+  await loadDefaultEmployees();
+}
+async function nextPeriod() {
+  applyPeriod(currentPeriodOffset + 1);
+  await loadDefaultEmployees();
+}
 
 /* ═══════════════════════════════════════════
    DEFAULT EMPLOYEES
@@ -1259,6 +1265,12 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   applyPeriod(detectPeriodOffset()); // Open on current period automatically
   buildSqlBlock();
+
+  ['periodStart','periodEnd'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', loadDefaultEmployees);
+  });
+
   await loadDefaultEmployees();
   // pre-load log badge
   loadLogBadge();
@@ -1279,7 +1291,9 @@ function switchTab(tab) {
    LOAD DEFAULT EMPLOYEES
 ═══════════════════════════════════════════ */
 async function loadDefaultEmployees() {
+  setAutosaveStatus('Loading Period…', 'saving');
   roster = [];
+
   for (const def of DEFAULTS) {
     let data = null;
     const r1 = await db.from('employees2025')
@@ -1293,20 +1307,113 @@ async function loadDefaultEmployees() {
         .ilike('last_name', '%' + def.lastName + '%').limit(1);
       if (r2.data && r2.data.length > 0) data = r2.data[0];
     }
+
     if (data) {
       roster.push({
-        dbId:data.id, empId:data.employee_id,
+        dbId:data.id,
+        empId:data.employee_id,
         name:(data.first_name+' '+data.last_name).toUpperCase(),
-        dept:data.department||'', title:data.job_title||'',
+        dept:data.department||'',
+        title:data.job_title||'',
         wage:parseFloat(data.hourly_rate)||def.wage,
-        regHours:def.reg||0, otOn:false, otHours:0, ptoOn:false, ptoHours:0, ptoDefault:def.pto||0, fromDb:true,
+        regHours:def.reg||0,
+        otOn:false,
+        otHours:0,
+        ptoOn:false,
+        ptoHours:0,
+        ptoDefault:def.pto||0,
+        fromDb:true,
       });
     } else {
-      roster.push({ dbId:null, empId:null, name:def.name, dept:'', title:'', wage:def.wage, regHours:def.reg||0, otOn:false, otHours:0, ptoOn:false, ptoHours:0, ptoDefault:def.pto||0, fromDb:false });
+      roster.push({
+        dbId:null,
+        empId:null,
+        name:def.name,
+        dept:'',
+        title:'',
+        wage:def.wage,
+        regHours:def.reg||0,
+        otOn:false,
+        otHours:0,
+        ptoOn:false,
+        ptoHours:0,
+        ptoDefault:def.pto||0,
+        fromDb:false
+      });
     }
   }
+
+  await loadSavedPayrollForCurrentPeriod();
   renderTable();
+  setAutosaveStatus('Autosave Ready','');
 }
+
+async function loadSavedPayrollForCurrentPeriod() {
+  const periodStart = document.getElementById('periodStart')?.value;
+  const periodEnd   = document.getElementById('periodEnd')?.value;
+  if (!periodStart || !periodEnd) return;
+
+  const { data, error } = await db.from('cash_payroll')
+    .select('id,employee_db_id,employee_name,employee_code,department,job_title,wage,regular_hours,overtime_hours,pto_hours,regular_pay,overtime_pay,pto_pay,total_pay,pay_period_start,pay_period_end,pay_date,payment_method')
+    .eq('pay_period_start', periodStart)
+    .eq('pay_period_end', periodEnd)
+    .order('employee_name');
+
+  if (error) {
+    toast('❌ Could not load saved payroll: ' + error.message, 'error');
+    return;
+  }
+
+  (data || []).forEach(row => {
+    const rowName = (row.employee_name || '').trim().toUpperCase();
+    const rowCode = (row.employee_code || '').trim();
+    let idx = roster.findIndex(r =>
+      (rowCode && String(r.empId || '').trim() === rowCode) ||
+      ((r.name || '').trim().toUpperCase() === rowName)
+    );
+
+    const savedReg = Number(row.regular_hours || 0);
+    const savedOT  = Number(row.overtime_hours || 0);
+    const savedPTO = Number(row.pto_hours || 0);
+    const savedWage = Number(row.wage || 0);
+
+    if (idx >= 0) {
+      roster[idx] = {
+        ...roster[idx],
+        dbId: roster[idx].dbId || row.employee_db_id || null,
+        empId: row.employee_code || roster[idx].empId,
+        name: rowName || roster[idx].name,
+        dept: row.department || roster[idx].dept || '',
+        title: row.job_title || roster[idx].title || '',
+        wage: savedWage || roster[idx].wage,
+        regHours: savedReg,
+        otOn: savedOT > 0,
+        otHours: savedOT,
+        ptoOn: savedPTO > 0,
+        ptoHours: savedPTO,
+        savedPayrollId: row.id,
+      };
+    } else {
+      roster.push({
+        dbId: row.employee_db_id || null,
+        empId: row.employee_code || null,
+        name: rowName || 'UNKNOWN EMPLOYEE',
+        dept: row.department || '',
+        title: row.job_title || '',
+        wage: savedWage || 0,
+        regHours: savedReg,
+        otOn: savedOT > 0,
+        otHours: savedOT,
+        ptoOn: savedPTO > 0,
+        ptoHours: savedPTO,
+        ptoDefault:0,
+        fromDb:false,
+        savedPayrollId: row.id,
+      });
+    }
+  });
+}
+
 
 /* ═══════════════════════════════════════════
    RENDER TABLE
@@ -1908,7 +2015,7 @@ function addEmployee() {
   roster.push({
     dbId:selEmp?.id||null, empId:selEmp?.employee_id||null, name,
     dept:selEmp?.department||'', title:selEmp?.job_title||'',
-    wage, regHours:0, otOn:false, otHours:0, fromDb:!!selEmp
+    wage, regHours:0, otOn:false, otHours:0, ptoOn:false, ptoHours:0, ptoDefault:0, fromDb:!!selEmp
   });
   selEmp=null;
   document.getElementById('addName').value='';
