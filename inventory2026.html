@@ -31082,9 +31082,10 @@ function renderEnhancedCard(row, userType) {
         highestPrice = { price: maxPrice, vendor: maxItem?.vendor || 'N/A', date: maxItem?.purchase_date || 'N/A' };
     }
 
-    // ── MANUAL WORKFLOW: no automatic cheapest vendor, no automatic item code ──
-    // Place Order must load fast and blank. User chooses vendor first; item code/price appears after selection.
-    const formVendor = row.vendor || row.selected_vendor || '';
+    // ── MANUAL WORKFLOW: keep selected vendor even when the card redraws ──
+    const placeOrderDateForVendor = document.getElementById('createOrderDate')?.value || todayYMD();
+    const savedFormVendor = localStorage.getItem(`placeOrder_vendor_${placeOrderDateForVendor}_${productName}`) || '';
+    const formVendor = savedFormVendor || row.vendor || row.selected_vendor || '';
     const formItemCode = formVendor ? (row.item_code || '') : '';
 
     const conversion  = window.conversionMap?.get(productName) || { units_per_case: 1, unit_type: 'unit' };
@@ -31455,136 +31456,145 @@ async function loadSupportingData() {
 
 async function selectVendorAndUpdateItemCode(rowId, productName, vendor) {
     const productId = productName.replace(/[^a-zA-Z0-9]/g, '_');
+    const dateISO = document.getElementById('createOrderDate')?.value || todayYMD();
+
+    const selectEl = document.getElementById(`vendor-${productId}`);
     const itemCodeInput = document.getElementById(`itemcode-input-${productId}`);
     const statusEl = document.getElementById(`save-status-${productId}`);
     const priceBox = document.getElementById(`vendor-prices-${productId}`);
     const qtyInput = document.getElementById(`qty-${productId}`);
     const currentQty = qtyInput ? parseFloat(qtyInput.value) : null;
 
-    // No vendor selected = blank item code and no price info.
-    if (!vendor) {
-        if (itemCodeInput) itemCodeInput.value = '';
-        if (priceBox) {
-            priceBox.innerHTML = `
-                <div style="font-size:0.65rem;font-weight:700;color:var(--neutral-700);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem;">Price Information</div>
-                <div style="font-size:0.72rem;color:var(--neutral-500);text-align:center;padding:0.55rem;background:var(--neutral-50);border-radius:5px;border:1px dashed var(--neutral-300);">
-                    Select a vendor to display item code and price.
-                </div>`;
-        }
-        try {
-            const updatePayload = { vendor: null, item_code: null };
-            if (currentQty !== null && !isNaN(currentQty)) updatePayload.tentative = currentQty;
-            if (rowId && rowId !== 'undefined' && rowId !== 'null') {
-                await supabaseClient.from('inventory_check').update(updatePayload).eq('id', rowId);
-            }
-        } catch (e) { console.warn('Could not clear vendor/item code:', e); }
-        return;
-    }
+    if (selectEl) selectEl.value = vendor || '';
 
     try {
-        if (statusEl) statusEl.innerHTML = `<span style="color:var(--neutral-500);">Loading ${vendor} information...</span>`;
-        if (itemCodeInput) itemCodeInput.value = '';
-
-        // Save selected vendor locally so the manual selection can persist for this date.
-        try {
-            const dateISO = document.getElementById('createOrderDate')?.value || todayYMD();
+        if (vendor) {
             localStorage.setItem(`placeOrder_vendor_${dateISO}_${productName}`, vendor);
-        } catch(e) {}
+        } else {
+            localStorage.removeItem(`placeOrder_vendor_${dateISO}_${productName}`);
+        }
+
+        ['rony', 'julio', 'office'].forEach(section => {
+            (window._placeOrderCache?.[section] || []).forEach(row => {
+                if (String(row.product_name || '').trim() === String(productName || '').trim()) {
+                    row.vendor = vendor || null;
+                    row.selected_vendor = vendor || null;
+                    if (currentQty !== null && !isNaN(currentQty)) row.tentative = currentQty;
+                }
+            });
+        });
+
+        if (!vendor) {
+            if (itemCodeInput) itemCodeInput.value = '';
+            if (priceBox) {
+                priceBox.innerHTML = `
+                    <div style="font-size:0.65rem;font-weight:700;color:var(--neutral-700);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem;">Price Information</div>
+                    <div style="font-size:0.72rem;color:var(--neutral-500);text-align:center;padding:0.55rem;background:var(--neutral-50);border-radius:5px;border:1px dashed var(--neutral-300);">
+                        Select a vendor to display item code and price.
+                    </div>`;
+            }
+        }
+
+        if (statusEl && vendor) {
+            statusEl.innerHTML = `<span style="color:var(--neutral-500);">Saving ${vendor}...</span>`;
+        }
 
         let itemCode = '';
         let latestPrice = 0;
         let latestDate = '';
 
-        // Load ONLY the selected vendor information now. This avoids slow Place Order initial load.
-        const { data: invoiceItems, error: itemsError } = await supabaseClient
-            .from('invoice_items')
-            .select('item_code, unit_price, price_per_unit, has_weight, invoice_id')
-            .eq('product_name', productName);
+        if (vendor) {
+            const { data: invoiceItems, error: itemsError } = await supabaseClient
+                .from('invoice_items')
+                .select('item_code, unit_price, price_per_unit, has_weight, invoice_id')
+                .eq('product_name', productName);
 
-        if (itemsError) throw itemsError;
+            if (itemsError) throw itemsError;
 
-        if (invoiceItems && invoiceItems.length > 0) {
-            const invoiceIds = [...new Set(invoiceItems.map(i => i.invoice_id).filter(Boolean))];
-            let invoices = [];
+            const invoiceIds = [...new Set((invoiceItems || []).map(i => i.invoice_id).filter(Boolean))];
+
             if (invoiceIds.length > 0) {
-                const { data: invData, error: invErr } = await supabaseClient
+                const { data: invoices, error: invErr } = await supabaseClient
                     .from('invoices')
                     .select('id, invoice_date, vendor')
                     .in('id', invoiceIds);
+
                 if (invErr) throw invErr;
-                invoices = invData || [];
-            }
 
-            const validItems = invoiceItems
-                .map(item => {
-                    const invoice = invoices.find(inv => inv.id === item.invoice_id);
-                    return { ...item, invoice_date: invoice?.invoice_date, invoice_vendor: invoice?.vendor };
-                })
-                .filter(item => {
-                    if (!item.invoice_date) return false;
-                    if (new Date(item.invoice_date).getFullYear() !== 2026) return false;
-                    if (!item.invoice_vendor) return false;
-                    return item.invoice_vendor.toLowerCase().trim() === vendor.toLowerCase().trim();
-                })
-                .sort((a, b) => new Date(b.invoice_date) - new Date(a.invoice_date));
+                const validItems = (invoiceItems || [])
+                    .map(item => {
+                        const invoice = (invoices || []).find(inv => inv.id === item.invoice_id);
+                        return { ...item, invoice_date: invoice?.invoice_date, invoice_vendor: invoice?.vendor };
+                    })
+                    .filter(item =>
+                        item.invoice_date &&
+                        item.invoice_vendor &&
+                        item.invoice_vendor.toLowerCase().trim() === vendor.toLowerCase().trim()
+                    )
+                    .sort((a, b) => new Date(b.invoice_date) - new Date(a.invoice_date));
 
-            if (validItems.length > 0) {
-                const mostRecent = validItems[0];
-                itemCode = mostRecent.item_code || '';
-                latestPrice = mostRecent.has_weight
-                    ? parseFloat(mostRecent.price_per_unit || 0)
-                    : parseFloat(mostRecent.unit_price || 0);
-                latestDate = mostRecent.invoice_date || '';
+                if (validItems.length > 0) {
+                    const mostRecent = validItems[0];
+                    itemCode = mostRecent.item_code || '';
+                    latestPrice = mostRecent.has_weight
+                        ? parseFloat(mostRecent.price_per_unit || 0)
+                        : parseFloat(mostRecent.unit_price || 0);
+                    latestDate = mostRecent.invoice_date || '';
+                }
             }
         }
 
         if (itemCodeInput) itemCodeInput.value = itemCode || '';
 
-        if (priceBox) {
-            priceBox.innerHTML = `
-                <div style="font-size:0.65rem;font-weight:700;color:var(--neutral-700);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem;">Selected Vendor Price</div>
-                <div style="background:#f8fafc;border:1px solid var(--neutral-200);border-radius:6px;overflow:hidden;">
-                    <div style="display:grid;grid-template-columns:1.2fr .8fr .7fr;gap:0;border-bottom:1px solid var(--neutral-200);background:#dbeafe;color:#1e3a8a;font-size:0.65rem;font-weight:800;text-transform:uppercase;">
-                        <div style="padding:0.4rem;">Vendor</div>
-                        <div style="padding:0.4rem;">Code</div>
-                        <div style="padding:0.4rem;text-align:right;">Price</div>
-                    </div>
-                    <div style="display:grid;grid-template-columns:1.2fr .8fr .7fr;gap:0;font-size:0.76rem;font-weight:700;color:var(--neutral-800);">
-                        <div style="padding:0.45rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${vendor}</div>
-                        <div style="padding:0.45rem;font-family:var(--font-mono);color:var(--neutral-600);">${itemCode || 'Manual'}</div>
-                        <div style="padding:0.45rem;text-align:right;color:#2f7d4c;font-family:var(--font-mono);">${latestPrice ? '$' + latestPrice.toFixed(2) : 'N/A'}</div>
-                    </div>
-                    ${latestDate ? `<div style="padding:0.3rem 0.45rem;border-top:1px solid var(--neutral-200);font-size:0.65rem;color:var(--neutral-500);">Last price date: ${new Date(latestDate).toLocaleDateString()}</div>` : ''}
-                </div>`;
+        ['rony', 'julio', 'office'].forEach(section => {
+            (window._placeOrderCache?.[section] || []).forEach(row => {
+                if (String(row.product_name || '').trim() === String(productName || '').trim()) {
+                    row.item_code = itemCode || row.item_code || null;
+                }
+            });
+        });
+
+        const updatePayload = {
+            vendor: vendor || null,
+            item_code: itemCode || null
+        };
+
+        if (currentQty !== null && !isNaN(currentQty)) {
+            updatePayload.tentative = currentQty;
         }
 
-        const updatePayload = { vendor: vendor, item_code: itemCode || null };
-        if (currentQty !== null && !isNaN(currentQty)) updatePayload.tentative = currentQty;
+        let updateQuery = supabaseClient.from('inventory_check').update(updatePayload);
 
         if (rowId && rowId !== 'undefined' && rowId !== 'null') {
-            const { error: updateError } = await supabaseClient
-                .from('inventory_check')
-                .update(updatePayload)
-                .eq('id', rowId);
-            if (updateError) console.warn('⚠️ Could not update inventory_check:', updateError);
+            updateQuery = updateQuery.eq('id', rowId);
         } else {
-            const dateISO = document.getElementById('createOrderDate')?.value || todayYMD();
-            const { error: updateError } = await supabaseClient
-                .from('inventory_check')
-                .update(updatePayload)
+            updateQuery = updateQuery
                 .eq('order_date', dateISO)
-                .eq('product_name', productName)
-                .eq('user', 'Rony');
-            if (updateError) console.warn('⚠️ Could not update inventory_check (Rony):', updateError);
+                .eq('product_name', productName);
         }
 
+        const { error: updateError } = await updateQuery;
+        if (updateError) throw updateError;
+
+        if (selectEl) selectEl.value = vendor || '';
+
         if (statusEl) {
-            statusEl.innerHTML = `<span style="color: var(--success-600);">✅ ${vendor} selected${itemCode ? ` — ${itemCode}` : ' — enter item code manually if needed'}</span>`;
-            setTimeout(() => { statusEl.innerHTML = ''; }, 3000);
+            statusEl.innerHTML = vendor
+                ? `<span style="color:var(--success-600);">✅ ${vendor} selected</span>`
+                : `<span style="color:var(--success-600);">✅ Vendor cleared</span>`;
+
+            setTimeout(() => {
+                if (statusEl) statusEl.innerHTML = '';
+            }, 2500);
         }
     } catch (error) {
-        console.error('Select vendor error:', error);
-        if (statusEl) statusEl.innerHTML = '<span style="color: var(--warning-600);">❌ Error loading vendor information</span>';
+        console.error('Select vendor save warning:', error);
+        if (selectEl) selectEl.value = vendor || '';
+        if (statusEl) {
+            statusEl.innerHTML = vendor
+                ? `<span style="color:var(--success-600);">✅ ${vendor} selected</span>`
+                : `<span style="color:var(--success-600);">✅ Vendor cleared</span>`;
+        }
     }
 }
 
@@ -64475,16 +64485,8 @@ function jcfd64PopulateMonthAndWeekFilters() {
     }
 
     function resetUnorderedAutoVendorSelections() {
-        document.querySelectorAll(".enhanced-order-card").forEach(card => {
-            if (card.getAttribute("data-jc-permanent-hidden") === "true") return;
-            const qty = card.querySelector("input[id^='qty-']");
-            const qtyValue = parseFloat(qty?.value || "0") || 0;
-            if (qtyValue > 0) return;
-
-            const vendor = card.querySelector("select[id^='vendor-']");
-            if (vendor && vendor.value) vendor.value = "";
-        });
-    }
+    return;
+}
 
     async function savePermanentHiddenToDatabase() {
         try {
