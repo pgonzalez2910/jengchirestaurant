@@ -229,6 +229,11 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 .emp-chip{padding:6px 11px;border-radius:var(--r6);display:flex;align-items:center;gap:8px;font-weight:700;font-size:12px;border:1px solid;transition:all .15s}
 .emp-chip button{background:transparent;border:none;color:inherit;cursor:pointer;padding:0;min-height:0;font-size:14px;opacity:.7;line-height:1;display:flex;align-items:center}
 .emp-chip button:hover{opacity:1}
+.emp-chip.hidden-chip{background:#F8FAFC!important;border-color:#CBD5E1!important;color:#64748B!important}
+.emp-chip.local-chip{background:#FFF7ED!important;border-color:#FDBA74!important;color:#C2410C!important}
+.emp-chip .emp-meta{font-size:9px;font-weight:700;color:#94A3B8;margin-left:2px}
+.employee-scope-row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:14px}
+.employee-mode-help{font-size:10.5px;color:#64748B;margin-top:6px;line-height:1.45}
 .add-emp{display:flex;gap:8px;margin-top:14px}
 .sec-lbl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:#94A3B8;display:flex;align-items:center;gap:6px;margin:12px 0 8px}
 .sec-lbl::after{content:'';flex:1;height:1px;background:#E2E8F0}
@@ -557,14 +562,30 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 <div class="page-sub">Add or remove employees from the scheduling system</div>
 <div class="emp-manager">
 <div class="card-hdr" style="border:none;padding:0 0 10px;margin-bottom:10px;border-bottom:1px solid #E2E8F0">
-<div class="card-title">👥 Active Employees</div>
+<div class="card-title">👥 Active Wok Chefs</div>
 </div>
+<div class="info-box">
+<h4><i class="fas fa-user-slash"></i> Temporary Hide / Return Control</h4>
+<p>Use Hide for a chef who is out temporarily, like YUXI YE. Use Unhide whenever the chef comes back, even before the target return date.</p>
+</div>
+<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+<div class="cg"><label>Target Return Date Optional</label><input type="date" id="hideUntilDate"></div>
+<div class="cg"><label>Hide Note Optional</label><input type="text" id="hideReasonNote" placeholder="e.g. Out for 2 months" style="min-width:220px"></div>
+</div>
+<div class="sec-lbl">Active / Visible Chefs</div>
 <div class="emp-list" id="employeeList"></div>
-<div class="sec-lbl">Add New Employee</div>
-<div class="add-emp">
-<input type="text" id="newEmployeeName" placeholder="Enter employee full name" style="flex:1" onkeydown="if(event.key==='Enter') ScheduleApp.addEmployee()">
-<button class="bp" onclick="ScheduleApp.addEmployee()"><i class="fas fa-plus"></i> Add</button>
+<div class="sec-lbl">Hidden / Temporarily Inactive Chefs</div>
+<div class="emp-list" id="hiddenEmployeeList"></div>
+<div class="sec-lbl">Add New Chef</div>
+<div class="employee-scope-row">
+<input type="text" id="newEmployeeName" placeholder="Enter chef full name" style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter') ScheduleApp.addEmployee()">
+<select id="newEmployeeScope" style="min-width:230px">
+<option value="permanent">Add to active/future schedules</option>
+<option value="current">Add only to this selected schedule</option>
+</select>
+<button class="bp" onclick="ScheduleApp.addEmployee()"><i class="fas fa-plus"></i> Add Chef</button>
 </div>
+<div class="employee-mode-help"><strong>Active/future schedules:</strong> saves the chef in the Wok Chef master list. <strong>This selected schedule only:</strong> adds the chef only to the current week/saved schedule and does not unhide or activate them globally.</div>
 </div>
 </div>
 <div id="requests-view" class="vs">
@@ -735,6 +756,7 @@ var autoSaveTimer = null;
 var supabase = null, dbConnected = false;
 try { supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY); } catch(e) {}
 var employees = ['FEI', 'DAMIAN', 'CHANG LI', 'PEDRO', 'YUXI YE'];
+var hiddenEmployees = [];
 var currentSchedule = {}, currentScheduleId = null, selectedScheduleForDuplicate = null;
 var viewMode = 'compact';
 // === Undo / Redo ===
@@ -1022,8 +1044,7 @@ if (employees.indexOf(sn) === -1) {
 employees.push(sn);
 var newKey = 'slot_x' + sn.replace(/\s+/g, '_');
 while (currentSchedule[newKey]) newKey = 'slot_x' + sn.replace(/\s+/g, '_') + '_' + Math.random().toString(36).slice(2, 6);
-currentSchedule[newKey] = {employee: sn, shifts: [], roles: {}};
-for (var d = 0; d < 7; d++) currentSchedule[newKey].shifts.push([{start: '', end: ''}]);
+currentSchedule[newKey] = createEmptyScheduleSlot(sn, false);
 }
 }
 }
@@ -1051,57 +1072,196 @@ resolve();
 }).catch(function(e) { console.error('loadEmployees error:', e); resolve(); });
 });
 }
-function addEmployee() {
-var name = document.getElementById('newEmployeeName').value.trim().toUpperCase();
+function getSafeNameLiteral(name) {
+return String(name || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+function normalizeChefName(name) {
+return String(name || '').trim().toUpperCase().replace(/\s+/g, ' ');
+}
+function createEmptyScheduleSlot(name, localOnly) {
+var slot = {employee: name, shifts: [], roles: {}};
+if (localOnly) slot.localOnly = true;
+for (var d = 0; d < 7; d++) slot.shifts.push([{start: '', end: ''}]);
+return slot;
+}
+function findSlotByEmployee(name) {
+var keys = Object.keys(currentSchedule);
+for (var i = 0; i < keys.length; i++) {
+if (currentSchedule[keys[i]] && currentSchedule[keys[i]].employee === name) return keys[i];
+}
+return null;
+}
+function addSlotForEmployee(name, localOnly) {
+var safe = name.replace(/[^A-Z0-9]+/g, '_');
+var newSlotKey = 'slot_' + safe;
+while (currentSchedule[newSlotKey]) newSlotKey = 'slot_' + safe + '_' + Math.random().toString(36).slice(2, 7);
+currentSchedule[newSlotKey] = createEmptyScheduleSlot(name, localOnly);
+}
+function removeEmployeeFromCurrentSchedule(name) {
+var keys = Object.keys(currentSchedule);
+for (var i = 0; i < keys.length; i++) {
+var k = keys[i];
+if (currentSchedule[k] && currentSchedule[k].employee === name) delete currentSchedule[k];
+}
+}
+function loadHiddenEmployees(done) {
+if (typeof done !== 'function') done = function(){};
+if (!dbConnected) { hiddenEmployees = []; renderHiddenEmployeeList(); done(); return; }
+supabase.from('wok_chefs').select('short_name, display_order, active, inactive_until, inactive_note').eq('active', false).order('display_order').then(function(result) {
+if (result.error && String(result.error.message || '').indexOf('inactive_until') >= 0) {
+return supabase.from('wok_chefs').select('short_name, display_order, active').eq('active', false).order('display_order').then(function(r2) {
+hiddenEmployees = r2.data || [];
+renderHiddenEmployeeList();
+done();
+});
+}
+hiddenEmployees = result.data || [];
+renderHiddenEmployeeList();
+done();
+}).catch(function() { hiddenEmployees = []; renderHiddenEmployeeList(); done(); });
+}
+function pruneInactiveChefsFromSchedule(done) {
+if (typeof done !== 'function') done = function(){};
 var weekStartValue = document.getElementById('weekStart').value;
-if (!name) { toast('Enter name', 'error'); return; }
-if (employees.indexOf(name) >= 0) { toast('Already exists', 'error'); return; }
+if (!dbConnected || isPastScheduleWeek(weekStartValue)) { done(); return; }
+loadHiddenEmployees(function() {
+var hiddenMap = {};
+for (var i = 0; i < hiddenEmployees.length; i++) hiddenMap[hiddenEmployees[i].short_name] = true;
+employees = employees.filter(function(name) {
+var sk = findSlotByEmployee(name);
+var isLocal = sk && currentSchedule[sk] && currentSchedule[sk].localOnly;
+return !hiddenMap[name] || isLocal;
+});
+var keys = Object.keys(currentSchedule);
+for (var k = 0; k < keys.length; k++) {
+var slot = currentSchedule[keys[k]];
+if (slot && hiddenMap[slot.employee] && !slot.localOnly) delete currentSchedule[keys[k]];
+}
+done();
+});
+}
+function addEmployee() {
+var name = normalizeChefName(document.getElementById('newEmployeeName').value);
+var weekStartValue = document.getElementById('weekStart').value;
+var scopeEl = document.getElementById('newEmployeeScope');
+var scope = scopeEl ? scopeEl.value : 'permanent';
+var localOnly = scope === 'current';
+if (!name) { toast('Enter chef name', 'error'); return; }
+if (!weekStartValue && localOnly) { toast('Select a week before adding a chef only to this schedule', 'error'); return; }
+if (employees.indexOf(name) >= 0) { toast('Chef already exists in this schedule', 'error'); return; }
 employees.push(name);
 document.getElementById('newEmployeeName').value = '';
-if (!isPastScheduleWeek(weekStartValue)) {
-var newSlotKey = 'slot_' + (Object.keys(currentSchedule).length);
-while (currentSchedule[newSlotKey]) newSlotKey = 'slot_x' + Math.random().toString(36).slice(2, 7);
-currentSchedule[newSlotKey] = {employee: name, shifts: [], roles: {}};
-for (var d = 0; d < 7; d++) currentSchedule[newSlotKey].shifts.push([{start: '', end: ''}]);
-}
-if (dbConnected) {
+if (!isPastScheduleWeek(weekStartValue)) addSlotForEmployee(name, localOnly);
+if (dbConnected && !localOnly) {
 supabase.from('wok_chefs').select('display_order').order('display_order', {ascending: false}).limit(1).then(function(r) {
-var nextOrder = (r.data && r.data.length) ? (r.data[0].display_order + 1) : 0;
-return supabase.from('wok_chefs').insert({short_name: name, full_name: name, display_order: nextOrder, active: true});
+var nextOrder = (r.data && r.data.length) ? (Number(r.data[0].display_order || 0) + 1) : 0;
+return supabase.from('wok_chefs').insert({short_name: name, full_name: name, display_order: nextOrder, active: true, inactive_until: null, inactive_note: null});
 }).then(function(res) {
 if (res && res.error) {
 if (res.error.code === '23505') {
-supabase.from('wok_chefs').update({active: true}).eq('short_name', name).then(function(){});
+supabase.from('wok_chefs').update({active: true, inactive_until: null, inactive_note: null}).eq('short_name', name).then(function(){});
+} else if (String(res.error.message || '').indexOf('inactive_until') >= 0) {
+supabase.from('wok_chefs').insert({short_name: name, full_name: name, display_order: 0, active: true}).then(function(){});
 } else {
 console.error('addEmployee error:', JSON.stringify(res.error));
 toast('DB save failed: ' + (res.error.message || JSON.stringify(res.error)), 'error');
 }
 }
+loadHiddenEmployees();
 }).catch(function(e) { toast('DB save failed: ' + (e.message || e), 'error'); });
 }
 renderEmployeeList();
 if (!isPastScheduleWeek(weekStartValue)) generateSchedule(true);
-toast('"' + name + '" added for current/future schedules', 'success');
+scheduleAutoSave();
+toast(localOnly ? ('"' + name + '" added only to this schedule') : ('"' + name + '" added for future schedules'), 'success');
 }
-function removeEmployee(name) {
+function removeEmployee(name) { hideEmployee(name); }
+function hideEmployee(name) {
 var weekStartValue = document.getElementById('weekStart').value;
-if (!confirm('Remove "' + name + '" from current/future schedules? Previous saved schedules will stay unchanged.')) return;
-var newEmp = [];
-for (var i = 0; i < employees.length; i++) {
-if (employees[i] !== name) newEmp.push(employees[i]);
-}
-employees = newEmp;
+var untilEl = document.getElementById('hideUntilDate');
+var noteEl = document.getElementById('hideReasonNote');
+var until = untilEl ? untilEl.value : '';
+var note = noteEl ? noteEl.value.trim() : '';
+if (!confirm('Hide "' + name + '" from active/future schedules? You can unhide this chef anytime.')) return;
+employees = employees.filter(function(e) { return e !== name; });
+removeEmployeeFromCurrentSchedule(name);
 if (dbConnected) {
-supabase.from('wok_chefs').update({active: false}).eq('short_name', name).then(function(res) {
-if (res.error) {
-console.error('removeEmployee error:', JSON.stringify(res.error));
-toast('DB remove failed: ' + (res.error.message || JSON.stringify(res.error)), 'error');
+var payload = {active: false};
+if (until) payload.inactive_until = until;
+if (note) payload.inactive_note = note;
+supabase.from('wok_chefs').update(payload).eq('short_name', name).then(function(res) {
+if (res.error && String(res.error.message || '').indexOf('inactive_until') >= 0) {
+return supabase.from('wok_chefs').update({active: false}).eq('short_name', name);
 }
-}).catch(function(e) { toast('DB remove failed: ' + (e.message || e), 'error'); });
+return res;
+}).then(function(res2) {
+if (res2 && res2.error) {
+console.error('hideEmployee error:', JSON.stringify(res2.error));
+toast('Hide failed: ' + (res2.error.message || JSON.stringify(res2.error)), 'error');
+return;
+}
+loadHiddenEmployees();
+}).catch(function(e) { toast('Hide failed: ' + (e.message || e), 'error'); });
 }
 renderEmployeeList();
-if (!isPastScheduleWeek(weekStartValue)) generateSchedule();
-toast('"' + name + '" removed from current/future schedules only', 'success');
+if (!isPastScheduleWeek(weekStartValue)) generateSchedule(true);
+scheduleAutoSave();
+toast('"' + name + '" hidden. Use Unhide when the chef comes back.', 'success');
+}
+function unhideEmployee(name) {
+var weekStartValue = document.getElementById('weekStart').value;
+if (employees.indexOf(name) === -1) employees.push(name);
+if (!isPastScheduleWeek(weekStartValue) && !findSlotByEmployee(name)) addSlotForEmployee(name, false);
+if (dbConnected) {
+supabase.from('wok_chefs').update({active: true, inactive_until: null, inactive_note: null}).eq('short_name', name).then(function(res) {
+if (res.error && String(res.error.message || '').indexOf('inactive_until') >= 0) {
+return supabase.from('wok_chefs').update({active: true}).eq('short_name', name);
+}
+return res;
+}).then(function(res2) {
+if (res2 && res2.error) {
+toast('Unhide failed: ' + (res2.error.message || JSON.stringify(res2.error)), 'error');
+return;
+}
+loadHiddenEmployees();
+}).catch(function(e) { toast('Unhide failed: ' + (e.message || e), 'error'); });
+}
+renderEmployeeList();
+if (!isPastScheduleWeek(weekStartValue)) generateSchedule(true);
+scheduleAutoSave();
+toast('"' + name + '" restored to active schedules', 'success');
+}
+function addHiddenChefToThisSchedule(name) {
+var weekStartValue = document.getElementById('weekStart').value;
+if (!weekStartValue) { toast('Select a week first', 'error'); return; }
+if (employees.indexOf(name) === -1) employees.push(name);
+if (!findSlotByEmployee(name)) addSlotForEmployee(name, true);
+renderEmployeeList();
+generateSchedule(true);
+scheduleAutoSave();
+toast('"' + name + '" added only to this schedule. Global hidden status was not changed.', 'success');
+}
+function renderHiddenEmployeeList() {
+var el = document.getElementById('hiddenEmployeeList');
+if (!el) return;
+if (!hiddenEmployees || hiddenEmployees.length === 0) {
+el.innerHTML = '<div class="empty-state" style="padding:14px"><p>No hidden wok chefs.</p></div>';
+return;
+}
+var html = '';
+for (var i = 0; i < hiddenEmployees.length; i++) {
+var e = hiddenEmployees[i];
+var name = e.short_name;
+var until = e.inactive_until ? ('Return target: ' + e.inactive_until) : 'No return date set';
+var note = e.inactive_note ? (' · ' + e.inactive_note) : '';
+html += '<div class="emp-chip hidden-chip">';
+html += '<div style="width:8px;height:8px;border-radius:50%;background:#94A3B8;flex-shrink:0"></div>';
+html += '<span>' + name + '</span><span class="emp-meta">' + until + note + '</span>';
+html += '<button onclick="ScheduleApp.unhideEmployee(\'' + getSafeNameLiteral(name) + '\')" title="Unhide globally"><i class="fas fa-eye"></i></button>';
+html += '<button onclick="ScheduleApp.addHiddenChefToThisSchedule(\'' + getSafeNameLiteral(name) + '\')" title="Add only to current schedule"><i class="fas fa-calendar-plus"></i></button>';
+html += '</div>';
+}
+el.innerHTML = html;
 }
 function renderEmployeeList() {
 var html = '';
@@ -1109,13 +1269,17 @@ for (var i = 0; i < employees.length; i++) {
 var e = employees[i];
 var clr = EMP_COLORS[i % EMP_COLORS.length];
 var bg = EMP_BG[i % EMP_BG.length];
-html += '<div class="emp-chip" style="background:' + bg + ';border-color:' + clr + '40;color:' + clr + '">';
+var sk = findSlotByEmployee(e);
+var localOnly = sk && currentSchedule[sk] && currentSchedule[sk].localOnly;
+html += '<div class="emp-chip' + (localOnly ? ' local-chip' : '') + '" style="background:' + bg + ';border-color:' + clr + '40;color:' + clr + '">';
 html += '<div style="width:8px;height:8px;border-radius:50%;background:' + clr + ';flex-shrink:0"></div>';
-html += e;
-html += '<button onclick="ScheduleApp.removeEmployee(\'' + e + '\')" title="Remove">×</button>';
+html += '<span>' + e + '</span>';
+if (localOnly) html += '<span class="emp-meta">THIS SCHEDULE ONLY</span>';
+html += '<button onclick="ScheduleApp.hideEmployee(\'' + getSafeNameLiteral(e) + '\')" title="Hide from active/future schedules"><i class="fas fa-eye-slash"></i></button>';
 html += '</div>';
 }
-document.getElementById('employeeList').innerHTML = html;
+document.getElementById('employeeList').innerHTML = html || '<div class="empty-state" style="padding:14px"><p>No active wok chefs.</p></div>';
+loadHiddenEmployees();
 }
 function onWeekChange() {
 var v = document.getElementById('weekStart').value;
@@ -2231,7 +2395,8 @@ var slot = currentSchedule[k];
 o[k] = {
 employee: slot.employee,
 shifts: [],
-roles: slot.roles || {}
+roles: slot.roles || {},
+localOnly: !!slot.localOnly
 };
 for (var di = 0; di < slot.shifts.length; di++) {
 var ds = slot.shifts[di];
@@ -2256,7 +2421,8 @@ var slot = saved[k];
 o[k] = {
 employee: slot.employee,
 shifts: [],
-roles: slot.roles || {}
+roles: slot.roles || {},
+localOnly: !!slot.localOnly
 };
 var shiftsArr = slot.shifts || [];
 for (var di = 0; di < shiftsArr.length; di++) {
@@ -2314,11 +2480,13 @@ document.getElementById('weekStart').value = w;
 currentScheduleId = data.id;
 currentSchedule = convertForLoad(data.schedule_data || {});
 if (Array.isArray(data.employees)) employees = data.employees;
+pruneInactiveChefsFromSchedule(function() {
 renderEmployeeList();
 generateSchedule(true);
 updateSaveBtn(true);
 showView('schedule');
 toast('Schedule loaded', 'success');
+});
 }).catch(function() { toast('Load failed', 'error'); });
 }
 function loadSavedSchedules() {
@@ -3251,6 +3419,9 @@ showDuplicateDialog: showDuplicateDialog,
 showAddEmployeeDialog: showAddEmployeeDialog,
 addEmployee: addEmployee,
 removeEmployee: removeEmployee,
+hideEmployee: hideEmployee,
+unhideEmployee: unhideEmployee,
+addHiddenChefToThisSchedule: addHiddenChefToThisSchedule,
 onWeekChange: onWeekChange,
 generateSchedule: generateSchedule,
 addShift: addShift,
