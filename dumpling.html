@@ -273,7 +273,7 @@
     <section id="databasePanel" class="panel">
       <div class="card">
         <div class="card-head">
-          <div><h2>DATABASE — Weekly Inventory Counts</h2><small>Press Enter to save and move down. Category dropdowns save automatically, update the JC Prep code, and refresh every report.</small></div>
+          <div><h2>DATABASE — Weekly Inventory Counts</h2><small>Press Enter to save and move to the next cell. The spreadsheet remains in place while reports refresh quietly in the background.</small></div>
           <button id="deleteCellButton" class="danger no-print" onclick="deleteSelectedCell()" disabled><i class="fa-solid fa-trash-can"></i> Delete Selected Cell</button>
         </div>
         <div class="card-body no-print">
@@ -366,6 +366,10 @@
     let workbookData = null;
     let selectedCell = null;
     let saveTimers = new Map();
+    let inventorySavePromises = new Map();
+    let reportsRefreshTimer = null;
+    let reportsRefreshInFlight = false;
+    let reportsRefreshPending = false;
     let categoryChart = null;
     let trendChart = null;
     let activePanelId = "overviewPanel";
@@ -459,6 +463,117 @@
       renderPrepSheet();
       renderComparison();
       populateCateringItems();
+    }
+
+    function renderActiveReportPanel(){
+      if(!workbookData) return;
+
+      if(activePanelId==="overviewPanel") renderOverview();
+      if(activePanelId==="inventoryPanel") renderInventorySummary();
+      if(activePanelId==="parPanel") renderParReport();
+      if(activePanelId==="prepPanel") renderPrepSheet();
+      if(activePanelId==="comparisonPanel") renderComparison();
+
+      populateCateringItems();
+    }
+
+    function scheduleReportsRefresh(delay=900){
+      if(reportsRefreshTimer) clearTimeout(reportsRefreshTimer);
+      reportsRefreshTimer=setTimeout(()=>{
+        reportsRefreshTimer=null;
+        refreshReportsOnly();
+      },delay);
+    }
+
+    async function refreshReportsOnly(){
+      if(reportsRefreshInFlight){
+        reportsRefreshPending=true;
+        return;
+      }
+
+      reportsRefreshInFlight=true;
+      const requestedDate=document.getElementById("weekSelect").value;
+
+      try{
+        const {data,error}=await client.rpc("jc_get_workbook",{p_count_date:requestedDate});
+        if(error) throw error;
+
+        if(document.getElementById("weekSelect").value!==requestedDate) return;
+
+        workbookData=data;
+        renderActiveReportPanel();
+      }catch(error){
+        console.error(error);
+        showMessage(
+          "databaseMessage",
+          `The inventory was saved, but the reports could not refresh: ${error.message || error}`,
+          "error"
+        );
+      }finally{
+        reportsRefreshInFlight=false;
+
+        if(reportsRefreshPending){
+          reportsRefreshPending=false;
+          scheduleReportsRefresh(250);
+        }
+      }
+    }
+
+    function updateInventoryCache(countDate,itemKey,quantity){
+      const gridRow=(workbookData?.database_grid||[]).find(row=>row.item_key===itemKey);
+
+      if(gridRow){
+        gridRow.counts=gridRow.counts||{};
+        gridRow.counts[countDate]=quantity;
+      }
+
+      if(workbookData?.selected_count_date===countDate){
+        const inventoryRow=(workbookData.inventory||[]).find(row=>row.item_key===itemKey);
+
+        if(inventoryRow){
+          inventoryRow.quantity=quantity;
+          inventoryRow.is_saved=true;
+          inventoryRow.source="website";
+          inventoryRow.saved_by="Dumpling Team";
+          inventoryRow.verified_at=new Date().toISOString();
+        }
+      }
+    }
+
+    function removeInventoryFromCache(countDate,itemKey){
+      const gridRow=(workbookData?.database_grid||[]).find(row=>row.item_key===itemKey);
+      if(gridRow?.counts) delete gridRow.counts[countDate];
+
+      if(workbookData?.selected_count_date===countDate){
+        const inventoryRow=(workbookData.inventory||[]).find(row=>row.item_key===itemKey);
+
+        if(inventoryRow){
+          inventoryRow.quantity=null;
+          inventoryRow.is_saved=false;
+          inventoryRow.source=null;
+          inventoryRow.saved_by=null;
+          inventoryRow.verified_at=null;
+        }
+      }
+    }
+
+    function updateCategoryCache(itemKey,category,prepCode){
+      const gridRow=(workbookData?.database_grid||[]).find(row=>row.item_key===itemKey);
+
+      if(gridRow){
+        gridRow.category=category;
+        gridRow.prep_code=prepCode;
+      }
+
+      const itemRow=(workbookData?.items||[]).find(row=>row.item_key===itemKey);
+
+      if(itemRow){
+        itemRow.category=category;
+        itemRow.prep_code=prepCode;
+      }
+
+      const codeCell=document.querySelector(`[data-prep-code-for="${itemKey}"]`);
+      if(codeCell) codeCell.textContent=prepCode;
     }
 
     function renderOverview(){
@@ -696,61 +811,147 @@
     }
 
     async function saveAndVerifyInventory(input){
-      const raw=cleanQuantity(input.value);
-      const previous=input.dataset.verifiedValue||"";
-      if(raw===""){
-        input.value=previous;
-        setCellState(input,previous!==""?"verified":"","Blank does not delete a record");
-        showMessage("databaseMessage","Enter 0 when the actual count is zero. Use Delete Selected Cell to remove a saved record.","error");
-        return false;
-      }
-      if(!/^\d+$/.test(raw)){
-        input.value=previous;
-        setCellState(input,"error","Only whole numbers are allowed");
-        return false;
-      }
-      const quantity=Number(raw);
-      if(!Number.isSafeInteger(quantity)||quantity<0||quantity>1000000){
-        input.value=previous;
-        setCellState(input,"error","Quantity is outside the allowed range");
-        return false;
+      const countDate=input.dataset.countDate;
+      const itemKey=input.dataset.itemKey;
+      const itemName=input.dataset.itemName;
+      const saveKey=`${countDate}|${itemKey}`;
+
+      if(inventorySavePromises.has(saveKey)){
+        await inventorySavePromises.get(saveKey);
+
+        const currentValue=cleanQuantity(input.value);
+        const verifiedValue=cleanQuantity(input.dataset.verifiedValue||"");
+
+        if(currentValue!=="" && currentValue!==verifiedValue){
+          return await saveAndVerifyInventory(input);
+        }
+
+        return currentValue===verifiedValue;
       }
 
-      if(previous!=="" && Number(cleanQuantity(previous))===quantity){
-        input.value=formatNumber(quantity);
-        setCellState(input,"verified",`${formatNumber(quantity)} is already verified in Supabase`);
+      const savePromise=(async()=>{
+        const raw=cleanQuantity(input.value);
+        const previous=input.dataset.verifiedValue||"";
+
+        if(raw===""){
+          input.value=previous;
+          setCellState(input,previous!==""?"verified":"","Blank does not delete a record");
+          showMessage(
+            "databaseMessage",
+            "Enter 0 when the actual count is zero. Use Delete Selected Cell to remove a saved record.",
+            "error"
+          );
+          return false;
+        }
+
+        if(!/^\d+$/.test(raw)){
+          input.value=previous;
+          setCellState(input,"error","Only whole numbers are allowed");
+          return false;
+        }
+
+        const quantity=Number(raw);
+
+        if(!Number.isSafeInteger(quantity)||quantity<0||quantity>1000000){
+          input.value=previous;
+          setCellState(input,"error","Quantity is outside the allowed range");
+          return false;
+        }
+
+        if(previous!=="" && Number(cleanQuantity(previous))===quantity){
+          input.value=formatNumber(quantity);
+          setCellState(input,"verified",`${formatNumber(quantity)} is already verified in Supabase`);
+          return true;
+        }
+
+        setCellState(input,"saving",`Saving ${formatNumber(quantity)} to Supabase...`);
+
+        const {error:saveError}=await client.rpc("jc_save_inventory_count",{
+          p_count_date:countDate,
+          p_item_key:itemKey,
+          p_quantity:quantity,
+          p_saved_by:"Dumpling Team",
+          p_notes:null
+        });
+
+        if(saveError){
+          input.value=previous;
+          setCellState(input,"error",saveError.message);
+          showMessage(
+            "databaseMessage",
+            `Database save failed for ${itemName}: ${saveError.message}`,
+            "error"
+          );
+          return false;
+        }
+
+        const {data,error:readError}=await client.rpc("jc_get_inventory_count",{
+          p_count_date:countDate
+        });
+
+        if(readError){
+          input.value=previous;
+          setCellState(input,"error",readError.message);
+          showMessage(
+            "databaseMessage",
+            `The save could not be verified: ${readError.message}`,
+            "error"
+          );
+          return false;
+        }
+
+        const verified=(data||[]).find(row=>row.item_key===itemKey);
+
+        if(!verified||!verified.is_saved||Number(verified.quantity)!==quantity){
+          input.value=previous;
+          setCellState(input,"error","Database read-back did not match");
+          showMessage(
+            "databaseMessage",
+            `Verification mismatch for ${itemName}. The cell was not marked green.`,
+            "error"
+          );
+          return false;
+        }
+
+        const currentRaw=cleanQuantity(input.value);
+
+        input.dataset.verifiedValue=String(quantity);
+        updateInventoryCache(countDate,itemKey,quantity);
+
+        if(currentRaw===raw){
+          input.value=formatNumber(quantity);
+          setCellState(
+            input,
+            "verified",
+            `${formatNumber(quantity)} saved and read back successfully`
+          );
+        }else{
+          setCellState(input,"saving","A newer value is waiting to save...");
+          queueInventorySave(input);
+        }
+
+        showMessage(
+          "databaseMessage",
+          `${itemName}: ${formatNumber(quantity)} saved and verified for ${formatDate(countDate)}.`,
+          "success"
+        );
+
+        /*
+          Do not rebuild the spreadsheet after each save.
+          The previous refreshWorkbook() call recreated every cell and chart,
+          causing the visible jump and loss of keyboard focus.
+        */
+        scheduleReportsRefresh(1000);
         return true;
-      }
+      })();
 
-      const countDate=input.dataset.countDate,itemKey=input.dataset.itemKey,itemName=input.dataset.itemName;
-      setCellState(input,"saving",`Saving ${formatNumber(quantity)} to Supabase...`);
-      const {error:saveError}=await client.rpc("jc_save_inventory_count",{p_count_date:countDate,p_item_key:itemKey,p_quantity:quantity,p_saved_by:"Dumpling Team",p_notes:null});
-      if(saveError){
-        input.value=previous;
-        setCellState(input,"error",saveError.message);
-        showMessage("databaseMessage",`Database save failed for ${itemName}: ${saveError.message}`,"error");
-        return false;
+      inventorySavePromises.set(saveKey,savePromise);
+
+      try{
+        return await savePromise;
+      }finally{
+        inventorySavePromises.delete(saveKey);
       }
-      const {data,error:readError}=await client.rpc("jc_get_inventory_count",{p_count_date:countDate});
-      if(readError){
-        input.value=previous;
-        setCellState(input,"error",readError.message);
-        showMessage("databaseMessage",`The save could not be verified: ${readError.message}`,"error");
-        return false;
-      }
-      const verified=(data||[]).find(row=>row.item_key===itemKey);
-      if(!verified||!verified.is_saved||Number(verified.quantity)!==quantity){
-        input.value=previous;
-        setCellState(input,"error","Database read-back did not match");
-        showMessage("databaseMessage",`Verification mismatch for ${itemName}. The cell was not marked green.`,"error");
-        return false;
-      }
-      input.dataset.verifiedValue=String(quantity);
-      input.value=formatNumber(quantity);
-      setCellState(input,"verified",`${formatNumber(quantity)} saved and read back successfully`);
-      showMessage("databaseMessage",`${itemName}: ${formatNumber(quantity)} saved and verified for ${formatDate(countDate)}.`,"success");
-      await refreshWorkbook();
-      return true;
     }
 
     async function saveAndVerifyCategory(select){
@@ -798,8 +999,16 @@
       select.classList.add("verified");
       select.disabled=false;
       select.title=`${category} / ${expectedCode} saved and verified in Supabase`;
-      showMessage("databaseMessage",`${itemName}: category changed to ${category}; prep code changed automatically to ${expectedCode}. All reports were refreshed.`,"success");
-      await refreshWorkbook();
+
+      updateCategoryCache(itemKey,category,expectedCode);
+
+      showMessage(
+        "databaseMessage",
+        `${itemName}: category changed to ${category}; prep code changed automatically to ${expectedCode}.`,
+        "success"
+      );
+
+      scheduleReportsRefresh(600);
       return true;
     }
 
@@ -814,7 +1023,20 @@
       if(readError){showMessage("databaseMessage",`Delete verification failed: ${readError.message}`,"error");return}
       const row=(data||[]).find(r=>r.item_key===itemKey);
       if(row?.is_saved){setCellState(selectedCell,"error","Row still exists after delete");showMessage("databaseMessage","Delete verification failed. The database record still exists.","error");return}
-      showMessage("databaseMessage",`${itemName} was deleted and the deletion was verified.`,"success");selectedCell=null;document.getElementById("deleteCellButton").disabled=true;await refreshWorkbook();
+      selectedCell.value="";
+      selectedCell.dataset.verifiedValue="";
+      setCellState(selectedCell,"","No database record");
+      removeInventoryFromCache(countDate,itemKey);
+
+      showMessage(
+        "databaseMessage",
+        `${itemName} was deleted and the deletion was verified.`,
+        "success"
+      );
+
+      selectedCell=null;
+      document.getElementById("deleteCellButton").disabled=true;
+      scheduleReportsRefresh(500);
     }
 
     async function generateReportSnapshot(){
@@ -842,7 +1064,15 @@
     }
 
     function switchPanel(panelId,button){
-      activePanelId=panelId;document.querySelectorAll(".panel").forEach(p=>p.classList.toggle("active",p.id===panelId));document.querySelectorAll(".tab-btn").forEach(b=>b.classList.toggle("active",b===button));
+      activePanelId=panelId;
+      document.querySelectorAll(".panel").forEach(
+        panel=>panel.classList.toggle("active",panel.id===panelId)
+      );
+      document.querySelectorAll(".tab-btn").forEach(
+        tab=>tab.classList.toggle("active",tab===button)
+      );
+
+      if(panelId!=="databasePanel") renderActiveReportPanel();
     }
     function printCurrentView(){window.print()}
 
