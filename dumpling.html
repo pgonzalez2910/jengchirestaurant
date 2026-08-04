@@ -144,6 +144,15 @@
     .inventory-input.error{background:var(--error);box-shadow:inset 0 0 0 2px var(--error-border)}
     .inventory-input.selected-cell{outline:3px solid #2f75b5;outline-offset:-3px}
 
+    .category-select{
+      width:100%;min-width:145px;height:40px;border:1px solid var(--line);border-radius:6px;outline:0;
+      background:#fff;color:var(--ink);font-weight:900;font-size:14px;padding:5px 30px 5px 9px;cursor:pointer
+    }
+    .category-select:focus{box-shadow:inset 0 0 0 3px #2f75b5}
+    .category-select.saving{background:var(--saving);border-color:var(--saving-border)}
+    .category-select.verified{background:var(--saved);border-color:var(--saved-border)}
+    .category-select.error{background:var(--error);border-color:var(--error-border)}
+
     .legend{display:flex;gap:15px;flex-wrap:wrap;color:var(--muted);font-size:12px;font-weight:800;margin:4px 0 12px}
     .legend-item{display:inline-flex;align-items:center;gap:6px}
     .swatch{width:17px;height:17px;border:1px solid #777}
@@ -264,7 +273,7 @@
     <section id="databasePanel" class="panel">
       <div class="card">
         <div class="card-head">
-          <div><h2>DATABASE — Weekly Inventory Counts</h2><small>Sunday physical counts in individual dumpling pieces</small></div>
+          <div><h2>DATABASE — Weekly Inventory Counts</h2><small>Press Enter to save and move down. Category dropdowns save automatically, update the JC Prep code, and refresh every report.</small></div>
           <button id="deleteCellButton" class="danger no-print" onclick="deleteSelectedCell()" disabled><i class="fa-solid fa-trash-can"></i> Delete Selected Cell</button>
         </div>
         <div class="card-body no-print">
@@ -341,6 +350,14 @@
     const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
     const FIRST_COUNT_DATE = "2026-07-12";
     const DEFAULT_COUNT_DATE = "2026-07-12";
+    const CATEGORY_OPTIONS = ["Pork", "Chicken", "Seafood", "Beef", "Vegetarian"];
+    const PREP_CODE_BY_CATEGORY = {
+      Pork: "R15908",
+      Chicken: "R15905",
+      Seafood: "R15906",
+      Beef: "R15904",
+      Vegetarian: "R15907"
+    };
 
     const client = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}
@@ -496,7 +513,8 @@
           const value=hasValue?formatNumber(counts[date]):"";
           html+=`<td class="${date===selectedDate?"selected-column":""}"><input class="inventory-input ${hasValue?"verified":""}" value="${escapeHtml(value)}" inputmode="numeric" autocomplete="off" data-item-key="${escapeHtml(row.item_key)}" data-item-name="${escapeHtml(row.name)}" data-count-date="${date}" data-verified-value="${escapeHtml(value)}" title="${hasValue?"Verified database record":"No database record"}" onfocus="selectInventoryCell(this)" oninput="queueInventorySave(this)" onblur="commitInventorySave(this)" onkeydown="handleInventoryKey(event,this)" /></td>`;
         }
-        html+=`<td class="center">${escapeHtml(row.category)}</td><td class="center">${escapeHtml(row.prep_code)}</td><td class="par-cell">${row.weekly_par==null?"REVIEW":formatNumber(row.weekly_par)}</td></tr>`;
+        const categoryOptions=CATEGORY_OPTIONS.map(category=>`<option value="${category}" ${category===row.category?"selected":""}>${category}</option>`).join("");
+        html+=`<td class="center"><select class="category-select verified" data-item-key="${escapeHtml(row.item_key)}" data-item-name="${escapeHtml(row.name)}" data-verified-category="${escapeHtml(row.category)}" onchange="saveAndVerifyCategory(this)" title="Saved in Supabase">${categoryOptions}</select></td><td class="center" data-prep-code-for="${escapeHtml(row.item_key)}">${escapeHtml(row.prep_code)}</td><td class="par-cell">${row.weekly_par==null?"REVIEW":formatNumber(row.weekly_par)}</td></tr>`;
       }
       html+="</tbody>";table.innerHTML=html;
     }
@@ -628,30 +646,161 @@
     async function commitInventorySave(input){
       const key=`${input.dataset.countDate}|${input.dataset.itemKey}`;
       if(saveTimers.has(key)){clearTimeout(saveTimers.get(key));saveTimers.delete(key)}
-      await saveAndVerifyInventory(input);
+      return await saveAndVerifyInventory(input);
     }
 
-    function handleInventoryKey(event,input){
-      if(event.key==="Enter"){event.preventDefault();input.blur()}
-      if(event.key==="Escape"){event.preventDefault();input.value=input.dataset.verifiedValue||"";setCellState(input,input.dataset.verifiedValue!==""?"verified":"","Edit cancelled");input.blur()}
+    async function handleInventoryKey(event,input){
+      if(event.key==="Enter"){
+        event.preventDefault();
+        const nextPosition=getAdjacentInventoryPosition(input,event.shiftKey?-1:1);
+        const saved=await commitInventorySave(input);
+        if(saved && nextPosition) focusInventoryPosition(nextPosition);
+      }
+      if(event.key==="Escape"){
+        event.preventDefault();
+        input.value=input.dataset.verifiedValue||"";
+        setCellState(input,input.dataset.verifiedValue!==""?"verified":"","Edit cancelled");
+        input.blur();
+      }
+    }
+
+    function getAdjacentInventoryPosition(input,direction=1){
+      const grid=workbookData?.database_grid||[];
+      const dates=databaseDisplayDates(document.getElementById("weekSelect").value,workbookData?.inventory_dates||[]);
+      let rowIndex=grid.findIndex(row=>row.item_key===input.dataset.itemKey);
+      let dateIndex=dates.indexOf(input.dataset.countDate);
+      if(rowIndex<0||dateIndex<0) return null;
+
+      if(direction>0){
+        rowIndex+=1;
+        if(rowIndex>=grid.length){rowIndex=0;dateIndex+=1}
+        if(dateIndex>=dates.length) return null;
+      }else{
+        rowIndex-=1;
+        if(rowIndex<0){rowIndex=grid.length-1;dateIndex-=1}
+        if(dateIndex<0) return null;
+      }
+
+      return {itemKey:grid[rowIndex].item_key,countDate:dates[dateIndex]};
+    }
+
+    function focusInventoryPosition(position){
+      requestAnimationFrame(()=>{
+        const target=document.querySelector(`.inventory-input[data-item-key="${position.itemKey}"][data-count-date="${position.countDate}"]`);
+        if(target){
+          target.focus();
+          target.select();
+          target.scrollIntoView({block:"nearest",inline:"nearest"});
+        }
+      });
     }
 
     async function saveAndVerifyInventory(input){
-      const raw=cleanQuantity(input.value);const previous=input.dataset.verifiedValue||"";
-      if(raw===""){input.value=previous;setCellState(input,previous!==""?"verified":"","Blank does not delete a record");showMessage("databaseMessage","Enter 0 when the actual count is zero. Use Delete Selected Cell to remove a saved record.","error");return}
-      if(!/^\d+$/.test(raw)){input.value=previous;setCellState(input,"error","Only whole numbers are allowed");return}
-      const quantity=Number(raw);if(!Number.isSafeInteger(quantity)||quantity<0||quantity>1000000){input.value=previous;setCellState(input,"error","Quantity is outside the allowed range");return}
+      const raw=cleanQuantity(input.value);
+      const previous=input.dataset.verifiedValue||"";
+      if(raw===""){
+        input.value=previous;
+        setCellState(input,previous!==""?"verified":"","Blank does not delete a record");
+        showMessage("databaseMessage","Enter 0 when the actual count is zero. Use Delete Selected Cell to remove a saved record.","error");
+        return false;
+      }
+      if(!/^\d+$/.test(raw)){
+        input.value=previous;
+        setCellState(input,"error","Only whole numbers are allowed");
+        return false;
+      }
+      const quantity=Number(raw);
+      if(!Number.isSafeInteger(quantity)||quantity<0||quantity>1000000){
+        input.value=previous;
+        setCellState(input,"error","Quantity is outside the allowed range");
+        return false;
+      }
+
+      if(previous!=="" && Number(cleanQuantity(previous))===quantity){
+        input.value=formatNumber(quantity);
+        setCellState(input,"verified",`${formatNumber(quantity)} is already verified in Supabase`);
+        return true;
+      }
+
       const countDate=input.dataset.countDate,itemKey=input.dataset.itemKey,itemName=input.dataset.itemName;
       setCellState(input,"saving",`Saving ${formatNumber(quantity)} to Supabase...`);
       const {error:saveError}=await client.rpc("jc_save_inventory_count",{p_count_date:countDate,p_item_key:itemKey,p_quantity:quantity,p_saved_by:"Dumpling Team",p_notes:null});
-      if(saveError){input.value=previous;setCellState(input,"error",saveError.message);showMessage("databaseMessage",`Database save failed for ${itemName}: ${saveError.message}`,"error");return}
+      if(saveError){
+        input.value=previous;
+        setCellState(input,"error",saveError.message);
+        showMessage("databaseMessage",`Database save failed for ${itemName}: ${saveError.message}`,"error");
+        return false;
+      }
       const {data,error:readError}=await client.rpc("jc_get_inventory_count",{p_count_date:countDate});
-      if(readError){input.value=previous;setCellState(input,"error",readError.message);showMessage("databaseMessage",`The save could not be verified: ${readError.message}`,"error");return}
+      if(readError){
+        input.value=previous;
+        setCellState(input,"error",readError.message);
+        showMessage("databaseMessage",`The save could not be verified: ${readError.message}`,"error");
+        return false;
+      }
       const verified=(data||[]).find(row=>row.item_key===itemKey);
-      if(!verified||!verified.is_saved||Number(verified.quantity)!==quantity){input.value=previous;setCellState(input,"error","Database read-back did not match");showMessage("databaseMessage",`Verification mismatch for ${itemName}. The cell was not marked green.`,"error");return}
-      input.dataset.verifiedValue=String(quantity);input.value=formatNumber(quantity);setCellState(input,"verified",`${formatNumber(quantity)} saved and read back successfully`);
+      if(!verified||!verified.is_saved||Number(verified.quantity)!==quantity){
+        input.value=previous;
+        setCellState(input,"error","Database read-back did not match");
+        showMessage("databaseMessage",`Verification mismatch for ${itemName}. The cell was not marked green.`,"error");
+        return false;
+      }
+      input.dataset.verifiedValue=String(quantity);
+      input.value=formatNumber(quantity);
+      setCellState(input,"verified",`${formatNumber(quantity)} saved and read back successfully`);
       showMessage("databaseMessage",`${itemName}: ${formatNumber(quantity)} saved and verified for ${formatDate(countDate)}.`,"success");
       await refreshWorkbook();
+      return true;
+    }
+
+    async function saveAndVerifyCategory(select){
+      const itemKey=select.dataset.itemKey;
+      const itemName=select.dataset.itemName;
+      const previous=select.dataset.verifiedCategory;
+      const category=select.value;
+      select.classList.remove("verified","error");
+      select.classList.add("saving");
+      select.disabled=true;
+      select.title=`Saving ${category} to Supabase...`;
+
+      const {data,error}=await client.rpc("jc_update_dumpling_category",{
+        p_item_key:itemKey,
+        p_category:category,
+        p_saved_by:"Dumpling Team"
+      });
+
+      if(error){
+        select.value=previous;
+        select.classList.remove("saving");
+        select.classList.add("error");
+        select.disabled=false;
+        select.title=error.message;
+        showMessage("databaseMessage",`Category save failed for ${itemName}: ${error.message}`,"error");
+        return false;
+      }
+
+      const {data:items,error:readError}=await client.rpc("jc_get_dumpling_items");
+      const verified=(items||[]).find(row=>row.item_key===itemKey);
+      const expectedCode=PREP_CODE_BY_CATEGORY[category];
+
+      if(readError||!verified||verified.category!==category||verified.prep_code!==expectedCode){
+        select.value=previous;
+        select.classList.remove("saving");
+        select.classList.add("error");
+        select.disabled=false;
+        select.title=readError?.message||"Database category read-back did not match";
+        showMessage("databaseMessage",`Category verification failed for ${itemName}. The reports were not refreshed.`,"error");
+        return false;
+      }
+
+      select.dataset.verifiedCategory=category;
+      select.classList.remove("saving","error");
+      select.classList.add("verified");
+      select.disabled=false;
+      select.title=`${category} / ${expectedCode} saved and verified in Supabase`;
+      showMessage("databaseMessage",`${itemName}: category changed to ${category}; prep code changed automatically to ${expectedCode}. All reports were refreshed.`,"success");
+      await refreshWorkbook();
+      return true;
     }
 
     async function deleteSelectedCell(){
