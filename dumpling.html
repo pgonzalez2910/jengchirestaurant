@@ -1363,17 +1363,158 @@
     }
 
     function renderInventorySummary(){
-      setText("inventoryReportDate",`Physical inventory count: ${formatDate(workbookData.selected_count_date)}`);
-      const rows=workbookData.inventory_summary||[];
+      const dates=databaseDisplayDates();
+      const grid=workbookData.database_grid||[];
       const table=document.getElementById("inventorySummaryTable");
-      let total=0;
-      let html="<thead><tr><th>Product Code</th><th>JC Prep Product</th><th>Category</th><th>Current Quantity</th><th>Counts Entered</th><th>Products Expected</th><th>Status</th></tr></thead><tbody>";
-      const productNames={Chicken:"JC Prep - Chicken Dumplings",Seafood:"JC Prep - Shrimp Dumplings",Vegetarian:"JC Prep - Veggie Dumplings",Pork:"JC Prep - Pork Dumplings",Beef:"JC Prep - Beef Dumplings"};
-      for(const row of rows){
-        total+=Number(row.inventory_quantity||0);
-        html+=`<tr><td>${escapeHtml(row.prep_code)}</td><td>${escapeHtml(productNames[row.category]||row.category)}</td><td>${escapeHtml(row.category)}</td><td class="number">${formatNumber(row.inventory_quantity||0)}</td><td class="center">${row.counts_entered}</td><td class="center">${row.products_expected}</td><td class="center">${statusBadge(row.is_complete?"Complete":"Incomplete",row.is_complete?"neutral":"review")}</td></tr>`;
-      }
-      html+=`<tr class="total-row"><td colspan="3">TOTAL PHYSICAL INVENTORY</td><td class="number">${formatNumber(total)}</td><td colspan="3"></td></tr></tbody>`;
+
+      const categories=[
+        {
+          category:"Chicken",
+          prepCode:"R15905",
+          productName:"JC Prep - Chicken Dumplings"
+        },
+        {
+          category:"Seafood",
+          prepCode:"R15906",
+          productName:"JC Prep - Shrimp Dumplings"
+        },
+        {
+          category:"Vegetarian",
+          prepCode:"R15907",
+          productName:"JC Prep - Veggie Dumplings"
+        },
+        {
+          category:"Pork",
+          prepCode:"R15908",
+          productName:"JC Prep - Pork Dumplings"
+        },
+        {
+          category:"Beef",
+          prepCode:"R15904",
+          productName:"JC Prep - Beef Dumplings"
+        }
+      ];
+
+      const categoryTotals={};
+      const dateTotals={};
+
+      categories.forEach(category=>{
+        categoryTotals[category.category]={};
+        dates.forEach(date=>{
+          categoryTotals[category.category][date]=0;
+        });
+      });
+
+      dates.forEach(date=>{
+        dateTotals[date]=0;
+      });
+
+      /*
+        Every product count is grouped automatically by its current database
+        category. Any category change in Supabase therefore updates this sheet
+        and all reports without manual formulas.
+      */
+      grid.forEach(item=>{
+        const category=item.category;
+
+        if(!categoryTotals[category]){
+          return;
+        }
+
+        dates.forEach(date=>{
+          const hasCount=
+            item.counts &&
+            Object.prototype.hasOwnProperty.call(item.counts,date) &&
+            item.counts[date]!==null;
+
+          if(!hasCount){
+            return;
+          }
+
+          const quantity=Number(item.counts[date]||0);
+          categoryTotals[category][date]+=quantity;
+          dateTotals[date]+=quantity;
+        });
+      });
+
+      const firstDate=dates[0];
+      const lastDate=dates[dates.length-1];
+
+      setText(
+        "inventoryReportDate",
+        dates.length
+          ? `${MONTH_NAMES[databaseViewMonth]} ${databaseViewYear} · ` +
+            `${formatDate(firstDate)} through ${formatDate(lastDate)} · ` +
+            `Automatically calculated from saved product counts`
+          : `${MONTH_NAMES[databaseViewMonth]} ${databaseViewYear} · No Sunday count dates`
+      );
+
+      let html=`
+        <thead>
+          <tr>
+            <th>Product Code</th>
+            <th>JC Prep Product</th>
+            <th>Category</th>
+      `;
+
+      dates.forEach((date,index)=>{
+        const status=getDatabaseDateStatus(date);
+
+        html+=`
+          <th
+            class="${date===document.getElementById("weekSelect").value?"selected-column":""}"
+            title="${escapeHtml(status.label)}"
+          >
+            QTY ${index+1}
+            <br>
+            <small>${formatDate(date)}</small>
+          </th>
+        `;
+      });
+
+      html+=`
+          </tr>
+        </thead>
+        <tbody>
+      `;
+
+      categories.forEach(category=>{
+        html+=`
+          <tr>
+            <td>${category.prepCode}</td>
+            <td>${escapeHtml(category.productName)}</td>
+            <td>${category.category}</td>
+        `;
+
+        dates.forEach(date=>{
+          const value=categoryTotals[category.category][date];
+
+          html+=`
+            <td class="number">
+              ${formatNumber(value)}
+            </td>
+          `;
+        });
+
+        html+=`</tr>`;
+      });
+
+      html+=`
+        <tr class="total-row">
+          <td colspan="3">TOTAL PHYSICAL INVENTORY</td>
+      `;
+
+      dates.forEach(date=>{
+        html+=`
+          <td class="number">${formatNumber(dateTotals[date])}</td>
+        `;
+      });
+
+      html+=`
+        </tr>
+        </tbody>
+      `;
+
       table.innerHTML=html;
     }
 
