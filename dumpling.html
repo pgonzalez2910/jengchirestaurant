@@ -223,7 +223,77 @@
     }
 
     #databaseTable{
-      min-width:1380px;
+      min-width:1080px;
+    }
+
+    .database-table-wrap{
+      overflow-x:auto;
+      overflow-y:visible;
+      max-height:none;
+    }
+
+    #databaseTable th,
+    #databaseTable td{
+      padding:5px 8px;
+    }
+
+    #databaseTable th{
+      height:38px;
+      font-size:11px;
+    }
+
+    #databaseTable td:first-child{
+      min-width:310px;
+      font-size:13px;
+      line-height:1.15;
+    }
+
+    #databaseTable .inventory-input{
+      min-width:118px;
+      height:34px;
+      padding:3px 6px;
+      font-size:14px;
+    }
+
+    #databaseTable .par-cell{
+      min-width:120px;
+      font-size:13px;
+    }
+
+    #databaseTable .group-separator td{
+      height:14px;
+      padding:0;
+    }
+
+    .database-group-row td{
+      background:#d9eef9 !important;
+      color:#243b67;
+      font-size:12px;
+      font-weight:900;
+      letter-spacing:.04em;
+      text-transform:uppercase;
+      padding:6px 10px !important;
+    }
+
+    .database-rank{
+      display:inline-flex;
+      width:24px;
+      height:24px;
+      align-items:center;
+      justify-content:center;
+      margin-right:8px;
+      border-radius:999px;
+      background:#eef4fb;
+      color:#243b67;
+      font-size:11px;
+      font-weight:900;
+      vertical-align:middle;
+    }
+
+    .database-sort-note{
+      color:var(--muted);
+      font-size:12px;
+      font-weight:800;
     }
 
     #databaseTable .week-header{
@@ -381,7 +451,7 @@
     <section id="databasePanel" class="panel">
       <div class="card">
         <div class="card-head">
-          <div><h2>DATABASE — Monthly Inventory View</h2><small>Select a year and month. Only that month’s Sunday counts appear. “NO PAR SET” means the database has inventory history but no approved weekly par for that item.</small></div>
+          <div><h2>DATABASE — Compact Monthly Inventory</h2><small>All four dumpling groups are shown together. Items are automatically ranked from highest to lowest using the latest Sunday count visible in the selected month.</small></div>
           <button id="deleteCellButton" class="danger no-print" onclick="deleteSelectedCell()" disabled><i class="fa-solid fa-trash-can"></i> Delete Selected Cell</button>
         </div>
         <div class="card-body no-print">
@@ -417,9 +487,9 @@
         </div>
         <div class="database-month-heading">
           <strong id="databaseMonthTitle">JULY 2026</strong>
-          <span id="databaseMonthStatus">Sunday inventory counts</span>
+          <span><span id="databaseMonthStatus">Sunday inventory counts</span><br><span class="database-sort-note">Sorted by latest visible count: highest → lowest</span></span>
         </div>
-        <div class="table-wrap"><table id="databaseTable" class="sheet"></table></div>
+        <div class="database-table-wrap"><table id="databaseTable" class="sheet"></table></div>
       </div>
     </section>
 
@@ -954,7 +1024,7 @@
 
     function renderDatabase(){
       const table=document.getElementById("databaseTable");
-      const grid=workbookData.database_grid||[];
+      const sourceGrid=workbookData.database_grid||[];
       const selectedDate=document.getElementById("weekSelect").value;
       const dates=databaseDisplayDates();
 
@@ -972,6 +1042,41 @@
         `${completeWeeks} complete` +
         `${partialWeeks?` · ${partialWeeks} in progress`:""}`
       );
+
+      /*
+        Rank items inside each of the four production groups using the latest
+        Sunday count available in the visible month.
+      */
+      const latestVisibleDate=[...dates].reverse().find(date =>
+        sourceGrid.some(row =>
+          row.counts &&
+          Object.prototype.hasOwnProperty.call(row.counts,date) &&
+          row.counts[date]!==null
+        )
+      ) || dates[dates.length-1];
+
+      const grouped=new Map();
+
+      for(const row of sourceGrid){
+        const group=row.display_group||"Other";
+        if(!grouped.has(group)) grouped.set(group,[]);
+        grouped.get(group).push(row);
+      }
+
+      const groupOrder=["Juicy","Boiled","Steamed","Other"];
+      const sortedRows=[];
+
+      for(const group of groupOrder){
+        const rows=(grouped.get(group)||[]).sort((a,b)=>{
+          const aValue=Number(a.counts?.[latestVisibleDate] ?? -1);
+          const bValue=Number(b.counts?.[latestVisibleDate] ?? -1);
+
+          if(bValue!==aValue) return bValue-aValue;
+          return String(a.name).localeCompare(String(b.name));
+        });
+
+        sortedRows.push({group,rows});
+      }
 
       let html=`<thead><tr><th>Dumpling Name</th>`;
 
@@ -991,74 +1096,68 @@
       }
 
       html+=`
-        <th>JC Prep Category</th>
-        <th>JC Prep Code</th>
         <th class="par-cell">Weekly Par Level</th>
       </tr></thead><tbody>`;
 
-      let priorGroup=null;
-
-      for(const row of grid){
-        if(priorGroup!==null && row.display_group!==priorGroup){
-          html+=`<tr class="group-separator"><td colspan="${dates.length+4}"></td></tr>`;
-        }
-
-        priorGroup=row.display_group;
-        const counts=row.counts||{};
-        html+=`<tr><td>${escapeHtml(row.name)}</td>`;
-
-        for(const date of dates){
-          const hasValue=
-            Object.prototype.hasOwnProperty.call(counts,date) &&
-            counts[date]!==null;
-
-          const value=hasValue?formatNumber(counts[date]):"";
-
-          html+=`
-            <td class="${date===selectedDate?"selected-column":""}">
-              <input
-                class="inventory-input ${hasValue?"verified":""}"
-                value="${escapeHtml(value)}"
-                inputmode="numeric"
-                autocomplete="off"
-                data-item-key="${escapeHtml(row.item_key)}"
-                data-item-name="${escapeHtml(row.name)}"
-                data-count-date="${date}"
-                data-verified-value="${escapeHtml(value)}"
-                title="${hasValue?"Verified database record":"No database record"}"
-                onfocus="selectInventoryCell(this)"
-                oninput="queueInventorySave(this)"
-                onblur="commitInventorySave(this)"
-                onkeydown="handleInventoryKey(event,this)"
-              />
-            </td>
-          `;
-        }
-
-        const categoryOptions=CATEGORY_OPTIONS.map(
-          category=>`<option value="${category}" ${category===row.category?"selected":""}>${category}</option>`
-        ).join("");
+      for(const section of sortedRows){
+        if(!section.rows.length) continue;
 
         html+=`
-          <td class="center">
-            <select
-              class="category-select verified"
-              data-item-key="${escapeHtml(row.item_key)}"
-              data-item-name="${escapeHtml(row.name)}"
-              data-verified-category="${escapeHtml(row.category)}"
-              onchange="saveAndVerifyCategory(this)"
-              title="Saved in Supabase"
-            >
-              ${categoryOptions}
-            </select>
-          </td>
-          <td class="center" data-prep-code-for="${escapeHtml(row.item_key)}">
-            ${escapeHtml(row.prep_code)}
-          </td>
-          <td class="par-cell">
-            ${row.weekly_par==null?'<span title="No weekly par is stored for this item">NO PAR SET</span>':formatNumber(row.weekly_par)}
-          </td>
-        </tr>`;
+          <tr class="database-group-row">
+            <td colspan="${dates.length+2}">
+              ${escapeHtml(section.group)} Dumplings
+            </td>
+          </tr>
+        `;
+
+        section.rows.forEach((row,index)=>{
+          const counts=row.counts||{};
+
+          html+=`
+            <tr>
+              <td>
+                <span class="database-rank">${index+1}</span>
+                ${escapeHtml(row.name)}
+              </td>
+          `;
+
+          for(const date of dates){
+            const hasValue=
+              Object.prototype.hasOwnProperty.call(counts,date) &&
+              counts[date]!==null;
+
+            const value=hasValue?formatNumber(counts[date]):"";
+
+            html+=`
+              <td class="${date===selectedDate?"selected-column":""}">
+                <input
+                  class="inventory-input ${hasValue?"verified":""}"
+                  value="${escapeHtml(value)}"
+                  inputmode="numeric"
+                  autocomplete="off"
+                  data-item-key="${escapeHtml(row.item_key)}"
+                  data-item-name="${escapeHtml(row.name)}"
+                  data-count-date="${date}"
+                  data-verified-value="${escapeHtml(value)}"
+                  title="${hasValue?"Verified database record":"No database record"}"
+                  onfocus="selectInventoryCell(this)"
+                  oninput="queueInventorySave(this)"
+                  onblur="commitInventorySave(this)"
+                  onkeydown="handleInventoryKey(event,this)"
+                />
+              </td>
+            `;
+          }
+
+          html+=`
+              <td class="par-cell">
+                ${row.weekly_par==null
+                  ? '<span title="No weekly par is stored for this item">NO PAR SET</span>'
+                  : formatNumber(row.weekly_par)}
+              </td>
+            </tr>
+          `;
+        });
       }
 
       html+="</tbody>";
