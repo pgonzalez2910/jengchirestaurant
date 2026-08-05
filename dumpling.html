@@ -2178,6 +2178,44 @@
       color:#355b82;
     }
 
+
+    /* DUMPLING PAR REPORT — CLEAR EMPTY-WEEK MESSAGE */
+    #parPanel .par-empty-state{
+      grid-column:1 / -1;
+      display:flex;
+      min-height:180px;
+      align-items:center;
+      justify-content:center;
+      gap:18px;
+      padding:28px;
+      border:1px dashed #9eacc0;
+      border-radius:9px;
+      background:#f7f9fc;
+      color:#17375e;
+      text-align:left;
+    }
+
+    #parPanel .par-empty-state > i{
+      color:#7186a3;
+      font-size:38px;
+    }
+
+    #parPanel .par-empty-state strong{
+      display:block;
+      font-size:18px;
+      font-weight:850;
+    }
+
+    #parPanel .par-empty-state span{
+      display:block;
+      max-width:760px;
+      margin-top:5px;
+      color:#5b6b80;
+      font-size:13px;
+      font-weight:650;
+      line-height:1.4;
+    }
+
 </style>
 </head>
 <body>
@@ -2470,6 +2508,7 @@
     let categoryChart = null;
     let trendChart = null;
     let activePanelId = "overviewPanel";
+    let initialWorkbookLoad = true;
     let databaseViewYear = Number(sessionStorage.getItem("jc_database_view_year")) || 2026;
     let databaseViewMonth = Number(sessionStorage.getItem("jc_database_view_month"));
 
@@ -2535,7 +2574,7 @@
       sessionStorage.setItem("jc_live_selected_week",date);
       document.getElementById("cateringEventDate").value=date;
       setDatabaseViewFromDate(date);
-      await refreshWorkbook();
+      await refreshWorkbook({allowInitialFallback:false});
     }
 
     async function moveWeek(days){
@@ -2550,33 +2589,140 @@
       select.value=next;await changeWeek();
     }
 
-    async function refreshWorkbook(){
-      const date=document.getElementById("weekSelect").value;
-      showMessage("globalMessage",`Loading live workbook for ${formatDate(date)}...`,"info");
-      const databaseScroll=document.querySelector("#databasePanel .table-wrap");
-      const oldScroll={left:databaseScroll?.scrollLeft||0,top:databaseScroll?.scrollTop||0};
+    async function fetchWorkbookBundle(date){
+      const {data,error}=await client.rpc(
+        "jc_get_workbook",
+        {p_count_date:date}
+      );
 
-      try{
-        const {data,error}=await client.rpc("jc_get_workbook",{p_count_date:date});
-        if(error) throw error;
+      if(error) throw error;
 
-        const {data:parLines,error:parLinesError}=await client.rpc(
+      const {data:parLines,error:parLinesError}=await client.rpc(
+        "jc_get_par_report_lines",
+        {p_count_date:date}
+      );
+
+      if(parLinesError) throw parLinesError;
+
+      return {
+        workbook:data,
+        parLines:Array.isArray(parLines)?parLines:[]
+      };
+    }
+
+    async function findPreviousPopulatedParDate(startDate,maxWeeks=104){
+      let probeDate=addDays(startDate,-7);
+
+      for(let attempt=0;attempt<maxWeeks;attempt+=1){
+        if(probeDate<FIRST_COUNT_DATE){
+          return null;
+        }
+
+        const {data,error}=await client.rpc(
           "jc_get_par_report_lines",
-          {p_count_date:date}
+          {p_count_date:probeDate}
         );
 
-        if(parLinesError) throw parLinesError;
+        if(!error && Array.isArray(data) && data.length>0){
+          return probeDate;
+        }
 
-        data.par_report=parLines||[];
-        workbookData=data;
-        populateInitialWeekSelect((data.inventory_dates||[]).map(row=>row.count_date));
+        probeDate=addDays(probeDate,-7);
+      }
+
+      return null;
+    }
+
+    async function refreshWorkbook(options={}){
+      const allowInitialFallback =
+        options.allowInitialFallback ?? initialWorkbookLoad;
+
+      let date=document.getElementById("weekSelect").value;
+
+      showMessage(
+        "globalMessage",
+        `Loading live workbook for Monday ${formatOperationalMonday(date)}...`,
+        "info"
+      );
+
+      const databaseScroll=document.querySelector(
+        "#databasePanel .table-wrap"
+      );
+
+      const oldScroll={
+        left:databaseScroll?.scrollLeft||0,
+        top:databaseScroll?.scrollTop||0
+      };
+
+      try{
+        let bundle=await fetchWorkbookBundle(date);
+        let usedFallback=false;
+
+        if(
+          allowInitialFallback &&
+          bundle.parLines.length===0
+        ){
+          const fallbackDate=await findPreviousPopulatedParDate(date);
+
+          if(fallbackDate){
+            date=fallbackDate;
+            usedFallback=true;
+
+            const weekSelect=document.getElementById("weekSelect");
+            weekSelect.value=date;
+
+            sessionStorage.setItem(
+              "jc_live_selected_week",
+              date
+            );
+
+            document.getElementById("cateringEventDate").value=date;
+            setDatabaseViewFromDate(date);
+
+            bundle=await fetchWorkbookBundle(date);
+          }
+        }
+
+        bundle.workbook.par_report=bundle.parLines;
+        workbookData=bundle.workbook;
+
+        populateInitialWeekSelect(
+          (bundle.workbook.inventory_dates||[])
+            .map(row=>row.count_date)
+        );
+
         document.getElementById("weekSelect").value=date;
         renderAll();
-        clearMessage("globalMessage");
-        requestAnimationFrame(()=>{if(databaseScroll){databaseScroll.scrollLeft=oldScroll.left;databaseScroll.scrollTop=oldScroll.top}});
+
+        if(usedFallback){
+          showMessage(
+            "globalMessage",
+            `Monday ${formatOperationalMonday(addDays(date,7))} had no saved ` +
+            `Par data. The website loaded Monday ` +
+            `${formatOperationalMonday(date)}, the nearest previous week ` +
+            `with saved sales information.`,
+            "info"
+          );
+        }else{
+          clearMessage("globalMessage");
+        }
+
+        requestAnimationFrame(()=>{
+          if(databaseScroll){
+            databaseScroll.scrollLeft=oldScroll.left;
+            databaseScroll.scrollTop=oldScroll.top;
+          }
+        });
       }catch(error){
         console.error(error);
-        showMessage("globalMessage",`Unable to refresh the workbook: ${error.message || error}`,"error");
+
+        showMessage(
+          "globalMessage",
+          `Unable to refresh the workbook: ${error.message || error}`,
+          "error"
+        );
+      }finally{
+        initialWorkbookLoad=false;
       }
     }
 
@@ -3639,7 +3785,7 @@
 
       renderParPlanningControls(countDate);
       setDatabaseViewFromDate(countDate);
-      await refreshWorkbook();
+      await refreshWorkbook({allowInitialFallback:false});
     }
 
     async function changeParCountDate(){
@@ -4028,6 +4174,30 @@
       });
 
 
+      const board=document.getElementById("parBoard");
+      const totalsPanel=document.getElementById("parBoardTotals");
+
+      if(sourceRows.length===0){
+        board.innerHTML=`
+          <div class="par-empty-state">
+            <i class="fa-solid fa-calendar-xmark"></i>
+
+            <div>
+              <strong>No sales data saved for this operational week</strong>
+
+              <span>
+                ${escapeHtml(salesPeriod)} is attached to Monday
+                ${escapeHtml(formatDate(operationalMonday))}. Supabase does
+                not contain Dumpling Par sales lines for this period yet.
+              </span>
+            </div>
+          </div>
+        `;
+
+        totalsPanel.innerHTML="";
+        return;
+      }
+
       const groupedRows=new Map();
 
       sourceRows.forEach((row,index)=>{
@@ -4056,8 +4226,6 @@
           .map(entry=>buildParBoardSection(entry.group,entry.rows))
           .join("");
       };
-
-      const board=document.getElementById("parBoard");
 
       board.innerHTML=`
         <div class="par-board-column">
