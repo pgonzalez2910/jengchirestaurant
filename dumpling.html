@@ -2162,6 +2162,22 @@
       }
     }
 
+
+    /* DATABASE + INVENTORY — DISPLAY OPERATIONAL MONDAY DATES */
+    #databasePanel .database-square-table .week-header::before{
+      content:"MONDAY";
+      display:block;
+      margin-bottom:2px;
+      color:#64778e;
+      font-size:9px;
+      font-weight:900;
+      letter-spacing:.045em;
+    }
+
+    #databasePanel .database-square-table .week-header.selected-column::before{
+      color:#355b82;
+    }
+
 </style>
 </head>
 <body>
@@ -2257,7 +2273,7 @@
         </div>
         <div class="database-month-heading">
           <strong id="databaseMonthTitle">JULY 2026</strong>
-          <span><span id="databaseMonthStatus">Sunday inventory counts</span><br><span class="database-sort-note">Sorted by latest visible count: highest → lowest</span></span>
+          <span><span id="databaseMonthStatus">Monday inventory weeks</span><br><span class="database-sort-note">Sorted by latest visible count: highest → lowest</span></span>
         </div>
         <div class="database-square-workspace"><div id="databaseSquareGrid" class="database-square-grid"></div></div>
       </div>
@@ -2282,7 +2298,7 @@
 
       <div class="report-title-band">
         <h2>JC PREP INVENTORY SUMMARY</h2>
-        <p id="inventoryReportDate">Selected Sunday count</p>
+        <p id="inventoryReportDate">Selected Monday inventory week</p>
       </div>
       <div class="card">
         <div class="card-head"><h2>Inventory by JC Prep Product and Category</h2><small>Calculated directly from verified item counts</small></div>
@@ -2928,10 +2944,21 @@
       sessionStorage.setItem("jc_database_view_month",String(databaseViewMonth));
     }
 
+    function countDateToOperationalMonday(countDate){
+      return addDays(countDate,1);
+    }
+
+    function formatOperationalMonday(countDate){
+      return formatDate(countDateToOperationalMonday(countDate));
+    }
+
     function setDatabaseViewFromDate(value){
-      const date=parseIsoDate(value);
-      databaseViewYear=date.getFullYear();
-      databaseViewMonth=date.getMonth();
+      const operationalMonday=parseIsoDate(
+        countDateToOperationalMonday(value)
+      );
+
+      databaseViewYear=operationalMonday.getFullYear();
+      databaseViewMonth=operationalMonday.getMonth();
 
       if(databaseViewYear<DATABASE_FIRST_YEAR){
         databaseViewYear=DATABASE_FIRST_YEAR;
@@ -2949,25 +2976,44 @@
     }
 
     function databaseDisplayDates(){
-      const dates=[];
-      const cursor=new Date(databaseViewYear,databaseViewMonth,1,12,0,0);
-      const lastDay=new Date(databaseViewYear,databaseViewMonth+1,0,12,0,0);
+      const countDates=[];
+      const mondayCursor=new Date(
+        databaseViewYear,
+        databaseViewMonth,
+        1,
+        12,
+        0,
+        0
+      );
 
-      while(cursor.getDay()!==0){
-        cursor.setDate(cursor.getDate()+1);
+      const lastDayInMonth=new Date(
+        databaseViewYear,
+        databaseViewMonth+1,
+        0,
+        12,
+        0,
+        0
+      );
+
+      while(mondayCursor.getDay()!==1){
+        mondayCursor.setDate(mondayCursor.getDate()+1);
       }
 
-      while(cursor<=lastDay){
-        const value=toIsoDate(cursor);
+      while(mondayCursor<=lastDayInMonth){
+        const mondayDate=toIsoDate(mondayCursor);
+        const officialSundayCountDate=addDays(mondayDate,-1);
 
-        if(value>=FIRST_COUNT_DATE && value<=LAST_DATABASE_DATE){
-          dates.push(value);
+        if(
+          officialSundayCountDate>=FIRST_COUNT_DATE &&
+          officialSundayCountDate<=LAST_DATABASE_DATE
+        ){
+          countDates.push(officialSundayCountDate);
         }
 
-        cursor.setDate(cursor.getDate()+7);
+        mondayCursor.setDate(mondayCursor.getDate()+7);
       }
 
-      return dates;
+      return countDates;
     }
 
     function getDatabaseDateStatus(date){
@@ -2997,7 +3043,9 @@
       const select=document.getElementById("weekSelect");
 
       if(![...select.options].some(option=>option.value===date)){
-        select.add(new Option(formatDate(date),date));
+        select.add(
+          new Option(`Monday ${formatOperationalMonday(date)}`,date)
+        );
         const options=[...select.options].sort((a,b)=>a.value.localeCompare(b.value));
         select.innerHTML="";
         options.forEach(option=>select.add(option));
@@ -3023,7 +3071,7 @@
       setText("databaseMonthTitle",monthTitle);
       setText(
         "databaseMonthStatus",
-        `${dates.length} Sunday count date${dates.length===1?"":"s"} · ` +
+        `${dates.length} Monday inventory week${dates.length===1?"":"s"} · ` +
         `${completeWeeks} complete` +
         `${partialWeeks?` · ${partialWeeks} in progress`:""}`
       );
@@ -3083,9 +3131,9 @@
             <th
               class="week-header ${status.className} ${date===selectedDate?"selected-column":""}"
               onclick="selectWeekFromDatabase('${date}')"
-              title="Select ${formatDate(date)} for reports"
+              title="Select Monday ${formatOperationalMonday(date)} for reports"
             >
-              ${formatDate(date)}
+              ${formatOperationalMonday(date)}
               <small>${status.className==="complete"?"Complete":status.className==="partial"?"In progress":"Blank"}</small>
             </th>
           `;
@@ -3233,9 +3281,11 @@
         "inventoryReportDate",
         dates.length
           ? `${MONTH_NAMES[databaseViewMonth]} ${databaseViewYear} · ` +
-            `${formatDate(firstDate)} through ${formatDate(lastDate)} · ` +
+            `Monday ${formatOperationalMonday(firstDate)} through ` +
+            `Monday ${formatOperationalMonday(lastDate)} · ` +
             `Automatically calculated from saved product counts`
-          : `${MONTH_NAMES[databaseViewMonth]} ${databaseViewYear} · No Sunday count dates`
+          : `${MONTH_NAMES[databaseViewMonth]} ${databaseViewYear} · ` +
+            `No Monday inventory weeks`
       );
 
       let html=`
@@ -3257,11 +3307,13 @@
         html+=`
           <th
             class="${date===document.getElementById("weekSelect").value?"selected-column":""}"
-            title="${escapeHtml(status.label)}"
+            title="${escapeHtml(
+              `Monday ${formatOperationalMonday(date)} · ${status.label}`
+            )}"
           >
-            Sunday
+            Monday
             <br>
-            <small>${formatDate(date)}</small>
+            <small>${formatOperationalMonday(date)}</small>
           </th>
         `;
       });
