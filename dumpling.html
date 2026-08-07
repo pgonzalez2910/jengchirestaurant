@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  <meta name="jc-dumpling-build" content="2026-08-07-planning-settings-v6" />
+  <meta name="jc-dumpling-build" content="2026-08-07-professional-prep-print-v7" />
   <title>Jeng Chi Dumpling Inventory 360 — Monday Weekly System</title>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -2652,7 +2652,7 @@
         <h1>Dumpling Inventory 360</h1>
         <div class="subtitle">Live Supabase workbook · inventory, par, prep, reporting, and week comparison</div>
       </div>
-      <div class="build-chip" title="Current production build">MONDAY BUILD · V6 · LIVE PAR SETTINGS</div>
+      <div class="build-chip" title="Current production build">MONDAY BUILD · V7 · PROFESSIONAL PREP PRINT</div>
       <div id="connectionChip" class="connection-chip"><i class="fa-solid fa-circle-notch fa-spin"></i> Connecting to database</div>
     </div>
   </header>
@@ -3034,7 +3034,7 @@
       <div class="card">
         <div class="card-head">
           <h2>Prep Sheet</h2>
-          <button class="secondary no-print" onclick="printCurrentView()"><i class="fa-solid fa-print"></i> Print Prep Sheet</button>
+          <button class="secondary no-print" onclick="printProfessionalPrepSheet()"><i class="fa-solid fa-print"></i> Print Prep Sheet</button>
         </div>
         <div class="table-wrap"><table id="prepTable" class="sheet"></table></div>
       </div>
@@ -3060,7 +3060,7 @@
     "use strict";
 
     console.info(
-      "Jeng Chi Dumpling Inventory 360 — MONDAY PRODUCTION BUILD V6 — LIVE PAR SETTINGS",
+      "Jeng Chi Dumpling Inventory 360 — MONDAY PRODUCTION BUILD V7 — PROFESSIONAL PREP PRINT",
       "Canonical first week: 2026-07-13"
     );
 
@@ -6076,6 +6076,674 @@
       }
     }
     function printCurrentView(){window.print()}
+
+    function buildProfessionalPrepPrintRows(){
+      const rows=workbookData?.prep_sheet||[];
+
+      return rows
+        .map(row=>{
+          const current=row.current_inventory==null
+            ? null
+            : Number(row.current_inventory);
+
+          const recurringPar=row.recurring_weekly_par==null
+            ? null
+            : Number(row.recurring_weekly_par);
+
+          const prepNeeded=
+            current==null || recurringPar==null
+              ? null
+              : Math.max(0,recurringPar-current);
+
+          return {
+            category:String(
+              row.display_group ||
+              row.category ||
+              "OTHER DUMPLINGS"
+            ).trim(),
+            dumplingName:displayProductName(row.dumpling_name),
+            currentInventory:current,
+            par:recurringPar,
+            prepNeeded
+          };
+        })
+        .filter(row=>
+          row.prepNeeded!=null &&
+          Number(row.prepNeeded)>0
+        );
+    }
+
+    function printProfessionalPrepSheet(){
+      const rows=buildProfessionalPrepPrintRows();
+      const mondayDate=workbookData?.selected_count_date||DEFAULT_COUNT_DATE;
+      const prepDate=getPrepWeekDate(mondayDate);
+      const salesPeriod=formatAttachedSalesPeriod(mondayDate);
+
+      const parSettingsRow=(workbookData?.par_report||[]).find(
+        row=>row.sales_period_name
+      )||{};
+
+      const salesWeeks=Number(parSettingsRow.sales_weeks||4);
+      const coverageWeeks=Number(parSettingsRow.par_coverage_weeks||1);
+      const safetyPercent=parSettingsRow.safety_stock_pct==null
+        ? 20
+        : Number(parSettingsRow.safety_stock_pct)*100;
+
+      const totalPrep=rows.reduce(
+        (sum,row)=>sum+Number(row.prepNeeded||0),
+        0
+      );
+
+      const grouped=new Map();
+
+      rows.forEach(row=>{
+        if(!grouped.has(row.category)){
+          grouped.set(row.category,[]);
+        }
+
+        grouped.get(row.category).push(row);
+      });
+
+      const categoryOrder=[
+        "JUICY DUMPLINGS",
+        "BOILED DUMPLINGS",
+        "STEAMED DUMPLINGS",
+        "WONTONS",
+        "TURNOVERS / POCKETS",
+        "SOUP WONTONS"
+      ];
+
+      const normalizeCategory=value=>
+        String(value||"")
+          .trim()
+          .toUpperCase();
+
+      const orderedGroups=[...grouped.entries()].sort((a,b)=>{
+        const ai=categoryOrder.indexOf(normalizeCategory(a[0]));
+        const bi=categoryOrder.indexOf(normalizeCategory(b[0]));
+
+        if(ai===-1 && bi===-1){
+          return a[0].localeCompare(b[0]);
+        }
+
+        if(ai===-1) return 1;
+        if(bi===-1) return -1;
+
+        return ai-bi;
+      });
+
+      let tableBody="";
+
+      if(!rows.length){
+        tableBody=`
+          <tr>
+            <td colspan="5" class="empty-state">
+              No dumplings require preparation for this selected Monday.
+            </td>
+          </tr>
+        `;
+      }else{
+        for(const [category,categoryRows] of orderedGroups){
+          const categoryPrep=categoryRows.reduce(
+            (sum,row)=>sum+Number(row.prepNeeded||0),
+            0
+          );
+
+          tableBody+=`
+            <tr class="category-band">
+              <td colspan="5">
+                <span>${escapeHtml(category)}</span>
+                <strong>${formatNumber(categoryPrep)} PIECES TO PREP</strong>
+              </td>
+            </tr>
+          `;
+
+          categoryRows.forEach((row,index)=>{
+            tableBody+=`
+              <tr class="item-row">
+                <td class="category-cell">
+                  ${index===0?escapeHtml(category):""}
+                </td>
+                <td class="name-cell">
+                  ${escapeHtml(row.dumplingName)}
+                </td>
+                <td class="prep-cell">
+                  ${formatNumber(row.prepNeeded)}
+                </td>
+                <td class="par-cell">
+                  ${row.par==null?"—":formatNumber(row.par)}
+                </td>
+                <td class="date-cell">
+                  ${formatDate(prepDate)}
+                </td>
+              </tr>
+            `;
+          });
+
+          tableBody+=`
+            <tr class="category-divider">
+              <td colspan="5"></td>
+            </tr>
+          `;
+        }
+      }
+
+      const printWindow=window.open(
+        "",
+        "_blank",
+        "width=900,height=1100,noopener,noreferrer"
+      );
+
+      if(!printWindow){
+        showMessage(
+          "globalMessage",
+          "The browser blocked the print preview. Allow pop-ups for this site and click Print Prep Sheet again.",
+          "error"
+        );
+        return;
+      }
+
+      const printHtml=`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Jeng Chi Dumpling Prep Sheet - ${escapeHtml(formatDate(prepDate))}</title>
+  <style>
+    @page{
+      size:Letter portrait;
+      margin:0.42in 0.42in 0.45in;
+    }
+
+    *{
+      box-sizing:border-box;
+    }
+
+    html,
+    body{
+      margin:0;
+      padding:0;
+      background:#fff;
+      color:#162238;
+      font-family:Arial,Helvetica,sans-serif;
+      -webkit-print-color-adjust:exact;
+      print-color-adjust:exact;
+    }
+
+    body{
+      font-size:10pt;
+    }
+
+    .page{
+      width:100%;
+      margin:0 auto;
+    }
+
+    .document-header{
+      display:grid;
+      grid-template-columns:115px 1fr 170px;
+      gap:14px;
+      align-items:center;
+      padding-bottom:10px;
+      border-bottom:3px solid #243b67;
+    }
+
+    .brand-block{
+      min-height:58px;
+      display:flex;
+      align-items:center;
+      justify-content:flex-start;
+    }
+
+    .brand-mark{
+      width:96px;
+      border:1px solid #c7d0dc;
+      padding:7px 8px;
+      color:#243b67;
+      font-family:Georgia,"Times New Roman",serif;
+      font-size:15px;
+      font-weight:700;
+      text-align:center;
+      letter-spacing:.08em;
+      line-height:1.15;
+    }
+
+    .title-block{
+      text-align:center;
+    }
+
+    .title-block h1{
+      margin:0;
+      color:#243b67;
+      font-family:Georgia,"Times New Roman",serif;
+      font-size:21pt;
+      line-height:1;
+      letter-spacing:.01em;
+    }
+
+    .title-block p{
+      margin:5px 0 0;
+      color:#5a6678;
+      font-size:8.7pt;
+      font-weight:700;
+      letter-spacing:.03em;
+      text-transform:uppercase;
+    }
+
+    .doc-control{
+      border:1px solid #9aa9bd;
+      background:#f4f7fb;
+      padding:7px 9px;
+      text-align:right;
+    }
+
+    .doc-control span{
+      display:block;
+      color:#65758a;
+      font-size:7.4pt;
+      font-weight:700;
+      text-transform:uppercase;
+      letter-spacing:.05em;
+    }
+
+    .doc-control strong{
+      display:block;
+      margin-top:2px;
+      color:#17375e;
+      font-size:9.5pt;
+    }
+
+    .meta-grid{
+      display:grid;
+      grid-template-columns:1fr 1.35fr 1fr;
+      gap:7px;
+      margin:9px 0 8px;
+    }
+
+    .meta-card{
+      border:1px solid #aeb9c7;
+      background:#f7f9fc;
+      padding:6px 8px;
+      min-height:44px;
+    }
+
+    .meta-card label{
+      display:block;
+      margin:0;
+      color:#65758a;
+      font-size:7pt;
+      font-weight:800;
+      text-transform:uppercase;
+      letter-spacing:.055em;
+    }
+
+    .meta-card strong{
+      display:block;
+      margin-top:3px;
+      color:#17375e;
+      font-size:10pt;
+      line-height:1.12;
+    }
+
+    .instruction{
+      display:flex;
+      justify-content:space-between;
+      gap:12px;
+      margin:0 0 8px;
+      padding:6px 8px;
+      border-left:4px solid #243b67;
+      background:#eef3f8;
+      color:#31445e;
+      font-size:8.3pt;
+      line-height:1.25;
+    }
+
+    .instruction strong{
+      color:#17375e;
+    }
+
+    table{
+      width:100%;
+      border-collapse:collapse;
+      table-layout:fixed;
+    }
+
+    col.category{width:18%}
+    col.name{width:37%}
+    col.prep{width:16%}
+    col.par{width:13%}
+    col.date{width:16%}
+
+    thead{
+      display:table-header-group;
+    }
+
+    thead th{
+      padding:6px 7px;
+      border:1px solid #6f819a;
+      background:#3f5b8d;
+      color:#fff;
+      font-size:7.7pt;
+      font-weight:800;
+      line-height:1.1;
+      text-transform:uppercase;
+      letter-spacing:.025em;
+      vertical-align:middle;
+      text-align:center;
+    }
+
+    thead th:nth-child(1),
+    thead th:nth-child(2){
+      text-align:left;
+    }
+
+    tbody td{
+      padding:6px 7px;
+      border-left:1px solid #b5becb;
+      border-right:1px solid #b5becb;
+      border-bottom:1px solid #c4ccd6;
+      vertical-align:middle;
+      line-height:1.15;
+    }
+
+    .category-band td{
+      padding:5px 7px;
+      border:1px solid #8291a4;
+      background:#dce8f5;
+      color:#17375e;
+      font-weight:900;
+    }
+
+    .category-band td{
+      display:table-cell;
+    }
+
+    .category-band span{
+      float:left;
+      font-size:8.5pt;
+      text-transform:uppercase;
+      letter-spacing:.035em;
+    }
+
+    .category-band strong{
+      float:right;
+      font-size:8pt;
+    }
+
+    .item-row{
+      break-inside:avoid;
+      page-break-inside:avoid;
+    }
+
+    .category-cell{
+      color:#5b697b;
+      font-size:7.5pt;
+      font-weight:800;
+      text-transform:uppercase;
+    }
+
+    .name-cell{
+      color:#152033;
+      font-size:9.2pt;
+      font-weight:700;
+      text-align:left;
+    }
+
+    .prep-cell{
+      background:#fff3db;
+      color:#8a4700;
+      font-size:11.2pt;
+      font-weight:900;
+      text-align:center;
+    }
+
+    .par-cell,
+    .date-cell{
+      text-align:center;
+      font-size:9pt;
+      font-weight:700;
+    }
+
+    .category-divider td{
+      height:7px;
+      padding:0;
+      border:0;
+      border-top:2px solid #243b67;
+      background:#fff;
+    }
+
+    .empty-state{
+      padding:26px!important;
+      border:1px solid #aeb9c7!important;
+      color:#526277;
+      text-align:center;
+      font-size:10pt;
+      font-weight:700;
+    }
+
+    .summary-row{
+      display:grid;
+      grid-template-columns:1fr 1fr 1fr;
+      gap:7px;
+      margin-top:8px;
+    }
+
+    .summary-box{
+      border:1px solid #9ba9ba;
+      padding:6px 8px;
+      background:#f7f9fc;
+      text-align:center;
+    }
+
+    .summary-box span{
+      display:block;
+      color:#66768a;
+      font-size:7pt;
+      font-weight:800;
+      text-transform:uppercase;
+      letter-spacing:.04em;
+    }
+
+    .summary-box strong{
+      display:block;
+      margin-top:2px;
+      color:#17375e;
+      font-size:11pt;
+    }
+
+    .summary-box.primary{
+      border:2px solid #243b67;
+      background:#e8f0f8;
+    }
+
+    .approval-grid{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:28px;
+      margin-top:20px;
+    }
+
+    .approval-line{
+      padding-top:14px;
+      border-bottom:1px solid #53647a;
+      color:#627187;
+      font-size:7.5pt;
+      font-weight:700;
+    }
+
+    .footer{
+      margin-top:10px;
+      padding-top:6px;
+      border-top:1px solid #aab5c3;
+      color:#788597;
+      font-size:6.8pt;
+      line-height:1.25;
+      text-align:justify;
+    }
+
+    @media screen{
+      body{
+        background:#e8ecf2;
+        padding:18px;
+      }
+
+      .page{
+        max-width:8.5in;
+        min-height:11in;
+        padding:0.42in;
+        background:#fff;
+        box-shadow:0 8px 28px rgba(22,34,56,.18);
+      }
+
+      .screen-actions{
+        max-width:8.5in;
+        margin:0 auto 12px;
+        display:flex;
+        justify-content:flex-end;
+      }
+
+      .screen-actions button{
+        border:0;
+        border-radius:6px;
+        padding:9px 14px;
+        background:#243b67;
+        color:#fff;
+        font-family:Arial,Helvetica,sans-serif;
+        font-size:10pt;
+        font-weight:800;
+        cursor:pointer;
+      }
+    }
+
+    @media print{
+      .screen-actions{
+        display:none!important;
+      }
+
+      .page{
+        padding:0;
+        box-shadow:none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="screen-actions">
+    <button onclick="window.print()">Print / Save PDF</button>
+  </div>
+
+  <main class="page">
+    <header class="document-header">
+      <div class="brand-block">
+        <div class="brand-mark">JENG CHI<br>RESTAURANT</div>
+      </div>
+
+      <div class="title-block">
+        <h1>Dumpling Prep Sheet</h1>
+        <p>Production Requirements · Prep Items Only</p>
+      </div>
+
+      <div class="doc-control">
+        <span>Prep Date</span>
+        <strong>${escapeHtml(formatDate(prepDate))}</strong>
+        <span style="margin-top:5px">Operational Week</span>
+        <strong>${escapeHtml(formatDate(mondayDate))}</strong>
+      </div>
+    </header>
+
+    <section class="meta-grid">
+      <div class="meta-card">
+        <label>Operational Monday</label>
+        <strong>${escapeHtml(formatDate(mondayDate))}</strong>
+      </div>
+
+      <div class="meta-card">
+        <label>Attached Sales Period</label>
+        <strong>${escapeHtml(salesPeriod)}</strong>
+      </div>
+
+      <div class="meta-card">
+        <label>Planning Standard</label>
+        <strong>${escapeHtml(formatDecimal(coverageWeeks,2))} wk coverage · ${escapeHtml(formatDecimal(safetyPercent,1))}% safety</strong>
+      </div>
+    </section>
+
+    <div class="instruction">
+      <span>
+        <strong>Production instruction:</strong>
+        Prepare only the quantities shown in the <strong>PREP QTY</strong> column.
+        Items already at or above par are intentionally excluded.
+      </span>
+      <span>
+        Sales basis: ${escapeHtml(formatDecimal(salesWeeks,2))} weeks
+      </span>
+    </div>
+
+    <table>
+      <colgroup>
+        <col class="category">
+        <col class="name">
+        <col class="prep">
+        <col class="par">
+        <col class="date">
+      </colgroup>
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Dumpling Name</th>
+          <th>Prep Qty</th>
+          <th>Par</th>
+          <th>Prep Date</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${tableBody}
+      </tbody>
+    </table>
+
+    <section class="summary-row">
+      <div class="summary-box">
+        <span>Prep Line Items</span>
+        <strong>${formatNumber(rows.length)}</strong>
+      </div>
+
+      <div class="summary-box primary">
+        <span>Total Pieces to Prepare</span>
+        <strong>${formatNumber(totalPrep)}</strong>
+      </div>
+
+      <div class="summary-box">
+        <span>Categories Requiring Prep</span>
+        <strong>${formatNumber(grouped.size)}</strong>
+      </div>
+    </section>
+
+    <section class="approval-grid">
+      <div class="approval-line">Prepared By / Initials</div>
+      <div class="approval-line">Verified By / Initials</div>
+    </section>
+
+    <footer class="footer">
+      Internal Jeng Chi operational production document. Quantities are generated
+      from the selected Monday's verified inventory and recurring weekly par.
+      This printout intentionally includes only items requiring preparation.
+    </footer>
+  </main>
+
+  <script>
+    window.addEventListener("load",()=>{
+      setTimeout(()=>window.print(),250);
+    });
+  <\/script>
+</body>
+</html>
+      `;
+
+      printWindow.document.open();
+      printWindow.document.write(printHtml);
+      printWindow.document.close();
+    }
+
 
     function summaryStrip(entries){return entries.map(([head,value])=>`<div><div class="head">${escapeHtml(head)}</div><div class="value">${escapeHtml(value)}</div></div>`).join("")}
     function statusType(action){const a=String(action||"").toUpperCase();if(a.startsWith("PREP"))return"prep";if(a.startsWith("HOLD"))return"hold";if(a.includes("REVIEW")||a.includes("COUNT"))return"review";return"neutral"}
