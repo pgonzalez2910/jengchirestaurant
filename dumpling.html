@@ -1383,6 +1383,10 @@
       background:#ffefb8;
     }
 
+    #parPanel .par-section-card[data-group="specialty"] .par-section-heading{
+      background:#f3e8d8;
+    }
+
     #parPanel .par-mini-table-wrap{
       width:100%;
       overflow-x:auto;
@@ -4563,7 +4567,7 @@
         <h1>Dumpling Inventory 360</h1>
         <div class="subtitle">Live Supabase workbook · inventory, par, prep, reporting, and week comparison</div>
       </div>
-      <div class="build-chip" title="Current production build">MONDAY BUILD · V32 · DAILY PREP</div>
+      <div class="build-chip" title="Current production build">MONDAY BUILD · V35 · DAILY PREP BUNS + SPECIALTY PAR</div>
       <div id="connectionChip" class="connection-chip"><i class="fa-solid fa-circle-notch fa-spin"></i> Connecting to database</div>
     </div>
   </header>
@@ -5014,7 +5018,7 @@
               <span class="legend-item"><span class="swatch saved"></span> Saved and verified</span>
               <span class="legend-item"><span class="swatch error"></span> Save or verification failed</span>
             </div>
-            <div class="note"><strong>Important:</strong> Blank means not reported. Enter <strong>0</strong> when production was confirmed as zero. Daily Prep is not connected to Sales, Par, Inventory, or the existing Prep Sheet.</div>
+            <div class="note"><strong>Important:</strong> Blank means not reported. Enter <strong>0</strong> when production was confirmed as zero. Daily Prep production remains independent from Sales, Par, Inventory, and the existing Prep Sheet. Specialty Par sales lines are tracked separately in the Dumpling Par Report.</div>
             <div id="dailyPrepMessage" class="message" style="margin-top:10px"></div>
           </div>
         </div>
@@ -5547,7 +5551,7 @@
     </section>
 
     <div class="footer">
-      Internal Jeng Chi operational system. Monday remains the canonical weekly date for inventory, sales, par calculations, catering demand, Prep Sheets, and week comparisons. Daily Prep is a separate Wednesday-through-Sunday actual-production database and does not change inventory, sales, par, or Prep Sheet calculations. All information is stored through Supabase. A verified cell means the value was saved and read back successfully.
+      Internal Jeng Chi operational system. Monday remains the canonical weekly date for inventory, sales, par calculations, catering demand, Prep Sheets, and week comparisons. Daily Prep is a separate Wednesday-through-Sunday actual-production database and does not change inventory, sales, par, or Prep Sheet calculations. Steamed Buns and Crab Rangoon have separate specialty sales/Par tracking lines with fixed pieces-per-order conversions. All information is stored through Supabase. A verified cell means the value was saved and read back successfully.
     </div>
   </main>
 
@@ -5555,7 +5559,7 @@
     "use strict";
 
     console.info(
-      "Jeng Chi Dumpling Inventory 360 — MONDAY PRODUCTION BUILD V32 — DAILY PREP",
+      "Jeng Chi Dumpling Inventory 360 — MONDAY PRODUCTION BUILD V35 — DAILY PREP BUNS + SPECIALTY PAR",
       "Canonical first week: 2026-07-13",
       "Permanent manual-sales planning horizon: 2026-07-13 through 2028-12-31"
     );
@@ -5579,6 +5583,36 @@
     // Daily Prep is intentionally independent from Inventory, Sales, Par, and Prep Sheet.
     const DAILY_PREP_FIRST_DATE = "2026-08-12";
     const DAILY_PREP_LAST_DATE = LAST_DATABASE_DATE;
+
+    // Additional actual-production items. These exist only in Daily Prep and
+    // do NOT become Monday physical-inventory rows. Quantities are individual pieces.
+    const DAILY_PREP_EXTRA_ITEMS = [
+      {
+        item_key:"pork_cabbage_steamed_buns",
+        name:"Pork & Cabbage Steamed Buns",
+        display_group:"Steamed"
+      },
+      {
+        item_key:"vegetarian_steamed_buns",
+        name:"Vegetarian Steamed Buns",
+        display_group:"Steamed"
+      },
+      {
+        item_key:"crab_rangoon",
+        name:"Crab Rangoon",
+        display_group:"Other"
+      }
+    ];
+
+    // Separate sales / Par tracking lines. 4, 9, and 5 are PIECES PER ORDER.
+    // These lines are intentionally separate from the legacy dumpling sales table.
+    const SPECIALTY_PAR_ITEMS = [
+      {item_key:"pork_cabbage_steamed_buns",dumpling_name:"Pork & Cabbage Steamed Buns",size_variant:"4 Count",pieces_per_order:4},
+      {item_key:"pork_cabbage_steamed_buns",dumpling_name:"Pork & Cabbage Steamed Buns",size_variant:"9 Count",pieces_per_order:9},
+      {item_key:"vegetarian_steamed_buns",dumpling_name:"Vegetarian Steamed Buns",size_variant:"4 Count",pieces_per_order:4},
+      {item_key:"vegetarian_steamed_buns",dumpling_name:"Vegetarian Steamed Buns",size_variant:"9 Count",pieces_per_order:9},
+      {item_key:"crab_rangoon",dumpling_name:"Crab Rangoon",size_variant:"5 Count",pieces_per_order:5}
+    ];
     const MONTH_NAMES = [
       "January","February","March","April","May","June",
       "July","August","September","October","November","December"
@@ -5780,6 +5814,21 @@
         );
       }
 
+      const {
+        data:specialtyParSales,
+        error:specialtyParSalesError
+      }=await client.rpc(
+        "jc_get_specialty_par_sales",
+        {p_count_date:date}
+      );
+
+      if(specialtyParSalesError){
+        console.warn(
+          "Specialty Par sales could not be loaded. Run the V34 SQL update:",
+          specialtyParSalesError
+        );
+      }
+
       return {
         workbook:data,
         parLines:Array.isArray(parLines)?parLines:[],
@@ -5788,6 +5837,9 @@
           : [],
         manualParLines:Array.isArray(manualParLines)
           ? manualParLines
+          : [],
+        specialtyParSales:Array.isArray(specialtyParSales)
+          ? specialtyParSales
           : []
       };
     }
@@ -5868,6 +5920,7 @@
         bundle.workbook.par_report=bundle.parLines;
         bundle.workbook.special_catering=bundle.specialCatering;
         bundle.workbook.manual_par_entry=bundle.manualParLines;
+        bundle.workbook.specialty_par_sales=bundle.specialtyParSales;
         workbookData=bundle.workbook;
 
         populateInitialWeekSelect(
@@ -5962,9 +6015,25 @@
 
         if(parLinesError) throw parLinesError;
 
+        const {data:manualParLines}=await client.rpc(
+          "jc_get_manual_par_entry_lines",
+          {p_count_date:requestedDate}
+        );
+
+        const {data:specialtyParSales,error:specialtyParSalesError}=await client.rpc(
+          "jc_get_specialty_par_sales",
+          {p_count_date:requestedDate}
+        );
+
+        if(specialtyParSalesError){
+          console.warn("Specialty Par refresh unavailable:",specialtyParSalesError);
+        }
+
         if(document.getElementById("weekSelect").value!==requestedDate) return;
 
         data.par_report=parLines||[];
+        data.manual_par_entry=Array.isArray(manualParLines)?manualParLines:[];
+        data.specialty_par_sales=Array.isArray(specialtyParSales)?specialtyParSales:[];
         data.special_catering=workbookData?.special_catering||[];
         workbookData=data;
         renderActiveReportPanel();
@@ -7484,7 +7553,7 @@
         Juicy:"Juicy Dumplings",
         Boiled:"Boiled Dumplings",
         Steamed:"Steamed Dumplings",
-        Other:"Other / Wontons / Turnovers"
+        Other:"Other / Wontons / Specialty"
       };
 
       const rowsBySection=new Map(sectionOrder.map(section=>[section,[]]));
@@ -7603,6 +7672,92 @@
 
 
 
+    function getDailyPrepSourceRows(){
+      const baseRows=Array.isArray(workbookData?.database_grid)
+        ? workbookData.database_grid
+        : [];
+
+      const existingKeys=new Set(baseRows.map(row=>String(row.item_key||"")));
+      const extraRows=DAILY_PREP_EXTRA_ITEMS
+        .filter(row=>!existingKeys.has(row.item_key))
+        .map(row=>({
+          ...row,
+          category:"Specialty",
+          weekly_par:null,
+          counts:{}
+        }));
+
+      return [...baseRows,...extraRows];
+    }
+
+    function specialtyParRecordKey(itemKey,sizeVariant){
+      return `${String(itemKey||"")}|||${String(sizeVariant||"")}`;
+    }
+
+    function buildSpecialtyParRows(settingsRow={}){
+      const savedRows=Array.isArray(workbookData?.specialty_par_sales)
+        ? workbookData.specialty_par_sales
+        : [];
+
+      const savedMap=new Map(
+        savedRows.map(row=>[
+          specialtyParRecordKey(row.item_key,row.size_variant),
+          row
+        ])
+      );
+
+      const salesWeeks=Math.max(0.01,Number(settingsRow.sales_weeks||4));
+      const coverageWeeks=Math.max(0,Number(settingsRow.par_coverage_weeks||1));
+      const safetyFraction=settingsRow.safety_stock_pct==null
+        ? 0.20
+        : Number(settingsRow.safety_stock_pct);
+
+      return SPECIALTY_PAR_ITEMS.map((config,index)=>{
+        const saved=savedMap.get(
+          specialtyParRecordKey(config.item_key,config.size_variant)
+        );
+        const isSaved=!!saved;
+        const ordersSold=isSaved?Number(saved.orders_sold||0):null;
+        const totalPieces=isSaved
+          ? ordersSold*Number(config.pieces_per_order)
+          : null;
+        const averageWeekly=isSaved
+          ? totalPieces/salesWeeks
+          : null;
+        const recommendedPar=isSaved
+          ? Math.ceil(averageWeekly*coverageWeeks*(1+safetyFraction))
+          : null;
+        const equivalentOrders=isSaved
+          ? recommendedPar/Number(config.pieces_per_order)
+          : null;
+
+        return {
+          ...config,
+          orders_sold:ordersSold,
+          total_dumplings_sold:totalPieces,
+          average_weekly_usage:averageWeekly,
+          recommended_par:recommendedPar,
+          par_equivalent_orders:equivalentOrders,
+          sales_period_name:settingsRow.sales_period_name||null,
+          sales_weeks:salesWeeks,
+          par_coverage_weeks:coverageWeeks,
+          safety_stock_pct:safetyFraction,
+          is_saved:isSaved,
+          saved_by:saved?.saved_by||null,
+          _specialtyPar:true,
+          _specialtyOrder:index
+        };
+      });
+    }
+
+    function getCombinedParSourceRows(){
+      const regular=Array.isArray(workbookData?.manual_par_entry) && workbookData.manual_par_entry.length
+        ? workbookData.manual_par_entry
+        : (Array.isArray(workbookData?.par_report)?workbookData.par_report:[]);
+      const settings=regular.find(row=>row.sales_period_name)||regular[0]||{};
+      return [...regular,...buildSpecialtyParRows(settings)];
+    }
+
     function getOverviewDailyPrepPeriod(selectedMonday){
       return {
         start:addDays(selectedMonday,2),
@@ -7632,19 +7787,48 @@
       const period=getOverviewDailyPrepPeriod(selectedMonday);
       const days=Array.from({length:5},(_,index)=>addDays(period.start,index));
       const dayLabels=["Wed","Thu","Fri","Sat","Sun"];
-      const groups=["Juicy","Boiled","Steamed","Other"];
+
+      // Steamed buns are intentionally shown as their own Daily Prep series
+      // so management can see their production separately from steamed dumplings.
+      const PORK_BUN_KEY="pork_cabbage_steamed_buns";
+      const VEG_BUN_KEY="vegetarian_steamed_buns";
+
+      const groups=[
+        "Juicy",
+        "Boiled",
+        "SteamedDumplings",
+        "PorkBuns",
+        "VegetarianBuns",
+        "Other"
+      ];
+
       const groupLabels={
-        Juicy:"Juicy",
-        Boiled:"Boiled",
-        Steamed:"Steamed",
-        Other:"Other / Wontons / Turnovers"
+        Juicy:"Juicy Dumplings",
+        Boiled:"Boiled Dumplings",
+        SteamedDumplings:"Steamed Dumplings",
+        PorkBuns:"Pork & Cabbage Steamed Buns",
+        VegetarianBuns:"Vegetarian Steamed Buns",
+        Other:"Other / Wontons / Turnovers / Specialty"
       };
 
       const itemGroup=new Map(
-        (workbookData.database_grid||[]).map(row=>[
-          row.item_key,
-          groups.includes(row.display_group)?row.display_group:"Other"
-        ])
+        getDailyPrepSourceRows().map(row=>{
+          let group="Other";
+
+          if(row.item_key===PORK_BUN_KEY){
+            group="PorkBuns";
+          }else if(row.item_key===VEG_BUN_KEY){
+            group="VegetarianBuns";
+          }else if(row.display_group==="Juicy"){
+            group="Juicy";
+          }else if(row.display_group==="Boiled"){
+            group="Boiled";
+          }else if(row.display_group==="Steamed"){
+            group="SteamedDumplings";
+          }
+
+          return [row.item_key,group];
+        })
       );
 
       const totals=Object.fromEntries(
@@ -7694,10 +7878,24 @@
               borderWidth:1
             },
             {
-              label:groupLabels.Steamed,
-              data:days.map(day=>totals.Steamed[day]),
+              label:groupLabels.SteamedDumplings,
+              data:days.map(day=>totals.SteamedDumplings[day]),
               backgroundColor:"rgba(121,104,164,.76)",
               borderColor:"#7968a4",
+              borderWidth:1
+            },
+            {
+              label:groupLabels.PorkBuns,
+              data:days.map(day=>totals.PorkBuns[day]),
+              backgroundColor:"rgba(66,133,244,.70)",
+              borderColor:"#4285f4",
+              borderWidth:1
+            },
+            {
+              label:groupLabels.VegetarianBuns,
+              data:days.map(day=>totals.VegetarianBuns[day]),
+              backgroundColor:"rgba(52,168,83,.70)",
+              borderColor:"#34a853",
               borderWidth:1
             },
             {
@@ -8080,15 +8278,15 @@
 
       updateDailyPrepPeriodHeader();
 
-      const sourceRows=workbookData.database_grid||[];
+      const sourceRows=getDailyPrepSourceRows();
       const days=Array.from({length:5},(_,index)=>addDays(dailyPrepWeekStart,index));
       const dayNames=["Wednesday","Thursday","Friday","Saturday","Sunday"];
       const sectionOrder=["Juicy","Boiled","Steamed","Other"];
       const sectionTitles={
         Juicy:"Juicy Dumplings",
         Boiled:"Boiled Dumplings",
-        Steamed:"Steamed Dumplings",
-        Other:"Other / Wontons / Turnovers"
+        Steamed:"Steamed Dumplings & Buns",
+        Other:"Other / Wontons / Turnovers / Specialty"
       };
 
       const rowsBySection=new Map(sectionOrder.map(section=>[section,[]]));
@@ -8123,7 +8321,7 @@
               <table class="daily-prep-table">
                 <thead>
                   <tr>
-                    <th>Dumpling Name</th>
+                    <th>Item Name</th>
         `;
 
         days.forEach((date,index)=>{
@@ -9473,6 +9671,16 @@
     function getParBoardGroup(row){
       const name=String(row?.dumpling_name||"").toLowerCase();
 
+      if(row?._specialtyPar){
+        return {
+          key:"specialty",
+          label:"Steamed Buns & Crab Rangoon",
+          icon:"fa-solid fa-basket-shopping",
+          order:7,
+          column:"right"
+        };
+      }
+
       if(name.includes("wonton soup")){
         return {
           key:"soups",
@@ -9544,6 +9752,10 @@
 
     function buildParBoardSection(group,rows){
       const sortedRows=[...rows].sort((a,b)=>{
+        if(group.key==="specialty"){
+          return Number(a._specialtyOrder||0)-Number(b._specialtyOrder||0);
+        }
+
         if(group.key==="soups"){
           const byName=String(a.dumpling_name||"")
             .localeCompare(String(b.dumpling_name||""));
@@ -9630,6 +9842,7 @@
                   ? ""
                   : escapeHtml(String(row.orders_sold))}"
                 data-is-saved="${row.is_saved?"true":"false"}"
+                data-specialty-par="${row._specialtyPar?"true":"false"}"
                 aria-label="Orders Sold for ${escapeHtml(displayProductName(row.dumpling_name))}${row.size_variant?` ${escapeHtml(displayProductName(row.size_variant))}`:""}"
                 onfocus="this.select()"
                 onkeydown="handleOrdersSoldKey(event,this)"
@@ -10136,7 +10349,7 @@
     }
 
     function renderParReport(){
-      const sourceRows=workbookData.manual_par_entry||workbookData.par_report||[];
+      const sourceRows=getCombinedParSourceRows();
       const first=sourceRows.find(row=>row.sales_period_name)||{};
       const countDate=workbookData.selected_count_date;
 
@@ -10310,7 +10523,7 @@
       });
 
       const leftOrder=["juicy","steamed","wontons"];
-      const rightOrder=["boiled","turnovers","soups"];
+      const rightOrder=["boiled","turnovers","soups","specialty"];
 
       const renderColumn=keys=>{
         return keys
@@ -10333,7 +10546,7 @@
       document.getElementById("parBoardTotals").innerHTML=`
         <div class="par-board-total-cell">
           <span class="par-board-total-label">Management View</span>
-          <span class="par-board-total-value">All Dumpling Sales Lines</span>
+          <span class="par-board-total-value">All Tracked Sales Lines</span>
         </div>
 
         <div class="par-board-total-cell">
@@ -10467,7 +10680,12 @@
       input.classList.remove("verified","error","manual-empty");
       input.classList.add("saving");
 
-      const {data,error}=await client.rpc("jc_set_sales_line_orders_sold",{
+      const isSpecialty=input.dataset.specialtyPar==="true";
+      const rpcName=isSpecialty
+        ? "jc_set_specialty_par_orders_sold"
+        : "jc_set_sales_line_orders_sold";
+
+      const {data,error}=await client.rpc(rpcName,{
         p_count_date:document.getElementById("weekSelect").value,
         p_item_key:itemKey,
         p_size_variant:sizeVariant,
@@ -10485,7 +10703,8 @@
         input.classList.add("error");
         showMessage(
           "globalMessage",
-          `Orders Sold could not be saved for ${itemName}: ${error.message}`,
+          `Orders Sold could not be saved for ${itemName}: ${error.message}` +
+          (isSpecialty?". Run the V34 Specialty Par SQL update if it has not been installed yet.":""),
           "error"
         );
         return false;
@@ -11906,7 +12125,7 @@
       });
       XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(databaseRows),"DATABASE");
       XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(workbookData.inventory_summary||[]),"INVENTORY");
-      XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(workbookData.par_report||[]),"DUMPLING PAR");
+      XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(getCombinedParSourceRows()),"DUMPLING PAR");
       XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(workbookData.prep_sheet||[]),"PREP SHEET");
       XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(workbookData.week_comparison||[]),"WEEK COMPARISON");
       XLSX.writeFile(wb,`JENG_CHI_DUMPLING_360_${workbookData.selected_count_date}.xlsx`);
