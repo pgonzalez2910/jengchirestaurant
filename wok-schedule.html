@@ -508,13 +508,14 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 <span class="rchip warn">🔁 Sat ↔ Sun Lunch: no back-to-back across week boundary</span>
 <span class="rchip warn">🍜 No 2 Noodles in a row per chef</span>
 <span class="rchip warn">🍜 Max 3 Noodles per chef per week</span>
-<span class="rchip">⚖️ Staffing generator: every chef gets 1–2 full days OFF + 50–55h/week</span>
+<span class="rchip">⚖️ 6-chef fairness: exactly 2 consecutive days OFF + 50 paid hours/week + 1h break each workday</span>
 </div>
 </div>
 </div>
 <div class="copy-panel" style="position:sticky;top:0;z-index:20;background:#fff;padding:8px;border-bottom:1px solid var(--bdr)">
 <button class="mini-action" onclick="ScheduleApp.showDuplicateDialog()">📋 Duplicate Previous Schedule</button>
-<button class="mini-action green" onclick="ScheduleApp.applyExactWeeklyStaffingTargets()">🎲 Balanced RANDOM Week · 50–55h + Day Off</button>
+<button class="mini-action green" onclick="ScheduleApp.applyExactWeeklyStaffingTargets()">🎲 6-Chef FAIR Week · 50h + 2 Consecutive Days OFF</button>
+<button class="mini-action green" onclick="ScheduleApp.randomizeFinalDefaultSchedule()" title="Use the finalized 08/23/2026 schedule as the master template and randomly assign its six weekly patterns to the six active chefs">⭐🎲 Randomize FINAL Default · 08/23 Template</button>
 <button class="mini-action" onclick="ScheduleApp.applyDefaultWeekShifts()">Apply Mon–Fri Defaults</button>
 <button class="mini-action green" onclick="ScheduleApp.applyWeekendDefaults()">🎲 Randomize Sat + Sun · 5/5</button>
 <button class="mini-action" onclick="ScheduleApp.applyThursdayDefaults(false)">Thursday 3 Doubles</button>
@@ -550,7 +551,7 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 </div>
 <div id="reports-view" class="vs">
 <div class="page-title">JENG CHI Hours Report</div>
-<div class="page-sub">Payroll reports with automatic break deductions</div>
+<div class="page-sub">Payroll reports with actual split-shift break calculations</div>
 <div class="card">
 <div class="card-hdr"><div class="card-title">📊 Report Configuration</div></div>
 <div class="info-box warning">
@@ -560,7 +561,7 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 <div class="cg"><label>End Date</label><input type="date" id="report-end-date"></div>
 <button class="bg" onclick="ScheduleApp.generateWokChefReport()"><i class="fas fa-chart-bar"></i> Generate</button>
 </div>
-<p style="margin-top:7px;font-size:11px;color:#B45309"><i class="fas fa-lightbulb"></i> Deducts 10h break per chef per week</p>
+<p style="margin-top:7px;font-size:11px;color:#B45309"><i class="fas fa-lightbulb"></i> Breaks are calculated from the actual gap between split shifts; paid hours are not double-deducted.</p>
 </div>
 <div id="reportContainer" style="margin-top:10px"></div>
 </div>
@@ -711,9 +712,9 @@ button{padding:7px 16px;border:none;border-radius:var(--r6);font-weight:600;font
 <b>Full A</b>: 10:00AM–3:00PM + 4:00PM–9:00PM (5h+5h)<br>
 <b>Full B</b>: 10:00AM–4:00PM + 5:00PM–9:00PM (6h+4h)<br>
 <b>PM Only</b>: 4:00PM–9:00PM (5h)<br>
-<b>Weekend Break A</b>: 10:00AM–2:00PM + 2:45PM–9:00PM (4h+6.25h)<br>
-<b>Weekend Break B</b>: 10:00AM–2:45PM + 3:30PM–9:00PM (4.75h+5.5h)<br>
-<b>Weekend Full</b>: 10:00AM–4:15PM + 5:00PM–9:00PM (6.25h+4h)
+<b>Weekend Break A</b>: 10:00AM–2:00PM + 3:00PM–9:00PM (4h+6h; 1h break)<br>
+<b>Weekend Break B</b>: 10:00AM–2:30PM + 3:30PM–9:00PM (4.5h+5.5h; 1h break)<br>
+<b>Weekend Full</b>: 10:00AM–4:00PM + 5:00PM–9:00PM (6h+4h; 1h break)
 </div>
 </div>
 <div class="sa-section">
@@ -764,13 +765,15 @@ var overriddenDayOff = {};
 var autoSaveTimer = null;
 var supabase = null, dbConnected = false;
 try { supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY); } catch(e) {}
-var employees = ['FEI', 'DAMIAN', 'CHANG LI', 'PEDRO', 'YUXI YE'];
+var employees = ['FEI', 'DAMIAN', 'CHANG LI', 'PEDRO', 'YUXI YE', 'TINT'];
 var hiddenEmployees = [];
 var currentSchedule = {}, currentScheduleId = null, selectedScheduleForDuplicate = null;
 var viewMode = 'compact';
 var weekStartMode = 'sunday';
 var lastWeekendRandomSignature = '';
 var lastBalancedRandomSignature = '';
+var lastFinalDefaultRandomSignature = '';
+var FINAL_DEFAULT_TEMPLATE_WEEK = '2026-08-23';
 // === Undo / Redo ===
 var _undoStack = [], _redoStack = [], _undoMaxDepth = 50;
 function _snapshot() {
@@ -818,15 +821,17 @@ var DAYS = [
 {zh:'禮拜三',en:'Wednesday'},{zh:'禮拜四',en:'Thursday'},{zh:'禮拜五',en:'Friday'},
 {zh:'禮拜六',en:'Saturday'}
 ];
-// Exact JENG CHI Wok Chef staffing targets — Morning / Night
-// Sunday 5/5, Monday-Wednesday 2/3, Thursday 3/3, Friday 4/5, Saturday 5/5.
+// JENG CHI 6-Wok-Chef fair staffing targets — Morning / Night
+// Every chef works 5 days × 10 paid hours = 50h, with exactly 2 consecutive days OFF.
+// TINT + YUXI YE are OFF Mon/Tue. The other four rotate Sun/Mon, Tue/Wed, Wed/Thu, Fri/Sat.
+// Resulting exact headcount: Sun 5/5, Mon 3/3, Tue 3/3, Wed 4/4, Thu 5/5, Fri 5/5, Sat 5/5.
 var STAFFING_TARGETS = {
 0:{morning:5,night:5},
-1:{morning:2,night:3},
-2:{morning:2,night:3},
-3:{morning:2,night:3},
-4:{morning:3,night:3},
-5:{morning:4,night:5},
+1:{morning:3,night:3},
+2:{morning:3,night:3},
+3:{morning:4,night:4},
+4:{morning:5,night:5},
+5:{morning:5,night:5},
 6:{morning:5,night:5}
 };
 function getStaffingTarget(day) {
@@ -1095,15 +1100,15 @@ else if (preset === 'pm') currentSchedule[slotKey].shifts[day] = [{start: PM_S, 
 else if (preset === 'dbl') currentSchedule[slotKey].shifts[day] = [{start: AM_S, end: AM_E}, {start: PM_S, end: PM_E}];
 else if (preset === 'off') currentSchedule[slotKey].shifts[day] = [{start: '', end: ''}];
 else if (preset === 'vac') currentSchedule[slotKey].shifts[day] = [{start: 'vacation', end: 'vacation'}];
-else if (preset === 'wkndA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:00'},{start:'14:45',end:'21:00'}];
-else if (preset === 'wkndB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:45'},{start:'15:30',end:'21:00'}];
-else if (preset === 'wkndFull') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:15'},{start:'17:00',end:'21:00'}];
+else if (preset === 'wkndA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:00'},{start:'15:00',end:'21:00'}];
+else if (preset === 'wkndB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:30'},{start:'15:30',end:'21:00'}];
+else if (preset === 'wkndFull') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:00'},{start:'17:00',end:'21:00'}];
 else if (preset === 'mwA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:00'},{start:'16:00',end:'21:00'}];
 else if (preset === 'mwB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:00'},{start:'17:00',end:'21:00'}];
 else if (preset === 'pmOnly') currentSchedule[slotKey].shifts[day] = [{start:'16:00',end:'21:00'}];
-else if (preset === 'thA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:45'},{start:'15:30',end:'21:00'}];
-else if (preset === 'thB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:30'},{start:'16:15',end:'21:00'}];
-else if (preset === 'thC') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:15'},{start:'17:00',end:'21:00'}];
+else if (preset === 'thA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:30'},{start:'15:30',end:'21:00'}];
+else if (preset === 'thB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:00'},{start:'16:00',end:'21:00'}];
+else if (preset === 'thC') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:30'},{start:'16:30',end:'21:00'}];
 sortShiftsAMPM(slotKey, day);
 refreshCell(slotKey, day);
 refreshEmpCol(slotKey);
@@ -2192,16 +2197,16 @@ toast(label + ' applied to ' + assigned + ' chef(s)', 'success');
 function setPresetNoUndo(slotKey, day, preset) {
 if (!currentSchedule[slotKey]) return;
 if (currentSchedule[slotKey].roles) delete currentSchedule[slotKey].roles[day];
-if (preset === 'wkndA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:00'},{start:'14:45',end:'21:00'}];
-else if (preset === 'wkndB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:45'},{start:'15:30',end:'21:00'}];
-else if (preset === 'wkndC') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:30'},{start:'16:15',end:'21:00'}];
-else if (preset === 'wkndFull') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:15'},{start:'17:00',end:'21:00'}];
+if (preset === 'wkndA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:00'},{start:'15:00',end:'21:00'}];
+else if (preset === 'wkndB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:30'},{start:'15:30',end:'21:00'}];
+else if (preset === 'wkndC') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:00'},{start:'16:00',end:'21:00'}];
+else if (preset === 'wkndFull') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:00'},{start:'17:00',end:'21:00'}];
 else if (preset === 'mwA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:00'},{start:'16:00',end:'21:00'}];
 else if (preset === 'mwB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:00'},{start:'17:00',end:'21:00'}];
 else if (preset === 'pmOnly') currentSchedule[slotKey].shifts[day] = [{start:'16:00',end:'21:00'}];
-else if (preset === 'thA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:45'},{start:'15:30',end:'21:00'}];
-else if (preset === 'thB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:30'},{start:'16:15',end:'21:00'}];
-else if (preset === 'thC') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'16:15'},{start:'17:00',end:'21:00'}];
+else if (preset === 'thA') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'14:30'},{start:'15:30',end:'21:00'}];
+else if (preset === 'thB') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:00'},{start:'16:00',end:'21:00'}];
+else if (preset === 'thC') currentSchedule[slotKey].shifts[day] = [{start:'10:00',end:'15:30'},{start:'16:30',end:'21:00'}];
 else if (preset === 'friLate') currentSchedule[slotKey].shifts[day] = [{start:'16:00',end:'21:00'}];
 else currentSchedule[slotKey].shifts[day] = [{start:'', end:''}];
 sortShiftsAMPM(slotKey, day);
@@ -2209,10 +2214,10 @@ sortShiftsAMPM(slotKey, day);
 
 function weekendPresetShiftSignature(preset) {
 var map = {
-wkndA:'10:00-14:00|14:45-21:00',
-wkndB:'10:00-14:45|15:30-21:00',
-wkndC:'10:00-15:30|16:15-21:00',
-wkndFull:'10:00-16:15|17:00-21:00'
+wkndA:'10:00-14:00|15:00-21:00',
+wkndB:'10:00-14:30|15:30-21:00',
+wkndC:'10:00-15:00|16:00-21:00',
+wkndFull:'10:00-16:00|17:00-21:00'
 };
 return map[preset] || preset || '';
 }
@@ -2287,252 +2292,241 @@ if (currentSchedule[key].roles) delete currentSchedule[key].roles[day];
 }
 }
 function applyWeekendDefaults() {
-if (!confirm('Randomize BOTH Saturday and Sunday at the required 5/5 staffing level? All 5 available wok chefs will work a double shift on each day. Two chefs will use 10:00AM–4:15PM + 5:00PM–9:00PM, and every press creates a new mix.')) return;
-// All five chefs work Saturday and Sunday (5 morning / 5 night).
-// The wkndFull pattern intentionally appears twice, so two employees receive the screenshot shift.
-// Employees/patterns are randomized separately for Saturday and Sunday.
-var saturdayPresets = ['wkndA','wkndB','wkndC','wkndFull','wkndFull'];
-var sundayPresets = ['wkndA','wkndB','wkndC','wkndFull','wkndFull'];
-var beforeSignature = getCurrentWeekendSignature();
-var satMap = {}, sunMap = {}, candidateSignature = '';
-for (var attempt = 0; attempt < 100; attempt++) {
-satMap = buildRandomDayPresetMap(6, saturdayPresets, null);
-sunMap = buildRandomDayPresetMap(0, sundayPresets, satMap);
-candidateSignature = weekendCandidateSignature(satMap, sunMap);
-if (candidateSignature !== lastWeekendRandomSignature && candidateSignature !== beforeSignature) break;
-}
-_pushUndo();
-applyRandomWeekendMap(6, satMap);
-applyRandomWeekendMap(0, sunMap);
-lastWeekendRandomSignature = getCurrentWeekendSignature();
-generateSchedule(true);
-scheduleAutoSave();
-toast('Weekend randomized — staffing target 5/5 applied to Saturday and Sunday', 'success');
-}
-function applyExactWeeklyStaffingTargets() {
-if (!confirm('Generate a NEW RANDOM + FAIR weekly schedule using the exact staffing targets? Every chef must receive at least 1 full day OFF and finish between 50 and 55 hours. Targets: Sun 5/5 · Mon 2/3 · Tue 2/3 · Wed 2/3 · Thu 3/3 · Fri 4/5 · Sat 5/5. PM-only shift is 4:00PM–9:00PM.')) return;
+if (!confirm(
+'Randomize Saturday + Sunday at 5/5 staffing with the 6-chef rules?\n\n' +
+'• Exactly 5 chefs work each weekend day\n' +
+'• The Saturday-OFF chef and Sunday-OFF chef must be different\n' +
+'• Nobody receives Saturday + Sunday OFF together\n' +
+'• Every working chef receives a full 1-hour break'
+)) return;
 
 var keys = Object.keys(currentSchedule).filter(function(k){ return !!currentSchedule[k]; });
-if (keys.length !== 5) {
-toast('Fair 50–55h scheduling with these fixed staffing targets requires exactly 5 active Wok Chefs. Current schedule has ' + keys.length + '.', 'error');
+if (keys.length !== 6) {
+toast('6-chef weekend randomizer requires exactly 6 active Wok Chefs. Current schedule has ' + keys.length + '.', 'error');
 return;
 }
 
-// With the exact staffing matrix, total labor is 254.25h.
-// Across 5 chefs the ideal average is 50.85h.
-var IDEAL_HOURS = 50.85;
-var MIN_HOURS = 50;
-var MAX_HOURS = 55;
-
-// Exact coverage feasibility checks.
-var requiredAvailable = {0:5,1:3,2:3,3:3,4:3,5:5,6:5};
-var impossible = [];
-for (var fd = 0; fd < 7; fd++) {
-var av = getAvailableChefKeys(fd).filter(function(k){ return keys.indexOf(k) >= 0; });
-if (av.length < requiredAvailable[fd]) {
-impossible.push(DAYS[fd].en + ' needs ' + requiredAvailable[fd] + ' available, only ' + av.length + ' available');
-}
-}
-if (impossible.length) {
-toast('Cannot build the fair schedule: ' + impossible.join(' · '), 'error');
-return;
-}
-
-function combinations(arr, size) {
-var result = [];
-function walk(startAt, chosen) {
-if (chosen.length === size) { result.push(chosen.slice()); return; }
-for (var i = startAt; i <= arr.length - (size - chosen.length); i++) {
-chosen.push(arr[i]);
-walk(i + 1, chosen);
-chosen.pop();
-}
-}
-walk(0, []);
-return result;
-}
-
-function buildDayOptions(day) {
+function chooseWeekendDay(day, avoidOffKey) {
 var available = getAvailableChefKeys(day).filter(function(k){ return keys.indexOf(k) >= 0; });
-var options = [];
+if (available.length < 5) return null;
 
-if (day >= 1 && day <= 3) {
-// Monday–Wednesday: 2 doubles + 1 PM-only = exact 2/3.
-var dblPairs = combinations(available, 2);
-for (var a = 0; a < dblPairs.length; a++) {
-var pair = dblPairs[a];
-for (var p = 0; p < available.length; p++) {
-var pm = available[p];
-if (pair.indexOf(pm) >= 0) continue;
-options.push({day:day, doubles:pair.slice(), pm:pm, workers:[pair[0], pair[1], pm]});
-}
-}
-} else if (day === 4) {
-// Thursday: exactly 3 doubles = 3/3.
-var triples = combinations(available, 3);
-for (var t = 0; t < triples.length; t++) {
-options.push({day:day, doubles:triples[t].slice(), pm:null, workers:triples[t].slice()});
-}
-}
-return options;
+var unavailable = keys.filter(function(k){ return available.indexOf(k) < 0; });
+if (unavailable.length > 1) return null;
+
+var offKey = null;
+if (unavailable.length === 1) {
+offKey = unavailable[0];
+if (offKey === avoidOffKey) return null;
+} else {
+var offChoices = available.filter(function(k){ return k !== avoidOffKey; });
+shuffleArray(offChoices);
+offKey = offChoices[0];
 }
 
-function copyNumberMap(m) {
-var o = {};
-for (var i = 0; i < keys.length; i++) o[keys[i]] = Number(m[keys[i]] || 0);
-return o;
+var workers = available.filter(function(k){ return k !== offKey; });
+if (workers.length > 5) {
+shuffleArray(workers);
+workers = workers.slice(0,5);
+}
+if (workers.length !== 5) return null;
+
+return {offKey:offKey, workers:workers};
 }
 
-function addOptionToState(option, hours, offCounts) {
-var nextHours = copyNumberMap(hours);
-var nextOff = copyNumberMap(offCounts);
+var satPlan = chooseWeekendDay(6, null);
+if (!satPlan) {
+toast('Cannot build Saturday at 5/5 because too many chefs are unavailable.', 'error');
+return;
+}
+
+var sunPlan = chooseWeekendDay(0, satPlan.offKey);
+if (!sunPlan) {
+toast('Cannot build Sunday at 5/5 without giving the same chef Saturday + Sunday OFF. Review weekend day-off requests.', 'error');
+return;
+}
+
+var patterns = [
+[{start:'10:00',end:'14:00'},{start:'15:00',end:'21:00'}],
+[{start:'10:00',end:'14:30'},{start:'15:30',end:'21:00'}],
+[{start:'10:00',end:'15:00'},{start:'16:00',end:'21:00'}],
+[{start:'10:00',end:'15:30'},{start:'16:30',end:'21:00'}],
+[{start:'10:00',end:'16:00'},{start:'17:00',end:'21:00'}]
+];
+
+function applyWeekendDay(day, plan) {
+var dayPatterns = patterns.slice();
+shuffleArray(dayPatterns);
+var workers = plan.workers.slice();
+shuffleArray(workers);
+
 for (var i = 0; i < keys.length; i++) {
 var k = keys[i];
-if (option.workers.indexOf(k) < 0) nextOff[k] += 1;
-}
-for (var d = 0; d < option.doubles.length; d++) {
-var dk = option.doubles[d];
-nextHours[dk] += (option.day === 4 ? 10.25 : 10);
-}
-if (option.pm) nextHours[option.pm] += 5;
-return {hours:nextHours, offCounts:nextOff};
-}
-
-var optionsByDay = {
-1:buildDayOptions(1),
-2:buildDayOptions(2),
-3:buildDayOptions(3),
-4:buildDayOptions(4)
-};
-if (!optionsByDay[1].length || !optionsByDay[2].length || !optionsByDay[3].length || !optionsByDay[4].length) {
-toast('No valid staffing combinations are available for Monday–Thursday.', 'error');
-return;
-}
-
-// Everyone works both weekend days: 10.25h + 10.25h = 20.5h baseline.
-var initialHours = {}, initialOff = {};
-for (var ik = 0; ik < keys.length; ik++) {
-initialHours[keys[ik]] = 20.5;
-initialOff[keys[ik]] = 0;
-}
-
-var bestPlan = null;
-var validAlternativeCount = 0;
-var samePlanFallback = null;
-var searchDays = [1,2,3,4];
-
-function balancedPlanSignature(weekdayAssignments, fridayPm) {
-var parts = [];
-for (var si = 0; si < weekdayAssignments.length; si++) {
-var a = weekdayAssignments[si];
-parts.push(
-'D' + a.day +
-':DBL=' + a.doubles.slice().sort().join(',') +
-':PM=' + (a.pm || '')
-);
-}
-parts.push('FPM=' + fridayPm);
-return parts.join('|');
-}
-
-function evaluateFriday(hours, offCounts, weekdayAssignments) {
-// Friday is exact 4/5: four doubles + one 4PM–9PM.
-// Every possible PM-only chef is tested.
-for (var pi = 0; pi < keys.length; pi++) {
-var fridayPm = keys[pi];
-var finalHours = copyNumberMap(hours);
-for (var fi = 0; fi < keys.length; fi++) {
-var fk = keys[fi];
-finalHours[fk] += (fk === fridayPm ? 5 : 10.25);
-}
-
-var valid = true;
-var offValues = [];
-var score = 0;
-for (var vi = 0; vi < keys.length; vi++) {
-var vk = keys[vi];
-var h = finalHours[vk];
-var off = offCounts[vk];
-if (h < MIN_HOURS - 0.001 || h > MAX_HOURS + 0.001 || off < 1) { valid = false; break; }
-offValues.push(off);
-score += Math.pow(h - IDEAL_HOURS, 2);
-}
-if (!valid) continue;
-
-// Fairness: the 8 Monday–Thursday OFF slots must distribute as evenly as possible:
-// each chef receives either 1 or 2 full days OFF.
-var minOff = Math.min.apply(null, offValues);
-var maxOff = Math.max.apply(null, offValues);
-if (maxOff - minOff > 1) continue;
-
-var signature = balancedPlanSignature(weekdayAssignments, fridayPm);
-var candidate = {
-weekdayAssignments: weekdayAssignments.map(function(x){
-return {day:x.day, doubles:x.doubles.slice(), pm:x.pm, workers:x.workers.slice()};
-}),
-fridayPm: fridayPm,
-finalHours: finalHours,
-offCounts: copyNumberMap(offCounts),
-score: score,
-signature: signature
-};
-
-// Keep the previous plan only as an emergency fallback.
-// Normally it is EXCLUDED so pressing the button again changes the OFF-day rotation.
-if (signature === lastBalancedRandomSignature) {
-if (!samePlanFallback) samePlanFallback = candidate;
+if (currentSchedule[k].roles) delete currentSchedule[k].roles[day];
+if (k === plan.offKey) {
+currentSchedule[k].shifts[day] = [{start:'',end:''}];
 continue;
 }
-
-// Reservoir sampling: choose randomly from ALL valid fair alternatives
-// without storing thousands of plans in memory.
-validAlternativeCount++;
-if (Math.random() < (1 / validAlternativeCount)) {
-bestPlan = candidate;
+var pos = workers.indexOf(k);
+if (pos >= 0) {
+currentSchedule[k].shifts[day] = JSON.parse(JSON.stringify(dayPatterns[pos]));
 }
 }
 }
 
-function search(index, hours, offCounts, assignments) {
-if (index >= searchDays.length) {
-evaluateFriday(hours, offCounts, assignments);
+_pushUndo();
+applyWeekendDay(6, satPlan);
+applyWeekendDay(0, sunPlan);
+generateSchedule(true);
+scheduleAutoSave();
+
+toast(
+'Weekend randomized ✓ 5/5 both days · 1h breaks · Saturday OFF: ' +
+currentSchedule[satPlan.offKey].employee + ' · Sunday OFF: ' +
+currentSchedule[sunPlan.offKey].employee,
+'success'
+);
+}
+
+function applyExactWeeklyStaffingTargets() {
+var v = document.getElementById('weekStart').value;
+if (!v) { toast('Select a week first', 'error'); return; }
+
+if (!confirm(
+'Generate a NEW RANDOM + FAIR 6-chef schedule?\n\n' +
+'• TINT: Monday + Tuesday OFF\n' +
+'• YUXI YE: Monday + Tuesday OFF\n' +
+'• Other 4 chefs: random consecutive OFF pairs (Sun/Mon, Tue/Wed, Wed/Thu, Fri/Sat)\n' +
+'• Saturday + Sunday can NEVER be the same chef\'s two-day OFF pair\n' +
+'• Every chef works exactly 5 days × 10 paid hours = 50.0 hours\n' +
+'• Every working day includes a real 1-hour break\n' +
+'• Weekend staffing remains 5/5'
+)) return;
+
+var keys = Object.keys(currentSchedule).filter(function(k){ return !!currentSchedule[k]; });
+if (keys.length !== 6) {
+toast('The new fair scheduler requires exactly 6 active Wok Chefs. Current schedule has ' + keys.length + '.', 'error');
 return;
 }
-var day = searchDays[index];
-var opts = optionsByDay[day];
-for (var oi = 0; oi < opts.length; oi++) {
-var opt = opts[oi];
-var next = addOptionToState(opt, hours, offCounts);
 
-// Simple pruning: after Thursday every chef must already have an OFF day,
-// because Friday/Saturday/Sunday are all working days.
-if (day === 4) {
-var hasAllOff = true;
-for (var ck = 0; ck < keys.length; ck++) {
-if (next.offCounts[keys[ck]] < 1) { hasAllOff = false; break; }
-}
-if (!hasAllOff) continue;
-}
-assignments.push(opt);
-search(index + 1, next.hours, next.offCounts, assignments);
-assignments.pop();
-}
+function normChefName(name) {
+return String(name || '').trim().replace(/\s+/g, ' ').toUpperCase();
 }
 
-search(0, initialHours, initialOff, []);
+var tintKey = null;
+var yuxiKey = null;
+var otherKeys = [];
 
-if (!bestPlan && samePlanFallback) bestPlan = samePlanFallback;
-if (!bestPlan) {
-toast('No schedule can satisfy ALL rules at the same time: exact daily staffing + every chef has a day OFF + every chef between 50 and 55 hours. Review day-off requests or staffing targets.', 'error');
+for (var i = 0; i < keys.length; i++) {
+var nm = normChefName(currentSchedule[keys[i]].employee);
+if (nm === 'TINT') tintKey = keys[i];
+else if (nm === 'YUXI YE') yuxiKey = keys[i];
+else otherKeys.push(keys[i]);
+}
+
+if (!tintKey || !yuxiKey) {
+toast('Cannot build the 6-chef plan: both TINT and YUXI YE must be active in this schedule.', 'error');
+return;
+}
+if (otherKeys.length !== 4) {
+toast('Cannot build the 6-chef plan: expected exactly 4 other active chefs besides TINT and YUXI YE.', 'error');
 return;
 }
 
-// Remember the structural rotation. The NEXT button press will exclude this combination.
-lastBalancedRandomSignature = bestPlan.signature;
+// Fixed business rule: TINT and YUXI YE are OFF Monday + Tuesday.
+var fixedPair = {days:[1,2], label:'Mon + Tue'};
+
+// The other four chefs each receive one of these consecutive pairs.
+// There is intentionally NO Sat + Sun pair.
+var pairTemplates = [
+{days:[0,1], label:'Sun + Mon'},
+{days:[2,3], label:'Tue + Wed'},
+{days:[3,4], label:'Wed + Thu'},
+{days:[5,6], label:'Fri + Sat'}
+];
+
+function requestedDaysFitPair(sk, pair) {
+for (var d = 0; d < 7; d++) {
+if (isRequestedDayOff(sk, d) && pair.days.indexOf(d) < 0) return false;
+}
+return true;
+}
+
+if (!requestedDaysFitPair(tintKey, fixedPair) || !requestedDaysFitPair(yuxiKey, fixedPair)) {
+toast('TINT or YUXI YE has an additional day-off request outside Monday/Tuesday. That would prevent an exact 50-hour / 2-day-OFF week. Review the request or manually override it.', 'error');
+return;
+}
+
+function permute(items) {
+var out = [];
+function walk(prefix, remaining) {
+if (!remaining.length) { out.push(prefix.slice()); return; }
+for (var p = 0; p < remaining.length; p++) {
+var next = remaining.slice();
+var picked = next.splice(p,1)[0];
+prefix.push(picked);
+walk(prefix, next);
+prefix.pop();
+}
+}
+walk([], items.slice());
+return out;
+}
+
+var pairPermutations = permute(pairTemplates);
+shuffleArray(pairPermutations);
+var candidates = [];
+
+for (var pi = 0; pi < pairPermutations.length; pi++) {
+var offMapCandidate = {};
+offMapCandidate[tintKey] = fixedPair;
+offMapCandidate[yuxiKey] = fixedPair;
+var ok = true;
+
+for (var oi = 0; oi < otherKeys.length; oi++) {
+var okKey = otherKeys[oi];
+var pair = pairPermutations[pi][oi];
+if (!requestedDaysFitPair(okKey, pair)) { ok = false; break; }
+offMapCandidate[okKey] = pair;
+}
+if (!ok) continue;
+
+var sigParts = [];
+var sigKeys = keys.slice().sort();
+for (var si = 0; si < sigKeys.length; si++) {
+var skSig = sigKeys[si];
+sigParts.push(
+normChefName(currentSchedule[skSig].employee) + '=' +
+offMapCandidate[skSig].days.join('-')
+);
+}
+candidates.push({offMap:offMapCandidate, signature:sigParts.join('|')});
+}
+
+if (!candidates.length) {
+toast('No 6-chef rotation can satisfy the saved day-off requests while keeping everyone at exactly two consecutive OFF days and 50 hours.', 'error');
+return;
+}
+
+var alternatives = candidates.filter(function(c){ return c.signature !== lastBalancedRandomSignature; });
+var pool = alternatives.length ? alternatives : candidates;
+var chosen = pool[Math.floor(Math.random() * pool.length)];
+lastBalancedRandomSignature = chosen.signature;
+var offMap = chosen.offMap;
+
+// Five staggered break patterns. Every pattern = exactly 10 paid hours + exactly 1 unpaid hour.
+var FAIR6_WORK_PATTERNS = [
+{label:'2:00–3:00', shifts:[{start:'10:00',end:'14:00'},{start:'15:00',end:'21:00'}]},
+{label:'2:30–3:30', shifts:[{start:'10:00',end:'14:30'},{start:'15:30',end:'21:00'}]},
+{label:'3:00–4:00', shifts:[{start:'10:00',end:'15:00'},{start:'16:00',end:'21:00'}]},
+{label:'3:30–4:30', shifts:[{start:'10:00',end:'15:30'},{start:'16:30',end:'21:00'}]},
+{label:'4:00–5:00', shifts:[{start:'10:00',end:'16:00'},{start:'17:00',end:'21:00'}]}
+];
+
+var expectedWorkers = {0:5,1:3,2:3,3:4,4:5,5:5,6:5};
 
 _pushUndo();
 
-// Clear the week before applying the balanced plan.
+// Clear all roles and shifts first.
 for (var ci = 0; ci < keys.length; ci++) {
 var clearKey = keys[ci];
 currentSchedule[clearKey].roles = {};
@@ -2541,49 +2535,320 @@ currentSchedule[clearKey].shifts[cd] = [{start:'',end:''}];
 }
 }
 
-// Weekend: all 5 chefs work double shifts, randomized separately.
-// Two employees receive 10:00–4:15 + 5:00–9:00 each weekend day.
-var weekendPool = ['wkndA','wkndB','wkndC','wkndFull','wkndFull'];
-var satMap = buildRandomDayPresetMap(6, weekendPool, null);
-var sunMap = buildRandomDayPresetMap(0, weekendPool, satMap);
-applyRandomWeekendMap(6, satMap);
-applyRandomWeekendMap(0, sunMap);
-
-// Monday–Thursday balanced assignments.
-for (var ai = 0; ai < bestPlan.weekdayAssignments.length; ai++) {
-var assignment = bestPlan.weekdayAssignments[ai];
-var day = assignment.day;
-var presetPool = day === 4 ? ['thA','thB','thC'] : ['mwA','mwB'];
-shuffleArray(presetPool);
-
-for (var di = 0; di < assignment.doubles.length; di++) {
-setPresetNoUndo(assignment.doubles[di], day, presetPool[di % presetPool.length]);
-}
-if (assignment.pm) setPresetNoUndo(assignment.pm, day, 'pmOnly');
+// Apply OFF pairs and 10-hour split shifts with staggered one-hour breaks.
+for (var day = 0; day < 7; day++) {
+var workers = [];
+for (var wi = 0; wi < keys.length; wi++) {
+var workerKey = keys[wi];
+var pairInfo = offMap[workerKey];
+if (pairInfo.days.indexOf(day) < 0) workers.push(workerKey);
 }
 
-// Friday: 4 doubles + 1 late 4PM–9PM.
-var friDoublePool = shuffleArray(['wkndA','wkndB','wkndC','wkndFull']);
-for (var fk = 0, fp = 0; fk < keys.length; fk++) {
-var fridayKey = keys[fk];
-if (fridayKey === bestPlan.fridayPm) {
-setPresetNoUndo(fridayKey, 5, 'friLate');
-} else {
-setPresetNoUndo(fridayKey, 5, friDoublePool[fp % friDoublePool.length]);
-fp++;
+if (workers.length !== expectedWorkers[day]) {
+toast('Internal scheduling error on ' + DAYS[day].en + ': expected ' + expectedWorkers[day] + ' chefs, calculated ' + workers.length + '.', 'error');
+return;
 }
+
+shuffleArray(workers);
+var patterns = FAIR6_WORK_PATTERNS.slice();
+shuffleArray(patterns);
+
+for (var w = 0; w < workers.length; w++) {
+var wkKey = workers[w];
+currentSchedule[wkKey].shifts[day] = JSON.parse(JSON.stringify(patterns[w].shifts));
+}
+}
+
+// Final validation: exactly 50 paid hours + exactly 2 OFF days for every chef.
+var summaries = [];
+for (var vk = 0; vk < keys.length; vk++) {
+var validKey = keys[vk];
+var paid = 0;
+var offCount = 0;
+
+for (var vd = 0; vd < 7; vd++) {
+var dayShifts = currentSchedule[validKey].shifts[vd] || [];
+var dayPaid = 0;
+for (var vs = 0; vs < dayShifts.length; vs++) {
+var sh = dayShifts[vs];
+if (sh.start && sh.end && sh.start !== 'vacation' && sh.start !== 'disabled') {
+dayPaid += calcH(sh.start, sh.end);
+}
+}
+if (dayPaid <= 0.001) offCount++;
+paid += dayPaid;
+}
+
+if (Math.abs(paid - 50) > 0.001 || offCount !== 2) {
+toast('Validation failed for ' + currentSchedule[validKey].employee + ': ' + paid.toFixed(1) + 'h / ' + offCount + ' days OFF.', 'error');
+return;
+}
+
+summaries.push(
+currentSchedule[validKey].employee + ' — ' +
+offMap[validKey].label + ' OFF · ' + paid.toFixed(1) + 'h'
+);
 }
 
 generateSchedule(true);
 scheduleAutoSave();
+toast('6-CHEF FAIR schedule applied ✓ 50.0h each · 2 consecutive OFF days each · 1h break each working day · ' + summaries.join(' · '), 'success');
+}
 
-var summaries = [];
-for (var si = 0; si < keys.length; si++) {
-var sk = keys[si];
-summaries.push(currentSchedule[sk].employee + ' ' + bestPlan.finalHours[sk].toFixed(2) + 'h / ' + bestPlan.offCounts[sk] + ' day' + (bestPlan.offCounts[sk] === 1 ? '' : 's') + ' off');
+
+// === FINAL DEFAULT WEEK RANDOMIZER ==========================================
+// The finalized schedule saved for Sunday 08/23/2026 is the master template.
+// We preserve all six complete weekly patterns (shifts + Lunch/Noodle roles)
+// and RANDOMLY reassign those weekly patterns to the six current Wok Chefs.
+// TINT and YUXI YE are always assigned a template that is OFF Monday + Tuesday.
+// This preserves the exact master-week staffing because templates are moved whole.
+function randomizeFinalDefaultSchedule() {
+var selected = document.getElementById('weekStart').value;
+if (!selected) { toast('Select the destination week first', 'error'); return; }
+
+var destKeys = Object.keys(currentSchedule).filter(function(k){ return !!currentSchedule[k]; });
+if (destKeys.length !== 6) {
+toast('FINAL Default Randomizer requires exactly 6 Wok Chefs. Current schedule has ' + destKeys.length + '.', 'error');
+return;
 }
-toast('NEW RANDOM FAIR schedule applied ✓ Press again for another rotation · ' + summaries.join(' · '), 'success');
+
+if (!confirm(
+'Randomize the FINAL DEFAULT schedule?\n\n' +
+'Master template: week of 08/23/2026\n' +
+'• The exact six weekly shift patterns are preserved\n' +
+'• The patterns are randomly reassigned to the six chefs\n' +
+'• TINT and YUXI YE remain Monday + Tuesday OFF\n' +
+'• Saturday + Sunday OFF together is not allowed\n' +
+'• Lunch / Noodle assignments move with the weekly template\n' +
+'• Press the button again for another random employee rotation'
+)) return;
+
+function clone(v) { return JSON.parse(JSON.stringify(v)); }
+function nameOf(slot) { return normalizeChefName(slot && slot.employee); }
+function slotHasWork(slot, day) {
+if (!slot || !slot.shifts || !slot.shifts[day]) return false;
+var ds = slot.shifts[day];
+for (var i = 0; i < ds.length; i++) {
+var s = ds[i];
+if (s && s.start && s.end && s.start !== 'vacation' && s.start !== 'disabled') return true;
 }
+return false;
+}
+function getOffDays(slot) {
+var off = [];
+for (var d = 0; d < 7; d++) if (!slotHasWork(slot, d)) off.push(d);
+return off;
+}
+function hasOffPair(slot, a, b) {
+var off = getOffDays(slot);
+return off.indexOf(a) >= 0 && off.indexOf(b) >= 0;
+}
+function isSatSunOff(slot) {
+return hasOffPair(slot, 6, 0);
+}
+function templateFitsDestination(destKey, template) {
+var destName = nameOf(currentSchedule[destKey]);
+var slot = template.slot;
+
+// Fixed business rule for TINT + YUXI YE.
+if (destName === 'TINT' || destName === 'YUXI YE') {
+if (!hasOffPair(slot, 1, 2)) return false;
+}
+
+// Nobody may receive Saturday + Sunday as the two-day OFF block.
+if (isSatSunOff(slot)) return false;
+
+// Respect any real day-off requests already entered for the destination employee.
+for (var d = 0; d < 7; d++) {
+if (isRequestedDayOff(destKey, d) && slotHasWork(slot, d)) return false;
+}
+return true;
+}
+function allPermutations(arr) {
+var out = [];
+function walk(prefix, remaining) {
+if (!remaining.length) { out.push(prefix.slice()); return; }
+for (var i = 0; i < remaining.length; i++) {
+var next = remaining.slice();
+var picked = next.splice(i, 1)[0];
+prefix.push(picked);
+walk(prefix, next);
+prefix.pop();
+}
+}
+walk([], arr.slice());
+return out;
+}
+
+function applyFromSavedData(savedData) {
+var templateSchedule = convertForLoad(savedData || {});
+var srcKeys = Object.keys(templateSchedule).filter(function(k){ return !!templateSchedule[k]; });
+if (srcKeys.length !== 6) {
+toast('The FINAL 08/23/2026 master schedule must contain exactly 6 chef templates. It currently contains ' + srcKeys.length + '.', 'error');
+return;
+}
+
+var templates = [];
+for (var si = 0; si < srcKeys.length; si++) {
+var srcSlot = templateSchedule[srcKeys[si]];
+templates.push({
+sourceKey: srcKeys[si],
+sourceName: nameOf(srcSlot),
+slot: clone(srcSlot),
+offDays: getOffDays(srcSlot)
+});
+}
+
+// Validate the master template before touching the destination week.
+var monTueTemplates = templates.filter(function(t){ return hasOffPair(t.slot, 1, 2); });
+if (monTueTemplates.length < 2) {
+toast('FINAL master template is invalid: at least two weekly patterns must have Monday + Tuesday OFF for TINT and YUXI YE.', 'error');
+return;
+}
+for (var mt = 0; mt < templates.length; mt++) {
+if (isSatSunOff(templates[mt].slot)) {
+toast('FINAL master template is invalid: ' + (templates[mt].sourceName || 'one template') + ' has Saturday + Sunday OFF together.', 'error');
+return;
+}
+}
+
+var perms = allPermutations(templates);
+var valid = [];
+var minSame = 999;
+
+for (var pi = 0; pi < perms.length; pi++) {
+var perm = perms[pi];
+var ok = true;
+var same = 0;
+var sig = [];
+
+for (var di = 0; di < destKeys.length; di++) {
+var dk = destKeys[di];
+var tpl = perm[di];
+if (!templateFitsDestination(dk, tpl)) { ok = false; break; }
+var dn = nameOf(currentSchedule[dk]);
+if (dn === tpl.sourceName) same++;
+sig.push(dn + '<-' + (tpl.sourceName || tpl.sourceKey));
+}
+if (!ok) continue;
+
+var signature = sig.join('|');
+if (signature === lastFinalDefaultRandomSignature) continue;
+
+// Favor the plans that give the MOST employees a different weekly pattern.
+if (same < minSame) {
+minSame = same;
+valid = [{perm:perm.slice(), signature:signature, same:same}];
+} else if (same === minSame) {
+valid.push({perm:perm.slice(), signature:signature, same:same});
+}
+}
+
+// If the only valid plan is the previous one, allow it rather than failing.
+if (!valid.length) {
+for (var pi2 = 0; pi2 < perms.length; pi2++) {
+var perm2 = perms[pi2];
+var ok2 = true;
+var same2 = 0;
+var sig2 = [];
+for (var di2 = 0; di2 < destKeys.length; di2++) {
+var dk2 = destKeys[di2];
+var tpl2 = perm2[di2];
+if (!templateFitsDestination(dk2, tpl2)) { ok2 = false; break; }
+var dn2 = nameOf(currentSchedule[dk2]);
+if (dn2 === tpl2.sourceName) same2++;
+sig2.push(dn2 + '<-' + (tpl2.sourceName || tpl2.sourceKey));
+}
+if (!ok2) continue;
+if (same2 < minSame) {
+minSame = same2;
+valid = [{perm:perm2.slice(), signature:sig2.join('|'), same:same2}];
+} else if (same2 === minSame) {
+valid.push({perm:perm2.slice(), signature:sig2.join('|'), same:same2});
+}
+}
+}
+
+if (!valid.length) {
+toast('No random assignment can satisfy TINT/YUXI Monday-Tuesday OFF plus the current day-off requests. Review Day-Off Requests and try again.', 'error');
+return;
+}
+
+var chosen = valid[Math.floor(Math.random() * valid.length)];
+lastFinalDefaultRandomSignature = chosen.signature;
+
+_pushUndo();
+var mapping = [];
+for (var ai = 0; ai < destKeys.length; ai++) {
+var destKey = destKeys[ai];
+var tplChosen = chosen.perm[ai];
+var destName = currentSchedule[destKey].employee;
+
+// Keep the employee identity / slot, but replace the complete weekly pattern.
+currentSchedule[destKey].shifts = clone(tplChosen.slot.shifts || []);
+currentSchedule[destKey].roles = clone(tplChosen.slot.roles || {});
+currentSchedule[destKey].editingShifts = {};
+
+mapping.push(destName + ' ← ' + (tplChosen.slot.employee || 'Template'));
+}
+
+generateSchedule(true);
+scheduleAutoSave();
+toast('FINAL DEFAULT randomized ✓ ' + mapping.join(' · '), 'success');
+}
+
+function useCurrentMasterAsFallback() {
+var currentKey = getDatabaseWeekKey(selected);
+if (currentKey === FINAL_DEFAULT_TEMPLATE_WEEK) {
+applyFromSavedData(convertForSave());
+return true;
+}
+return false;
+}
+
+// Preferred source: the finalized saved Supabase schedule for 08/23/2026.
+if (!dbConnected) {
+if (!useCurrentMasterAsFallback()) {
+toast('Database is not connected. Open the 08/23/2026 final schedule to use it directly, or reconnect the database.', 'error');
+}
+return;
+}
+
+supabase.from('schedules')
+.select('id,week_start,week_start_date,schedule_data,employees')
+.eq('week_start_date', FINAL_DEFAULT_TEMPLATE_WEEK)
+.limit(1)
+.then(function(res) {
+if (res.error) throw res.error;
+if (res.data && res.data.length) {
+applyFromSavedData(res.data[0].schedule_data || {});
+return;
+}
+// Legacy fallback if the row only has week_start populated.
+return supabase.from('schedules')
+.select('id,week_start,week_start_date,schedule_data,employees')
+.eq('week_start', FINAL_DEFAULT_TEMPLATE_WEEK)
+.limit(1)
+.then(function(res2) {
+if (res2.error) throw res2.error;
+if (res2.data && res2.data.length) {
+applyFromSavedData(res2.data[0].schedule_data || {});
+return;
+}
+if (!useCurrentMasterAsFallback()) {
+toast('FINAL default template was not found in Supabase. Save or Update the week of 08/23/2026 first.', 'error');
+}
+});
+})
+.catch(function(err) {
+console.error('randomizeFinalDefaultSchedule error:', err);
+if (!useCurrentMasterAsFallback()) {
+toast('Could not load FINAL default template: ' + (err && err.message ? err.message : 'database error'), 'error');
+}
+});
+}
+// === END FINAL DEFAULT WEEK RANDOMIZER ======================================
+
 function applyThursdayDefaults(randomize) {
 if (!confirm('Apply Thursday schedule: 3 wok chefs working double shift all day?')) return;
 applyPresetListToDay(4, ['thA','thB','thC'], randomize, 'Thursday 3 double shifts');
@@ -3301,87 +3566,136 @@ function generateWokChefReport() {
 var ss = document.getElementById('report-start-date').value;
 var es = document.getElementById('report-end-date').value;
 if (!ss || !es) { toast('Select both dates', 'error'); return; }
+
 var sd = new Date(ss + 'T00:00:00'), ed = new Date(es + 'T00:00:00');
 if (sd > ed) { toast('Start before end', 'error'); return; }
 if (!dbConnected) { toast('Database required', 'error'); return; }
+
 toast('Generating…', 'info');
-supabase.from('schedules').select('*').gte('week_start_date', ss).lte('week_start_date', es).order('week_start_date', {ascending: true}).then(function(result) {
+
+supabase.from('schedules')
+.select('*')
+.gte('week_start_date', ss)
+.lte('week_start_date', es)
+.order('week_start_date', {ascending: true})
+.then(function(result) {
 if (result.error || !result.data || result.data.length === 0) {
-document.getElementById('reportContainer').innerHTML = '<div class="info-box warning"><h4>No Schedules Found</h4><p>Save schedules for the selected period first.</p></div>';
+document.getElementById('reportContainer').innerHTML =
+'<div class="info-box warning"><h4>No Schedules Found</h4><p>Save schedules for the selected period first.</p></div>';
 return;
 }
+
 var schedules = result.data;
-var wk = schedules.length;
-function pD(s) {
-if (!s || s === 'vacation' || s === 'disabled') return 0;
-if (typeof s === 'object' && s.start && s.end) return calcH(s.start, s.end);
-if (typeof s === 'string') {
-var m = s.trim().match(/(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})/);
-return m ? calcH(m[1], m[2]) : 0;
+
+function mins(t) {
+if (!t || typeof t !== 'string' || t.indexOf(':') < 0) return null;
+var p = t.split(':');
+var h = Number(p[0]), m = Number(p[1]);
+if (!isFinite(h) || !isFinite(m)) return null;
+return h * 60 + m;
 }
-return 0;
+
+function dayMetrics(shifts) {
+var segs = [];
+for (var i = 0; i < (shifts || []).length; i++) {
+var s = shifts[i];
+if (!s || !s.start || !s.end || s.start === 'vacation' || s.start === 'disabled') continue;
+var a = mins(s.start), b = mins(s.end);
+if (a === null || b === null) continue;
+if (b < a) b += 1440;
+segs.push({a:a,b:b,paid:(b-a)/60});
 }
+if (!segs.length) return {gross:0, brk:0, net:0, worked:false};
+
+segs.sort(function(x,y){ return x.a-y.a; });
+var net = 0;
+for (var j = 0; j < segs.length; j++) net += segs[j].paid;
+
+var gross = (segs[segs.length-1].b - segs[0].a) / 60;
+var brk = Math.max(0, gross - net);
+
+return {
+gross:Math.round(gross*100)/100,
+brk:Math.round(brk*100)/100,
+net:Math.round(net*100)/100,
+worked:true
+};
+}
+
 var eH = {};
+
 for (var si = 0; si < schedules.length; si++) {
 var sch = schedules[si];
 var sd2 = convertForLoad(sch.schedule_data || {});
 var keys = Object.keys(sd2);
+
 for (var ki = 0; ki < keys.length; ki++) {
 var slot = sd2[keys[ki]];
-if (!slot.employee) continue;
-var hasRole = false;
-if (slot.roles) {
-var rk = Object.keys(slot.roles);
-for (var ri = 0; ri < rk.length; ri++) {
-var r = slot.roles[rk[ri]];
-if (r && (r.lunch || r.noodle)) { hasRole = true; break; }
-}
-}
-if (!hasRole) continue;
+if (!slot || !slot.employee) continue;
+
 var n = slot.employee;
-if (!eH[n]) eH[n] = {total: 0, days: 0};
+if (!eH[n]) eH[n] = {gross:0, brk:0, net:0, days:0};
+
 for (var d = 0; d < 7; d++) {
-var dh = 0;
-if (slot.shifts && slot.shifts[d]) {
-for (var di = 0; di < slot.shifts[d].length; di++) {
-dh += pD(slot.shifts[d][di]);
+var metrics = dayMetrics(slot.shifts ? slot.shifts[d] : []);
+if (!metrics.worked) continue;
+
+eH[n].days++;
+eH[n].gross += metrics.gross;
+eH[n].brk += metrics.brk;
+eH[n].net += metrics.net;
 }
 }
-if (dh > 0) { eH[n].days++; eH[n].total += dh; }
 }
-}
-}
-var rows = [], gH = 0, gB = 0, gN = 0;
+
+var rows = [];
+var gH = 0, gB = 0, gN = 0;
 var empKeys = Object.keys(eH);
+
 for (var ei = 0; ei < empKeys.length; ei++) {
 var name = empKeys[ei];
 var data = eH[name];
-var bk = wk * 10;
-var net = Math.max(0, data.total - bk);
-rows.push({name: name, gross: data.total, brk: bk, net: net, days: data.days});
-gH += data.total;
-gB += bk;
-gN += net;
+rows.push({
+name:name,
+gross:data.gross,
+brk:data.brk,
+net:data.net,
+days:data.days
+});
+gH += data.gross;
+gB += data.brk;
+gN += data.net;
 }
-rows.sort(function(a, b) { return a.name.localeCompare(b.name); });
+
+rows.sort(function(a,b){ return a.name.localeCompare(b.name); });
+
 var wList = [];
 for (var wi = 0; wi < schedules.length; wi++) {
-wList.push(new Date(schedules[wi].week_start_date + 'T00:00:00').toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'}));
+wList.push(
+new Date(schedules[wi].week_start_date + 'T00:00:00')
+.toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'})
+);
 }
+
 var html = '<div style="background:var(--card);border:1px solid var(--bdr);border-radius:var(--r10);overflow:hidden;box-shadow:var(--sh1)">';
 html += '<div style="background:#F8FAFC;padding:12px 18px;border:1px solid #E2E8F0">';
 html += '<h3 style="color:#0C1A2E;font-size:14px;font-weight:800;margin:0 0 2px">🍜 JENG CHI HOURS REPORT</h3>';
-html += '<div style="color:#64748B;font-size:10.5px">' + sd.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'}) + ' – ' + ed.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'}) + ' · ' + wk + ' week' + (wk !== 1 ? 's' : '') + ' · ' + wk + '×10h break per chef</div>';
+html += '<div style="color:#64748B;font-size:10.5px">' +
+sd.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) + ' – ' +
+ed.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) +
+' · Break = actual gap between split shifts · Net = paid shift hours</div>';
 html += '</div>';
+
 html += '<div style="padding:14px 18px;overflow-x:auto">';
 html += '<table style="width:100%;border-collapse:collapse;font-family:var(--font);font-size:12.5px">';
 html += '<thead><tr style="background:var(--bg)">';
 html += '<th style="border:1px solid var(--bdr);padding:8px 12px;text-align:left;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--txt2)">Employee</th>';
 html += '<th style="border:1px solid var(--bdr);padding:8px 12px;text-align:center;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--txt2)">Days</th>';
-html += '<th style="border:1px solid var(--bdr);padding:8px 12px;text-align:right;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--txt2)">Gross</th>';
+html += '<th style="border:1px solid var(--bdr);padding:8px 12px;text-align:right;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--txt2)">Gross Span</th>';
 html += '<th style="border:1px solid var(--bdr);padding:8px 12px;text-align:right;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--txt2)">Break</th>';
-html += '<th style="border:1px solid var(--bdr);padding:8px 12px;text-align:right;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--success);background:var(--success-lt)">Net</th>';
+html += '<th style="border:1px solid var(--bdr);padding:8px 12px;text-align:right;font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--success);background:var(--success-lt)">Paid Hours</th>';
 html += '</tr></thead><tbody>';
+
 for (var ri = 0; ri < rows.length; ri++) {
 var r = rows[ri];
 html += '<tr>';
@@ -3392,18 +3706,23 @@ html += '<td style="border:1px solid var(--bdr);padding:8px 12px;text-align:righ
 html += '<td style="border:1px solid var(--bdr);padding:8px 12px;text-align:right;font-weight:800;background:var(--success-lt);font-family:var(--mono);color:var(--success)">' + r.net.toFixed(1) + '</td>';
 html += '</tr>';
 }
+
 html += '<tr style="background:var(--bg)">';
 html += '<td style="border:1px solid var(--bdrm);padding:9px 12px;font-weight:800" colspan="2">GRAND TOTAL</td>';
 html += '<td style="border:1px solid var(--bdrm);padding:9px 12px;text-align:right;font-weight:800;font-family:var(--mono)">' + gH.toFixed(1) + '</td>';
 html += '<td style="border:1px solid var(--bdrm);padding:9px 12px;text-align:right;font-weight:800;font-family:var(--mono);color:var(--danger)">−' + gB.toFixed(1) + '</td>';
 html += '<td style="border:1px solid var(--bdrm);padding:9px 12px;text-align:right;font-weight:800;background:var(--success-lt);font-family:var(--mono);color:var(--success)">' + gN.toFixed(1) + '</td>';
 html += '</tr></tbody></table>';
+
 html += '<p style="margin-top:10px;font-size:10.5px;color:var(--txtm);text-align:center">Weeks: ' + wList.join(', ') + '</p>';
 html += '</div></div>';
+
 document.getElementById('reportContainer').innerHTML = html;
-toast('Report: ' + wk + ' week' + (wk !== 1 ? 's' : '') + ' processed', 'success');
-}).catch(function() { toast('Report failed', 'error'); });
+toast('Hours report generated with actual break gaps and paid hours', 'success');
+})
+.catch(function() { toast('Report failed', 'error'); });
 }
+
 function init() {
 setStatus(false);
 try {
@@ -3623,12 +3942,17 @@ var SA_SHIFTS = {
 fullA: [{start:'10:00',end:'15:00'},{start:'16:00',end:'21:00'}],
 fullB: [{start:'10:00',end:'16:00'},{start:'17:00',end:'21:00'}],
 pmOnly: [{start:'16:00',end:'21:00'}],
-wkndBreak1: [{start:'10:00',end:'14:00'},{start:'14:45',end:'21:00'}],
-wkndBreak2: [{start:'10:00',end:'14:45'},{start:'15:30',end:'21:00'}],
-wkndFull: [{start:'10:00',end:'16:15'},{start:'17:00',end:'21:00'}],
+wkndBreak1: [{start:'10:00',end:'14:00'},{start:'15:00',end:'21:00'}],
+wkndBreak2: [{start:'10:00',end:'14:30'},{start:'15:30',end:'21:00'}],
+wkndFull: [{start:'10:00',end:'16:00'},{start:'17:00',end:'21:00'}],
 off: [{start:'',end:''}]
 };
 function showSmartAssignModal() {
+var activeKeys = Object.keys(currentSchedule).filter(function(k){ return !!currentSchedule[k]; });
+if (activeKeys.length === 6) {
+applyExactWeeklyStaffingTargets();
+return;
+}
 document.getElementById('saModal').classList.add('show');
 updateSaPreview();
 }
@@ -3840,6 +4164,32 @@ var ppStart = new Date(ref.getTime() + ppIndex * 14 * 86400000);
 var ppEnd = new Date(ppStart.getTime() + 13 * 86400000);
 return {start: ppStart, end: ppEnd, index: ppIndex};
 }
+function hasAllowedConsecutiveOffPair(slot) {
+if (!slot || !slot.shifts) return false;
+var off = [];
+for (var d = 0; d < 7; d++) {
+var shifts = slot.shifts[d] || [];
+var a = analyze(shifts);
+var worked = false;
+for (var i = 0; i < shifts.length; i++) {
+var s = shifts[i];
+if (s && s.start && s.end && s.start !== 'vacation' && s.start !== 'disabled') {
+worked = true;
+break;
+}
+}
+off[d] = a.isVac || a.isDisabled || !worked;
+}
+// Allowed consecutive pairs. Sat+Sun [6,0] is deliberately excluded.
+return (
+(off[0] && off[1]) ||
+(off[1] && off[2]) ||
+(off[2] && off[3]) ||
+(off[3] && off[4]) ||
+(off[4] && off[5]) ||
+(off[5] && off[6])
+);
+}
 function renderHoursSummary() {
 var el = document.getElementById('hoursSummaryTable');
 var badge = document.getElementById('payPeriodBadge');
@@ -3895,10 +4245,14 @@ if (dh > 0) { cells += '<td class="hrs-val">' + dh.toFixed(1) + '</td>'; empTota
 else { offDays++; cells += '<td class="hrs-zero">OFF</td>'; }
 }
 grandTotal += empTotal;
-var fairHours = empTotal >= 50 - 0.001 && empTotal <= 55 + 0.001;
-var fairOff = offDays >= 1;
+var fairHours = Math.abs(empTotal - 50) <= 0.05;
+var fairOff = offDays === 2 && hasAllowedConsecutiveOffPair(slot);
 var fairStatus = fairHours && fairOff;
-var statusText = fairStatus ? '✓ FAIR' : (!fairOff ? '⚠ NO DAY OFF' : (empTotal < 50 ? '⚠ UNDER 50H' : '⚠ OVER 55H'));
+var statusText = fairStatus
+? '✓ 50H + 2 CONSEC OFF'
+: (!fairOff
+? '⚠ NEED 2 CONSEC OFF'
+: (empTotal < 49.95 ? '⚠ UNDER 50H' : '⚠ OVER 50H'));
 tbody += '<tr>';
 tbody += '<td class="emp-td"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:' + clr2 + ';margin-right:5px;vertical-align:middle"></span>' + slot.employee + '</td>';
 tbody += cells;
@@ -3912,7 +4266,7 @@ for (var fp = 0; fp < displayOrder.length; fp++) {
 var fi = displayOrder[fp];
 footCells += '<td class="' + (dayTotals[fi]>0?'total-td':'hrs-zero') + '">' + (dayTotals[fi]>0?dayTotals[fi].toFixed(1):'\u00b7') + '</td>';
 }
-el.innerHTML = '<table class="hrs-table"><thead><tr><th class="emp-th">Chef</th>' + dayHeaders + '<th class="total-th">Total</th><th>Days Off</th><th>Status</th></tr></thead><tbody>' + tbody + '</tbody><tfoot><tr><td class="emp-td" style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;font-weight:800;color:var(--txt2)">Day Total</td>' + footCells + '<td class="total-td">' + grandTotal.toFixed(1) + '</td><td>—</td><td>50–55h + OFF</td></tr></tfoot></table>';
+el.innerHTML = '<table class="hrs-table"><thead><tr><th class="emp-th">Chef</th>' + dayHeaders + '<th class="total-th">Total</th><th>Days Off</th><th>Status</th></tr></thead><tbody>' + tbody + '</tbody><tfoot><tr><td class="emp-td" style="font-size:9px;text-transform:uppercase;letter-spacing:.5px;font-weight:800;color:var(--txt2)">Day Total</td>' + footCells + '<td class="total-td">' + grandTotal.toFixed(1) + '</td><td>—</td><td>50h + 2 CONSEC OFF</td></tr></tfoot></table>';
 }
 function printHoursSummary() {
 var v = document.getElementById('weekStart').value;
@@ -4026,6 +4380,7 @@ randomizeDayShifts: randomizeDayShifts,
 randomizeWeekendShifts: randomizeWeekendShifts,
 applyWeekendDefaults: applyWeekendDefaults,
 applyExactWeeklyStaffingTargets: applyExactWeeklyStaffingTargets,
+randomizeFinalDefaultSchedule: randomizeFinalDefaultSchedule,
 applyThursdayDefaults: applyThursdayDefaults,
 applyFridayDefaults: applyFridayDefaults,
 applyDefaultWeekShifts: applyDefaultWeekShifts,
