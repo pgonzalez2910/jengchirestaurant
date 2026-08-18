@@ -567,6 +567,40 @@
       .prod-summary-wait{grid-column:1/-1}
     }
 
+  
+    /* ===== Baseline / first-count initialization ===== */
+    .baseline-panel{margin:4px 0 24px}
+    .baseline-head{
+      display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;
+      margin:0 0 10px
+    }
+    .baseline-head h2{font-size:1.05rem;margin:0 0 2px}
+    .baseline-head p{font-size:.77rem;color:var(--text-3);margin:0}
+    .baseline-badge{
+      border:1px solid #cbd5e1;background:#f8fafc;color:#475569;border-radius:999px;
+      padding:6px 11px;font-size:.65rem;font-weight:800;letter-spacing:.08em
+    }
+    .baseline-table-wrap{border-top:3px solid #64748b}
+    .baseline-na{
+      display:inline-block;border-radius:999px;padding:5px 9px;background:#f1f5f9;
+      color:#64748b;font-family:'DM Sans',sans-serif;font-size:.64rem;font-weight:800
+    }
+    .baseline-rule{
+      margin-top:8px;padding:10px 12px;border-radius:9px;background:#f8fafc;
+      border:1px solid #e2e8f0;color:#64748b;font-size:.74rem;line-height:1.5
+    }
+    .baseline-rule strong,.baseline-rule b{color:#334155}
+
+  
+    .sql-baseline-status{
+      display:inline-block;margin-top:8px;padding:5px 9px;border-radius:999px;
+      background:#eef7f1;border:1px solid #c9e4d1;color:#356247;
+      font-size:.7rem;font-weight:700
+    }
+    .sql-baseline-status.missing{
+      background:#fff5e6;border-color:#efd39a;color:#8a6100
+    }
+
   </style>
 </head>
 
@@ -721,6 +755,7 @@ function normalizeSession(row) {
     production:prod,
     countRows:inventoryRows.length,
     productionRows:productionRows.length,
+    isTrackingBaseline:row.is_tracking_baseline === true,
     calculated:null,
   };
 }
@@ -1049,8 +1084,12 @@ function nav(view,opts={}) {
       break;
 
     case 'count':
-      if (!S.editId) {
-        loadDraftForDate((S.draft && S.draft.date) ? S.draft.date : todayStr());
+      // Count always opens on the CURRENT DATE by default.
+      // This prevents an old localStorage draft (for example 08/13)
+      // from becoming the default date on a new day.
+      if (!opts.editId) {
+        S.editId = null;
+        loadDraftForDate(todayStr());
       }
       app.innerHTML = renderCount();
       break;
@@ -1237,8 +1276,47 @@ function rollEquivalent(qty) {
   return `${display} roll${Number(display) === 1 ? '' : 's'}`;
 }
 
+function getTrackingSessionsAsc() {
+  const all = getAllSortedSessions();
+  const baselineIndex = all.findIndex(s => s.isTrackingBaseline === true);
+
+  // IMPORTANT:
+  // If SQL baseline exists, everything before it is historical only.
+  // If no baseline is marked yet, return an empty ledger instead of
+  // silently using March or another old session as the baseline.
+  if (baselineIndex < 0) return [];
+
+  return all.slice(baselineIndex);
+}
+
 function getCompleteSessionsAsc() {
-  return getAllSortedSessions().filter(hasCompleteCounts);
+  return getTrackingSessionsAsc().filter(hasCompleteCounts);
+}
+
+/*
+  SQL BASELINE RULE
+  The session where inventory_sessions.is_tracking_baseline = TRUE
+  is the official beginning of this new tracking model.
+*/
+function getInventoryBaseline() {
+  const all = getAllSortedSessions();
+  const first = all.find(s => s.isTrackingBaseline === true) || null;
+  if (!first || !hasCompleteCounts(first)) return null;
+
+  const rows = NOODLES.map(n => ({
+    noodle:n,
+    startingInventory:0,
+    firstCount:stTotal(first.inventory,n.id),
+  }));
+
+  return {
+    session:first,
+    rows,
+    totals:{
+      startingInventory:0,
+      firstCount:rows.reduce((s,r)=>s+r.firstCount,0),
+    }
+  };
 }
 
 function buildInventoryPeriods() {
@@ -1355,10 +1433,30 @@ function renderDash() {
   }
 
   const open = getOpenInventoryPeriod();
+  const baseline = getInventoryBaseline();
   const periods = buildInventoryPeriods();
   const lastClosed = periods.at(-1) || null;
   const recent = periods.slice(-8).reverse();
   const hasDraft = !!S.draft;
+
+  if (!baseline) {
+    return `
+      <div class="move-dashboard">
+        <div class="move-hero">
+          <div>
+            <div class="move-eyebrow">JENG CHI · NOODLE INVENTORY</div>
+            <h1>Inventory Movement</h1>
+            <p>The Dashboard is waiting for the official SQL tracking baseline.</p>
+          </div>
+        </div>
+
+        <div class="move-empty">
+          <div class="move-empty-icon">⚙️</div>
+          <h2>Tracking baseline not found</h2>
+          <p>Mark exactly one row in <strong>inventory_sessions</strong> with <strong>is_tracking_baseline = true</strong>. Older inventory will remain historical and will not be used by the new ledger.</p>
+        </div>
+      </div>`;
+  }
 
   if (!open) {
     return `
@@ -1367,15 +1465,8 @@ function renderDash() {
           <div>
             <div class="move-eyebrow">JENG CHI · NOODLE INVENTORY</div>
             <h1>Inventory Movement</h1>
-            <p>Start with your first physical inventory count. Count will remain your source of truth.</p>
+            <p>Baseline found, but no complete inventory count is available from that point forward.</p>
           </div>
-        </div>
-
-        <div class="move-empty">
-          <div class="move-empty-icon">📦</div>
-          <h2>No complete inventory count yet</h2>
-          <p>Complete the Count screen first. After that, the Dashboard will automatically track Starting Inventory, Production, Ending Inventory and Difference.</p>
-          <button class="cta primary" onclick="startSession()">Start Count</button>
         </div>
       </div>`;
   }
@@ -1486,6 +1577,7 @@ function renderDash() {
           <div class="move-eyebrow">JENG CHI · NOODLE INVENTORY</div>
           <h1>Inventory Movement</h1>
           <p>One simple flow: <strong>Starting Count + Production − Next Count = Used / Difference</strong></p>
+          ${baseline ? `<div class="sql-baseline-status">Tracking begins: <strong>${fmtDateShort(baseline.session.date)}</strong></div>` : `<div class="sql-baseline-status missing">⚠ No SQL baseline is marked yet.</div>`}
         </div>
         <div class="move-rule-card">
           <span>1 ROLL</span>
@@ -1501,6 +1593,60 @@ function renderDash() {
           <span>The new ending inventory immediately becomes the starting inventory for the next period. You never enter the starting inventory twice.</span>
         </div>
       </div>
+
+      ${baseline ? `
+        <div class="baseline-panel">
+          <div class="baseline-head">
+            <div>
+              <div class="move-section-kicker">SYSTEM STARTING POINT</div>
+              <h2>Baseline Inventory · ${fmtDateShort(baseline.session.date)}</h2>
+              <p>This is where tracking begins. Before this first physical count, Starting Inventory is <strong>0</strong>.</p>
+            </div>
+            <div class="baseline-badge">BASELINE</div>
+          </div>
+
+          <div class="move-table-wrap baseline-table-wrap">
+            <table class="move-table">
+              <thead>
+                <tr>
+                  <th>Noodle</th>
+                  <th>Starting Inventory</th>
+                  <th>First Physical Count</th>
+                  <th>Used / Difference</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${baseline.rows.map(r => `
+                  <tr>
+                    <td>
+                      <div class="move-noodle">
+                        <span class="move-dot" style="background:${r.noodle.hex}"></span>
+                        <strong>${r.noodle.short}</strong>
+                      </div>
+                    </td>
+                    <td class="move-num">0</td>
+                    <td class="move-num">${r.firstCount}</td>
+                    <td class="move-num"><span class="baseline-na">BASELINE — NOT CALCULATED</span></td>
+                  </tr>
+                `).join('')}
+                <tr class="move-total-row">
+                  <td>TOTAL</td>
+                  <td>0</td>
+                  <td>${baseline.totals.firstCount}</td>
+                  <td><span class="baseline-na">STARTING POINT</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="baseline-rule">
+            <strong>Important:</strong>
+            The first count establishes the inventory on hand. It is not treated as usage.
+            From this baseline forward, the normal formula is:
+            <b>Starting Count + Production − Next Count = Used / Difference.</b>
+          </div>
+        </div>
+      ` : ''}
 
       <div class="move-period-header">
         <div>
@@ -1731,6 +1877,9 @@ function renderCount() {
       <div class="date-row" style="flex-wrap:wrap;gap:10px">
         <label>Session Date:</label>
         <input type="date" id="sess-date" value="${S.draft.date}" onchange="switchCountDate(this.value)" />
+        ${S.draft.date === todayStr()
+          ? `<span style="display:inline-flex;align-items:center;padding:4px 9px;border-radius:999px;background:#eef7f1;border:1px solid #c9e4d1;color:#356247;font-size:.72rem;font-weight:800">TODAY</span>`
+          : ''}
         ${statusBadge}
       </div>
 
@@ -3188,6 +3337,15 @@ document.addEventListener('DOMContentLoaded',async () => {
     `<div class="loader-wrap"><div class="spinner"></div><span>Connecting to database…</span></div>`;
 
   S.draft = loadDraftLS();
+
+  // Do not allow yesterday/older localStorage drafts to become today's
+  // default Count date. Historical sessions remain in Supabase and can
+  // still be selected manually using the date field.
+  if (S.draft && S.draft.date !== todayStr()) {
+    S.draft = null;
+    S.editId = null;
+  }
+
   await loadSessionsFromDB();
   nav('dashboard');
 });
