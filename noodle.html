@@ -959,6 +959,53 @@
     .prod-save-actions{align-items:stretch}
     .prod-save-actions .cta.primary{min-width:190px}
 
+  
+    .previous-inventory-banner{
+      align-items:center;
+      background:#fff8e8;
+      border-color:#efd79e;
+      color:#725615;
+    }
+    .previous-inventory-banner>div{
+      display:flex;
+      flex-direction:column;
+      gap:2px;
+    }
+    .previous-inventory-banner strong{color:#5d450f}
+    .previous-inventory-banner span{
+      font-size:.72rem;
+      color:#8a6a21;
+      font-weight:500;
+    }
+
+  
+    .prev-production-strip{
+      display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
+      background:#fffaf0;border:1px solid #efd79e;border-left:4px solid var(--yellow);
+      border-radius:10px;padding:10px 12px;margin-bottom:9px
+    }
+    .prev-production-title span{
+      display:block;font-size:.6rem;text-transform:uppercase;letter-spacing:.07em;
+      font-weight:800;color:#8b7a51;margin-bottom:2px
+    }
+    .prev-production-title strong{
+      font-family:'Syne',sans-serif;font-size:.95rem;color:#9a6b00
+    }
+    .prev-production-items{
+      display:flex;gap:8px;flex-wrap:wrap
+    }
+    .prev-prod-item{
+      min-width:78px;background:#fff;border:1px solid #f0dfb9;border-radius:8px;
+      padding:6px 8px;text-align:center
+    }
+    .prev-prod-item span{
+      display:block;font-size:.58rem;text-transform:uppercase;letter-spacing:.05em;
+      font-weight:800;color:var(--text-3)
+    }
+    .prev-prod-item strong{
+      display:block;font-family:'Syne',sans-serif;font-size:.9rem;color:#9a6b00
+    }
+
   </style>
 </head>
 
@@ -1174,6 +1221,23 @@ async function saveSessionToDB(draft) {
   return data;
 }
 
+async function setInventorySessionStatus(sessionId,status) {
+  if (!sessionId) return;
+
+  try {
+    const { error } = await sb
+      .from('inventory_sessions')
+      .update({ status })
+      .eq('id',sessionId);
+
+    if (error) {
+      console.warn('Could not update inventory session status:', error);
+    }
+  } catch(e) {
+    console.warn('Could not update inventory session status:', e);
+  }
+}
+
 async function verifySavedSessionRows(sessionId) {
   const [countsRes, prodsRes] = await Promise.all([
     sb.from('inventory_counts').select('id', { count:'exact', head:true }).eq('session_id', sessionId),
@@ -1224,7 +1288,26 @@ function stTotal(inventory, nId) {
 }
 
 function hasCompleteCounts(sess) {
-  return !!sess && Number(sess.countRows || 0) === 12;
+  if (!sess || Number(sess.countRows || 0) !== 12) return false;
+
+  // Persisted draft sessions are not operationally complete.
+  if (sess.status === 'draft') return false;
+
+  // IMPORTANT:
+  // While staff is actively counting today, autosave may already have
+  // written all 12 database rows (including zeros). That unfinished Count
+  // must NOT replace the previous physical inventory on the Dashboard.
+  if (
+    S.draft &&
+    S.draft.id &&
+    sess.id === S.draft.id &&
+    sess.date === S.draft.date &&
+    S.view !== 'production'
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function hasCompleteProduction(sess) {
@@ -1766,6 +1849,26 @@ function movementDifferenceHtml(value) {
   return `<div class="move-diff">${n}</div>`;
 }
 
+function previousProductionSummary(openPeriod) {
+  if (!openPeriod) return '';
+
+  const items = openPeriod.rows.map(r => `
+    <div class="prev-prod-item">
+      <span>${r.noodle.short}</span>
+      <strong>${r.production ? '+' + r.production : '0'}</strong>
+    </div>
+  `).join('');
+
+  return `
+    <div class="prev-production-strip">
+      <div class="prev-production-title">
+        <span>Production attached to this starting Count</span>
+        <strong>Total +${openPeriod.totals.production}</strong>
+      </div>
+      <div class="prev-production-items">${items}</div>
+    </div>`;
+}
+
 function renderMovementRows(rows, closed=false) {
   return rows.map(r => `
     <tr>
@@ -1939,7 +2042,14 @@ function renderDash() {
 
   return `
     <div class="move-dashboard simple-dash">
-      ${hasDraft ? `<div class="draft-banner">📋 Unfinished Count — ${S.draft.date}<button class="btn-amber" style="margin-left:auto" onclick="nav('count')">Resume →</button></div>` : ''}
+      ${hasDraft ? `
+        <div class="draft-banner previous-inventory-banner">
+          <div>
+            📋 <strong>Unfinished Count — ${S.draft.date}</strong>
+            <span>Previous saved inventory AND its production remain active until this Count is finished.</span>
+          </div>
+          <button class="btn-amber" style="margin-left:auto" onclick="nav('count')">Resume →</button>
+        </div>` : ''}
 
       <div class="simple-dash-hero">
         <div>
@@ -1962,10 +2072,17 @@ function renderDash() {
         <div class="simple-dash-section-head">
           <div>
             <div class="move-section-kicker">CURRENT OPEN PERIOD</div>
-            <h2>Started: ${currentStartLabel}</h2>
-            <p>Enter production as noodles are made. When you perform the next Count, this period closes automatically.</p>
+            <h2>Using Last Finished Count: ${currentStartLabel}</h2>
+            <p>
+              These are the previous saved inventory quantities currently in effect.
+              Production already entered for this period stays attached to this starting Count.
+              An unfinished new Count will not replace either the inventory or its production until you press
+              <strong>Save Count</strong> or <strong>Next: Production</strong>.
+            </p>
           </div>
         </div>
+
+        ${previousProductionSummary(open)}
 
         <div class="move-table-wrap move-current">
           <table class="move-table simple-current-table">
@@ -2038,6 +2155,11 @@ function triggerAutosave(flashRowKey) {
       const savedId = await saveSessionToDB(S.draft);
       S.draft.id = savedId;
       S.editId = savedId;
+
+      // Autosave protects the employee's work, but the Count is still
+      // operationally unfinished until Save Count / Next Production.
+      await setInventorySessionStatus(savedId,'draft');
+      S.draft.status = 'draft';
       saveDraftLS();
 
       await loadSessionsFromDB();
@@ -2073,20 +2195,30 @@ async function saveCountNow() {
 
   try {
     const savedId = await saveSessionToDB(S.draft);
-    S.draft.id = savedId;
-    S.editId = savedId;
+
+    await setInventorySessionStatus(savedId,'completed');
+
+    // Count is now officially finished. Remove the "unfinished Count"
+    // draft so the Dashboard can immediately use this as the new inventory.
+    S.draft = null;
+    S.editId = null;
     saveDraftLS();
 
     await loadSessionsFromDB();
     clearCalcCaches();
 
     setAutosaveStatus('saved');
-    showInlineDbSaved('count-save-inline');
+    showInlineDbSaved('count-save-inline','🐥 Rony saved it');
 
     if (btn) {
       btn.disabled = false;
-      btn.textContent = '💾 Save Count';
+      btn.textContent = '✅ Count Saved';
     }
+
+    toast('✅ Physical Count completed','ok');
+
+    setTimeout(() => nav('dashboard'),450);
+
   } catch(e) {
     setAutosaveStatus('error','Save failed: ' + (e.message || 'unknown error'));
     showInlineDbSaved('count-save-inline','❌ No se guardó',true);
@@ -2095,6 +2227,33 @@ async function saveCountNow() {
       btn.disabled = false;
       btn.textContent = '💾 Save Count';
     }
+  }
+}
+
+async function finishCountAndGoProduction() {
+  clearTimeout(_autosaveTimer);
+  setAutosaveStatus('saving');
+
+  try {
+    const savedId = await saveSessionToDB(S.draft);
+    const finishedDate = S.draft.date;
+
+    await setInventorySessionStatus(savedId,'completed');
+
+    S.draft = null;
+    S.editId = null;
+    saveDraftLS();
+
+    await loadSessionsFromDB();
+    clearCalcCaches();
+
+    _productionSelectedDate = finishedDate;
+    loadProductionDate(finishedDate);
+    nav('production');
+
+  } catch(e) {
+    setAutosaveStatus('error','Save failed: ' + (e.message || 'unknown error'));
+    toast('❌ Count could not be completed','err');
   }
 }
 
@@ -2190,7 +2349,7 @@ function renderCount() {
         <button class="cta secondary" onclick="nav('dashboard')">← Back</button>
         <button onclick="saveCountNow()" id="count-save-btn" style="padding:12px 22px;border-radius:10px;font-family:'Syne',sans-serif;font-weight:700;font-size:.88rem;cursor:pointer;border:2px solid #007A40;background:rgba(0,122,64,.08);color:#007A40">💾 Save Count</button>
         <span id="count-save-inline" class="inline-save-slot"></span>
-        <button onclick="nav('production')" style="padding:12px 22px;border-radius:10px;font-family:'Syne',sans-serif;font-weight:700;font-size:.88rem;cursor:pointer;border:2px solid #C8962A;background:rgba(200,150,42,.10);color:#B07800">Next: Production →</button>
+        <button onclick="finishCountAndGoProduction()" style="padding:12px 22px;border-radius:10px;font-family:'Syne',sans-serif;font-weight:700;font-size:.88rem;cursor:pointer;border:2px solid #C8962A;background:rgba(200,150,42,.10);color:#B07800">Next: Production →</button>
       </div>
     </div>`;
 }
