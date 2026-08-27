@@ -894,6 +894,47 @@
       margin-top:12px;background:#fff8e8;border:1px solid #efd79e;border-radius:8px;
       padding:9px 11px;font-size:.7rem;color:#725615
     }
+    .weekly-sales-period-head{
+      display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;
+      margin-top:16px;margin-bottom:8px
+    }
+    .weekly-sales-period-head h3{
+      font-family:'Syne',sans-serif;font-size:.82rem;font-weight:800;color:var(--text-1);margin:0 0 2px
+    }
+    .weekly-sales-period-head p{font-size:.68rem;color:var(--text-3);margin:0;line-height:1.45}
+    .weekly-sales-badge{
+      display:inline-flex;align-items:center;gap:5px;padding:5px 9px;border-radius:999px;
+      background:#eef7f1;border:1px solid #c9e4d1;color:#356247;font-size:.62rem;font-weight:800
+    }
+    .weekly-period-sales-table{min-width:780px}
+    .weekly-period-sales-table td:first-child{text-align:left}
+    .weekly-period-label strong{display:block;font-family:'Syne',sans-serif;font-size:.76rem;color:var(--text-1)}
+    .weekly-period-label small{display:block;margin-top:2px;font-size:.61rem;font-weight:600;color:var(--text-3)}
+    .weekly-period-total{
+      color:#235d35!important;font-family:'Syne',sans-serif!important;font-size:.92rem!important;font-weight:800!important;
+      background:#f3faf5
+    }
+    .weekly-period-audits{display:flex;flex-direction:column;gap:7px;margin-top:9px}
+    .weekly-period-audit{
+      background:#fbfcfd;border:1px solid #e4e7eb;border-radius:9px;overflow:hidden
+    }
+    .weekly-period-audit summary{
+      cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;
+      gap:10px;flex-wrap:wrap;padding:9px 11px;font-size:.69rem;font-weight:800;color:#334155
+    }
+    .weekly-period-audit summary::-webkit-details-marker{display:none}
+    .weekly-period-audit summary span:last-child{color:#235d35;font-family:'Syne',sans-serif}
+    .weekly-period-audit-body{padding:0 10px 10px}
+    .weekly-audit-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+    .weekly-audit-item{
+      border:1px solid var(--border);border-radius:8px;padding:8px;background:#fff;text-align:center
+    }
+    .weekly-audit-item .name{font-size:.61rem;font-weight:800;margin-bottom:4px}
+    .weekly-audit-item .formula{font-size:.62rem;color:var(--text-2);line-height:1.45}
+    .weekly-audit-item .result{font-family:'Syne',sans-serif;font-size:.83rem;font-weight:800;color:#235d35;margin-top:3px}
+    @media(max-width:700px){
+      .weekly-audit-grid{grid-template-columns:1fr 1fr}
+    }
     .weekly-behavior-strip{
       display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px
     }
@@ -2024,7 +2065,7 @@ function renderDash() {
                 <th>Production</th>
                 <th>Available</th>
                 <th>Next Count</th>
-                <th>Used / Difference</th>
+                <th>Sold / Used</th>
               </tr>
             </thead>
             <tbody>
@@ -3277,7 +3318,7 @@ function renderWeekNoodleTable(week) {
             <th>Production Qty</th>
             <th>Roll Eq.</th>
             <th>Latest Count</th>
-            <th>Used / Difference</th>
+            <th>Sold / Used</th>
           </tr>
         </thead>
         <tbody>
@@ -3300,38 +3341,97 @@ function renderPeriodLedger(week) {
   if (!week.periods.length) {
     return `
       <div class="weekly-no-periods">
-        Waiting for the next physical Count. Used / Difference cannot be calculated until a count-to-count period is closed.
+        Waiting for the next physical Count. Sold / Used cannot be calculated until a count-to-count period is closed.
       </div>`;
   }
 
-  const rows = week.periods.slice().reverse().map(p => `
-    <tr>
-      <td>${fmtDateShort(p.start.date)} → ${fmtDateShort(p.end.date)}</td>
-      <td>${p.totals.startCount}</td>
-      <td class="weekly-prod">+${p.totals.production}</td>
-      <td>${rollEq(p.totals.production)}</td>
-      <td>${p.totals.endCount}</td>
-      <td class="weekly-used">${p.totals.difference}</td>
-    </tr>
-  `).join('');
+  const periodDateLabel = (dateStr) => {
+    const d = historyLocalDate(dateStr);
+    const day = d.toLocaleDateString('en-US',{weekday:'short'});
+    const date = d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    return `${day} ${date}`;
+  };
+
+  // Keep chronological order so management can read the week from the first
+  // physical Count through each following Count (Mon→Wed, Wed→Thu, Thu→Mon, etc.).
+  const orderedPeriods = week.periods.slice().sort((a,b) => a.start.date.localeCompare(b.start.date));
+
+  const rows = orderedPeriods.map(p => {
+    const soldByNoodle = {};
+    p.rows.forEach(r => {
+      soldByNoodle[r.noodle.id] = Number(r.difference || 0);
+    });
+
+    return `
+      <tr>
+        <td class="weekly-period-label">
+          <strong>${periodDateLabel(p.start.date)} → ${periodDateLabel(p.end.date)}</strong>
+          <small>${fmtDateShort(p.start.date)} → ${fmtDateShort(p.end.date)}</small>
+        </td>
+        ${NOODLES.map(n => `<td class="weekly-used">${soldByNoodle[n.id] ?? 0}</td>`).join('')}
+        <td class="weekly-period-total">${p.totals.difference}</td>
+      </tr>`;
+  }).join('');
+
+  const noodleTotals = {};
+  NOODLES.forEach(n => {
+    noodleTotals[n.id] = orderedPeriods.reduce((sum,p) => {
+      const row = p.rows.find(r => r.noodle.id === n.id);
+      return sum + Number(row?.difference || 0);
+    },0);
+  });
+
+  const auditCards = orderedPeriods.map((p,index) => {
+    const auditItems = p.rows.map(r => `
+      <div class="weekly-audit-item">
+        <div class="name" style="color:${r.noodle.hex}">${r.noodle.short}</div>
+        <div class="formula">${r.startCount} + ${r.production} − ${r.endCount}</div>
+        <div class="result">${r.difference} sold / used</div>
+      </div>`).join('');
+
+    return `
+      <details class="weekly-period-audit" ${index === 0 ? 'open' : ''}>
+        <summary>
+          <span>${periodDateLabel(p.start.date)} → ${periodDateLabel(p.end.date)} · calculation audit</span>
+          <span>${p.totals.difference} total sold / used</span>
+        </summary>
+        <div class="weekly-period-audit-body">
+          <div class="weekly-audit-grid">${auditItems}</div>
+        </div>
+      </details>`;
+  }).join('');
 
   return `
-    <div class="weekly-ledger-title">Count-to-count audit trail</div>
+    <div class="weekly-sales-period-head">
+      <div>
+        <h3>Noodles Sold / Used by Inventory Period</h3>
+        <p>Each row measures what moved between two physical Counts. This automatically handles Mon→Wed, Wed→Thu, Thu→Mon, or any other Count schedule.</p>
+      </div>
+      <span class="weekly-sales-badge">✓ Count-to-count calculation</span>
+    </div>
+
     <div class="weekly-detail-table-wrap">
-      <table class="weekly-detail-table compact">
+      <table class="weekly-detail-table weekly-period-sales-table">
         <thead>
           <tr>
-            <th>Inventory Period</th>
-            <th>Start</th>
-            <th>Production</th>
-            <th>Roll Eq.</th>
-            <th>Ending</th>
-            <th>Used / Difference</th>
+            <th>Sales / Usage Period</th>
+            ${NOODLES.map(n => `<th style="color:${n.hex}">${n.short} Sold</th>`).join('')}
+            <th>Total Sold / Used</th>
           </tr>
         </thead>
-        <tbody>${rows}</tbody>
+        <tbody>
+          ${rows}
+          <tr class="weekly-total-row">
+            <td>WEEK TOTAL</td>
+            ${NOODLES.map(n => `<td class="weekly-used">${noodleTotals[n.id]}</td>`).join('')}
+            <td class="weekly-period-total">${orderedPeriods.reduce((s,p)=>s+Number(p.totals.difference||0),0)}</td>
+          </tr>
+        </tbody>
       </table>
-    </div>`;
+    </div>
+
+    <div class="weekly-ledger-title">Calculation audit · Start Count + Production − Ending Count = Sold / Used</div>
+    <div class="weekly-period-audits">${auditCards}</div>`;
 }
 
 function renderHist() {
@@ -3391,7 +3491,7 @@ function renderHist() {
               <strong>${rollEq(w.productionQty)}</strong>
             </div>
             <div>
-              <span>Used</span>
+              <span>Sold / Used</span>
               <strong>${w.usedQty}</strong>
             </div>
           </div>
@@ -3407,7 +3507,7 @@ function renderHist() {
               ${historyChangeBadge(w.wowProd)}
             </div>
             <div>
-              <span>Used vs prior week</span>
+              <span>Sold / Used vs prior week</span>
               ${historyChangeBadge(w.wowUsed)}
             </div>
             <div>
@@ -3426,8 +3526,8 @@ function renderHist() {
       <div class="weekly-history-hero">
         <div>
           <div class="move-eyebrow">JENG CHI · WEEKLY HISTORY</div>
-          <h1>Weekly Inventory & Production</h1>
-          <p>Automatic Monday–Sunday history. Quantity and roll-equivalent are calculated from saved Production.</p>
+          <h1>Weekly Inventory, Production & Noodles Sold</h1>
+          <p>Operational weekly history with count-to-count Sold / Used periods. Production and roll-equivalent come from saved Production.</p>
         </div>
         <div class="weekly-roll-rule">
           <span>ROLL CONVERSION</span>
@@ -3449,7 +3549,7 @@ function renderHist() {
         </div>
 
         <div class="weekly-kpi">
-          <span>Current Week Used</span>
+          <span>Current Week Sold / Used</span>
           <strong>${latest.usedQty}</strong>
           <small>${latest.periods.length ? 'from completed count periods' : 'waiting for next count'}</small>
         </div>
@@ -3470,7 +3570,7 @@ function renderHist() {
             <small>previous week ${previous.productionQty}</small>
           </div>
           <div>
-            <span>WEEK-OVER-WEEK USED</span>
+            <span>WEEK-OVER-WEEK SOLD / USED</span>
             <strong>${latest.usedQty}</strong>
             ${historyChangeBadge(latest.usedQty - previous.usedQty)}
             <small>previous week ${previous.usedQty}</small>
@@ -3495,8 +3595,8 @@ function renderHist() {
       <div class="weekly-data-note">
         <strong>How this report calculates:</strong>
         Production Qty is the quantity saved in Production. Roll Equivalent = Production Qty ÷ 50.
-        Used / Difference = Starting Count + Production − Ending Count.
-        A week can remain open until the next physical Count closes the current inventory period.
+        Sold / Used = Starting Count + Production − Ending Count.
+        Every physical Count closes the prior period, so Weekly History can show Mon→Wed, Wed→Thu, Thu→Mon, or any other Count-to-count span automatically.
       </div>
     </section>`;
 }
