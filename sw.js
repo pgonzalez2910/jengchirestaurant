@@ -32,4 +32,4 @@ async function syncPendingCatalogOrders(){
   }
 }
 async function backgroundSync(){await syncPendingCatalogOrders();const drafts=(await getAll('drafts')).filter(x=>x.dirty);for(const d of drafts){try{await syncDraft(d)}catch(e){}}const subs=(await getAll('submissions')).filter(x=>x.status!=='synced'||x.email_status!=='sent');for(const s of subs){try{await sendSubmission(s)}catch(e){}}const clients=await self.clients.matchAll({type:'window'});clients.forEach(c=>c.postMessage({type:'SYNC_NOW'}))}
-self.addEventListener('sync',event=>{if(event.tag==='jc-place-order-sync')event.waitUntil(backgroundSync())});
+self.addEventListener('sync',event=>{if(event.tag==='jc-place-order-sync')event.waitUntil(backgroundSync())}); 
