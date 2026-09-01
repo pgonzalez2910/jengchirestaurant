@@ -1,10 +1,10 @@
-const CACHE='jc-place-order-shell-v1';
-const IMAGE_CACHE='jc-place-order-images-v1';
+const CACHE='jc-place-order-shell-v2';
+const IMAGE_CACHE='jc-place-order-images-v2';
 const DB_NAME='jc-place-order-offline-v1', DB_VERSION=1;
 const SUPABASE_URL="https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
 self.addEventListener('install',event=>event.waitUntil((async()=>{const c=await caches.open(CACHE);await c.addAll(['./','./jengchi-place-order.html']);try{await c.add('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2')}catch(e){}await self.skipWaiting()})()));
-self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
+self.addEventListener('activate',event=>event.waitUntil((async()=>{const keep=new Set([CACHE,IMAGE_CACHE]);const keys=await caches.keys();await Promise.all(keys.filter(k=>k.startsWith('jc-place-order-')&&!keep.has(k)).map(k=>caches.delete(k)));await self.clients.claim()})()));
 self.addEventListener('fetch',event=>{if(event.request.method!=='GET')return;const u=new URL(event.request.url);if(u.hostname==='raw.githubusercontent.com'||u.hostname==='cdn.jsdelivr.net'){event.respondWith(caches.open(IMAGE_CACHE).then(async c=>{const hit=await c.match(event.request);if(hit)return hit;try{const r=await fetch(event.request);if(r.ok||r.type==='opaque')c.put(event.request,r.clone());return r}catch(e){return hit||Response.error()}}));return}if(u.origin===self.location.origin){event.respondWith(fetch(event.request).then(r=>{const x=r.clone();caches.open(CACHE).then(c=>c.put(event.request,x));return r}).catch(()=>caches.match(event.request)))}});
 function openDb(){return new Promise((resolve,reject)=>{const r=indexedDB.open(DB_NAME,DB_VERSION);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains('drafts'))d.createObjectStore('drafts',{keyPath:'key'});if(!d.objectStoreNames.contains('submissions'))d.createObjectStore('submissions',{keyPath:'client_submission_id'});if(!d.objectStoreNames.contains('meta'))d.createObjectStore('meta',{keyPath:'key'})};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
 async function getAll(store){const d=await openDb();return new Promise((res,rej)=>{const tx=d.transaction(store,'readonly');const r=tx.objectStore(store).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error)})}
