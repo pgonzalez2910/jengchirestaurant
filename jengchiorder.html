@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#ffffff">
 <title>Jeng Chi — Place Order</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
 <style>
 :root{--navy:#173a63;--navy2:#244f7d;--line:#aebdcc;--soft:#eef3f8;--text:#17283b;--muted:#66788a;--green:#2f7d4a;--amber:#b66b00;--red:#b42318;}
 *{box-sizing:border-box}
@@ -171,6 +172,58 @@ input,select,button{font:inherit}
   input,select,textarea{font-size:16px!important}
 }
 </style>
+
+<style id="jc-category-drag-v1">
+.drag-handle{
+  margin-left:auto;
+  width:34px;height:28px;min-width:34px;
+  border:1px solid rgba(255,255,255,.38);
+  border-radius:6px;
+  background:rgba(255,255,255,.14);
+  color:#fff;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:17px;font-weight:900;line-height:1;
+  cursor:grab;
+  touch-action:none;
+  user-select:none;
+  -webkit-user-select:none;
+  -webkit-touch-callout:none;
+}
+.drag-handle:hover{background:rgba(255,255,255,.24)}
+.drag-handle:active{cursor:grabbing}
+.product-card.sortable-ghost{
+  opacity:.32!important;
+  border:2px dashed #245a92!important;
+  background:#eef6ff!important;
+}
+.product-card.sortable-chosen{
+  box-shadow:0 8px 24px rgba(23,58,99,.24)!important;
+  border-color:#245a92!important;
+}
+.product-card.sortable-drag{
+  transform:rotate(.3deg);
+}
+.catalog-grid.drag-saving{
+  outline:2px solid rgba(47,125,74,.20);
+  outline-offset:4px;
+  border-radius:8px;
+}
+.section-reorder-help{
+  font-size:9px;
+  font-weight:800;
+  letter-spacing:0;
+  text-transform:none;
+  color:#5b7185;
+  white-space:nowrap;
+}
+@media(pointer:coarse){
+  .drag-handle{width:42px;height:34px;min-width:42px;font-size:20px}
+}
+@media(max-width:480px){
+  .section-reorder-help{font-size:8px}
+}
+</style>
+
 </head>
 <body>
 <header>
@@ -232,6 +285,8 @@ let activeUser='';
 let catalog=[];
 let drafts=new Map();
 let saveTimers=new Map();
+let sortableInstances=[];
+let pendingOrderCount=0;
 
 function chicagoYMD(){
   const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Chicago',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());
@@ -278,6 +333,130 @@ async function idbGetAll(store){
 async function saveMeta(key,value){return idbPut('meta',{key,value})}
 async function loadMeta(key){return (await idbGetAll('meta')).find(x=>x.key===key)?.value}
 
+function pendingOrderKey(user=activeUser){return `catalog-order-pending:${user}`}
+
+async function queueCatalogOrder(rows){
+  if(!rows?.length)return;
+  const key=pendingOrderKey();
+  const current=await loadMeta(key)||[];
+  const map=new Map((current||[]).map(r=>[String(r.id),r]));
+  rows.forEach(r=>map.set(String(r.id),r));
+  const merged=[...map.values()];
+  pendingOrderCount=merged.length;
+  await saveMeta(key,merged);
+  await saveMeta(`catalog:${activeUser}`,catalog);
+  updateCounts();
+}
+
+async function syncPendingCatalogOrder(silent=false){
+  if(!navigator.onLine||!activeUser)return false;
+  const key=pendingOrderKey();
+  const pending=await loadMeta(key)||[];
+  if(!pending.length){pendingOrderCount=0;updateCounts();return true}
+
+  for(const row of pending){
+    const {error}=await db.from('place_order_catalog')
+      .update({sort_order:Number(row.sort_order),updated_at:new Date().toISOString()})
+      .eq('id',row.id)
+      .eq('user_type',activeUser);
+    if(error)throw error;
+  }
+
+  await saveMeta(key,[]);
+  pendingOrderCount=0;
+  await saveMeta(`catalog:${activeUser}`,catalog);
+  updateCounts();
+  if(!silent)notice('Category order saved automatically.','success',1800);
+  return true;
+}
+
+function destroyCategorySorting(){
+  sortableInstances.forEach(s=>{try{s.destroy()}catch(e){}});
+  sortableInstances=[];
+}
+
+function refreshCardIndexes(){
+  document.querySelectorAll('#catalogGrid .product-card .card-index').forEach((el,i)=>{
+    el.textContent=`#${i+1}`;
+  });
+}
+
+async function persistCategoryOrder(grid){
+  if(!grid||!activeUser)return;
+
+  const ids=[...grid.querySelectorAll('.product-card')]
+    .map(card=>card.dataset.productId)
+    .filter(Boolean);
+
+  if(!ids.length)return;
+
+  const first=catalog.find(p=>String(p.id)===String(ids[0]));
+  const groupSort=Number(first?.group_sort??9999);
+  const base=groupSort*1000;
+
+  const rows=[];
+  ids.forEach((id,index)=>{
+    const p=catalog.find(x=>String(x.id)===String(id));
+    if(!p)return;
+    const newSort=base+((index+1)*10);
+    p.sort_order=newSort;
+    rows.push({id:p.id,sort_order:newSort});
+  });
+
+  grid.classList.add('drag-saving');
+  refreshCardIndexes();
+
+  try{
+    await queueCatalogOrder(rows);
+
+    if(navigator.onLine){
+      await syncPendingCatalogOrder(false);
+    }else{
+      notice('New category order saved on this device. It will sync automatically when internet returns.','success',3000);
+      registerBackgroundSync();
+    }
+  }catch(e){
+    console.warn('Catalog reorder sync:',e);
+    notice('New category order saved locally. Sync is pending.','success',3000);
+    registerBackgroundSync();
+  }finally{
+    setTimeout(()=>grid.classList.remove('drag-saving'),450);
+  }
+}
+
+function initCategorySorting(){
+  destroyCategorySorting();
+  if(!window.Sortable)return;
+
+  const searchActive=!!norm(document.getElementById('search')?.value);
+
+  document.querySelectorAll('#catalogGrid .catalog-grid[data-display-group]').forEach((grid,index)=>{
+    const sortable=new Sortable(grid,{
+      group:{name:`jc-category-${index}`,pull:false,put:false},
+      sort:true,
+      disabled:searchActive,
+      handle:'.drag-handle',
+      draggable:'.product-card',
+      animation:165,
+      forceFallback:true,
+      fallbackOnBody:true,
+      fallbackTolerance:4,
+      delay:120,
+      delayOnTouchOnly:true,
+      touchStartThreshold:4,
+      ghostClass:'sortable-ghost',
+      chosenClass:'sortable-chosen',
+      dragClass:'sortable-drag',
+      onEnd:evt=>{
+        if(evt.oldIndex===evt.newIndex)return;
+        persistCategoryOrder(grid).catch(console.warn);
+      }
+    });
+    sortableInstances.push(sortable);
+  });
+}
+
+
 function notice(text,type='info',ms=3500){
   const el=document.getElementById('notice');
   el.className=`notice show ${type==='error'?'error':type==='success'?'success':''}`;
@@ -320,10 +499,22 @@ async function loadWorkspace(){
   drafts=new Map(localDrafts.map(d=>[norm(d.product_name),d]));
 
   const cached=await loadMeta(cacheKey)||[];
-  if(cached.length){catalog=cached;render();}
+  const pendingCatalogOrder=await loadMeta(pendingOrderKey())||[];
+  pendingOrderCount=pendingCatalogOrder.length;
+
+  // IMPORTANT: Never render a stale cached catalog while online.
+  // Supabase is authoritative for which products are active/inactive.
+  // Only use the cached catalog when the device is actually offline.
+  if(!navigator.onLine && cached.length){
+    catalog=cached;
+    render();
+  }
 
   if(navigator.onLine){
     try{
+      // Push any category reordering done while offline BEFORE loading the server catalog.
+      await syncPendingCatalogOrder(true).catch(e=>console.warn('Pending category order:',e));
+
       const [catRes,draftRes]=await Promise.all([
         db.from('place_order_catalog')
           .select('id,sort_order,group_sort,display_group,vendor,product_number,product_name,image_url')
@@ -372,6 +563,7 @@ function getDraft(p){
 }
 
 function render(){
+  destroyCategorySorting();
   const host=document.getElementById('catalogGrid');
   const q=norm(document.getElementById('search').value);
 
@@ -409,9 +601,10 @@ function render(){
       const id=btoa(unescape(encodeURIComponent(norm(p.product_name)))).replace(/[^a-z0-9]/gi,'').slice(0,24);
       const qty=Number(d.qty||0);
 
-      return `<article class="product-card${qty>0?' has-qty':''}">
+      return `<article class="product-card${qty>0?' has-qty':''}" data-product-id="${esc(p.id)}">
         <div class="product-card-head">
           <span class="card-index">#${globalIndex}</span>
+          <button type="button" class="drag-handle" aria-label="Drag to reorder within this category" title="Drag to reorder">☰</button>
           <span class="vendor-chip">Pacific Plus</span>
         </div>
         <div class="product-card-body">
@@ -429,7 +622,7 @@ function render(){
             <label for="qty_${id}">Order Qty</label>
             <input id="qty_${id}" class="card-qty" type="number" min="0" step="0.01"
                    value="${qty||''}" placeholder="0" inputmode="decimal"
-                   oninput="changeQtyCard(this,'${esc(p.product_name)}')">
+                   oninput="changeQtyCard(this,'${esc(p.id)}')">
           </div>
         </div>
       </article>`;
@@ -438,17 +631,19 @@ function render(){
     return `<section class="catalog-section">
       <div class="catalog-section-title">
         <span>${esc(cleanGroup)}</span>
+        <span class="section-reorder-help">${q?'Clear search to reorder':'Drag ☰ to reorder within category'}</span>
         <span class="section-count">${products.length}</span>
       </div>
-      <div class="catalog-grid">${cards}</div>
+      <div class="catalog-grid" data-display-group="${esc(group)}">${cards}</div>
     </section>`;
   }).join('');
 
   updateCounts();
+  requestAnimationFrame(initCategorySorting);
 }
 
-function changeQtyCard(input,name){
-  const p=catalog.find(x=>norm(x.product_name)===norm(name));
+function changeQtyCard(input,productId){
+  const p=catalog.find(x=>String(x.id)===String(productId));
   if(!p)return;
   const d=getDraft(p);
   d.qty=Math.max(0,Number(input.value||0));
@@ -492,6 +687,7 @@ async function syncDraft(d){
 
 async function syncAll(){
   if(!navigator.onLine)return;
+  await syncPendingCatalogOrder(true).catch(e=>console.warn('Catalog order sync:',e));
   const pending=[...drafts.values()].filter(d=>d.dirty);
   for(const d of pending){try{await syncDraft(d)}catch(e){console.warn(e)}}
   await syncPendingSubmissions();
@@ -602,7 +798,7 @@ async function registerBackgroundSync(){
 function updateCounts(){
   document.getElementById('countProducts').textContent=catalog.length;
   document.getElementById('countOrdered').textContent=[...drafts.values()].filter(d=>Number(d.qty)>0).length;
-  document.getElementById('countPending').textContent=[...drafts.values()].filter(d=>d.dirty).length;
+  document.getElementById('countPending').textContent=[...drafts.values()].filter(d=>d.dirty).length+pendingOrderCount;
 }
 
 document.getElementById('search').addEventListener('input',render);
@@ -611,7 +807,7 @@ window.addEventListener('online',()=>{updateNetwork();syncAll().then(loadWorkspa
 window.addEventListener('offline',updateNetwork);
 
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=6').catch(e=>console.warn('Service worker:',e));
+  navigator.serviceWorker.register('./sw.js?v=9').catch(e=>console.warn('Service worker:',e));
   navigator.serviceWorker.addEventListener('message',e=>{if(e.data?.type==='SYNC_NOW')syncAll().catch(()=>{})});
 }
 updateNetwork();
