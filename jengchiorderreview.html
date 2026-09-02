@@ -51,6 +51,74 @@ textarea{width:100%;min-height:145px;border:1px solid #9eafbe;border-radius:8px;
 }
 </style>
 
+
+<style id="jc-review-v6-qty-ui">
+.submitted-qty{
+  display:inline-flex;
+  min-width:38px;
+  height:30px;
+  align-items:center;
+  justify-content:center;
+  border-radius:7px;
+  font-weight:900;
+  font-size:13px;
+  background:#eef4fb;
+  border:1px solid #c7d7e8;
+  color:#214e7a;
+}
+.submitted-qty.none{
+  background:transparent;
+  border-color:transparent;
+  color:#9aa6b2;
+  font-weight:700;
+}
+.final-qty-editor{
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  white-space:nowrap;
+}
+.final-qty-editor .qty{
+  width:74px !important;
+  min-height:38px;
+  font-size:15px;
+  border:2px solid #86a4c1;
+  background:#fff;
+}
+.qty-step{
+  width:34px;
+  height:34px;
+  padding:0 !important;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border:1px solid #9fb0bf;
+  border-radius:7px;
+  background:#fff;
+  color:#173a63;
+  font-size:16px;
+  font-weight:900;
+  cursor:pointer;
+}
+.qty-step:hover{
+  background:#edf4fa;
+}
+.final-edit-label{
+  display:block;
+  font-size:8px;
+  text-transform:uppercase;
+  letter-spacing:.05em;
+  color:#6f8091;
+  margin-bottom:3px;
+  font-weight:800;
+}
+@media(max-width:760px){
+  .final-qty-editor{gap:3px}
+  .qty-step{width:30px;height:32px}
+  .final-qty-editor .qty{width:62px !important;min-height:34px}
+}
+</style>
+
 </head>
 <body>
 <div class="wrap">
@@ -81,13 +149,13 @@ textarea{width:100%;min-height:145px;border:1px solid #9eafbe;border-radius:8px;
     <button id="mergeBtn" class="btn primary" onclick="refreshFromSubmissions({reason:'manual_refresh'})"><i class="fa-solid fa-code-merge"></i> Load / Refresh Rony + Julio</button>
     <button class="btn secondary" onclick="openAddModal()"><i class="fa-solid fa-plus"></i> Add Product</button>
     <button class="btn secondary" onclick="rebuildFromSavedOrders()"><i class="fa-solid fa-wand-magic-sparkles"></i> Rebuild Missing Lines</button>
-    <span style="margin-left:auto;font-size:11px;color:#647386">All reviewer changes autosave.</span>
+    <span style="margin-left:auto;font-size:11px;color:#647386">Only Final Qty is editable. Rony/Julio submitted quantities remain unchanged. All reviewer changes autosave.</span>
   </div>
 
   <div class="table-shell">
     <table>
       <thead><tr>
-        <th>#</th><th>Pacific Plus #</th><th>Product</th><th>Rony</th><th>Julio</th><th>Combined</th><th>Final Qty</th><th>Source</th><th>Action</th>
+        <th>#</th><th>Pacific Plus #</th><th>Product</th><th>Rony Submitted</th><th>Julio Submitted</th><th>Combined</th><th>Final Qty — Editable</th><th>Source</th><th>Action</th>
       </tr></thead>
       <tbody id="itemsBody"><tr><td colspan="9" style="padding:24px;text-align:center;color:#647386">Choose a date to load submissions.</td></tr></tbody>
     </table>
@@ -726,15 +794,98 @@ async function rebuildFromSavedOrders(){
 
 function renderItems(){
   const body=document.getElementById('itemsBody');
-  const rows=[...finalItems].sort((a,b)=>(Number(a.vendor_order_sort??999999)-Number(b.vendor_order_sort??999999))||String(a.product_name).localeCompare(String(b.product_name)));
-  if(!rows.length){body.innerHTML='<tr><td colspan="9" style="padding:24px;text-align:center;color:#647386">No submitted order items loaded yet. Submitted Rony or Julio orders will appear here automatically.</td></tr>';return}
-  body.innerHTML=rows.map((r,idx)=>`<tr class="${r.is_removed?'removed':''}" data-id="${r.id}">
-    <td>${idx+1}</td><td class="code">${esc(r.product_number||'—')}</td><td class="name">${esc(r.product_name)}</td>
-    <td>${Number(r.rony_qty||0)}</td><td>${Number(r.julio_qty||0)}</td><td><b>${Number(r.combined_qty||0)}</b></td>
-    <td><input class="qty" type="number" min="0" step="0.01" value="${Number(r.final_qty||0)}" ${r.is_removed?'disabled':''} oninput="changeFinalQty('${r.id}',this.value)"></td>
-    <td><span class="src">${r.source==='reviewer_added'?'Reviewer Added':r.source==='rony'?'Rony':r.source==='julio'?'Julio':'Combined'}</span></td>
-    <td>${r.is_removed?`<button class="btn secondary" style="padding:6px 8px" onclick="toggleRemove('${r.id}',false)"><i class="fa-solid fa-rotate-left"></i> Undo</button>`:`<button class="btn danger" style="padding:6px 8px" onclick="toggleRemove('${r.id}',true)"><i class="fa-solid fa-trash"></i> Remove</button>`}</td>
-  </tr>`).join('');
+
+  // Only show products that were actually submitted by Rony or Julio,
+  // plus products intentionally added by the reviewer.
+  const rows=[...finalItems]
+    .filter(r=>
+      Number(r.rony_qty||0)>0 ||
+      Number(r.julio_qty||0)>0 ||
+      r.source==='reviewer_added'
+    )
+    .sort((a,b)=>
+      (Number(a.vendor_order_sort??999999)-Number(b.vendor_order_sort??999999))
+      || String(a.product_name).localeCompare(String(b.product_name))
+    );
+
+  if(!rows.length){
+    body.innerHTML='<tr><td colspan="9" style="padding:24px;text-align:center;color:#647386">No submitted quantities greater than zero are loaded yet.</td></tr>';
+    return;
+  }
+
+  body.innerHTML=rows.map((r,idx)=>{
+    const ronyQty=Number(r.rony_qty||0);
+    const julioQty=Number(r.julio_qty||0);
+    const combined=Number(r.combined_qty||0);
+    const finalQty=Number(r.final_qty||0);
+
+    return `<tr class="${r.is_removed?'removed':''}" data-id="${r.id}">
+      <td>${idx+1}</td>
+      <td class="code">${esc(r.product_number||'—')}</td>
+      <td class="name">${esc(r.product_name)}</td>
+
+      <td>
+        <span class="submitted-qty ${ronyQty>0?'':'none'}">
+          ${ronyQty>0?ronyQty:'—'}
+        </span>
+      </td>
+
+      <td>
+        <span class="submitted-qty ${julioQty>0?'':'none'}">
+          ${julioQty>0?julioQty:'—'}
+        </span>
+      </td>
+
+      <td><b>${combined>0?combined:'—'}</b></td>
+
+      <td>
+        ${r.is_removed
+          ? '<span style="color:#9aa6b2">Removed</span>'
+          : `<span class="final-edit-label"><i class="fa-solid fa-pen"></i> Edit Final Qty</span>
+             <div class="final-qty-editor">
+               <button type="button" class="qty-step" onclick="stepFinalQty('${r.id}',-1)" aria-label="Decrease final quantity">−</button>
+               <input class="qty" type="number" min="0" step="1" value="${finalQty}" oninput="changeFinalQty('${r.id}',this.value)">
+               <button type="button" class="qty-step" onclick="stepFinalQty('${r.id}',1)" aria-label="Increase final quantity">+</button>
+             </div>`
+        }
+      </td>
+
+      <td>
+        <span class="src">${
+          r.source==='reviewer_added' ? 'Reviewer Added' :
+          r.source==='rony' ? 'Rony' :
+          r.source==='julio' ? 'Julio' :
+          'Combined'
+        }</span>
+      </td>
+
+      <td>
+        ${r.is_removed
+          ? `<button class="btn secondary" style="padding:6px 8px" onclick="toggleRemove('${r.id}',false)">
+               <i class="fa-solid fa-rotate-left"></i> Undo
+             </button>`
+          : `<button class="btn danger" style="padding:6px 8px" onclick="toggleRemove('${r.id}',true)">
+               <i class="fa-solid fa-trash"></i> Remove
+             </button>`
+        }
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+
+function stepFinalQty(id,delta){
+  const r=finalItems.find(x=>x.id===id);
+  if(!r || r.is_removed)return;
+
+  const current=Number(r.final_qty||0);
+  r.final_qty=Math.max(0,current+Number(delta||0));
+
+  const row=document.querySelector(`tr[data-id="${CSS.escape(String(id))}"]`);
+  const input=row?.querySelector('input.qty');
+  if(input)input.value=String(r.final_qty);
+
+  queueItemSave(r);
 }
 
 function changeFinalQty(id,v){
@@ -833,5 +984,5 @@ loadAll().catch(e=>notice(e.message||String(e),'err'));
 // Rony or Julio submission and merge it into the current review.
 setInterval(checkForNewSubmissions,30000);
 </script>
-<div id="reviewBuildMarker">REVIEW BUILD 5 · LIVE CLIENT SUBMISSION KEY</div>
+<div id="reviewBuildMarker">REVIEW BUILD 6 · CLEAN SUBMITTED QTY + FINAL EDIT</div>
 </body></html>
