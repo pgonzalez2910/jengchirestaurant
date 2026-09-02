@@ -1,11 +1,61 @@
-const CACHE='jc-place-order-shell-v1';
-const IMAGE_CACHE='jc-place-order-images-v1';
+const CACHE='jc-place-order-shell-v17';
+const IMAGE_CACHE='jc-place-order-images-v17';
 const DB_NAME='jc-place-order-offline-v1', DB_VERSION=1;
 const SUPABASE_URL="https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
 self.addEventListener('install',event=>event.waitUntil((async()=>{const c=await caches.open(CACHE);await c.addAll(['./','./jengchi-place-order.html']);const external=['https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2','https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js'];await Promise.allSettled(external.map(url=>c.add(url)));await self.skipWaiting()})()));
-self.addEventListener('activate',event=>event.waitUntil(self.clients.claim()));
-self.addEventListener('fetch',event=>{if(event.request.method!=='GET')return;const u=new URL(event.request.url);if(u.hostname==='raw.githubusercontent.com'||u.hostname==='cdn.jsdelivr.net'){event.respondWith(caches.open(IMAGE_CACHE).then(async c=>{const hit=await c.match(event.request);if(hit)return hit;try{const r=await fetch(event.request);if(r.ok||r.type==='opaque')c.put(event.request,r.clone());return r}catch(e){return hit||Response.error()}}));return}if(u.origin===self.location.origin){event.respondWith(fetch(event.request).then(r=>{const x=r.clone();caches.open(CACHE).then(c=>c.put(event.request,x));return r}).catch(()=>caches.match(event.request)))}});
+self.addEventListener('activate',event=>event.waitUntil((async()=>{
+  const keys=await caches.keys();
+  await Promise.all(keys.map(k=>{
+    if((k.startsWith('jc-place-order-shell-')||k.startsWith('jc-place-order-images-')) && k!==CACHE && k!==IMAGE_CACHE){
+      return caches.delete(k);
+    }
+  }));
+  await self.clients.claim();
+})()));
+self.addEventListener('fetch',event=>{
+  if(event.request.method!=='GET')return;
+  const u=new URL(event.request.url);
+
+  // Always fetch HTML/navigation from network first and explicitly bypass
+  // HTTP cache. Offline fallback still uses the current service-worker cache.
+  if(event.request.mode==='navigate' || u.pathname.endsWith('/jengchi-place-order.html')){
+    event.respondWith((async()=>{
+      try{
+        const fresh=await fetch(event.request,{cache:'no-store'});
+        if(fresh && fresh.ok){
+          const c=await caches.open(CACHE);
+          await c.put(event.request,fresh.clone());
+        }
+        return fresh;
+      }catch(e){
+        return (await caches.match(event.request))
+          || (await caches.match('./jengchi-place-order.html'))
+          || Response.error();
+      }
+    })());
+    return;
+  }
+
+  if(u.hostname==='raw.githubusercontent.com'||u.hostname==='cdn.jsdelivr.net'||u.hostname==='cdnjs.cloudflare.com'){
+    event.respondWith((async()=>{
+      const c=await caches.open(IMAGE_CACHE);
+      const hit=await c.match(event.request);
+      try{
+        const r=await fetch(event.request);
+        if(r.ok||r.type==='opaque')await c.put(event.request,r.clone());
+        return r;
+      }catch(e){
+        return hit||Response.error();
+      }
+    })());
+    return;
+  }
+
+  if(u.origin===self.location.origin){
+    event.respondWith(fetch(event.request,{cache:'no-store'}).catch(()=>caches.match(event.request)));
+  }
+});
 function openDb(){return new Promise((resolve,reject)=>{const r=indexedDB.open(DB_NAME,DB_VERSION);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains('drafts'))d.createObjectStore('drafts',{keyPath:'key'});if(!d.objectStoreNames.contains('submissions'))d.createObjectStore('submissions',{keyPath:'client_submission_id'});if(!d.objectStoreNames.contains('meta'))d.createObjectStore('meta',{keyPath:'key'})};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)})}
 async function getAll(store){const d=await openDb();return new Promise((res,rej)=>{const tx=d.transaction(store,'readonly');const r=tx.objectStore(store).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error)})}
 async function put(store,val){const d=await openDb();return new Promise((res,rej)=>{const tx=d.transaction(store,'readwrite');tx.objectStore(store).put(val);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
@@ -32,4 +82,4 @@ async function syncPendingCatalogOrders(){
   }
 }
 async function backgroundSync(){await syncPendingCatalogOrders();const drafts=(await getAll('drafts')).filter(x=>x.dirty);for(const d of drafts){try{await syncDraft(d)}catch(e){}}const subs=(await getAll('submissions')).filter(x=>x.status!=='synced'||x.email_status!=='sent');for(const s of subs){try{await sendSubmission(s)}catch(e){}}const clients=await self.clients.matchAll({type:'window'});clients.forEach(c=>c.postMessage({type:'SYNC_NOW'}))}
-self.addEventListener('sync',event=>{if(event.tag==='jc-place-order-sync')event.waitUntil(backgroundSync())}); 
+self.addEventListener('sync',event=>{if(event.tag==='jc-place-order-sync')event.waitUntil(backgroundSync())});
