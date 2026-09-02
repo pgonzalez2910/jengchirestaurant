@@ -42,6 +42,15 @@ textarea{width:100%;min-height:145px;border:1px solid #9eafbe;border-radius:8px;
 .checklist{margin:14px 0;border:1px solid #dbe3e9;border-radius:9px;overflow:hidden} .checkline{padding:9px 11px;border-bottom:1px solid #e5eaee;font-size:12px} .checkline:last-child{border-bottom:0} .checkline i{width:20px;color:#287944}
 @media(max-width:760px){.wrap{padding:8px} .status-grid{grid-template-columns:1fr} .summary{grid-template-columns:1fr} .datebox{margin-left:0;width:100%;justify-content:space-between} h1{font-size:18px} .email-row{grid-template-columns:1fr} .final-actions{flex-direction:column} .final-actions .btn{width:100%}}
 </style>
+
+<style id="jc-review-build-v2">
+#reviewBuildMarker{
+  position:fixed;left:6px;bottom:5px;z-index:10;
+  font-size:7px;color:#82909c;background:rgba(255,255,255,.8);
+  padding:2px 4px;border-radius:4px;pointer-events:none;
+}
+</style>
+
 </head>
 <body>
 <div class="wrap">
@@ -52,15 +61,26 @@ textarea{width:100%;min-height:145px;border:1px solid #9eafbe;border-radius:8px;
   </div>
 
   <div class="status-grid">
-    <div class="status"><strong>Rony Submission</strong><span id="ronyStatus" class="pill wait"><i class="fa-solid fa-clock"></i> Waiting</span><div id="ronyTime" class="sub"></div></div>
-    <div class="status"><strong>Julio Submission</strong><span id="julioStatus" class="pill wait"><i class="fa-solid fa-clock"></i> Waiting</span><div id="julioTime" class="sub"></div></div>
+    <div class="status"><strong>Rony Submission</strong><span id="ronyStatus" class="pill wait"><i class="fa-solid fa-clock"></i> Waiting</span><div id="ronyTime" class="sub"></div>
+       <div id="ronyLoaded" class="sub"></div>
+       <div id="ronyEmail" class="sub"></div>
+       <button id="ronyResendBtn" class="btn secondary" style="display:none;margin-top:7px;padding:6px 9px;font-size:10px" onclick="resendPreliminaryEmail('rony')">
+         <i class="fa-solid fa-envelope"></i> Resend Rony Email
+       </button></div>
+    <div class="status"><strong>Julio Submission</strong><span id="julioStatus" class="pill wait"><i class="fa-solid fa-clock"></i> Waiting</span><div id="julioTime" class="sub"></div>
+       <div id="julioLoaded" class="sub"></div>
+       <div id="julioEmail" class="sub"></div>
+       <button id="julioResendBtn" class="btn secondary" style="display:none;margin-top:7px;padding:6px 9px;font-size:10px" onclick="resendPreliminaryEmail('julio')">
+         <i class="fa-solid fa-envelope"></i> Resend Julio Email
+       </button></div>
     <div class="status"><strong>Final Review</strong><span id="reviewStatus" class="pill wait"><i class="fa-solid fa-pen-to-square"></i> Draft</span><div id="reviewMeta" class="sub"></div></div>
   </div>
 
   <div class="toolbar">
     <button class="btn secondary" onclick="loadAll()"><i class="fa-solid fa-rotate"></i> Refresh</button>
-    <button id="mergeBtn" class="btn primary" onclick="refreshFromSubmissions()"><i class="fa-solid fa-code-merge"></i> Load / Refresh Submitted Orders</button>
+    <button id="mergeBtn" class="btn primary" onclick="refreshFromSubmissions({reason:'manual_refresh'})"><i class="fa-solid fa-code-merge"></i> Load / Refresh Rony + Julio</button>
     <button class="btn secondary" onclick="openAddModal()"><i class="fa-solid fa-plus"></i> Add Product</button>
+    <button class="btn secondary" onclick="rebuildFromSavedOrders()"><i class="fa-solid fa-wand-magic-sparkles"></i> Rebuild Missing Lines</button>
     <span style="margin-left:auto;font-size:11px;color:#647386">All reviewer changes autosave.</span>
   </div>
 
@@ -133,20 +153,52 @@ function notice(msg,type='ok'){const n=document.getElementById('notice');n.textC
 function fmtTime(v){if(!v)return'';return new Date(v).toLocaleString([],{dateStyle:'medium',timeStyle:'short'})}
 function itemKey(i){const c=String(i.item_code||i.product_number||'').trim().toUpperCase();return c?`code:${c}`:`name:${norm(i.product_name)}`}
 
+
+function submissionKey(s){
+  return String(s?.client_submission_id||'').trim();
+}
+
 async function loadAll(){
   const date=document.getElementById('orderDate').value||todayYMD();
   document.getElementById('orderDate').value=date;
-  await Promise.all([loadMaster(),loadSubmissions(date),loadReview(date)]);
 
-  // Progressive review: as soon as Rony OR Julio submits, load that order.
-  if((latestRony||latestJulio) && !finalItems.length && review?.status!=='sent'){
-    await refreshFromSubmissions({silent:true});
+  await Promise.all([
+    loadMaster(),
+    loadSubmissions(date),
+    loadReview(date)
+  ]);
+
+  // ============================================================
+  // AUTO-MERGE RULE
+  // ============================================================
+  // Compare the newest Rony/Julio submissions with the IDs that were
+  // previously loaded into this review. If either user has a new
+  // submission, automatically rebuild the combined table.
+  const ronyChanged =
+    !!latestRony &&
+    String(review?.rony_submission_key||'') !== submissionKey(latestRony);
+
+  const julioChanged =
+    !!latestJulio &&
+    String(review?.julio_submission_key||'') !== submissionKey(latestJulio);
+
+  const needsInitialLoad =
+    !!(latestRony||latestJulio) &&
+    (!review || !finalItems.length);
+
+  if(review?.status!=='sent' && (needsInitialLoad || ronyChanged || julioChanged)){
+    await refreshFromSubmissions({
+      silent:true,
+      reason: julioChanged ? 'julio_new_submission'
+            : ronyChanged ? 'rony_new_submission'
+            : 'initial_load'
+    });
     return;
   }
 
-  renderStatuses();renderItems();
+  renderStatuses();
+  renderItems();
 }
-
 async function loadMaster(){
   if(master.length)return;
   const {data,error}=await db.from('pacific_plus_order_master').select('*').eq('active',true).order('vendor_order_sort');
@@ -192,6 +244,18 @@ function renderStatuses(){
     }else meta.textContent='Not started';
   }
   document.getElementById('approveBtn').disabled=review?.status==='sent';
+
+  const ronyRows=finalItems.filter(x=>Number(x.rony_qty||0)>0).length;
+  const julioRows=finalItems.filter(x=>Number(x.julio_qty||0)>0).length;
+
+  document.getElementById('ronyLoaded').textContent =
+    latestRony ? `${ronyRows} product${ronyRows===1?'':'s'} loaded into review` : '';
+
+  document.getElementById('julioLoaded').textContent =
+    latestJulio ? `${julioRows} product${julioRows===1?'':'s'} loaded into review` : '';
+
+  renderPreliminaryEmailStatus('rony',latestRony,ronyRows);
+  renderPreliminaryEmailStatus('julio',latestJulio,julioRows);
 }
 function setSubmissionStatus(user,s){
   const el=document.getElementById(user+'Status'),t=document.getElementById(user+'Time');
@@ -202,15 +266,291 @@ function setSubmissionStatus(user,s){
 async function ensureReview(){
   if(review)return review;
   const date=document.getElementById('orderDate').value;
-  const payload={order_date:date,status:'draft',rony_submission_id:latestRony?.id||null,julio_submission_id:latestJulio?.id||null,rony_submitted_at:latestRony?.submitted_at||null,julio_submitted_at:latestJulio?.submitted_at||null};
+  const payload={
+    order_date:date,
+    status:'draft',
+    rony_submission_key:latestRony?submissionKey(latestRony):null,
+    julio_submission_key:latestJulio?submissionKey(latestJulio):null,
+    rony_submitted_at:latestRony?.submitted_at||null,
+    julio_submitted_at:latestJulio?.submitted_at||null
+  };
   const {data,error}=await db.from('place_order_final_reviews').insert(payload).select().single();
   if(error)throw error;review=data;return review;
 }
 
-function submissionItems(s){return Array.isArray(s?.payload?.items)?s.payload.items:[]}
+async function submissionItems(s,user,{repair=true}={}){
+  const userType=user||s?.user_type;
+  const date=s?.order_date||document.getElementById('orderDate').value;
+  if(!s||!userType||!date)return [];
+
+  // ------------------------------------------------------------
+  // SOURCE 1 — immutable submission payload (preferred)
+  // ------------------------------------------------------------
+  const direct=Array.isArray(s?.payload?.items)?s.payload.items:[];
+  if(direct.length)return await enrichRecoveredItems(direct,userType);
+
+  let recovered=[];
+
+  // ------------------------------------------------------------
+  // SOURCE 2 — inventory_submissions history.
+  // sendSubmission writes these rows BEFORE sending the email, so this is
+  // usually the best recovery source when the email step failed.
+  // ------------------------------------------------------------
+  try{
+    const submittedAt=s.submitted_at?new Date(s.submitted_at):null;
+    const from=submittedAt?new Date(submittedAt.getTime()-20*60*1000).toISOString():`${date}T00:00:00`;
+    const to=submittedAt?new Date(submittedAt.getTime()+20*60*1000).toISOString():`${date}T23:59:59`;
+
+    const {data,error}=await db
+      .from('inventory_submissions')
+      .select('product_name,quantity,submission_date,notes')
+      .ilike('submitted_by',userType)
+      .eq('submission_type','place_order')
+      .gte('submission_date',from)
+      .lte('submission_date',to)
+      .gt('quantity',0)
+      .order('submission_date',{ascending:false});
+
+    if(!error && data?.length){
+      const seen=new Set();
+      recovered=data
+        .filter(r=>{
+          const k=norm(r.product_name);
+          if(!k||seen.has(k))return false;
+          seen.add(k);return true;
+        })
+        .map(r=>({
+          product_name:r.product_name,
+          quantity:Number(r.quantity||0),
+          vendor:'Pacific Plus',
+          item_code:'',
+          image_url:'',
+          recovery_source:'inventory_submissions'
+        }));
+    }
+  }catch(e){console.warn('inventory_submissions recovery:',e)}
+
+  // ------------------------------------------------------------
+  // SOURCE 3 — place_order_drafts
+  // ------------------------------------------------------------
+  if(!recovered.length){
+    try{
+      const {data,error}=await db
+        .from('place_order_drafts')
+        .select('product_name,qty,item_code,image_url,vendor')
+        .eq('order_date',date)
+        .eq('user_type',userType)
+        .gt('qty',0);
+
+      if(!error && data?.length){
+        recovered=data.map(d=>({
+          product_name:d.product_name,
+          quantity:Number(d.qty||0),
+          vendor:'Pacific Plus',
+          item_code:d.item_code||'',
+          image_url:d.image_url||'',
+          recovery_source:'place_order_drafts'
+        }));
+      }
+    }catch(e){console.warn('place_order_drafts recovery:',e)}
+  }
+
+  // ------------------------------------------------------------
+  // SOURCE 4 — legacy inventory_check compatibility table
+  // ------------------------------------------------------------
+  if(!recovered.length){
+    try{
+      const label=userType==='rony'?'Rony':'Julio';
+      const {data,error}=await db
+        .from('inventory_check')
+        .select('product_name,tentative,item_code,image_url,vendor')
+        .eq('order_date',date)
+        .ilike('user',label)
+        .gt('tentative',0);
+
+      if(!error && data?.length){
+        recovered=data.map(d=>({
+          product_name:d.product_name,
+          quantity:Number(d.tentative||0),
+          vendor:'Pacific Plus',
+          item_code:d.item_code||'',
+          image_url:d.image_url||'',
+          recovery_source:'inventory_check'
+        }));
+      }
+    }catch(e){console.warn('inventory_check recovery:',e)}
+  }
+
+  if(!recovered.length)return [];
+
+  recovered=await enrichRecoveredItems(recovered,userType);
+
+  // Repair the original saved submission so all future reviewer loads use
+  // the normal immutable payload instead of needing recovery again.
+  if(repair && recovered.length){
+    try{
+      const {error}=await db
+        .from('place_order_submissions')
+        .update({
+          item_count:recovered.length,
+          payload:{items:recovered}
+        })
+        .eq('client_submission_id',submissionKey(s));
+      if(error)console.warn('Submission payload repair:',error);
+      else{
+        s.item_count=recovered.length;
+        s.payload={items:recovered};
+      }
+    }catch(e){console.warn('Submission payload repair:',e)}
+  }
+
+  return recovered;
+}
+
+async function enrichRecoveredItems(items,userType){
+  const names=[...new Set((items||[]).map(i=>i.product_name).filter(Boolean))];
+  let catalogRows=[];
+
+  if(names.length){
+    try{
+      const {data,error}=await db
+        .from('place_order_catalog')
+        .select('product_name,product_number,image_url,vendor_order_sort,vendor_order_name')
+        .eq('user_type',userType)
+        .in('product_name',names);
+      if(!error)catalogRows=data||[];
+    }catch(e){console.warn('Catalog enrichment:',e)}
+  }
+
+  const map=new Map(catalogRows.map(p=>[norm(p.product_name),p]));
+
+  return (items||[])
+    .filter(i=>Number(i.quantity||0)>0)
+    .map(i=>{
+      const p=map.get(norm(i.product_name))||{};
+      return {
+        ...i,
+        product_name:i.product_name,
+        quantity:Number(i.quantity||0),
+        vendor:'Pacific Plus',
+        item_code:String(p.product_number||i.item_code||'').trim(),
+        image_url:p.image_url||i.image_url||'',
+        vendor_order_sort:
+          Number.isFinite(Number(p.vendor_order_sort))
+            ? Number(p.vendor_order_sort)
+            : (Number.isFinite(Number(i.vendor_order_sort))?Number(i.vendor_order_sort):null),
+        vendor_order_name:p.vendor_order_name||i.vendor_order_name||''
+      };
+    })
+    .sort((a,b)=>{
+      const av=Number.isFinite(Number(a.vendor_order_sort))?Number(a.vendor_order_sort):9999999;
+      const bv=Number.isFinite(Number(b.vendor_order_sort))?Number(b.vendor_order_sort):9999999;
+      return av-bv||String(a.product_name).localeCompare(String(b.product_name));
+    });
+}
+
+
+function renderPreliminaryEmailStatus(user,s,rowCount){
+  const el=document.getElementById(user+'Email');
+  const btn=document.getElementById(user+'ResendBtn');
+  if(!el||!btn)return;
+
+  if(!s){
+    el.textContent='';
+    btn.style.display='none';
+    return;
+  }
+
+  const status=String(s.email_status||'pending').toLowerCase();
+
+  if(status==='sent'){
+    el.innerHTML='<span style="color:#287944"><i class="fa-solid fa-envelope-circle-check"></i> Preliminary email sent</span>';
+    btn.style.display=rowCount>0?'inline-block':'none';
+    btn.innerHTML=`<i class="fa-solid fa-rotate"></i> Resend ${user==='rony'?'Rony':'Julio'} Email`;
+  }else if(status==='failed'){
+    const err=s.email_error?` — ${esc(s.email_error)}`:'';
+    el.innerHTML=`<span style="color:#b83a32"><i class="fa-solid fa-triangle-exclamation"></i> Email failed${err}</span>`;
+    btn.style.display=rowCount>0?'inline-block':'none';
+  }else{
+    el.innerHTML='<span style="color:#8b5b00"><i class="fa-solid fa-envelope"></i> Email pending / not confirmed</span>';
+    btn.style.display=rowCount>0?'inline-block':'none';
+  }
+}
+
+async function resendPreliminaryEmail(user){
+  const s=user==='rony'?latestRony:latestJulio;
+  if(!s){
+    notice(`${user==='rony'?'Rony':'Julio'} has no submission for this date.`,'err');
+    return;
+  }
+
+  const btn=document.getElementById(user+'ResendBtn');
+  const oldHtml=btn.innerHTML;
+  btn.disabled=true;
+  btn.innerHTML='<i class="fa-solid fa-spinner fa-spin"></i> Recovering...';
+
+  try{
+    const items=await submissionItems(s,user,{repair:true});
+    if(!items.length){
+      throw new Error(`No ${user==='rony'?'Rony':'Julio'} order lines could be recovered from submission history, drafts, or inventory_check.`);
+    }
+
+    btn.innerHTML='<i class="fa-solid fa-spinner fa-spin"></i> Sending email...';
+
+    // Mark pending before retry so the Edge Function does not treat an old
+    // incorrect status as final.
+    await db.from('place_order_submissions')
+      .update({email_status:'pending',email_error:null,item_count:items.length,payload:{items}})
+      .eq('client_submission_id',submissionKey(s));
+
+    const resp=await fetch(`${SUPABASE_URL}/functions/v1/send-order-notification`,{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'Authorization':`Bearer ${SUPABASE_ANON_KEY}`
+      },
+      body:JSON.stringify({
+        submissionId:s.client_submission_id,
+        submittedBy:user,
+        orderDate:s.order_date,
+        companyLogo:COMPANY_LOGO,
+        items
+      })
+    });
+
+    const result=await resp.json().catch(()=>({success:false,error:`HTTP ${resp.status}`}));
+    if(!resp.ok||!result.success)throw new Error(result.error||`HTTP ${resp.status}`);
+
+    s.email_status='sent';
+    s.email_error=null;
+    s.item_count=items.length;
+    s.payload={items};
+
+    notice(`${user==='rony'?'Rony':'Julio'} preliminary order email sent successfully.`);
+    await refreshFromSubmissions({silent:true,reason:`${user}_email_recovery`});
+    renderStatuses();
+
+  }catch(e){
+    console.warn('Resend preliminary email:',e);
+    const msg=e.message||String(e);
+    s.email_status='failed';
+    s.email_error=msg;
+    try{
+      await db.from('place_order_submissions')
+        .update({email_status:'failed',email_error:msg})
+        .eq('client_submission_id',submissionKey(s));
+    }catch(_){}
+    notice(`Email could not be sent: ${msg}`,'err');
+    renderStatuses();
+  }finally{
+    btn.disabled=false;
+    if(btn.innerHTML.includes('spinner'))btn.innerHTML=oldHtml;
+  }
+}
 
 async function refreshFromSubmissions(options={}){
   const silent=!!options.silent;
+  const reason=options.reason||'manual_refresh';
 
   if(!latestRony&&!latestJulio){
     if(!silent)notice('No Rony or Julio submission has been received for this date yet.','err');
@@ -248,8 +588,11 @@ async function refreshFromSubmissions(options={}){
     }
   };
 
-  if(latestRony)ingest(submissionItems(latestRony),'rony');
-  if(latestJulio)ingest(submissionItems(latestJulio),'julio');
+  const ronyItems=latestRony ? await submissionItems(latestRony,'rony') : [];
+  const julioItems=latestJulio ? await submissionItems(latestJulio,'julio') : [];
+
+  if(latestRony)ingest(ronyItems,'rony');
+  if(latestJulio)ingest(julioItems,'julio');
 
   for(const r of map.values()){
     r.combined_qty=Number(r.rony_qty||0)+Number(r.julio_qty||0);
@@ -283,8 +626,8 @@ async function refreshFromSubmissions(options={}){
   if(error)throw error;
 
   await db.from('place_order_final_reviews').update({
-    rony_submission_id:latestRony?.id||null,
-    julio_submission_id:latestJulio?.id||null,
+    rony_submission_key:latestRony?submissionKey(latestRony):null,
+    julio_submission_key:latestJulio?submissionKey(latestJulio):null,
     rony_submitted_at:latestRony?.submitted_at||null,
     julio_submitted_at:latestJulio?.submitted_at||null,
     updated_at:new Date().toISOString()
@@ -294,8 +637,9 @@ async function refreshFromSubmissions(options={}){
     review_id:review.id,
     action:(latestRony&&latestJulio)?'combined_latest_submissions':'loaded_available_submission',
     details:{
-      rony_submission_id:latestRony?.id||null,
-      julio_submission_id:latestJulio?.id||null,
+      reason,
+      rony_submission_key:latestRony?submissionKey(latestRony):null,
+      julio_submission_key:latestJulio?submissionKey(latestJulio):null,
       item_count:rows.length
     }
   });
@@ -304,11 +648,82 @@ async function refreshFromSubmissions(options={}){
   renderStatuses();renderItems();
 
   if(!silent){
-    if(latestRony&&latestJulio)notice('Rony and Julio orders loaded and combined successfully.');
-    else if(latestRony)notice('Rony order loaded. Waiting for Julio to submit.');
-    else notice('Julio order loaded. Waiting for Rony to submit.');
+    const ronyCount=rows.filter(x=>Number(x.rony_qty||0)>0).length;
+    const julioCount=rows.filter(x=>Number(x.julio_qty||0)>0).length;
+
+    if(latestRony&&latestJulio){
+      if(julioCount===0){
+        notice('Julio is marked Submitted, but no positive Julio quantities were found in the submission payload or saved drafts.','err');
+      }else{
+        notice(`Orders loaded: Rony ${ronyCount} product(s) + Julio ${julioCount} product(s).`);
+      }
+    }else if(latestRony){
+      notice(`Rony order loaded: ${ronyCount} product(s). Waiting for Julio.`);
+    }else{
+      notice(`Julio order loaded: ${julioCount} product(s). Waiting for Rony.`);
+    }
   }
 }
+
+async function checkForNewSubmissions(){
+  try{
+    if(review?.status==='sent')return;
+
+    const date=document.getElementById('orderDate').value||todayYMD();
+    const oldRonyId=submissionKey(latestRony);
+    const oldJulioId=submissionKey(latestJulio);
+
+    await loadSubmissions(date);
+
+    const ronyChanged=submissionKey(latestRony)!==oldRonyId;
+    const julioChanged=submissionKey(latestJulio)!==oldJulioId;
+
+    const reviewMissingRony =
+      !!latestRony &&
+      String(review?.rony_submission_key||'')!==submissionKey(latestRony);
+
+    const reviewMissingJulio =
+      !!latestJulio &&
+      String(review?.julio_submission_key||'')!==submissionKey(latestJulio);
+
+    if(ronyChanged||julioChanged||reviewMissingRony||reviewMissingJulio){
+      renderStatuses();
+      await refreshFromSubmissions({
+        silent:false,
+        reason: julioChanged||reviewMissingJulio
+          ? 'julio_new_submission'
+          : 'rony_new_submission'
+      });
+    }else{
+      renderStatuses();
+    }
+  }catch(e){
+    console.warn('Automatic submission refresh:',e);
+  }
+}
+
+
+async function rebuildFromSavedOrders(){
+  try{
+    await loadSubmissions(document.getElementById('orderDate').value);
+
+    const ronyItems=latestRony
+      ? await submissionItems(latestRony,'rony',{repair:true})
+      : [];
+    const julioItems=latestJulio
+      ? await submissionItems(latestJulio,'julio',{repair:true})
+      : [];
+
+    await refreshFromSubmissions({silent:true,reason:'rebuild_missing_lines'});
+
+    notice(
+      `Recovery complete — Rony: ${ronyItems.length} product(s), Julio: ${julioItems.length} product(s).`
+    );
+  }catch(e){
+    notice(e.message||String(e),'err');
+  }
+}
+
 function renderItems(){
   const body=document.getElementById('itemsBody');
   const rows=[...finalItems].sort((a,b)=>(Number(a.vendor_order_sort??999999)-Number(b.vendor_order_sort??999999))||String(a.product_name).localeCompare(String(b.product_name)));
@@ -411,6 +826,12 @@ document.getElementById('toEmail').addEventListener('input',queueReviewSave);
 document.getElementById('addModal').addEventListener('click',e=>{if(e.target.id==='addModal')closeAddModal()});
 document.getElementById('approveModal').addEventListener('click',e=>{if(e.target.id==='approveModal')closeApproval()});
 document.getElementById('orderDate').value=todayYMD();
+
 loadAll().catch(e=>notice(e.message||String(e),'err'));
+
+// While the reviewer page is open, automatically detect a later
+// Rony or Julio submission and merge it into the current review.
+setInterval(checkForNewSubmissions,30000);
 </script>
+<div id="reviewBuildMarker">REVIEW BUILD 5 · LIVE CLIENT SUBMISSION KEY</div>
 </body></html>
