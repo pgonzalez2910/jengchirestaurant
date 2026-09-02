@@ -356,6 +356,15 @@ input,select,button{font:inherit}
 }
 </style>
 
+
+<style id="jc-build-v17">
+#jcBuildMarker{
+  position:fixed;left:6px;bottom:6px;z-index:3;
+  font-size:7px;color:#7f8b96;background:rgba(255,255,255,.78);
+  padding:2px 4px;border-radius:4px;pointer-events:none;
+}
+</style>
+
 </head>
 <body>
 <header>
@@ -692,7 +701,7 @@ async function loadWorkspace(){
 
       const [catRes,draftRes]=await Promise.all([
         db.from('place_order_catalog')
-          .select('id,sort_order,group_sort,display_group,vendor,product_number,product_name,image_url')
+          .select('id,sort_order,group_sort,display_group,vendor,product_number,product_name,image_url,vendor_order_sort,vendor_order_name')
           .eq('user_type',activeUser).eq('active',true).order('sort_order'),
         db.from('place_order_drafts')
           .select('*').eq('order_date',date).eq('user_type',activeUser)
@@ -929,9 +938,21 @@ async function submitOrder(){
 
   // Build the submission ONLY from currently active catalog products
   // whose Order Qty is greater than zero.
+  // ORDER FOR EMAIL / SUBMISSION:
+  // Always follow the Pacific Plus vendor-guide sequence.
+  // Dragging cards on the website does NOT change this email order.
   const orderedRows=catalog
     .map(p=>({p,d:getDraft(p)}))
-    .filter(({d})=>Number(d.qty||0)>0);
+    .filter(({d})=>Number(d.qty||0)>0)
+    .sort((a,b)=>{
+      const av=Number.isFinite(Number(a.p.vendor_order_sort))
+        ? Number(a.p.vendor_order_sort)
+        : 1000000 + (Number(a.p.group_sort||9999)*1000) + Number(a.p.sort_order||9999);
+      const bv=Number.isFinite(Number(b.p.vendor_order_sort))
+        ? Number(b.p.vendor_order_sort)
+        : 1000000 + (Number(b.p.group_sort||9999)*1000) + Number(b.p.sort_order||9999);
+      return av-bv || String(a.p.product_name||'').localeCompare(String(b.p.product_name||''));
+    });
 
   if(!orderedRows.length){
     notice('Enter at least one Order Qty before submitting.','error');
@@ -953,7 +974,9 @@ async function submitOrder(){
       quantity:Number(d.qty||0),
       vendor:DEFAULT_VENDOR,
       item_code:finalCode,
-      image_url:p.image_url||d.image_url||''
+      image_url:p.image_url||d.image_url||'',
+      vendor_order_sort:Number.isFinite(Number(p.vendor_order_sort)) ? Number(p.vendor_order_sort) : null,
+      vendor_order_name:p.vendor_order_name||''
     };
   });
 
@@ -961,38 +984,33 @@ async function submitOrder(){
   // is still waiting for a Pacific Plus number.
   const missingCodeItems=items.filter(i=>!String(i.item_code||'').trim());
 
-  if(missingCodeItems.length){
-    const names=missingCodeItems.map(i=>i.product_name);
-    const shown=names.slice(0,3).join(', ');
-    const extra=names.length>3?` +${names.length-3} more`:'';
-
-    notice(
-      `Cannot submit yet. Missing Pacific Plus product number for: ${shown}${extra}`,
-      'error',
-      9000
-    );
-
-    // Find and scroll to the first actual ordered product that is missing a code.
-    const firstName=norm(names[0]);
-    const firstProduct=catalog.find(p=>norm(p.product_name)===firstName);
-    if(firstProduct){
-      const card=document.querySelector(
-        `.product-card[data-product-id="${CSS.escape(String(firstProduct.id))}"]`
-      );
-      if(card){
-        card.scrollIntoView({behavior:'smooth',block:'center'});
-        card.style.outline='3px solid #c62828';
-        card.style.outlineOffset='2px';
-        setTimeout(()=>{
-          card.style.outline='';
-          card.style.outlineOffset='';
-        },7000);
-      }
-    }
-    return;
+  // ============================================================
+  // PRELIMINARY ORDER POLICY
+  // ============================================================
+  // Rony and Julio are ALWAYS allowed to submit their preliminary order,
+  // even when one or more products still need a Pacific Plus product #.
+  // Missing codes are passed to the Reviewer Console for resolution.
+  // ONLY the FINAL reviewer email is blocked until all final products
+  // have a verified Pacific Plus number.
+  for(const item of missingCodeItems){
+    item.needs_product_number_review=true;
+    item.code_status='REVIEW REQUIRED';
   }
 
-  if(!confirm(`Submit ${items.length} item(s) for ${date}?`))return;
+  const missingNames=missingCodeItems.map(i=>i.product_name);
+  let submitMessage=`Submit ${items.length} item(s) for ${date}?`;
+
+  if(missingNames.length){
+    const preview=missingNames.slice(0,6).join(', ');
+    const extra=missingNames.length>6?` +${missingNames.length-6} more`:'';
+    submitMessage=
+      `Submit this PRELIMINARY order for ${date}?\n\n`
+      + `⚠ ${missingNames.length} product(s) still need Pacific Plus product-number verification:\n`
+      + `${preview}${extra}\n\n`
+      + `The order WILL still be submitted. The Final Reviewer must verify these product numbers before the final Pacific Plus order can be sent.`;
+  }
+
+  if(!confirm(submitMessage))return;
 
   const btn=document.getElementById('submitBtn');
   btn.disabled=true;
@@ -1068,6 +1086,14 @@ async function sendSubmission(s){
     })));
   }catch(e){console.warn('inventory_submissions history:',e)}
 
+  // Defensive email sort: guarantees the Edge Function receives the items
+  // in Pacific Plus vendor-guide order, including offline-synced submissions.
+  s.items=[...(s.items||[])].sort((a,b)=>{
+    const av=Number.isFinite(Number(a.vendor_order_sort)) ? Number(a.vendor_order_sort) : 9999999;
+    const bv=Number.isFinite(Number(b.vendor_order_sort)) ? Number(b.vendor_order_sort) : 9999999;
+    return av-bv;
+  });
+
   const resp=await fetch(`${SUPABASE_URL}/functions/v1/send-order-notification`,{
     method:'POST',
     headers:{'Content-Type':'application/json','Authorization':`Bearer ${SUPABASE_ANON_KEY}`},
@@ -1114,7 +1140,7 @@ window.addEventListener('online',()=>{updateNetwork();syncAll().then(loadWorkspa
 window.addEventListener('offline',updateNetwork);
 
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js?v=14').catch(e=>console.warn('Service worker:',e));
+  navigator.serviceWorker.register('./sw.js?v=17').catch(e=>console.warn('Service worker:',e));
   navigator.serviceWorker.addEventListener('message',e=>{if(e.data?.type==='SYNC_NOW')syncAll().catch(()=>{})});
 }
 updateNetwork();
@@ -1123,5 +1149,18 @@ document.getElementById('orderDate').value=chicagoYMD();
 const initial=new URL(location.href).searchParams.get('user');
 if(initial==='rony'||initial==='julio')chooseUser(initial);
 </script>
+<div id="jcBuildMarker">BUILD 17 · PRELIMINARY REVIEW</div>
+
+<script id="JC_FORCE_SW_UPDATE_V17">
+window.addEventListener('load',async()=>{
+  if('serviceWorker' in navigator){
+    try{
+      const reg=await navigator.serviceWorker.getRegistration();
+      if(reg)await reg.update();
+    }catch(e){console.warn('SW update',e)}
+  }
+});
+</script>
+
 </body>
 </html>
