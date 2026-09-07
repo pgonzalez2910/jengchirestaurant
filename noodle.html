@@ -4,19 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="description" content="JengChi Noodle Inventory Management System" />
-  <meta name="theme-color" content="#0a0a0a" />
-  <title>JengChi — Noodle Inventory</title>
+  <meta name="theme-color" content="#f4f5f7" />
+  <title>JengChi — Noodle Inventory · Weekly Sold Fixed</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Performance: Tailwind and Font Awesome were removed because this file does not use them. -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
   <style>
     :root {
@@ -362,6 +360,14 @@
     #toast.ok{border-color:rgba(0,122,64,.35)}
     #toast.err{border-color:rgba(198,40,40,.35)}
     @media(min-width:768px){#toast{bottom:28px}}
+
+    /* Performance + accessibility: avoid expensive decorative paint on small screens
+       and respect users who request reduced motion. */
+    @media(max-width:767px){body::before{display:none}}
+    @media(prefers-reduced-motion:reduce){
+      html{scroll-behavior:auto}
+      *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+    }
 
     .hidden{display:none!important}
     .autosave-bar{display:flex;align-items:center;gap:9px;padding:9px 14px;border-radius:9px;font-size:.82rem;font-weight:600;margin-bottom:16px;transition:all .4s}
@@ -894,6 +900,12 @@
       margin-top:12px;background:#fff8e8;border:1px solid #efd79e;border-radius:8px;
       padding:9px 11px;font-size:.7rem;color:#725615
     }
+    .weekly-closed-rule{
+      display:flex;align-items:flex-start;gap:9px;margin-top:12px;margin-bottom:10px;
+      background:#eef7f1;border:1px solid #c9e4d1;border-left:4px solid #2f7d46;
+      border-radius:9px;padding:9px 11px;font-size:.7rem;color:#356247;line-height:1.45
+    }
+    .weekly-closed-rule strong{color:#235d35}
     .weekly-sales-period-head{
       display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;
       margin-top:16px;margin-bottom:8px
@@ -1141,16 +1153,27 @@ let _corpModeSales = 'bar';
 let _corpModeStock = 'bar';
 let _lastChartPeriods = [];
 
+// Derived-data cache. The database data changes far less often than the UI renders.
+// This prevents repeated sorting/deduplication on every card/table calculation.
+let _sessionDataVersion = 0;
+let _sortedSessionsCacheVersion = -1;
+let _sortedSessionsCache = [];
+
 /* ==========================================================
    DATABASE
 ========================================================== */
 async function loadSessionsFromDB() {
   S.loading = true;
   try {
+    // Fetch only columns this page actually uses. This reduces payload size and parse time.
     const [sessRes, countsRes, prodsRes] = await Promise.all([
-      sb.from('inventory_sessions').select('*').order('session_date', { ascending:false }),
-      sb.from('inventory_counts').select('*'),
-      sb.from('production_logs').select('*'),
+      sb.from('inventory_sessions')
+        .select('id,session_date,created_at,notes,status,is_tracking_baseline')
+        .order('session_date', { ascending:false }),
+      sb.from('inventory_counts')
+        .select('session_id,noodle_type,station,quantity'),
+      sb.from('production_logs')
+        .select('session_id,noodle_type,quantity_produced'),
     ]);
 
     if (sessRes.error) throw sessRes.error;
@@ -1172,6 +1195,7 @@ async function loadSessionsFromDB() {
       inventory_counts:countsMap[row.id] || [],
       production_logs:prodsMap[row.id] || [],
     }));
+    invalidateSessionDerivedData();
 
     try {
       localStorage.setItem('jengchi_sessions_cache', JSON.stringify(S.sessions));
@@ -1180,7 +1204,10 @@ async function loadSessionsFromDB() {
     console.error('Supabase load error:', e);
     try {
       const raw = localStorage.getItem('jengchi_sessions_cache');
-      if (raw) S.sessions = JSON.parse(raw);
+      if (raw) {
+        S.sessions = JSON.parse(raw);
+        invalidateSessionDerivedData();
+      }
     } catch(le) {
       S.sessions = [];
     }
@@ -1220,6 +1247,65 @@ function normalizeSession(row) {
     isTrackingBaseline:row.is_tracking_baseline === true,
     calculated:null,
   };
+}
+
+function invalidateSessionDerivedData() {
+  _sessionDataVersion += 1;
+  _sortedSessionsCacheVersion = -1;
+  _sortedSessionsCache = [];
+}
+
+function saveSessionsCache() {
+  try {
+    localStorage.setItem('jengchi_sessions_cache', JSON.stringify(S.sessions));
+  } catch(e) {}
+}
+
+function hydrateSessionsFromCache() {
+  try {
+    const raw = localStorage.getItem('jengchi_sessions_cache');
+    if (!raw) return false;
+    const cached = JSON.parse(raw);
+    if (!Array.isArray(cached) || !cached.length) return false;
+    S.sessions = cached;
+    invalidateSessionDerivedData();
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+// After an RPC save, the browser already has the exact values that were sent.
+// Update that one session locally instead of re-downloading the entire database.
+function upsertSessionInMemory(draft,statusOverride=null) {
+  if (!draft || !draft.date) return null;
+
+  const idx = S.sessions.findIndex(s =>
+    (draft.id && s.id === draft.id) || s.date === draft.date
+  );
+  const existing = idx >= 0 ? S.sessions[idx] : null;
+
+  const session = {
+    ...(existing || {}),
+    id:draft.id || existing?.id || null,
+    date:draft.date,
+    timestamp:existing?.timestamp || draft.timestamp || Date.now(),
+    notes:draft.notes || '',
+    status:statusOverride || draft.status || existing?.status || 'completed',
+    inventory:JSON.parse(JSON.stringify(draft.inventory || blankInventory())),
+    production:JSON.parse(JSON.stringify(draft.production || blankProduction())),
+    countRows:12,
+    productionRows:4,
+    isTrackingBaseline:draft.isTrackingBaseline === true || existing?.isTrackingBaseline === true,
+    calculated:null,
+  };
+
+  if (idx >= 0) S.sessions[idx] = session;
+  else S.sessions.push(session);
+
+  invalidateSessionDerivedData();
+  saveSessionsCache();
+  return session;
 }
 
 function showInlineDbSaved(targetId, text='🐥 Rony, ya está guardado', isError=false) {
@@ -1379,22 +1465,25 @@ function missingCountLabel(sess) {
   It deduplicates by date so one date cannot accidentally appear multiple times.
 */
 function getAllSortedSessions() {
-  const byDate = {};
+  if (_sortedSessionsCacheVersion === _sessionDataVersion) {
+    return _sortedSessionsCache;
+  }
 
-  [...S.sessions]
+  const byDate = new Map();
+  const sorted = [...S.sessions]
     .filter(session => session && session.date)
     .sort((a,b) => {
       if (a.date !== b.date) return a.date > b.date ? 1 : -1;
       return (a.timestamp || 0) - (b.timestamp || 0);
-    })
-    .forEach(session => {
-      byDate[session.date] = session; // latest same-date row wins
     });
 
-  return Object.values(byDate).sort((a,b) => {
-    if (a.date !== b.date) return a.date > b.date ? 1 : -1;
-    return (a.timestamp || 0) - (b.timestamp || 0);
+  sorted.forEach(session => {
+    byDate.set(session.date,session); // latest same-date row wins
   });
+
+  _sortedSessionsCache = Array.from(byDate.values());
+  _sortedSessionsCacheVersion = _sessionDataVersion;
+  return _sortedSessionsCache;
 }
 
 function latestCompleteSession(sessions=S.sessions) {
@@ -1424,12 +1513,25 @@ function getNextSessionForDate(date,currentId=null) {
     : null;
 }
 
+function getNextOperationalSessionForDate(date,currentId=null) {
+  const sessions = getAllSortedSessions();
+  const currentIndex = sessions.findIndex(session => {
+    if (currentId) return session.id === currentId;
+    return session.date === date;
+  });
+
+  if (currentIndex < 0) return null;
+  return sessions.slice(currentIndex + 1).find(hasOperationalInventoryCount) || null;
+}
+
 function clearCalcCaches() {
+  // Backward-compatible cleanup for older cached session objects.
   S.sessions.forEach(session => {
     Object.keys(session).forEach(key => {
       if (key.startsWith('_calcCache')) delete session[key];
     });
   });
+  invalidateSessionDerivedData();
 }
 
 /*
@@ -1446,10 +1548,9 @@ function clearCalcCaches() {
 function calcSold(sess) {
   if (!sess) return {};
 
-  const cacheKey = `_calcCache_fixed_${S.sessions.length}_${sess.id || sess.date}_${sess.countRows || 0}`;
-  if (sess[cacheKey]) return sess[cacheKey];
-
-  const nextSession = getNextSessionForDate(sess.date, sess.id);
+  // Always compare against the next completed operational count.
+  // An autosaved draft between two finished counts must not break the period.
+  const nextSession = getNextOperationalSessionForDate(sess.date, sess.id);
   const currentComplete = hasCompleteCounts(sess);
   const nextComplete = hasCompleteCounts(nextSession);
   const res = {};
@@ -1509,7 +1610,6 @@ function calcSold(sess) {
     };
   });
 
-  sess[cacheKey] = res;
   return res;
 }
 
@@ -1601,7 +1701,7 @@ function nav(view,opts={}) {
 
     case 'packing':
       app.innerHTML = renderPacking();
-      setTimeout(loadPackingLogs,0);
+      setTimeout(() => loadPackingForDate(_packState.date || todayStr()),0);
       break;
 
     case 'history':
@@ -1820,8 +1920,7 @@ function getInventoryBaseline() {
   };
 }
 
-function buildInventoryPeriods() {
-  const sessions = getCompleteSessionsAsc();
+function buildInventoryPeriods(sessions=getCompleteSessionsAsc()) {
   const periods = [];
 
   for (let i = 0; i < sessions.length - 1; i++) {
@@ -2065,7 +2164,7 @@ function renderDash() {
                 <th>Production</th>
                 <th>Available</th>
                 <th>Next Count</th>
-                <th>Sold / Used</th>
+                <th>Sold / Used<br><small>Closed This Week</small></th>
               </tr>
             </thead>
             <tbody>
@@ -2144,8 +2243,7 @@ function triggerAutosave(flashRowKey) {
       S.draft.status = 'draft';
       saveDraftLS();
 
-      await loadSessionsFromDB();
-      clearCalcCaches();
+      upsertSessionInMemory(S.draft,'draft');
 
       setAutosaveStatus(isUpdate ? 'updated' : 'saved');
 
@@ -2691,8 +2789,7 @@ async function persistProduction(showAllRows=false) {
   }
 
   const sessionId = await saveSessionToDB(S.draft);
-  await loadSessionsFromDB();
-  clearCalcCaches();
+  upsertSessionInMemory(S.draft,S.draft.status || 'completed');
 
   const saved = getAllSortedSessions().find(s => s.id === sessionId);
   if (saved) {
@@ -2986,31 +3083,39 @@ function switchPackDate(date) {
   initPackState(date);
   document.getElementById('app').innerHTML = renderPacking();
   loadPackingForDate(date);
-  loadPackingLogs();
 }
 
 async function loadPackingForDate(date) {
   try {
-    const {data,error} = await sb.from('packing_logs').select('*').eq('pack_date',date);
-    if (error || !data?.length) return;
+    const {data,error} = await sb
+      .from('packing_logs')
+      .select('pack_date,noodle_type,pack_size,packs_count,notes')
+      .eq('pack_date',date);
+    if (error) throw error;
 
-    data.forEach(row => {
-      if (_packState.packs[row.noodle_type]) {
-        _packState.packs[row.noodle_type].count = row.packs_count;
-        _packState.packs[row.noodle_type].packSize = row.pack_size;
-      }
-    });
+    if (data?.length) {
+      data.forEach(row => {
+        if (_packState.packs[row.noodle_type]) {
+          _packState.packs[row.noodle_type].count = Number(row.packs_count) || 0;
+          _packState.packs[row.noodle_type].packSize = Number(row.pack_size) || PACK_DEFAULTS[row.noodle_type] || 10;
+        }
+      });
 
-    document.getElementById('app').innerHTML = renderPacking();
-    loadPackingLogs();
-  } catch(e) {}
+      document.getElementById('app').innerHTML = renderPacking();
+    }
+
+    await loadPackingLogs();
+  } catch(e) {
+    console.error('Packing date load error:',e);
+    await loadPackingLogs();
+  }
 }
 
 async function loadPackingLogs() {
   try {
     const {data,error} = await sb
       .from('packing_logs')
-      .select('*')
+      .select('pack_date,noodle_type,pack_size,packs_count,notes,created_at')
       .order('pack_date',{ascending:false})
       .order('created_at',{ascending:false});
 
@@ -3169,7 +3274,7 @@ function getTrackingCompleteSessions() {
 
 function buildWeeklyHistory() {
   const sessions = getTrackingCompleteSessions();
-  const periods = buildInventoryPeriods();
+  const periods = buildInventoryPeriods(sessions);
   const weeks = {};
 
   function ensureWeek(monday) {
@@ -3228,9 +3333,11 @@ function buildWeeklyHistory() {
     });
   });
 
-  // Used / Difference belongs to the week where the period STARTED.
+  // Operational rule: Sold / Used belongs to the week where the period CLOSED.
+  // The ENDING physical count is what makes the sold/used number final.
+  // Example: Thu 09/03 → Mon 09/07 is reported in the week Sep 07–13.
   periods.forEach(period => {
-    const monday = mondayForDate(period.start.date);
+    const monday = mondayForDate(period.end.date);
     const w = ensureWeek(monday);
 
     w.periods.push(period);
@@ -3341,7 +3448,7 @@ function renderPeriodLedger(week) {
   if (!week.periods.length) {
     return `
       <div class="weekly-no-periods">
-        Waiting for the next physical Count. Sold / Used cannot be calculated until a count-to-count period is closed.
+        No Sold / Used period has closed in this week yet. The next physical Count will close the current open inventory period.
       </div>`;
   }
 
@@ -3402,12 +3509,17 @@ function renderPeriodLedger(week) {
   }).join('');
 
   return `
+    <div class="weekly-closed-rule">
+      <span>✓</span>
+      <div><strong>Weekly Sold / Used is recorded when the ending Count closes the period.</strong> A period such as Thu Sep 3 → Mon Sep 7 is therefore shown in the Sep 7–13 week.</div>
+    </div>
+
     <div class="weekly-sales-period-head">
       <div>
-        <h3>Noodles Sold / Used by Inventory Period</h3>
-        <p>Each row measures what moved between two physical Counts. This automatically handles Mon→Wed, Wed→Thu, Thu→Mon, or any other Count schedule.</p>
+        <h3>Weekly Sold / Used · Closed Inventory Periods</h3>
+        <p>Each row uses Starting Count + Production − Ending Count. Periods are assigned to the week of the ending physical Count.</p>
       </div>
-      <span class="weekly-sales-badge">✓ Count-to-count calculation</span>
+      <span class="weekly-sales-badge">✓ Closed-period calculation</span>
     </div>
 
     <div class="weekly-detail-table-wrap">
@@ -3551,7 +3663,7 @@ function renderHist() {
         <div class="weekly-kpi">
           <span>Current Week Sold / Used</span>
           <strong>${latest.usedQty}</strong>
-          <small>${latest.periods.length ? 'from completed count periods' : 'waiting for next count'}</small>
+          <small>${latest.periods.length ? 'from periods closed by counts this week' : 'no period closed this week yet'}</small>
         </div>
 
         <div class="weekly-kpi">
@@ -3586,7 +3698,7 @@ function renderHist() {
         <div>
           <div class="move-section-kicker">WEEKLY LOG</div>
           <h2>Inventory & Production by Week</h2>
-          <p>Open any week to see each noodle and every completed count-to-count period.</p>
+          <p>Open any week to see each noodle and every count-to-count period that closed during that week.</p>
         </div>
       </div>
 
@@ -3596,7 +3708,7 @@ function renderHist() {
         <strong>How this report calculates:</strong>
         Production Qty is the quantity saved in Production. Roll Equivalent = Production Qty ÷ 50.
         Sold / Used = Starting Count + Production − Ending Count.
-        Every physical Count closes the prior period, so Weekly History can show Mon→Wed, Wed→Thu, Thu→Mon, or any other Count-to-count span automatically.
+        Every physical Count closes the prior period. Sold / Used is assigned to the week of that ending Count, so Thu→Mon usage appears in the new Monday week.
       </div>
     </section>`;
 }
@@ -4313,6 +4425,12 @@ document.addEventListener('DOMContentLoaded',async () => {
   if (S.draft && S.draft.date !== todayStr()) {
     S.draft = null;
     S.editId = null;
+  }
+
+  // Fast first paint: show the last verified local snapshot immediately,
+  // then refresh with Supabase as the authoritative source.
+  if (hydrateSessionsFromCache()) {
+    nav('dashboard');
   }
 
   await loadSessionsFromDB();
