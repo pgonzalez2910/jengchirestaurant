@@ -1,25 +1,27 @@
-const CACHE='jc-place-order-shell-v18';
-const IMAGE_CACHE='jc-place-order-images-v18';
+const CACHE='jc-place-order-shell-v25';
+const IMAGE_CACHE='jc-place-order-images-v25';
 const DB_NAME='jc-place-order-offline-v1', DB_VERSION=1;
 
 const SUPABASE_URL="https://kpldzwlftkvjjntgsqxx.supabase.co";
 const SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtwbGR6d2xmdGt2ampudGdzcXh4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDY2MzE5NzAsImV4cCI6MjA2MjIwNzk3MH0.qnWbOQv2RLPsIyO-oRwQkAN2VhmmdhTBt46SweUsLbs";
 
-const PLACE_ORDER_PAGE='./jengchi-place-order.html';
+const PLACE_ORDER_PAGE='./jengchiorder.html';
+const LEGACY_PLACE_ORDER_PAGE='./jengchi-place-order.html';
 const INVENTORY_PAGE='./JengChi_Inventory_Count_Sheet_v8.html';
 
 self.addEventListener('install',event=>event.waitUntil((async()=>{
   const c=await caches.open(CACHE);
 
-  await c.addAll([
-    './',
-    PLACE_ORDER_PAGE,
-    INVENTORY_PAGE
+  await Promise.allSettled([
+    c.add('./'),
+    c.add(PLACE_ORDER_PAGE),
+    c.add(INVENTORY_PAGE)
   ]);
 
   const external=[
     'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2',
-    'https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js'
+    'https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css'
   ];
 
   await Promise.allSettled(external.map(url=>c.add(url)));
@@ -47,24 +49,31 @@ self.addEventListener('fetch',event=>{
 
   const u=new URL(event.request.url);
 
-  // Never intercept live Supabase API/database requests.
   if(u.hostname.endsWith('.supabase.co'))return;
 
-  // Network-first for HTML/navigation.
-  // If offline, return the correct cached app instead of always falling back
-  // to Place Order.
-  if(
-    event.request.mode==='navigate' ||
-    u.pathname.endsWith('/jengchi-place-order.html') ||
-    u.pathname.endsWith('/JengChi_Inventory_Count_Sheet_v8.html')
-  ){
+  const isPlaceOrder=
+    u.pathname.endsWith('/jengchiorder.html') ||
+    u.pathname.endsWith('/jengchi-place-order.html');
+
+  const isInventory=
+    u.pathname.endsWith('/JengChi_Inventory_Count_Sheet_v8.html');
+
+  // Network-first for HTML/navigation so GitHub/hosting updates appear immediately.
+  if(event.request.mode==='navigate' || isPlaceOrder || isInventory){
     event.respondWith((async()=>{
       try{
-        const fresh=await fetch(event.request,{cache:'no-store'});
+        const fresh=await fetch(event.request,{
+          cache:'no-store',
+          headers:{'Cache-Control':'no-cache'}
+        });
 
         if(fresh && fresh.ok){
           const c=await caches.open(CACHE);
           await c.put(event.request,fresh.clone());
+
+          if(isPlaceOrder){
+            await c.put(PLACE_ORDER_PAGE,fresh.clone()).catch(()=>{});
+          }
         }
 
         return fresh;
@@ -72,20 +81,24 @@ self.addEventListener('fetch',event=>{
         const exact=await caches.match(event.request);
         if(exact)return exact;
 
-        if(u.pathname.endsWith('/JengChi_Inventory_Count_Sheet_v8.html')){
+        if(isInventory){
           return (await caches.match(INVENTORY_PAGE)) || Response.error();
         }
 
-        return (await caches.match(PLACE_ORDER_PAGE))
-          || (await caches.match('./'))
-          || Response.error();
+        if(isPlaceOrder || event.request.mode==='navigate'){
+          return (await caches.match(PLACE_ORDER_PAGE))
+            || (await caches.match(LEGACY_PLACE_ORDER_PAGE))
+            || (await caches.match('./'))
+            || Response.error();
+        }
+
+        return Response.error();
       }
     })());
 
     return;
   }
 
-  // Cache product images and CDN libraries.
   if(
     u.hostname==='raw.githubusercontent.com' ||
     u.hostname==='cdn.jsdelivr.net' ||
@@ -96,7 +109,7 @@ self.addEventListener('fetch',event=>{
       const hit=await c.match(event.request);
 
       try{
-        const r=await fetch(event.request);
+        const r=await fetch(event.request,{cache:'no-store'});
 
         if(r.ok||r.type==='opaque'){
           await c.put(event.request,r.clone());
@@ -111,7 +124,6 @@ self.addEventListener('fetch',event=>{
     return;
   }
 
-  // Same-origin assets: live version first, cached version if offline.
   if(u.origin===self.location.origin){
     event.respondWith(
       fetch(event.request,{cache:'no-store'})
@@ -127,11 +139,13 @@ self.addEventListener('fetch',event=>{
   }
 });
 
-// Inventory v8 sends CACHE_URL after service-worker registration.
-// This lets the currently-open inventory URL (including query string)
-// become available for offline reopening.
 self.addEventListener('message',event=>{
   const data=event.data||{};
+
+  if(data.type==='SKIP_WAITING'){
+    self.skipWaiting();
+    return;
+  }
 
   if(data.type!=='CACHE_URL'||!data.url)return;
 
@@ -143,9 +157,7 @@ self.addEventListener('message',event=>{
       if(r && r.ok){
         await c.put(data.url,r.clone());
       }
-    }catch(e){
-      // Keep any previous cached copy.
-    }
+    }catch(e){}
   })());
 });
 
@@ -362,7 +374,7 @@ async function syncPendingCatalogOrders(){
   );
 
   for(const job of jobs){
-    let complete=true;
+    const failed=[];
 
     for(const row of job.value){
       try{
@@ -375,14 +387,11 @@ async function syncPendingCatalogOrders(){
           }
         );
       }catch(e){
-        complete=false;
-        break;
+        failed.push(row);
       }
     }
 
-    if(complete){
-      await put('meta',{key:job.key,value:[]});
-    }
+    await put('meta',{key:job.key,value:failed});
   }
 }
 
