@@ -1,5 +1,5 @@
-const CACHE='jc-place-order-shell-v25';
-const IMAGE_CACHE='jc-place-order-images-v25';
+const CACHE='jc-place-order-shell-v26';
+const IMAGE_CACHE='jc-place-order-images-v26';
 const DB_NAME='jc-place-order-offline-v1', DB_VERSION=1;
 
 const SUPABASE_URL="https://kpldzwlftkvjjntgsqxx.supabase.co";
@@ -395,8 +395,41 @@ async function syncPendingCatalogOrders(){
   }
 }
 
+async function syncPendingMasterSequences(){
+  const meta=await getAll('meta');
+
+  const jobs=meta.filter(
+    x=>
+      String(x.key||'').startsWith('master-sequence-pending:') &&
+      Array.isArray(x.value) &&
+      x.value.length
+  );
+
+  for(const job of jobs){
+    const userType=String(job.key).split(':').pop();
+
+    if(userType!=='rony'&&userType!=='julio')continue;
+
+    try{
+      await rest(
+        'place_order_sequence_master?on_conflict=user_type',
+        'POST',
+        [{
+          user_type:userType,
+          sequence:job.value,
+          updated_at:new Date().toISOString(),
+          updated_by:'service-worker-build26'
+        }],
+        'resolution=merge-duplicates'
+      );
+
+      await put('meta',{key:job.key,value:[]});
+    }catch(e){}
+  }
+}
+
 async function backgroundSync(){
-  await syncPendingCatalogOrders();
+  await syncPendingMasterSequences();
 
   const drafts=(await getAll('drafts')).filter(x=>x.dirty);
 
