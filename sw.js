@@ -1,5 +1,5 @@
-const CACHE='jc-place-order-shell-v26';
-const IMAGE_CACHE='jc-place-order-images-v26';
+const CACHE='jc-place-order-shell-v31';
+const IMAGE_CACHE='jc-place-order-images-v31';
 const DB_NAME='jc-place-order-offline-v1', DB_VERSION=1;
 
 const SUPABASE_URL="https://kpldzwlftkvjjntgsqxx.supabase.co";
