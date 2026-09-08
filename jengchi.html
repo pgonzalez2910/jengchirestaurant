@@ -423,13 +423,10 @@ input,select,button{font:inherit}
 
 
 <style id="jc-build27-sequence-number-only">
-/* BUILD 27 - Card header shows ONLY the editable sequence number.
+/* BUILD 28 - Card header shows ONLY the editable sequence number.
    The blue header itself remains the drag surface. */
 .product-card-head{
-  cursor:grab;
-}
-.product-card-head:active{
-  cursor:grabbing;
+  cursor:default;
 }
 .card-order-tools.sequence-number-only{
   display:flex;
@@ -1313,11 +1310,53 @@ function destroyCategorySorting(){
 }
 
 function refreshCardIndexes(){
-  [...document.querySelectorAll('#catalogGrid .product-card')].forEach((card,i)=>{
-    const index=i+1;
+  const ordered=[...catalog].sort((a,b)=>
+    Number(a.sort_order??9999999)-Number(b.sort_order??9999999) ||
+    String(a.product_name||'').localeCompare(String(b.product_name||''))
+  );
+  const positions=new Map(ordered.map((p,i)=>[String(p.id),i+1]));
+
+  document.querySelectorAll('#catalogGrid .product-card').forEach(card=>{
     const seq=card.querySelector('.sequence-input');
-    if(seq && document.activeElement!==seq)seq.value=String(index);
+    const position=positions.get(String(card.dataset.productId));
+    if(seq && position && document.activeElement!==seq)seq.value=String(position);
   });
+}
+
+function visualGroupForProduct(p,position){
+  const n=norm(p?.product_name);
+
+  // Explicit operational group overrides requested by the user.
+  // Sequence number remains GLOBAL and is NOT changed by these assignments.
+  if(n.includes('hand soap refill'))return 'group3';
+  if(n.includes('tapioca starch'))return 'remaining';
+
+  // Existing default visual grouping for every other product.
+  if(position<=9)return 'group1';
+  if(position<=12)return 'group2';
+  if(position<=42)return 'group3';
+  return 'remaining';
+}
+
+function applySequenceNumberLocally(productId,requested){
+  const ordered=[...catalog].sort((a,b)=>
+    Number(a.sort_order??9999999)-Number(b.sort_order??9999999) ||
+    String(a.product_name||'').localeCompare(String(b.product_name||''))
+  );
+
+  const currentIndex=ordered.findIndex(p=>String(p.id)===String(productId));
+  if(currentIndex<0)return false;
+
+  requested=parseInt(requested,10);
+  if(!Number.isFinite(requested))return false;
+  requested=Math.max(1,Math.min(ordered.length,requested));
+
+  const [moved]=ordered.splice(currentIndex,1);
+  ordered.splice(requested-1,0,moved);
+
+  ordered.forEach((p,index)=>{p.sort_order=(index+1)*10});
+  catalog=ordered;
+  return true;
 }
 
 let sequenceInputTimers=new Map();
@@ -1333,9 +1372,7 @@ function queueSequenceChange(input,productId){
 }
 
 async function changeSequence(input,productId){
-  const grid=input?.closest('.catalog-grid');
-  const card=input?.closest('.product-card');
-  if(!grid||!card||!activeUser)return;
+  if(!input||!activeUser)return;
 
   if(norm(document.getElementById('search')?.value)){
     refreshCardIndexes();
@@ -1343,86 +1380,18 @@ async function changeSequence(input,productId){
     return;
   }
 
-  const cards=[...grid.querySelectorAll('.product-card')];
-  const currentIndex=cards.indexOf(card);
   let requested=parseInt(input.value,10);
   if(!Number.isFinite(requested)){refreshCardIndexes();return}
-  requested=Math.max(1,Math.min(cards.length,requested));
-  input.value=String(requested);
-  const targetIndex=requested-1;
 
-  if(targetIndex!==currentIndex){
-    const without=cards.filter(x=>x!==card);
-    if(targetIndex>=without.length)grid.appendChild(card);
-    else grid.insertBefore(card,without[targetIndex]);
+  if(!applySequenceNumberLocally(productId,requested)){
+    refreshCardIndexes();
+    return;
   }
 
-  // Even when the requested number equals the current number, save the
-  // exact visible sequence so the user's current arrangement is protected.
-  refreshCardIndexes();
-  await persistCategoryOrder(grid);
-}
-
-function flushSequenceBeforeUnload(){
-  const grid=document.querySelector('#catalogGrid .catalog-grid');
-  if(!grid||!activeUser)return;
-
-  // Apply any still-focused SEQ value synchronously before the page leaves.
-  const active=document.activeElement;
-  if(active?.classList?.contains('sequence-input')){
-    const card=active.closest('.product-card');
-    const cards=[...grid.querySelectorAll('.product-card')];
-    if(card&&cards.length){
-      let requested=parseInt(active.value,10);
-      if(Number.isFinite(requested)){
-        requested=Math.max(1,Math.min(cards.length,requested));
-        const currentIndex=cards.indexOf(card);
-        const targetIndex=requested-1;
-        if(targetIndex!==currentIndex){
-          const without=cards.filter(x=>x!==card);
-          if(targetIndex>=without.length)grid.appendChild(card);
-          else grid.insertBefore(card,without[targetIndex]);
-        }
-      }
-    }
-  }
-
-  const ids=[...grid.querySelectorAll('.product-card')]
-    .map(card=>card.dataset.productId).filter(Boolean);
-
-  if(ids.length){
-    ids.forEach((id,index)=>{
-      const p=catalog.find(x=>String(x.id)===String(id));
-      if(p)p.sort_order=(index+1)*10;
-    });
-
-    saveSequenceSnapshotImmediate(ids,activeUser,true);
-
-    // Queue one complete master sequence for the next online sync.
-    const entries=currentCatalogSequenceEntries();
-    saveMasterPendingImmediate(entries,activeUser);
-    saveMeta(masterSequencePendingKey(activeUser),entries).catch(()=>{});
-  }
-}
-
-async function persistCategoryOrder(grid){
-  if(!grid||!activeUser)return;
-
-  const ids=[...grid.querySelectorAll('.product-card')]
-    .map(card=>card.dataset.productId)
-    .filter(Boolean);
-
-  if(!ids.length)return;
-
-  // Update the in-memory master order immediately.
-  ids.forEach((id,index)=>{
-    const p=catalog.find(x=>String(x.id)===String(id));
-    if(p)p.sort_order=(index+1)*10;
-  });
-
+  const ids=currentCatalogSequenceIds();
   const entries=currentCatalogSequenceEntries();
 
-  // Immediate OFFLINE backup so a rapid refresh cannot lose the move.
+  // Save immediately on device.
   saveSequenceSnapshotImmediate(ids,activeUser,true);
   saveMasterPendingImmediate(entries,activeUser);
   saveMeta(`catalog:${activeUser}`,catalog).catch(()=>{});
@@ -1430,55 +1399,53 @@ async function persistCategoryOrder(grid){
 
   pendingOrderCount=1;
   updateCounts();
-  updateSequenceStatus(navigator.onLine?'Saving master…':'Saved locally - master sync pending');
+  updateSequenceStatus(navigator.onLine?'Saving master...':'Saved locally - master sync pending');
 
-  refreshCardIndexes();
+  render();
 
-  // Re-render quickly; visual groups follow the new global sequence.
-  setTimeout(()=>{
-    try{render()}catch(e){console.warn('Render after sequence change:',e)}
-  },20);
-
-  // ONE database write for the complete sequence.
   try{
     await saveMasterSequence(entries,activeUser,{queueOnFailure:true});
   }catch(e){
     console.warn('Master sequence save:',e);
     if(e?.message==='BUILD26_MASTER_TABLE_MISSING'){
-      notice('Build 26 master-sequence SQL has not been installed yet. Your sequence is saved locally until the SQL is run.','error',9000);
+      notice('The master-sequence table is missing. Your sequence is saved locally until Supabase is available.','error',9000);
     }
   }
 }
 
+function flushSequenceBeforeUnload(){
+  if(!activeUser||!catalog.length)return;
+
+  const active=document.activeElement;
+  if(active?.classList?.contains('sequence-input')){
+    const card=active.closest('.product-card');
+    if(card){
+      const requested=parseInt(active.value,10);
+      if(Number.isFinite(requested)){
+        applySequenceNumberLocally(card.dataset.productId,requested);
+      }
+    }
+  }
+
+  const ids=currentCatalogSequenceIds();
+  const entries=currentCatalogSequenceEntries();
+
+  if(ids.length){
+    saveSequenceSnapshotImmediate(ids,activeUser,true);
+    saveMasterPendingImmediate(entries,activeUser);
+    saveMeta(masterSequencePendingKey(activeUser),entries).catch(()=>{});
+    saveMeta(`catalog:${activeUser}`,catalog).catch(()=>{});
+  }
+}
+
+// Build 28: visual groups are independent from the global sequence.
+// Reordering is therefore done by the sequence number only.
+async function persistCategoryOrder(){
+  return;
+}
+
 function initCategorySorting(){
   destroyCategorySorting();
-  if(!window.Sortable)return;
-
-  const searchActive=!!norm(document.getElementById('search')?.value);
-
-  document.querySelectorAll('#catalogGrid .catalog-grid[data-display-group]').forEach((grid,index)=>{
-    const sortable=new Sortable(grid,{
-      group:{name:'jc-all-products',pull:false,put:false},
-      sort:true,
-      disabled:searchActive,
-      handle:'.product-card-head',
-      draggable:'.product-card',
-      filter:'.sequence-input,input,button,select,textarea,a',
-      preventOnFilter:false,
-      animation:120,
-      delay:60,
-      delayOnTouchOnly:true,
-      touchStartThreshold:3,
-      ghostClass:'sortable-ghost',
-      chosenClass:'sortable-chosen',
-      dragClass:'sortable-drag',
-      onEnd:evt=>{
-        if(evt.oldIndex===evt.newIndex)return;
-        persistCategoryOrder(grid).catch(console.warn);
-      }
-    });
-    sortableInstances.push(sortable);
-  });
 }
 
 
@@ -1502,7 +1469,7 @@ async function chooseUser(user){
   document.getElementById('landing').classList.add('hidden');
   document.getElementById('workspace').classList.remove('hidden');
   document.getElementById('title').textContent=`${titleUser(user)} — Place Order`;
-  document.getElementById('subtitle').textContent='Pacific Plus only - ALL PRODUCTS in one list - Reorder by sequence number or drag the blue header - Enter Order Qty only';
+  document.getElementById('subtitle').textContent='Pacific Plus only - Use the sequence number to control the master order - Enter Order Qty only';
   await loadWorkspace();
 }
 function switchUser(){
@@ -1704,54 +1671,26 @@ function render(){
   const host=document.getElementById('catalogGrid');
   const q=norm(document.getElementById('search').value);
 
-  // BUILD 26:
-  // Categories are still ignored. The master sequence is continuous.
-  // Visual group boundaries are based ONLY on the global sequence number.
   const allRows=[...catalog].sort((a,b)=>
     Number(a.sort_order??9999999)-Number(b.sort_order??9999999) ||
     Number(a.group_sort??9999)-Number(b.group_sort??9999) ||
     String(a.product_name||'').localeCompare(String(b.product_name||''))
   );
 
-  const rows=allRows.filter(p=>
+  const globalPosition=new Map(allRows.map((p,i)=>[String(p.id),i+1]));
+
+  const filtered=allRows.filter(p=>
     !q||norm(`${p.product_number||''} ${p.product_name} ${p.display_group||''}`).includes(q)
   );
 
-  if(!rows.length){
+  if(!filtered.length){
     host.innerHTML=`<div class="empty-catalog">No products match the current search.</div>`;
     updateCounts();
     return;
   }
 
-  const globalPosition=new Map(allRows.map((p,i)=>[String(p.id),i+1]));
-
-  function groupHeader(position,total){
-    if(q)return '';
-    if(position===1){
-      return `<div class="sequence-group-break">
-        <span>Group 1</span><span class="range">#1 - #9</span>
-      </div>`;
-    }
-    if(position===10){
-      return `<div class="sequence-group-break">
-        <span>Group 2</span><span class="range">#10 - #12</span>
-      </div>`;
-    }
-    if(position===13){
-      return `<div class="sequence-group-break">
-        <span>Group 3</span><span class="range">#13 - #42</span>
-      </div>`;
-    }
-    if(position===43 && total>42){
-      return `<div class="sequence-group-break remaining">
-        <span>Remaining Products</span><span class="range">#43 - #${total}</span>
-      </div>`;
-    }
-    return '';
-  }
-
-  const cards=rows.map((p,index)=>{
-    const position=q ? globalPosition.get(String(p.id)) : index+1;
+  function cardHtml(p){
+    const position=globalPosition.get(String(p.id));
     const d=getDraft(p);
     const image=p.image_url||d.image_url||'';
     const img=image
@@ -1760,11 +1699,9 @@ function render(){
     const id=btoa(unescape(encodeURIComponent(norm(p.product_name)))).replace(/[^a-z0-9]/gi,'').slice(0,24);
     const qty=Number(d.qty||0);
 
-    const header=groupHeader(position,allRows.length);
-
-    return `${header}<article class="product-card${qty>0?' has-qty':''}" data-product-id="${esc(p.id)}">
+    return `<article class="product-card${qty>0?' has-qty':''}" data-product-id="${esc(p.id)}">
       <div class="product-card-head">
-        <div class="card-order-tools sequence-number-only" title="Drag the blue header to reorder, or enter a sequence number">
+        <div class="card-order-tools sequence-number-only" title="Enter the global sequence number">
           <input class="sequence-input sequence-only-input" type="number" min="1" max="${allRows.length}" step="1"
                  value="${position}" ${q?'disabled':''}
                  aria-label="Sequence number for ${esc(p.product_name)}"
@@ -1793,19 +1730,61 @@ function render(){
         </div>
       </div>
     </article>`;
+  }
+
+  if(q){
+    host.innerHTML=`<section class="catalog-section all-products-section">
+      <div class="catalog-section-title">
+        <span>SEARCH RESULTS</span>
+        <span class="section-reorder-help">Clear search to edit sequence numbers</span>
+        <span class="section-count">${filtered.length}</span>
+      </div>
+      <div class="catalog-grid">${filtered.map(cardHtml).join('')}</div>
+    </section>`;
+    updateCounts();
+    return;
+  }
+
+  const groups={
+    group1:[],
+    group2:[],
+    group3:[],
+    remaining:[]
+  };
+
+  for(const p of allRows){
+    const pos=globalPosition.get(String(p.id));
+    groups[visualGroupForProduct(p,pos)].push(p);
+  }
+
+  const sections=[
+    ['group1','GROUP 1'],
+    ['group2','GROUP 2'],
+    ['group3','GROUP 3'],
+    ['remaining','REMAINING PRODUCTS']
+  ].map(([key,label])=>{
+    const rows=groups[key];
+    if(!rows.length)return '';
+    return `
+      <div class="sequence-group-break${key==='remaining'?' remaining':''}">
+        <span>${label}</span>
+        <span class="range">${rows.length} products</span>
+      </div>
+      <div class="catalog-grid" data-display-group="${key}">
+        ${rows.map(cardHtml).join('')}
+      </div>`;
   }).join('');
 
   host.innerHTML=`<section class="catalog-section all-products-section">
     <div class="catalog-section-title">
       <span>MASTER PRODUCT SEQUENCE</span>
-      <span class="section-reorder-help">${q?'Clear search to reorder':'Sequence number controls the master order - drag the blue header or type a number - Supabase Master autosave'}</span>
+      <span class="section-reorder-help">The number is the global master sequence - group placement is independent</span>
       <span class="section-count">${allRows.length}</span>
     </div>
-    <div class="catalog-grid" data-display-group="MASTER SEQUENCE">${cards}</div>
+    ${sections}
   </section>`;
 
   updateCounts();
-  requestAnimationFrame(initCategorySorting);
 }
 
 function changeQtyCard(input,productId){
@@ -2140,7 +2119,7 @@ document.getElementById('orderDate').value=chicagoYMD();
 const initial=new URL(location.href).searchParams.get('user');
 if(initial==='rony'||initial==='julio')chooseUser(initial);
 </script>
-<div id="jcBuildMarker">BUILD 27 - MASTER SEQUENCE - NUMBER ONLY</div>
+<div id="jcBuildMarker">BUILD 28 - MASTER SEQUENCE - CUSTOM GROUPS</div>
 
 <script id="JC_FORCE_SW_UPDATE_V17">
 window.addEventListener('load',async()=>{
