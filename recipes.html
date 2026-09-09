@@ -229,7 +229,8 @@ table.grid{width:100%;border-collapse:separate;border-spacing:0;min-width:1000px
 <main>
 <div id="globalMessage" class="message"></div>
 <nav class="tabs">
-  <button class="tab active" data-panel="recipesPanel"><i class="fa-solid fa-book-open"></i> Recipe Book</button>
+  <button class="tab active" data-panel="recipesPanel" data-library-mode="all"><i class="fa-solid fa-book-open"></i> Recipe Book</button>
+  <button class="tab" data-panel="recipesPanel" data-library-mode="special"><i class="fa-solid fa-star"></i> Special</button>
   <button class="tab" data-panel="dashboardPanel" data-master-only style="display:none"><i class="fa-solid fa-gauge-high"></i> Master Control</button>
   <button class="tab" data-panel="matchPanel" data-master-only style="display:none"><i class="fa-solid fa-magnifying-glass"></i> Product Match</button>
   <button class="tab" data-panel="productsPanel" data-master-only style="display:none"><i class="fa-solid fa-boxes-stacked"></i> Product Master</button>
@@ -241,8 +242,8 @@ table.grid{width:100%;border-collapse:separate;border-spacing:0;min-width:1000px
   <div class="studio">
     <aside class="library">
       <div class="library-head">
-        <h2>Recipe Library</h2>
-        <p>All recipes organized by category and recipe group.</p>
+        <h2 id="libraryTitle">Recipe Library</h2>
+        <p id="librarySubtitle">All recipes organized by category and recipe group.</p>
       </div>
       <div class="library-tools">
         <input id="librarySearch" type="search" placeholder="Search recipes...">
@@ -459,6 +460,7 @@ const saveTimers=new Map();
 let isMaster=false;
 let masterToken=sessionStorage.getItem("jc_recipe_master_token")||"";
 let masterDisplayName=sessionStorage.getItem("jc_recipe_master_name")||"";
+let libraryMode="all";
 
 const RECIPE_UNIT_OPTIONS=[
   "oz","lb","fl oz",
@@ -489,6 +491,12 @@ function formatQty(value){
   if(value===null || value===undefined || value==="") return "";
   const n=Number(value);
   return Number.isFinite(n) ? n.toFixed(2) : "";
+}
+
+function formatRecipePortion(value){
+  if(value===null || value===undefined || value==="") return "—";
+  const n=Number(value);
+  return Number.isFinite(n) ? n.toFixed(3) : "—";
 }
 
 function showMessage(text,type="info"){const el=$("globalMessage");el.className="message show "+type;el.textContent=text}
@@ -650,9 +658,30 @@ async function restoreMasterSession(){
 }
 
 
-document.querySelectorAll(".tab").forEach(btn=>btn.addEventListener("click",()=>{
+document.querySelectorAll(".tab").forEach(btn=>btn.addEventListener("click",async()=>{
   document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b===btn));
   document.querySelectorAll(".panel").forEach(p=>p.classList.toggle("active",p.id===btn.dataset.panel));
+
+  if(btn.dataset.panel==="recipesPanel"){
+    libraryMode=btn.dataset.libraryMode||"all";
+    renderLibrary();
+
+    if(libraryMode==="special"){
+      const specialRows=masterRows.filter(r=>String(r.category||"").toLowerCase()==="special");
+      const currentIsSpecial=String(currentRecipeData?.recipe?.category||"").toLowerCase()==="special";
+      if(specialRows.length && !currentIsSpecial){
+        await openRecipe(specialRows[0].recipe_key,{resetHistory:true});
+      }
+    }else{
+      const currentIsSpecial=String(currentRecipeData?.recipe?.category||"").toLowerCase()==="special";
+      if(currentIsSpecial){
+        const firstRegular=masterRows.find(r=>String(r.category||"").toLowerCase()!=="special" && r.component_type==="FINISHED_DUMPLING")
+          || masterRows.find(r=>String(r.category||"").toLowerCase()!=="special");
+        if(firstRegular) await openRecipe(firstRegular.recipe_key,{resetHistory:true});
+      }
+    }
+  }
+
   if(btn.dataset.panel==="matchPanel") loadUnresolved();
   if(btn.dataset.panel==="productsPanel") searchProductsMaster();
 }));
@@ -704,7 +733,19 @@ function renderDashboard(){
 
 function renderLibrary(){
   const q=$("librarySearch").value.trim().toLowerCase();
-  const filtered=masterRows.filter(r=>!q||[r.recipe_name,r.recipe_group,r.category,r.component_type,r.sheet_name].join(" ").toLowerCase().includes(q));
+
+  const specialMode=libraryMode==="special";
+  $("libraryTitle").textContent=specialMode?"Special Recipes":"Recipe Library";
+  $("librarySubtitle").textContent=specialMode
+    ?"Special combination recipes and sampler presentations."
+    :"All recipes organized by category and recipe group.";
+
+  const filtered=masterRows.filter(r=>{
+    const isSpecial=String(r.category||"").toLowerCase()==="special";
+    if(specialMode ? !isSpecial : isSpecial) return false;
+    return !q||[r.recipe_name,r.recipe_group,r.category,r.component_type,r.sheet_name].join(" ").toLowerCase().includes(q);
+  });
+
   const byCategory={};
   filtered.forEach(r=>{
     byCategory[r.category]??={};
@@ -793,6 +834,7 @@ function renderRecipeEditor(){
   const r=data.recipe, ingredients=data.ingredients||[], group=data.group_recipes||[], used=data.used_in||[];
   const calc=data.calculation||{};
   const isFinished=r.component_type==="FINISHED_DUMPLING";
+  const isSpecial=String(r.category||"").toLowerCase()==="special";
   const canEdit=isMaster;
   const back=recipeHistory[recipeHistory.length-1];
   $("recipeEditor").innerHTML=`
@@ -816,13 +858,15 @@ function renderRecipeEditor(){
           <div class="control-box"><div class="control-label">CT Recipe #</div><input data-meta="ct_recipe_no" ${canEdit?"":"readonly"} value="${esc(r.ct_recipe_no||"")}" placeholder="Add CT Recipe #"></div>
           <div class="control-box">
             <div class="control-label">${
-              isFinished
-                ? "Finished Portion / Yield"
-                : r.component_type==="DOUGH"
-                  ? "Production Yield — Synced with Filling"
-                  : r.component_type==="FILLING"
-                    ? "Production Yield — Synced with Dough"
-                    : "Production Yield"
+              String(r.category||"").toLowerCase()==="special"
+                ? "Total Pieces / Yield"
+                : isFinished
+                  ? "Finished Portion / Yield"
+                  : r.component_type==="DOUGH"
+                    ? "Production Yield — Synced with Filling"
+                    : r.component_type==="FILLING"
+                      ? "Production Yield — Synced with Dough"
+                      : "Production Yield"
             }</div>
             <input
               data-meta="yield_text"
@@ -857,6 +901,17 @@ function renderRecipeEditor(){
                 <i class="fa-solid fa-arrows-rotate"></i>
                 <span><strong>PRODUCTION YIELD IS SYNCHRONIZED.</strong> You can edit it here or on the Filling tab. Changing either one automatically updates the other and recalculates the Finished Dumpling.</span>
               </div>` : ""}
+            ${isSpecial ? `
+              <div class="auto-calc-banner" style="align-items:flex-start">
+                <i class="fa-solid fa-calculator"></i>
+                <span>
+                  <strong>SPECIAL RECIPE — PIECE-TO-RECIPE CONVERSION.</strong>
+                  The first column now shows the exact CrunchTime quantity to use.
+                  It is calculated automatically as <strong>Sampler Pieces ÷ Source Recipe Yield</strong>.
+                  Example: 3 pieces ÷ 8 pieces = <strong>0.375 CT recipe</strong>.
+                  The small line under the quantity shows the piece calculation for reference.
+                </span>
+              </div>` : ""}
             ${isFinished ? `
               <div class="auto-calc-banner">
                 <i class="fa-solid fa-calculator"></i>
@@ -864,9 +919,27 @@ function renderRecipeEditor(){
                 <span class="formula">${esc(calc.formula||"Source oz × portion size ÷ production yield")} · Yield ${esc(calc.portion_size||"")} / Production ${esc(calc.production_yield||"")}</span>
               </div>` : ""}
             <table class="recipe-table">
-              <thead><tr><th>QTY</th><th>UNIT</th><th>PRODUCT / INGREDIENT</th><th>PRODUCT #</th><th>VENDOR</th><th></th></tr></thead>
+              <thead>
+                ${isSpecial ? `
+                  <tr>
+                    <th>CT RECIPE QTY</th>
+                    <th>RECIPE COMPONENT</th>
+                    <th>CT RECIPE #</th>
+                    <th></th>
+                  </tr>
+                ` : `
+                  <tr>
+                    <th>QTY</th>
+                    <th>UNIT</th>
+                    <th>PRODUCT / INGREDIENT</th>
+                    <th>PRODUCT #</th>
+                    <th>VENDOR</th>
+                    <th></th>
+                  </tr>
+                `}
+              </thead>
               <tbody>
-                ${ingredients.map(i=>ingredientRowHtml(i,isFinished)).join("")}
+                ${ingredients.map(i=>ingredientRowHtml(i,isFinished,isSpecial)).join("")}
               </tbody>
             </table>
 
@@ -898,13 +971,20 @@ function renderRecipeEditor(){
   attachRecipeAutoSave();
 }
 
-function ingredientRowHtml(i,isFinished=false){
-  const linked=i.linked_recipe_key?`<span class="link" onclick="linkedOpen('${esc(i.linked_recipe_key)}')">${esc(i.product_name)}</span>`:esc(i.product_name);
+function ingredientRowHtml(i,isFinished=false,isSpecial=false){
+  const linked=i.linked_recipe_key
+    ? `<span class="link" onclick="linkedOpen('${esc(i.linked_recipe_key)}')">${esc(i.product_name)}</span>`
+    : esc(i.product_name);
+
+  const linkedRecipeOnly=!!i.linked_recipe_key && !i.product_code;
   const rowReadOnly=isFinished || !isMaster;
   const ro=rowReadOnly?"readonly":"";
-  const codeCell=rowReadOnly
-    ? `<span>${esc(i.product_code||"")}</span>`
-    : `<div class="product-combo">
+
+  const codeCell=linkedRecipeOnly
+    ? `<span class="${i.linked_ct_recipe_no ? "" : "badge warn"}">${esc(i.linked_ct_recipe_no||"CT # NOT SET")}</span>`
+    : rowReadOnly
+      ? `<span>${esc(i.product_code||"")}</span>`
+      : `<div class="product-combo">
         <input
           class="product-code-input"
           data-grid-field="product_code"
@@ -919,10 +999,37 @@ function ingredientRowHtml(i,isFinished=false){
         <div id="productCombo_${esc(i.id)}" class="product-combo-menu"></div>
       </div>`;
 
+  // SPECIAL combination recipes use individual pieces from an existing
+  // finished recipe. The CT recipe quantity is therefore fractional.
+  if(isSpecial && linkedRecipeOnly){
+    const sourceYield=i.linked_recipe_yield;
+    const sourceYieldText=sourceYield===null || sourceYield===undefined
+      ? esc(i.linked_recipe_yield_text||"NOT SET")
+      : `${esc(formatQty(sourceYield))} pcs`;
+
+    const ctQty=formatRecipePortion(i.linked_recipe_portion);
+    const conversionOk=ctQty!=="—";
+
+    return `<tr data-ingredient-id="${esc(i.id)}">
+      <td style="text-align:center;min-width:145px">
+        <strong class="${conversionOk?"":"badge warn"}">${conversionOk?esc(ctQty)+" recipe":"YIELD NOT SET"}</strong>
+        ${conversionOk
+          ? `<small style="display:block;color:var(--muted);margin-top:4px">${esc(formatQty(i.quantity))} pcs ÷ ${esc(formatQty(sourceYield))} pcs</small>`
+          : ""}
+      </td>
+      <td>
+        <strong>${esc(i.product_name||i.source_name||"")}</strong>
+        <small style="display:block;margin-top:3px">${linked}</small>
+      </td>
+      <td class="code">${codeCell}</td>
+      <td>${rowReadOnly?"":`<button class="ghost" title="Delete ingredient" onclick="deleteIngredient('${esc(i.id)}')"><i class="fa-regular fa-trash-can"></i></button>`}</td>
+    </tr>`;
+  }
+
   return `<tr data-ingredient-id="${esc(i.id)}">
     <td class="qty"><input ${ro} data-ing="quantity" data-grid-field="quantity" inputmode="decimal" value="${esc(formatQty(i.quantity))}"></td>
     <td class="unit">${unitSelectHtml(i.unit,rowReadOnly)}</td>
-    <td>${rowReadOnly
+    <td>${rowReadOnly || linkedRecipeOnly
       ? `<span>${esc(i.product_name||i.source_name||"")}</span>${i.linked_recipe_key?`<small style="display:block;margin-top:3px">${linked}</small>`:""}`
       : `<input data-ing="source_name" data-grid-field="source_name" value="${esc(i.source_name||i.product_name||"")}">${i.linked_recipe_key?`<small style="display:block;margin-top:3px">${linked}</small>`:""}`}</td>
     <td class="code">${codeCell}</td>
