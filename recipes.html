@@ -343,8 +343,8 @@ table.grid{width:100%;border-collapse:separate;border-spacing:0;min-width:1000px
     <div class="card-body">
       <div class="access-security-note">
         This dashboard records website security/access metadata such as session time, IP address, browser/device information,
-        approximate network location when available, last recipe/page activity, and Master Login events.
-        Browser security prevents a website from reliably reading a person's Windows computer name or exact physical location.
+        approximate IP-based network location when available, last recipe/page activity, and Master Login events.
+        The Equipment Name/Model column uses browser/device information that is actually available. On Android it can often show the hardware model; on Windows/macOS it usually shows a generic label such as Windows PC or Mac because browsers do not expose the private computer hostname.
       </div>
 
       <div class="access-toolbar">
@@ -381,16 +381,17 @@ table.grid{width:100%;border-collapse:separate;border-spacing:0;min-width:1000px
               <th>IP Address</th>
               <th>Access Count</th>
               <th>Duration</th>
+              <th>Equipment Name / Model</th>
               <th>Device / Computer</th>
               <th>Browser / User Agent</th>
               <th>Screen</th>
-              <th>Approx. Location</th>
+              <th>IP Approx. Location</th>
               <th>Last Activity</th>
               <th>Master Login</th>
             </tr>
           </thead>
           <tbody id="accessLogRows">
-            <tr><td colspan="10" class="placeholder">Open Access Logs to load history.</td></tr>
+            <tr><td colspan="11" class="placeholder">Open Access Logs to load history.</td></tr>
           </tbody>
         </table>
       </div>
@@ -622,13 +623,43 @@ function ensureAccessIds(){
   }
 }
 
+function browserNameFromUa(ua=""){
+  if(/Edg\//i.test(ua)) return "Microsoft Edge";
+  if(/OPR\//i.test(ua)) return "Opera";
+  if(/Chrome\//i.test(ua) && !/Edg\//i.test(ua)) return "Google Chrome";
+  if(/Firefox\//i.test(ua)) return "Mozilla Firefox";
+  if(/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) return "Safari";
+  return "Browser";
+}
+
+function modelFromUa(ua=""){
+  // Android user agents commonly expose a hardware model between Android info and Build/.
+  const androidModel=ua.match(/Android[^;]*;\s*([^;)]+?)(?:\s+Build\/|\))/i);
+  if(androidModel?.[1]){
+    const cleaned=androidModel[1].replace(/^wv;\s*/i,"").trim();
+    if(cleaned && !/^en-us$/i.test(cleaned)) return cleaned;
+  }
+  if(/iPhone/i.test(ua)) return "iPhone";
+  if(/iPad/i.test(ua)) return "iPad";
+  if(/Macintosh/i.test(ua)) return "Mac";
+  if(/Windows/i.test(ua)) return "Windows PC";
+  return "";
+}
+
 function accessDeviceInfo(){
   const ua=navigator.userAgent||"";
   const platform=navigator.userAgentData?.platform||navigator.platform||"Unknown";
   const mobile=navigator.userAgentData?.mobile ?? /Android|iPhone|iPad|Mobile/i.test(ua);
+  const browser_name=browserNameFromUa(ua);
+  const fallbackModel=modelFromUa(ua);
+  const equipment_name=fallbackModel || `${platform} ${mobile?"Device":"Computer"}`;
+
   return {
     platform,
     device_type:mobile?"Mobile / Tablet":"Desktop / Laptop",
+    equipment_name,
+    device_model:fallbackModel,
+    browser_name,
     screen_width:window.screen?.width||null,
     screen_height:window.screen?.height||null,
     timezone:Intl.DateTimeFormat().resolvedOptions().timeZone||"",
@@ -637,6 +668,32 @@ function accessDeviceInfo(){
     current_path:location.pathname||"/",
     current_activity:accessLastActivity
   };
+}
+
+async function enrichEquipmentFromClientHints(){
+  try{
+    if(!navigator.userAgentData?.getHighEntropyValues) return;
+    const hints=await navigator.userAgentData.getHighEntropyValues([
+      "model","platformVersion","architecture","bitness","fullVersionList"
+    ]);
+    const model=String(hints.model||"").trim();
+    const browser=(hints.fullVersionList||[])
+      .map(x=>`${x.brand} ${x.version}`)
+      .join(", ");
+
+    if(model || browser){
+      await accessTrack("equipment",{
+        equipment_name:model||undefined,
+        device_model:model||undefined,
+        browser_name:browser||undefined,
+        platform_version:hints.platformVersion||undefined,
+        architecture:hints.architecture||undefined,
+        bitness:hints.bitness||undefined
+      });
+    }
+  }catch(error){
+    console.debug("Client Hints unavailable:",error?.message||error);
+  }
 }
 
 async function accessTrack(action="heartbeat",extra={}){
@@ -676,6 +733,7 @@ function accessSetActivity(text){
 function startAccessTracking(){
   ensureAccessIds();
   accessTrack("start");
+  setTimeout(enrichEquipmentFromClientHints,600);
   clearInterval(accessHeartbeatTimer);
   accessHeartbeatTimer=setInterval(()=>accessTrack("heartbeat"),60000);
 
@@ -723,7 +781,7 @@ function shortUserAgent(ua){
 async function loadAccessLogs(){
   if(!isMaster) return;
   const tbody=$("accessLogRows");
-  tbody.innerHTML='<tr><td colspan="10" class="placeholder"><i class="fa-solid fa-circle-notch fa-spin"></i> Loading access history...</td></tr>';
+  tbody.innerHTML='<tr><td colspan="11" class="placeholder"><i class="fa-solid fa-circle-notch fa-spin"></i> Loading access history...</td></tr>';
 
   try{
     const result=await adminRpc("jc_recipe_admin_get_access_logs",{
@@ -747,7 +805,7 @@ async function loadAccessLogs(){
       </div>`).join("");
 
     tbody.innerHTML=rows.length?rows.map(row=>{
-      const location=[row.city,row.region,row.country_code].filter(Boolean).join(", ")||"Not available";
+      const location=[row.city,row.region,row.country_code].filter(Boolean).join(", ")||"Location pending / unavailable";
       const loginText=Number(row.master_login_successes||0)>0
         ? `${row.master_login_successes} success`
         : Number(row.master_login_failures||0)>0
@@ -759,16 +817,20 @@ async function loadAccessLogs(){
         <td class="mono">${esc(row.ip_address||"-")}</td>
         <td style="text-align:center"><strong>${esc(row.total_accesses||1)}</strong><span class="access-sub">Visit #${esc(row.access_number||1)}</span></td>
         <td class="nowrap"><strong>${esc(formatDuration(row.duration_seconds||0))}</strong></td>
+        <td>
+          <span class="access-device">${esc(row.equipment_name||row.device_model||"Unknown equipment")}</span>
+          ${row.device_model&&row.device_model!==row.equipment_name?`<span class="access-sub">${esc(row.device_model)}</span>`:""}
+        </td>
         <td><span class="access-device">${esc(row.device_type||"Unknown")}</span><span class="access-sub">${esc(row.platform||"Unknown platform")}</span></td>
-        <td><span class="access-sub" title="${esc(row.user_agent||"")}">${esc(shortUserAgent(row.user_agent))}</span></td>
+        <td><span class="access-sub" title="${esc(row.user_agent||"")}">${esc(row.browser_name||shortUserAgent(row.user_agent))}</span><span class="access-sub">${esc(shortUserAgent(row.user_agent))}</span></td>
         <td class="nowrap">${row.screen_width&&row.screen_height?`${esc(row.screen_width)} × ${esc(row.screen_height)}`:"-"}</td>
         <td>${esc(location)}<span class="access-sub">${esc(row.timezone||"")}</span></td>
         <td>${esc(row.current_activity||row.current_path||"-")}</td>
         <td style="text-align:center">${esc(loginText)}</td>
       </tr>`;
-    }).join(""):'<tr><td colspan="10" class="placeholder">No access records in this period.</td></tr>';
+    }).join(""):'<tr><td colspan="11" class="placeholder">No access records in this period.</td></tr>';
   }catch(error){
-    tbody.innerHTML=`<tr><td colspan="10" class="placeholder" style="color:var(--errorText)">${esc(error.message||error)}</td></tr>`;
+    tbody.innerHTML=`<tr><td colspan="11" class="placeholder" style="color:var(--errorText)">${esc(error.message||error)}</td></tr>`;
   }
 }
 
