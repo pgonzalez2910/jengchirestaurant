@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  <meta name="jc-dumpling-build" content="2026-08-17-v54-database-current-monday" />
+  <meta name="jc-dumpling-build" content="2026-09-14-v55-lobster-juicy-start" />
   <title>Jeng Chi Dumpling Inventory 360 — Monday Weekly System</title>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -5511,7 +5511,7 @@
         <h1>Dumpling Inventory 360</h1>
         <div class="subtitle">Live Supabase workbook · inventory, par, prep, reporting, and week comparison</div>
       </div>
-      <div class="build-chip" title="Current production build">MONDAY BUILD · V54 · DATABASE CURRENT MONDAY</div>
+      <div class="build-chip" title="Current production build">MONDAY BUILD · V57 · DAILY PREP SYNC · LOBSTER SEAFOOD</div>
       <div id="connectionChip" class="connection-chip"><i class="fa-solid fa-circle-notch fa-spin"></i> Connecting to database</div>
     </div>
   </header>
@@ -6537,7 +6537,7 @@
     </section>
 
     <div class="footer">
-      Internal Jeng Chi operational system. Monday remains the canonical weekly date for inventory, sales, par calculations, catering demand, Prep Sheets, and week comparisons. Daily Prep is a separate Wednesday-through-Sunday actual-production database and does not change inventory, sales, par, or Prep Sheet calculations. Pork & Napa Steamed Buns, Vegetarian Steamed Buns, Green Onion Steamed Bun, and Crab Rangoon are counted in the main Monday inventory and flow through the standard Prep Sheet. Specialty sales/Par lines use fixed pieces-per-order conversions; Toast Flower Bun is mapped to Green Onion Steamed Bun (4-count and 8-count). All information is stored through Supabase. A verified cell means the value was saved and read back successfully.
+      Internal Jeng Chi operational system. Monday remains the canonical weekly date for inventory, sales, par calculations, catering demand, Prep Sheets, and week comparisons. Daily Prep is a separate Wednesday-through-Sunday actual-production database and does not change inventory, sales, par, or Prep Sheet calculations. Pork & Napa Steamed Buns, Vegetarian Steamed Buns, Green Onion Steamed Bun, and Crab Rangoon are counted in the main Monday inventory and flow through the standard Prep Sheet. Specialty sales/Par lines use fixed pieces-per-order conversions; Toast Flower Bun is mapped to Green Onion Steamed Bun (4-count and 8-count). Lobster Juicy Dumplings is a Seafood item. Monday inventory/Par/Prep begins 09/14/2026, and Daily Prep always follows the 360 Overview operational Monday; for Monday 09/14/2026 the linked production week is Wednesday 09/09/2026 through Sunday 09/13/2026; earlier operational weeks remain not applicable. All information is stored through Supabase. A verified cell means the value was saved and read back successfully.
     </div>
   </main>
 
@@ -6545,7 +6545,7 @@
     "use strict";
 
     console.info(
-      "Jeng Chi Dumpling Inventory 360 — MONDAY PRODUCTION BUILD V38 — GREEN ONION STEAMED BUN",
+      "Jeng Chi Dumpling Inventory 360 — MONDAY PRODUCTION BUILD V57 — DAILY PREP SYNC + LOBSTER SEAFOOD",
       "Canonical first week: 2026-07-13",
       "Permanent manual-sales planning horizon: 2026-07-13 through 2028-12-31"
     );
@@ -6570,8 +6570,11 @@
     const DAILY_PREP_FIRST_DATE = "2026-08-12";
     const DAILY_PREP_LAST_DATE = LAST_DATABASE_DATE;
 
-    // Additional actual-production items. These exist only in Daily Prep and
-    // do NOT become Monday physical-inventory rows. Quantities are individual pieces.
+    // Daily Prep item definitions that must always be available to the production grid.
+    // Some are also normal Monday inventory items. These definitions are MERGED with
+    // database_grid so a newly-effective item cannot disappear from Daily Prep just
+    // because the currently-loaded workbook was built from a different Monday.
+    // Quantities are individual pieces.
     const DAILY_PREP_EXTRA_ITEMS = [
       {
         item_key:"pork_cabbage_steamed_buns",
@@ -6591,7 +6594,17 @@
       {
         item_key:"crab_rangoon",
         name:"Crab Rangoon",
-        display_group:"Other"
+        display_group:"Other",
+        category:"Seafood"
+      },
+      {
+        item_key:"lobster_juicy_dumplings",
+        name:"Lobster Juicy Dumplings",
+        display_group:"Juicy",
+        group_order:1,
+        sort_order:45,
+        category:"Seafood",
+        prep_code:"R15906"
       }
     ];
 
@@ -6619,6 +6632,23 @@
       Beef: "R15904",
       Vegetarian: "R15907"
     };
+
+    // V56 — item-level operational start dates.
+    // Lobster Juicy Dumplings becomes a live Monday inventory/Par item on 09/14/2026.
+    // Its Daily Prep production week is the preceding Wednesday-Sunday (09/09-09/13).
+    // Historical operational Mondays before 09/14/2026 remain not applicable.
+    const ITEM_OPERATIONAL_START_DATES = {
+      lobster_juicy_dumplings:"2026-09-14"
+    };
+
+    function itemOperationalStartDate(itemKey){
+      return ITEM_OPERATIONAL_START_DATES[String(itemKey||"")] || FIRST_COUNT_DATE;
+    }
+
+    function isItemOperationalOn(itemKey,date){
+      const value=String(date||"");
+      return !value || value>=itemOperationalStartDate(itemKey);
+    }
 
     const client = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}
@@ -8497,6 +8527,7 @@
       "Chicken Curry Dumplings",
       "Fiery Juicy Dumplings",
       "Pork & Crab Juicy Dumplings",
+      "Lobster Juicy Dumplings",
       "Beef Juicy Dumplings",
 
       "Pork & Napa Boiled Dumplings",
@@ -8656,6 +8687,21 @@
           `;
 
           dates.forEach(date=>{
+            const isOperational=isItemOperationalOn(row.item_key,date);
+
+            if(!isOperational){
+              sectionHtml+=`
+                <td
+                  class="${date===selectedDate?"selected-column":""}"
+                  title="${escapeHtml(displayProductName(row.name))} starts Monday ${formatDate(itemOperationalStartDate(row.item_key))}"
+                  style="text-align:center;color:#7a8798;background:#eef1f5;font-weight:800"
+                >
+                  —
+                </td>
+              `;
+              return;
+            }
+
             const hasValue=
               Object.prototype.hasOwnProperty.call(counts,date) &&
               counts[date]!==null;
@@ -8703,22 +8749,50 @@
 
 
 
-    function getDailyPrepSourceRows(){
+    function getDailyPrepSourceRows(referenceDate=null){
       const baseRows=Array.isArray(workbookData?.database_grid)
         ? workbookData.database_grid
         : [];
 
-      const existingKeys=new Set(baseRows.map(row=>String(row.item_key||"")));
-      const extraRows=DAILY_PREP_EXTRA_ITEMS
-        .filter(row=>!existingKeys.has(row.item_key))
-        .map(row=>({
-          ...row,
-          category:"Specialty",
-          weekly_par:null,
-          counts:{}
-        }));
+      // Merge by item_key instead of only appending missing keys.
+      // This is critical for newly-effective products such as Lobster Juicy
+      // Dumplings: even if database_grid contains a stale or partial Lobster
+      // row, the Daily Prep definition below remains authoritative for name,
+      // Juicy grouping, Seafood category, and display order.
+      const mergedRows=new Map();
 
-      return [...baseRows,...extraRows];
+      baseRows.forEach(row=>{
+        const key=String(row?.item_key||"");
+        if(!key) return;
+        mergedRows.set(key,{...row});
+      });
+
+      DAILY_PREP_EXTRA_ITEMS.forEach(extra=>{
+        const key=String(extra?.item_key||"");
+        if(!key) return;
+        const existing=mergedRows.get(key)||{};
+        mergedRows.set(key,{
+          ...existing,
+          ...extra,
+          category:extra.category||existing.category||"Specialty",
+          weekly_par:existing.weekly_par??null,
+          counts:existing.counts||{}
+        });
+      });
+
+      const productionWeekStart=String(
+        referenceDate || dailyPrepWeekStart || addDays(workbookData?.selected_count_date||FIRST_COUNT_DATE,-5)
+      );
+
+      // Daily Prep is Wednesday-Sunday and closes immediately before the
+      // operational Monday. Eligibility must therefore be checked against
+      // that FOLLOWING Monday, not against Wednesday itself.
+      // Example: 09/09-09/13 production belongs to Monday 09/14.
+      const effectiveOperationalMonday=addDays(productionWeekStart,5);
+
+      return [...mergedRows.values()].filter(row=>
+        isItemOperationalOn(row.item_key,effectiveOperationalMonday)
+      );
     }
 
     function specialtyParRecordKey(itemKey,sizeVariant){
@@ -8840,7 +8914,7 @@
 
       const period=getOverviewDailyPrepPeriod(selectedMonday);
       const productionDays=getOverviewDailyPrepChartDays(period);
-      const sourceRows=getDailyPrepSourceRows();
+      const sourceRows=getDailyPrepSourceRows(period.start);
 
       const PORK_BUN_KEY="pork_cabbage_steamed_buns";
       const VEG_BUN_KEY="vegetarian_steamed_buns";
@@ -9225,7 +9299,23 @@
     }
 
     function initializeDailyPrepControls(){
-      if(!isDailyPrepWeekStart(dailyPrepWeekStart)){
+      // V57: Daily Prep defaults to the SAME operational period selected in
+      // the 360 Overview/global Monday selector.
+      // Selected Monday M -> production week Wednesday M-5 through Sunday M-1.
+      // Session storage must never override the currently-selected Overview week.
+      const selectedOperationalMonday=String(
+        workbookData?.selected_count_date ||
+        document.getElementById("overviewWeekSelect")?.value ||
+        document.getElementById("weekSelect")?.value ||
+        getCurrentOperationalMonday() ||
+        FIRST_COUNT_DATE
+      );
+
+      const linkedProductionStart=addDays(selectedOperationalMonday,-5);
+
+      if(isDailyPrepWeekStart(linkedProductionStart)){
+        dailyPrepWeekStart=linkedProductionStart;
+      }else if(!isDailyPrepWeekStart(dailyPrepWeekStart)){
         dailyPrepWeekStart=DAILY_PREP_FIRST_DATE;
       }
 
@@ -9481,7 +9571,7 @@
 
       updateDailyPrepPeriodHeader();
 
-      const sourceRows=getDailyPrepSourceRows();
+      const sourceRows=getDailyPrepSourceRows(dailyPrepWeekStart);
       const days=Array.from({length:5},(_,index)=>addDays(dailyPrepWeekStart,index));
       const dayNames=["Wednesday","Thursday","Friday","Saturday","Sunday"];
       /*
@@ -13999,6 +14089,8 @@
       }
 
       if(panelId==="dailyPrepPanel"){
+        // Always derive the Daily Prep period from the currently selected
+        // 360 Overview operational Monday before reading production records.
         initializeDailyPrepControls();
         loadDailyPrepWeek();
       }
