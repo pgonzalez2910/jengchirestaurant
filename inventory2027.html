@@ -1046,7 +1046,12 @@
     }
     .jc-product-editor-table input:focus{outline:2px solid #2f75b5;outline-offset:-1px;border-color:#2f75b5}
     .jc-product-editor-table input[type="checkbox"]{width:18px;height:18px;accent-color:#17365d}
+    .jc-product-editor-table .control-check{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+    .jc-product-editor-table .control-check small{font-size:7px;font-weight:900;color:#6c7886;text-transform:uppercase;line-height:1}
     .jc-product-editor-table tr.inactive td{background:#fafafa;color:#7b8490}
+    .row-feature-disabled{display:block;text-align:center;color:#98a2ad;font-size:10px;font-weight:900}
+    .count-input.admin-disabled{background:#eceff2!important;border-color:#d5dbe1!important;color:#9aa3ad!important}
+    .unit-cell.admin-disabled{background:#f2f4f6!important;color:#9aa3ad!important;text-decoration:line-through}
     .jc-product-editor-table tr.draft td{background:#fffbea}
     .jc-product-editor-table .center{text-align:center}
     .jc-product-editor-table .source-row{color:#697786;font-size:8px;font-weight:800}
@@ -1556,10 +1561,42 @@
 
     // Keep every spreadsheet row in ALL_INVENTORY_ROWS for reference, but do not
     // render, count, search, export, or save the disabled inventory locations.
-    let INVENTORY_ROWS = ALL_INVENTORY_ROWS.filter(row => !DISABLED_CATEGORIES.has(row.c));
+    let INVENTORY_ROWS = ALL_INVENTORY_ROWS
+      .map(row => ({...row, ...builtInRowControls(row)}))
+      .filter(row => !DISABLED_CATEGORIES.has(row.c) && row.active !== false);
 
     const ALL_CATEGORY_ORDER = ["Back Bar", "Bakery", "Bakery Freezer", "Baking & Seasoning", "Bar Fridge", "Bar Reach In", "Beer Cooler", "Canned Goods & Sauces", "Dry Goods", "Dumpling", "Liquor Room", "Packaging & Paper Supplies", "Produce", "Restroom", "Rice & Soy Sauce", "Tea", "To-Go", "Unassigned", "Walk-In Cooler", "Walk-In Freezer", "Well", "Wine Fridge"];
     let CATEGORY_ORDER = ALL_CATEGORY_ORDER.filter(category => !DISABLED_CATEGORIES.has(category));
+
+    // v7 per-row administrator display controls. Database settings win whenever available.
+    function builtInRowControls(row) {
+      const sourceRow = Number(row?.r);
+      const category = String(row?.c || "");
+      const controls = {
+        calculator_enabled:true,
+        notes_enabled:true,
+        inventory_enabled:true,
+        alt1_enabled:true,
+        alt2_enabled:true,
+        alt3_enabled:true,
+        active:row?.active !== false
+      };
+      if (category === "Bakery" && sourceRow >= 106 && sourceRow <= 114) {
+        controls.calculator_enabled = false;
+        controls.notes_enabled = false;
+      }
+      if (category === "Bakery" && [115,120,10134,10137].includes(sourceRow)) controls.active = false;
+      if (category === "Bakery" && sourceRow === 10135) {
+        controls.alt1_enabled = false;
+        controls.alt2_enabled = false;
+        controls.alt3_enabled = false;
+      }
+      if (category === "Bakery Freezer") {
+        controls.inventory_enabled = false;
+        controls.alt1_enabled = false;
+      }
+      return controls;
+    }
 
 
     // Curated bakery/product-image repository mappings supplied by the user.
@@ -1607,7 +1644,9 @@
       // becomes authoritative so Administrator edits and soft-deletes are respected.
       // The embedded Excel data remains the offline/fallback source and also fills
       // genuinely missing database rows.
-      const embeddedActive = ALL_INVENTORY_ROWS.filter(row => !DISABLED_CATEGORIES.has(row.c));
+      const embeddedActive = ALL_INVENTORY_ROWS
+        .map(row => ({...row, ...builtInRowControls(row)}))
+        .filter(row => !DISABLED_CATEGORIES.has(row.c) && row.active !== false);
       const embeddedOrderByRow = new Map(embeddedActive.map((row,index) => [Number(row.r),index]));
       const seenSourceRows = new Set();
       const merged = [];
@@ -1629,7 +1668,7 @@
         if (seenSourceRows.has(Number(embedded.r))) continue;
         merged.push({
           ...embedded,
-          active:true,
+          ...builtInRowControls(embedded),
           _category_order:ALL_CATEGORY_ORDER.indexOf(embedded.c),
           _display_order:embeddedOrderByRow.get(Number(embedded.r)) ?? Number(embedded.r)
         });
@@ -1674,7 +1713,7 @@
       try {
         const {data, error} = await client
           .from(PRODUCT_TABLE)
-          .select("source_sheet_row,category,category_order,display_order,seq,product_no,product_name,inventory_unit,alt1_unit,alt2_unit,alt3_unit,active")
+          .select("source_sheet_row,category,category_order,display_order,seq,product_no,product_name,inventory_unit,alt1_unit,alt2_unit,alt3_unit,active,calculator_enabled,notes_enabled,inventory_enabled,alt1_enabled,alt2_enabled,alt3_enabled")
           .order("category_order", {ascending:true})
           .order("display_order", {ascending:true});
 
@@ -1692,6 +1731,12 @@
           a2: row.alt2_unit == null ? "" : String(row.alt2_unit),
           a3: row.alt3_unit == null ? "" : String(row.alt3_unit),
           active: row.active !== false,
+          calculator_enabled: row.calculator_enabled !== false,
+          notes_enabled: row.notes_enabled !== false,
+          inventory_enabled: row.inventory_enabled !== false,
+          alt1_enabled: row.alt1_enabled !== false,
+          alt2_enabled: row.alt2_enabled !== false,
+          alt3_enabled: row.alt3_enabled !== false,
           _category_order: row.category_order == null ? null : Number(row.category_order),
           _display_order: row.display_order == null ? null : Number(row.display_order)
         }));
@@ -1702,7 +1747,9 @@
         return true;
       } catch (error) {
         console.warn(`[Inventory] Could not load ${PRODUCT_TABLE}; using embedded fallback.`, error);
-        INVENTORY_ROWS = ALL_INVENTORY_ROWS.filter(row => !DISABLED_CATEGORIES.has(row.c));
+        INVENTORY_ROWS = ALL_INVENTORY_ROWS
+          .map(row => ({...row, ...builtInRowControls(row)}))
+          .filter(row => !DISABLED_CATEGORIES.has(row.c) && row.active !== false);
         CATEGORY_ORDER = ALL_CATEGORY_ORDER.filter(category => !DISABLED_CATEGORIES.has(category));
         return false;
       }
@@ -2177,6 +2224,7 @@
     }
 
     function isWeightRequired(master) {
+      if (master?.inventory_enabled === false) return false;
       const overrideMap = window.JC_WEIGHT_RULES;
       const rowKey = Number(master?.r);
       if (overrideMap && typeof overrideMap.has === "function" && overrideMap.has(rowKey)) {
@@ -3000,11 +3048,11 @@
       return INVENTORY_ROWS.reduce((n,row) => n + (row.c === category ? 1 : 0), 0);
     }
 
-    function quantityInput(row, field, unit) {
-      const disabled = !unit;
+    function quantityInput(row, field, unit, enabled=true) {
+      const disabled = !unit || enabled === false;
       return `
         <input
-          class="count-input"
+          class="count-input${enabled === false ? " admin-disabled" : ""}"
           data-row="${row.r}"
           data-field="${field}"
           type="number"
@@ -3062,6 +3110,7 @@
             </td>
             <td class="category">${htmlEscape(row.c)}</td>
             <td class="tools">
+              ${row.calculator_enabled === false ? "" : `
               <div class="calc-tool-buttons">
                 <button class="weigh-btn" type="button" data-calc-row="${row.r}" data-calc-mode="multiplier" title="Multiply the amount in one bag, pack, box, or case by how many you have">Bag ×</button>
                 <button class="weigh-btn" type="button" data-calc-row="${row.r}" data-calc-mode="weights" title="Add several scale readings and calculate the final total">Weigh</button>
@@ -3071,24 +3120,25 @@
                   <strong id="calc-live-value-${row.r}">—</strong>
                   <small id="calc-live-detail-${row.r}">No calculator entry</small>
                 </div>
-              </div>
+              </div>`}
             </td>
 
-            <td class="qty">${quantityInput(row,"inventory_qty",row.u)}</td>
-            <td class="unit unit-cell ${row.u ? "" : "muted-unit"}">${htmlEscape(row.u || "—")}</td>
+            <td class="qty">${quantityInput(row,"inventory_qty",row.u,row.inventory_enabled !== false)}</td>
+            <td class="unit unit-cell ${row.u ? "" : "muted-unit"} ${row.inventory_enabled === false ? "admin-disabled" : ""}">${htmlEscape(row.u || "—")}</td>
 
-            <td class="qty">${quantityInput(row,"alt1_qty",row.a1)}</td>
-            <td class="unit unit-cell ${row.a1 ? "" : "muted-unit"}">${htmlEscape(row.a1 || "—")}</td>
+            <td class="qty">${quantityInput(row,"alt1_qty",row.a1,row.alt1_enabled !== false)}</td>
+            <td class="unit unit-cell ${row.a1 ? "" : "muted-unit"} ${row.alt1_enabled === false ? "admin-disabled" : ""}">${htmlEscape(row.a1 || "—")}</td>
 
-            <td class="qty">${quantityInput(row,"alt2_qty",row.a2)}</td>
-            <td class="unit unit-cell ${row.a2 ? "" : "muted-unit"}">${htmlEscape(row.a2 || "—")}</td>
+            <td class="qty">${quantityInput(row,"alt2_qty",row.a2,row.alt2_enabled !== false)}</td>
+            <td class="unit unit-cell ${row.a2 ? "" : "muted-unit"} ${row.alt2_enabled === false ? "admin-disabled" : ""}">${htmlEscape(row.a2 || "—")}</td>
 
-            <td class="qty">${quantityInput(row,"alt3_qty",row.a3)}</td>
-            <td class="unit unit-cell ${row.a3 ? "" : "muted-unit"}">${htmlEscape(row.a3 || "—")}</td>
+            <td class="qty">${quantityInput(row,"alt3_qty",row.a3,row.alt3_enabled !== false)}</td>
+            <td class="unit unit-cell ${row.a3 ? "" : "muted-unit"} ${row.alt3_enabled === false ? "admin-disabled" : ""}">${htmlEscape(row.a3 || "—")}</td>
 
             <td class="notes">
+              ${row.notes_enabled === false ? "" : `
               <input class="notes-input" data-row="${row.r}" data-field="notes" type="text" autocomplete="off"
-                     aria-label="${htmlEscape(row.n)} notes" />
+                     aria-label="${htmlEscape(row.n)} notes" />`}
             </td>
             <td class="row-status"><span id="status-${row.r}" class="save-state blank">Blank</span></td>
           </tr>
@@ -4778,15 +4828,21 @@
                       <table class="jc-product-editor-table" aria-label="Administrator product master editor">
                         <thead>
                           <tr>
-                            <th style="width:58px">Active</th>
+                            <th style="width:64px">Show Row</th>
+                            <th style="width:56px">Calc</th>
+                            <th style="width:56px">Notes</th>
+                            <th style="width:56px">Inv.</th>
+                            <th style="width:56px">Alt 1</th>
+                            <th style="width:56px">Alt 2</th>
+                            <th style="width:56px">Alt 3</th>
                             <th style="width:72px">Seq.</th>
                             <th style="width:100px">Product #</th>
-                            <th style="width:270px">Product Name</th>
-                            <th style="width:170px">Category</th>
-                            <th style="width:115px">Inventory Unit</th>
-                            <th style="width:115px">Alt Unit 1</th>
-                            <th style="width:115px">Alt Unit 2</th>
-                            <th style="width:115px">Alt Unit 3</th>
+                            <th style="width:250px">Product Name</th>
+                            <th style="width:160px">Category</th>
+                            <th style="width:110px">Inventory Unit</th>
+                            <th style="width:110px">Alt Unit 1</th>
+                            <th style="width:110px">Alt Unit 2</th>
+                            <th style="width:110px">Alt Unit 3</th>
                             <th style="width:82px">Status</th>
                             <th style="width:120px">Action</th>
                           </tr>
@@ -4796,7 +4852,7 @@
                     </div>
 
                     <div class="jc-product-editor-note">
-                      Edit any field directly. Changes save automatically after you stop typing. <strong>Delete from Website</strong> is a safe delete: it hides the product but preserves prior inventory history. Use <strong>Restore</strong> to bring it back. New products become part of the live inventory master after they are created.
+                      <strong>Checked = enabled on the live website.</strong> Turn Calculator, Notes, Inventory Qty, Alt 1, Alt 2, or Alt 3 on/off for each product. Uncheck <strong>Show Row</strong> to disable the complete line. Every change auto-saves.
                     </div>
                   </section>
 
@@ -5145,6 +5201,12 @@
         alt2_unit:row.alt2_unit == null ? "" : String(row.alt2_unit),
         alt3_unit:row.alt3_unit == null ? "" : String(row.alt3_unit),
         active:row.active !== false,
+        calculator_enabled:row.calculator_enabled !== false,
+        notes_enabled:row.notes_enabled !== false,
+        inventory_enabled:row.inventory_enabled !== false,
+        alt1_enabled:row.alt1_enabled !== false,
+        alt2_enabled:row.alt2_enabled !== false,
+        alt3_enabled:row.alt3_enabled !== false,
         __new:false,
         __status:"saved"
       };
@@ -5179,7 +5241,7 @@
       try {
         const {data,error} = await adminClient
           .from(PRODUCT_TABLE)
-          .select("source_sheet_row,category,category_order,display_order,seq,product_no,product_name,inventory_unit,alt1_unit,alt2_unit,alt3_unit,active")
+          .select("source_sheet_row,category,category_order,display_order,seq,product_no,product_name,inventory_unit,alt1_unit,alt2_unit,alt3_unit,active,calculator_enabled,notes_enabled,inventory_enabled,alt1_enabled,alt2_enabled,alt3_enabled")
           .order("category_order",{ascending:true})
           .order("display_order",{ascending:true});
         if (error) throw error;
@@ -5224,10 +5286,13 @@
         const actionText = inactive ? "Restore" : "Delete from Website";
         return `
           <tr data-product-editor-row="${key}" class="${inactive ? "inactive " : ""}${row.__new ? "draft" : ""}">
-            <td class="center">
-              <input type="checkbox" data-product-field="active" ${inactive ? "" : "checked"} aria-label="Active on website" />
-              <div class="source-row">Row ${key}</div>
-            </td>
+            <td class="center"><div class="control-check"><input type="checkbox" data-product-field="active" ${inactive ? "" : "checked"} aria-label="Show complete row on website" /><small>Row ${key}</small></div></td>
+            <td class="center"><div class="control-check"><input type="checkbox" data-product-field="calculator_enabled" ${row.calculator_enabled === false ? "" : "checked"} aria-label="Calculator enabled" /><small>Bag/Weigh</small></div></td>
+            <td class="center"><div class="control-check"><input type="checkbox" data-product-field="notes_enabled" ${row.notes_enabled === false ? "" : "checked"} aria-label="Notes enabled" /><small>Notes</small></div></td>
+            <td class="center"><div class="control-check"><input type="checkbox" data-product-field="inventory_enabled" ${row.inventory_enabled === false ? "" : "checked"} aria-label="Inventory quantity enabled" /><small>Qty</small></div></td>
+            <td class="center"><div class="control-check"><input type="checkbox" data-product-field="alt1_enabled" ${row.alt1_enabled === false ? "" : "checked"} aria-label="Alt unit 1 enabled" /><small>Alt 1</small></div></td>
+            <td class="center"><div class="control-check"><input type="checkbox" data-product-field="alt2_enabled" ${row.alt2_enabled === false ? "" : "checked"} aria-label="Alt unit 2 enabled" /><small>Alt 2</small></div></td>
+            <td class="center"><div class="control-check"><input type="checkbox" data-product-field="alt3_enabled" ${row.alt3_enabled === false ? "" : "checked"} aria-label="Alt unit 3 enabled" /><small>Alt 3</small></div></td>
             <td><input type="text" data-product-field="seq" value="${htmlEscape(row.seq || "")}" /></td>
             <td><input type="text" data-product-field="product_no" value="${htmlEscape(row.product_no || "")}" /></td>
             <td><input type="text" data-product-field="product_name" value="${htmlEscape(row.product_name || "")}" /></td>
@@ -5244,7 +5309,7 @@
             </td>
           </tr>
         `;
-      }).join("") || `<tr><td colspan="11" style="padding:24px;text-align:center;color:#6f7b89">No matching products.</td></tr>`;
+      }).join("") || `<tr><td colspan="17" style="padding:24px;text-align:center;color:#6f7b89">No matching products.</td></tr>`;
 
       let datalist = document.getElementById("jcProductCategoryList");
       if (!datalist) {
@@ -5310,7 +5375,13 @@
         alt1_unit:String(row.alt1_unit || "").trim() || null,
         alt2_unit:String(row.alt2_unit || "").trim() || null,
         alt3_unit:String(row.alt3_unit || "").trim() || null,
-        active:row.active !== false
+        active:row.active !== false,
+        calculator_enabled:row.calculator_enabled !== false,
+        notes_enabled:row.notes_enabled !== false,
+        inventory_enabled:row.inventory_enabled !== false,
+        alt1_enabled:row.alt1_enabled !== false,
+        alt2_enabled:row.alt2_enabled !== false,
+        alt3_enabled:row.alt3_enabled !== false
       };
     }
 
@@ -5385,6 +5456,12 @@
         alt2_unit:"",
         alt3_unit:"",
         active:true,
+        calculator_enabled:true,
+        notes_enabled:true,
+        inventory_enabled:true,
+        alt1_enabled:true,
+        alt2_enabled:true,
+        alt3_enabled:true,
         __new:true,
         __status:"local"
       };
@@ -6273,23 +6350,23 @@
 
       ui.jcProductEditorBody?.addEventListener("input",event => {
         const input = event.target.closest("[data-product-field]");
-        if (!input) return;
+        if (!input || input.type === "checkbox") return;
         const tr = input.closest("[data-product-editor-row]");
         const row = findAdminProductRow(Number(tr?.dataset.productEditorRow));
         if (!row) return;
         const field = input.dataset.productField;
-        if (field === "active") return;
         row[field] = input.value;
         queueAdminProductAutoSave(row);
       });
 
       ui.jcProductEditorBody?.addEventListener("change",event => {
-        const input = event.target.closest('[data-product-field="active"]');
+        const input = event.target.closest('[data-product-field][type="checkbox"]');
         if (!input) return;
         const tr = input.closest("[data-product-editor-row]");
         const row = findAdminProductRow(Number(tr?.dataset.productEditorRow));
         if (!row) return;
-        row.active = Boolean(input.checked);
+        const field = input.dataset.productField;
+        row[field] = Boolean(input.checked);
         void saveAdminProductRow(row,{immediate:true}).then(() => renderAdminProductEditor());
       });
 
