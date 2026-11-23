@@ -5674,7 +5674,7 @@ main{max-width:1900px;margin:0 auto;padding:18px 14px 55px}
 #jcLibAlternate{white-space:normal}
 .jc-lib-auth-panel{flex-wrap:wrap}
 @media print{.jc-lib-side,.jc-lib-overview,.jc-lib-auth,.jc-lib-file,.jc-lib-tabs,.jc-lib-head button{display:none!important}}
-</style><meta name="jc-recipe-auth-build" content="2026-11-23-username-reset-v3"/></head>
+</style><meta name="jc-recipe-auth-build" content="2026-11-23-central-accounts-v4"/></head>
 <body><header>
 <div class="header-inner">
 <img alt="Jeng Chi Logo" class="logo" src="https://raw.githubusercontent.com/pgonzalez2910/jengchi-product-images/main/jengchilogo.jpg"/>
@@ -5709,12 +5709,12 @@ main{max-width:1900px;margin:0 auto;padding:18px 14px 55px}
     <label>Username<input autocomplete="username" id="jcLibUsername" placeholder="Username" type="text" maxlength="32"/></label>
     <label>Password<input autocomplete="current-password" id="jcLibPassword" placeholder="Password" type="password"/></label>
     <button id="jcLibLogin" type="button"><i class="fa-solid fa-right-to-bracket"></i> Sign in</button>
-    <button id="jcLibForgotPassword" class="secondary" type="button">Forgot password?</button>
+    <button id="jcLibForgotPassword" class="secondary" type="button" style="display:none">Forgot password?</button>
     <button class="secondary" id="jcLibSignOut" style="display:none" type="button">Sign out</button>
     <button class="secondary" disabled id="jcLibReload" type="button">Reload Saved Edits</button>
     <button class="secondary" id="jcLibImport" type="button" disabled style="display:none">Import 73 Workbooks</button>
   </div>
-  <div class="jc-lib-subtle" style="margin-top:8px">No activation email is required for new Recipe Book accounts. Administrators create a username and password; Supabase securely manages passwords and sessions. Your Excel worksheet formatting is unchanged.</div>
+  <div class="jc-lib-subtle" style="margin-top:8px">No activation email is required. Administrators create usernames and passwords from one central user table; passwords are securely hashed, not displayed. Your Excel worksheet formatting is unchanged.</div>
   <div class="jc-lib-error" id="jcLibMessage" style="margin-top:8px" role="status" aria-live="polite"></div>
   <div id="jcLibRecoveryPanel" style="display:none;margin-top:12px;border:1px solid #abc4dc;border-radius:8px;padding:14px;background:#f4f9ff">
     <strong>Choose a new Recipe Book password</strong>
@@ -5734,8 +5734,17 @@ main{max-width:1900px;margin:0 auto;padding:18px 14px 55px}
       <label>Access level<select id="jcLibNewUserRole"><option value="viewer">Viewer — recipes only</option><option value="editor">Editor — change recipes</option></select></label>
       <button id="jcLibCreateUser" type="submit"><i class="fa-solid fa-user-plus"></i> Create User</button>
     </form>
-    <div class="jc-lib-subtle" style="margin:8px 0">Share the temporary password privately with the user. They can sign in immediately using the username and password. Choose a password. Supabase Auth applies any minimum configured for this project.</div>
+    <div class="jc-lib-subtle" style="margin:8px 0">Share the chosen password privately. New accounts are active immediately. The user table stores only salted password hashes, not readable passwords.</div>
     <div id="jcLibUserList" class="jc-lib-subtle">Loading accounts…</div>
+    <div style="margin-top:12px;padding-top:10px;border-top:1px solid #cad6e3">
+      <strong>Set or change an account password</strong>
+      <form id="jcLibAdminResetForm" class="jc-lib-auth-panel" autocomplete="off">
+        <label>Username<select id="jcLibResetUsername" required><option value="">Select username</option></select></label>
+        <label>New password<input id="jcLibResetPassword" type="password" autocomplete="new-password" placeholder="Choose a password" required/></label>
+        <button id="jcLibAdminResetSave" class="secondary" type="submit">Save Password</button>
+      </form>
+      <div class="jc-lib-subtle">Passwords cannot be displayed because they are securely hashed. Administrators can replace them without email activation.</div>
+    </div>
     <div style="margin-top:12px;padding-top:10px;border-top:1px solid #cad6e3">
       <strong>Change my administrator password</strong>
       <form id="jcLibOwnPasswordForm" class="jc-lib-auth-panel" autocomplete="off">
@@ -6046,11 +6055,10 @@ $('jcLibRecoveryForm').addEventListener('submit',async e=>{
     button.disabled=true;
     const {data:{session}}=await getClient().auth.getSession();
     if(!session)throw new Error('The recovery link is missing or has expired. Request another password reset.');
-    const {error}=await getClient().auth.updateUser({password:pwd});
-    if(error)throw error;
+    await accountRequest({action:'set_password',username:'pg9367',password:pwd});
     $('jcLibRecoveryPassword').value='';$('jcLibRecoveryConfirm').value='';
     $('jcLibRecoveryPanel').style.display='none';
-    status('Password saved in Supabase Auth. You can now sign in using your username and new password.');
+    status('Password updated in the central user table and Supabase Auth. Sign in with your username.');
     await afterLogin();
   } catch(err){status('Unable to save the new password: '+(err.message||err),true)}
   finally {button.disabled=false;}
@@ -6059,15 +6067,18 @@ $('jcLibRecoveryForm').addEventListener('submit',async e=>{
 function renderUserList(users){
   const list=$('jcLibUserList');
   if(!users.length){list.textContent='No accounts found.';return;}
-  list.innerHTML='<table style="width:100%;border-collapse:collapse;background:#fff"><thead><tr><th style="text-align:left;padding:7px">Username</th><th style="padding:7px">Role</th><th style="padding:7px">Status</th><th style="padding:7px">Action</th></tr></thead><tbody>'+users.map(u=>{
+  list.innerHTML='<table style="width:100%;border-collapse:collapse;background:#fff"><thead><tr><th style="text-align:left;padding:7px">Username</th><th style="padding:7px">Password</th><th style="padding:7px">Role</th><th style="padding:7px">Status</th><th style="padding:7px">Action</th></tr></thead><tbody>'+users.map(u=>{
     const act=u.access_role==='admin'?'':`<button type="button" class="secondary" data-user-toggle="${esc(u.username)}" data-action="${u.active?'disable':'enable'}" style="min-height:28px;padding:4px 9px;font-size:11px">${u.active?'Disable':'Enable'}</button>`;
-    return `<tr><td style="padding:7px;border-top:1px solid #dae3eb">${esc(u.username.toUpperCase())}</td><td style="text-align:center;padding:7px;border-top:1px solid #dae3eb">${esc(u.access_role)}</td><td style="text-align:center;padding:7px;border-top:1px solid #dae3eb">${u.active?'Active':'Disabled'}</td><td style="text-align:center;padding:7px;border-top:1px solid #dae3eb">${act}</td></tr>`;
+    return `<tr><td style="padding:7px;border-top:1px solid #dae3eb">${esc(u.username.toUpperCase())}</td><td style="text-align:center;padding:7px;border-top:1px solid #dae3eb" title="Password is securely hashed">••••••</td><td style="text-align:center;padding:7px;border-top:1px solid #dae3eb">${esc(u.access_role)}</td><td style="text-align:center;padding:7px;border-top:1px solid #dae3eb">${u.active?'Active':'Disabled'}</td><td style="text-align:center;padding:7px;border-top:1px solid #dae3eb">${act}</td></tr>`;
   }).join('')+'</tbody></table>';
 }
 async function refreshUserList(){
   if(editorRole!=='admin')return;
   const result=await accountRequest({action:'list'});
   renderUserList(result.users||[]);
+  const pick=$('jcLibResetUsername'),previous=pick.value;
+  pick.innerHTML='<option value="">Select username</option>'+(result.users||[]).map(u=>`<option value="${esc(u.username)}">${esc(u.username.toUpperCase())}</option>`).join('');
+  if((result.users||[]).some(u=>u.username===previous))pick.value=previous;
 }
 $('jcLibCreateForm').addEventListener('submit',async e=>{
   e.preventDefault();
@@ -6089,6 +6100,19 @@ $('jcLibUserList').addEventListener('click',async e=>{
   try{const out=await accountRequest({action:b.dataset.action,username:b.dataset.userToggle});status(out.username.toUpperCase()+' is now '+(out.active?'enabled':'disabled'));await refreshUserList();}
   catch(err){status('Account change failed: '+(err.message||err),true);b.disabled=false;}
 });
+$('jcLibAdminResetForm').addEventListener('submit',async e=>{
+  e.preventDefault();
+  if(editorRole!=='admin')return;
+  const username=$('jcLibResetUsername').value,password=$('jcLibResetPassword').value;
+  if(!username||!validChosenPassword(password)){status('Select a username and enter the new password.',true);return;}
+  const button=$('jcLibAdminResetSave');button.disabled=true;
+  try {
+    await accountRequest({action:'set_password',username,password});
+    $('jcLibResetPassword').value='';
+    status('Password for '+username.toUpperCase()+' saved in the central user table and Supabase Auth.');
+  } catch(err){status('Unable to update password: '+(err.message||err),true)}
+  finally{button.disabled=false;}
+});
 $('jcLibOwnPasswordForm').addEventListener('submit',async e=>{
   e.preventDefault();
   if(!loginUser||editorRole!=='admin')return;
@@ -6096,10 +6120,9 @@ $('jcLibOwnPasswordForm').addEventListener('submit',async e=>{
   if(!validChosenPassword(password)){status('Enter the administrator password you want to use.',true);return;}
   if(password!==confirm){status('Passwords do not match.',true);return;}
   try{
-    const {error}=await getClient().auth.updateUser({password});
-    if(error)throw error;
+    await accountRequest({action:'set_password',username:'pg9367',password});
     $('jcLibOwnPassword').value='';$('jcLibOwnPasswordConfirm').value='';
-    status('Administrator password updated in Supabase Auth. Username sign-in is ready.');
+    status('Administrator password updated securely in the central user table and Supabase Auth.');
   }catch(err){status('Password update failed: '+(err.message||err),true);}
 });
 $('jcLibSignOut').addEventListener('click',async()=>{
