@@ -12,11 +12,12 @@ var canEdit=()=>Boolean(user()&&['admin','editor'].includes(bridge()?.getRole())
 var fmt=v=>(v!==''&&v!==null&&v!==undefined&&Number.isFinite(Number(v))?Number(v).toFixed(3):String(v??''));
 var k=(r,c)=>r+':'+c;
 function original(sheet,row,col){
+ sheet=canonicalSheet(sheet);
  var record=(sheet.rows||[]).find(x=>Number(x.r)===Number(row));
  var cell=record?.c?.find(x=>Number(x.c)===Number(col));
  return cell?.v??'';
 }
-const approvedMushroomMasters={"DM-PREP-INTERNAL":{"name":"Dried Mushroom Prep","master":"2aae8bf9-10fb-5051-8e1a-a2fece6d31cc","ids":["2aae8bf9-10fb-5051-8e1a-a2fece6d31cc","b0978670-2650-516c-9111-7e58a290e024","14a4b515-ceda-5c3f-be31-def83e73fefb","00343328-cfd5-58bb-b52f-c2de52ed09f7","44d2072f-2321-5799-bebf-620c88d5889a","af6d1eaa-251d-5f7f-b74d-dc45af81e8a5"],"defaults":{"4:6":"15 lb","8:0":2,"8:1":"lb","8:2":"Produce Mushroom Dried","8:3":"P6758","8:7":"P6758 | Produce Mushroom Dried","9:0":10,"9:1":"qt","9:2":"Tap Water","9:3":"R1326","9:7":"R1326 | Tap Water"}},"FM-PREP-INTERNAL":{"name":"Fungus Mushroom Prep","master":"63854625-ea09-5853-be55-e46f077cd0f3","ids":["63854625-ea09-5853-be55-e46f077cd0f3","a381962a-6796-59f4-8ed7-4bddd27e03fe","69b40037-1d21-5de2-b201-5c9618a3ced1","d71c68d9-dcc6-5f33-9033-69dcfb1d629e"],"defaults":{"4:6":"15 lb","8:0":2.5,"8:1":"lb","8:2":"Mushroom Fungus Strips","8:3":"P2874","8:7":"P2874 | Mushroom Fungus Strips","9:0":18,"9:1":"qt","9:2":"Tap Water","9:3":"R1326","9:7":"R1326 | Tap Water"}}};
+const approvedMushroomMasters={"DM-PREP-INTERNAL":{"name":"Dried Mushroom Prep","master":"2aae8bf9-10fb-5051-8e1a-a2fece6d31cc","ids":["2aae8bf9-10fb-5051-8e1a-a2fece6d31cc","b0978670-2650-516c-9111-7e58a290e024","14a4b515-ceda-5c3f-be31-def83e73fefb","00343328-cfd5-58bb-b52f-c2de52ed09f7","44d2072f-2321-5799-bebf-620c88d5889a","af6d1eaa-251d-5f7f-b74d-dc45af81e8a5"],"defaults":{"4:6":"15 lb","8:0":2,"8:1":"lb","8:2":"Produce Mushroom Dried","8:3":"P6758","8:7":"P6758 | Produce Mushroom Dried","9:0":10,"9:1":"qt","9:2":"Tap Water","9:3":"R1326","9:7":"R1326 | Tap Water"}},"FM-PREP-INTERNAL":{"name":"Fungus Mushroom Prep","master":"63854625-ea09-5853-be55-e46f077cd0f3","ids":["63854625-ea09-5853-be55-e46f077cd0f3","a381962a-6796-59f4-8ed7-4bddd27e03fe","69b40037-1d21-5de2-b201-5c9618a3ced1","d71c68d9-dcc6-5f33-9033-69dcfb1d629e"],"defaults":{"4:6":"15 lb","8:0":2.5,"8:1":"lb","8:2":"Mushroom Fungus Strips","8:3":"P2874","8:7":"P2874 | Mushroom Fungus Strips","9:0":18,"9:1":"qt","9:2":"Tap Water","9:3":"R1326","9:7":"R1326 | Tap Water"}},"SL-INTERNAL":{"name":"Special Lard","master":"4593d49a-4de7-5b2c-94ba-d75738596152","ids":["4593d49a-4de7-5b2c-94ba-d75738596152","c4453b8d-c554-5515-9137-54443c69fe00","36c6cd6b-b059-5aa5-b467-1d7938c23914","6d8cd551-2f20-5005-9069-18a6ccd5f727"],"defaults":{"4:6":"90 lb (5 batches)"}},"PK-J-INTERNAL":{"name":"Pork Jelly","master":"b7d4bffe-ad3a-5584-a923-27739b5efefa","ids":["b7d4bffe-ad3a-5584-a923-27739b5efefa","ab76cd2d-8ae9-54eb-8b4e-7c89a8c8194b"],"defaults":{"4:6":"35 lb","16:0":3.5,"16:1":"bottle","16:2":"Gelatin Mix Unflavored","16:3":"P6712","16:7":"P6712 | Gelatin Mix Unflavored"}}};
 function mushroomMaster(sheet){return Object.values(approvedMushroomMasters).find(g=>g.ids.includes(sheet?.component_id));}
 function canonicalSheet(sheet){const g=mushroomMaster(sheet);return g?(bridge()?.getLibrary()?.sheets||[]).find(x=>x.component_id===g.master)||sheet:sheet;}
 function state(sheet){
@@ -196,6 +197,7 @@ function addedHtml(sheet,item){
  return h+'</tr>';
 }
 function render(sheet,targetId){
+ const master=canonicalSheet(sheet);if(master!==sheet){sheet={...master,id:sheet.id,component_id:sheet.component_id,file:master.file,sheet:sheet.sheet,name:mushroomMaster(sheet).name};}
  var el=document.getElementById(targetId);if(!el||!sheet)return false;
  A.active=sheet;A.selectedCell=null;var heights=sheet.heights||{},widths=sheet.widths||{};
  var cols=Array.from({length:8},(_,i)=>Math.max(58,Math.min(440,Math.round((widths[i]||[14,10,31,19,16,16,18,42][i])*7))));
@@ -323,10 +325,10 @@ function showDependencyReport(sheet,savedIds=null){
  let panel=document.getElementById('jcDependencyReport');
  if(!panel){panel=document.createElement('details');panel.id='jcDependencyReport';panel.className='jc-dependency-report';grid.closest('.je-wb-scroll')?.before(panel);}
  const {group,found,ambiguous}=dependencyReport(sheet);
- const ids=new Set(savedIds||[]),copies=group.matches.filter(x=>x.id!==sheet.id);
+ const ids=new Set(savedIds||[]),copies=group.matches.filter(x=>x.id!==sheet.id);const approved=mushroomMaster(sheet);
  panel.innerHTML='<summary>Recipe dependencies · '+H(group.code||sheet.name)+' · '+found.length+' verified linked worksheet'+(found.length===1?'':'s')+(group.conflicts.length?' · ⚠ Code conflict':'')+'</summary>'+
  '<div class="jc-dependency-body">'+(savedIds?'<p>Saved '+ids.size+' component draft'+(ids.size===1?'':'s')+'. Original workbooks unchanged.</p>':'')+
- copies.map(x=>'<div>✓ '+H(x.file)+' / '+H(x.sheet)+' — '+(ids.has(x.component_id)?'draft synchronized':'matching master')+'</div>').join('')+
+ copies.map(x=>'<div>✓ '+H(x.file)+' / '+H(x.sheet)+' — '+(ids.has(approved?.master||x.component_id)?'shared master draft saved':approved?'shared canonical master':'matching master')+'</div>').join('')+
  group.conflicts.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — different source formula or yield; not merged</div>').join('')+
  found.map(x=>'<div>'+H(x.sheet.file)+' / '+H(x.sheet.sheet)+' — '+H((x.depth===1?'Direct: ':'Indirect: ')+x.kind)+'</div>').join('')+ (ambiguous.length?'<p>Unresolved code references ('+ambiguous.length+') — excluded from verified dependencies:</p>'+ambiguous.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — source not uniquely identified</div>').join(''):'')+
  '<p>Fixed amounts of prepared ingredients remain unchanged. Formula dependencies are recalculated when supported; unresolved formulas require review.</p></div>';
