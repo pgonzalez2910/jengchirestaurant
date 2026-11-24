@@ -109,6 +109,14 @@ function linkedFormulaValue(sheet,row,col,cell){
  if(!isProtected(sheet)&&Object.prototype.hasOwnProperty.call(current,k(row,0)))return null;
  return Number((cell.v*converted/base*batchFactor).toFixed(6));
 }
+function dumplingCountYield(sheet,raw){
+ if(!/^\s*\d+(?:\.\d+)?\s*(?:pcs?|pieces?|dumplings?)?\s*$/i.test(String(raw??'')))return false;
+ if(sheet.variantServing)return true;
+ if(!/\bdumplings?\b/i.test(String(sheet.file||'')))return false;
+ const name=String(sheet.name||'')+' '+String(sheet.sheet||'');
+ if(/\b(dough|jelly|stock|broth|oil|lard|grease|prep|trim|blend|sauce)\b/i.test(name))return false;
+ return isProtected(sheet)||/\bfilling\b/i.test(name)||/\bdumplings?\b/i.test(name);
+}
 function rendered(sheet,row,col,cell){
  var v=cellValue(sheet,row,col);
  var derived=linkedFormulaValue(sheet,row,col,cell);if(derived!==null)v=derived;
@@ -120,7 +128,8 @@ function rendered(sheet,row,col,cell){
  if(col===2&&p.name)v=p.name;
  }
  if(col===0 && ingredientRow(sheet,row) && (typeof v==='number'||v!==''&&/^[-+]?\d+(\.\d+)?$/.test(String(v))))v=fmt(v);
- if(isYield(sheet,row,col)&&typeof v==='number')v=fmt(v);
+ if(isYield(sheet,row,col)&&dumplingCountYield(sheet,v))v=Number(String(v).match(/^[\s]*\d+(?:\.\d+)?/)[0]).toLocaleString('en-US')+' dumplings';
+ else if(isYield(sheet,row,col)&&typeof v==='number')v=fmt(v);
  return v??'';
 }
 async function load(){
@@ -190,7 +199,7 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
   var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'')+(isYield(sheet,r,col)&&editable?' jc-wb-yield-edit':'');
   var title=(cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
   html+='<td class="'+cls2+'" data-r="'+r+'" data-c="'+col+'"'+(span?' colspan="'+span[0]+'" rowspan="'+span[1]+'"':'')+
-    ' style="'+H(sty)+'" title="'+H(title)+'">'+(isProtected(sheet)&&editable&&isYield(sheet,r,col)?'<input class="jc-direct-yield" type="number" min="1" step="1" aria-label="Serving yield in pieces" value="'+H(yieldValue(sheet)||'')+'">':'<span class="jc-wb-value">'+H(val)+'</span>')+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
+    ' style="'+H(sty)+'" title="'+H(title)+'">'+(isProtected(sheet)&&editable&&isYield(sheet,r,col)?'<input class="jc-direct-yield" type="number" min="1" step="1" aria-label="Serving yield in pieces" value="'+H(yieldValue(sheet)||'')+'">'+(dumplingCountYield(sheet,cellValue(sheet,r,col))?'<span class="jc-yield-unit">dumplings</span>':''):'<span class="jc-wb-value">'+H(val)+'</span>')+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
  }
  return html+'</tr>';
 }
@@ -409,6 +418,7 @@ async function setCell(sheet,row,col,value){
  if(/\b(?:CT\s+)?internal\s+(?:product\s+)?code\s*:/i.test(String(original(sheet,row,col))))throw Error('The registered internal product code is protected.');
  if(isProtected(sheet)&&ingredientRow(sheet,row))throw Error('Main dish ingredients are calculated; edit the supporting recipe.');
  if(isProtected(sheet)&&isYield(sheet,row,col)){if(!/^\d+(?:\.\d+)?$/.test(String(value).trim())||!(Number(value)>0))throw Error('Enter a positive serving yield');value=Number(value);}
+ if(isYield(sheet,row,col)&&dumplingCountYield(sheet,cellValue(sheet,row,col))){const m=String(value).match(/^\s*(\d+)\s*(?:dumplings?|pcs?|pieces?)?\s*$/i);if(!m||Number(m[1])<1)throw Error('Enter a positive whole-number dumpling yield');value=Number(m[1]);}
  var obj=currentDraft(sheet),key=k(row,col);
  const originalValue=cellValue(sheet,row,col);
  if(String(value)===String(originalValue))return true;
