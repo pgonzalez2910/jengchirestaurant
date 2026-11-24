@@ -131,7 +131,7 @@ async function load(){
  })().finally(()=>{A.loading=null;});
  return A.loading;
 }
-function sourceStatus(m){const e=document.getElementById('jeWorkbookSave');if(e)e.textContent=m;}
+function sourceStatus(m){const e=document.getElementById('jeWorkbookSave');if(!e)return;const kind=/not saved|⚠|error|failed/i.test(m)&&!/^(✓|Published)/.test(m)?'failed':/saving|⏳/i.test(m)?'saving':/^(✓|Published)|saved|updated/i.test(m)?'saved':'ready';e.className='jc-autosave '+kind;const icon=document.createElement('i');icon.className='fa-solid '+(kind==='saving'?'fa-cloud-arrow-up fa-fade':kind==='saved'?'fa-circle-check':kind==='failed'?'fa-circle-exclamation':'fa-cloud');icon.setAttribute('aria-hidden','true');e.replaceChildren(icon,document.createTextNode(' '+String(m).replace(/^[⏳✓⚠]+\s*/u,'')));if(kind==='saved')e.title='Saved at '+new Date().toLocaleTimeString();else e.title='';}
 function toast(msg,error=false){
  if(window.JCRecipeCore?.toast)window.JCRecipeCore.toast(msg,error);
  else sourceStatus(msg);
