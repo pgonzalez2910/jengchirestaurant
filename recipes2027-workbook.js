@@ -16,7 +16,13 @@ function original(sheet,row,col){
  var cell=record?.c?.find(x=>Number(x.c)===Number(col));
  return cell?.v??'';
 }
+const approvedMushroomMasters={"DM-PREP-INTERNAL":{"name":"Dried Mushroom Prep","master":"2aae8bf9-10fb-5051-8e1a-a2fece6d31cc","ids":["2aae8bf9-10fb-5051-8e1a-a2fece6d31cc","b0978670-2650-516c-9111-7e58a290e024","14a4b515-ceda-5c3f-be31-def83e73fefb","00343328-cfd5-58bb-b52f-c2de52ed09f7","44d2072f-2321-5799-bebf-620c88d5889a","af6d1eaa-251d-5f7f-b74d-dc45af81e8a5"],"defaults":{"4:6":"15 lb","8:0":2,"8:1":"lb","8:2":"Produce Mushroom Dried","8:3":"P6758","8:7":"P6758 | Produce Mushroom Dried","9:0":10,"9:1":"qt","9:2":"Tap Water","9:3":"R1326","9:7":"R1326 | Tap Water"}},"FM-PREP-INTERNAL":{"name":"Fungus Mushroom Prep","master":"63854625-ea09-5853-be55-e46f077cd0f3","ids":["63854625-ea09-5853-be55-e46f077cd0f3","a381962a-6796-59f4-8ed7-4bddd27e03fe","69b40037-1d21-5de2-b201-5c9618a3ced1","d71c68d9-dcc6-5f33-9033-69dcfb1d629e"],"defaults":{"4:6":"15 lb","8:0":2.5,"8:1":"lb","8:2":"Mushroom Fungus Strips","8:3":"P2874","8:7":"P2874 | Mushroom Fungus Strips","9:0":18,"9:1":"qt","9:2":"Tap Water","9:3":"R1326","9:7":"R1326 | Tap Water"}}};
+function mushroomMaster(sheet){return Object.values(approvedMushroomMasters).find(g=>g.ids.includes(sheet?.component_id));}
+function canonicalSheet(sheet){const g=mushroomMaster(sheet);return g?(bridge()?.getLibrary()?.sheets||[]).find(x=>x.component_id===g.master)||sheet:sheet;}
 function state(sheet){
+ const g=mushroomMaster(sheet);
+ if(g){const p=A.published.get(g.master)||{},d=A.drafts.get(g.master)||p;return {...d,cells:{...g.defaults,...(d.cells||{}),'2:2':g.name},added_rows:d.added_rows||[],removed_rows:d.removed_rows||[]};}
+
  var p=A.published.get(sheet.component_id)||{cells:{},added_rows:[],removed_rows:[],version:0};
  return A.drafts.get(sheet.component_id)||p;
 }
@@ -37,6 +43,7 @@ function productForRow(sheet,row){
  if(/^(water|tap water|hot water|cold water)$/i.test(rawName.trim())) return {code:'R1326',name:'Tap Water',selector:'R1326 | Tap Water'};
  var parsed=sel.match(/^\s*([^|]+)\s*\|\s*(.+)$/);
  if(parsed){code=parsed[1].trim();rawName=parsed[2].trim();}
+ if(approvedMushroomMasters[code]){rawName=approvedMushroomMasters[code].name;return {code,name:rawName,selector:code+' | '+rawName};}
  var p=lookupProduct(code); if(p&&normalizeName(p.canonical_name)===normalizeName(rawName))return {code:p.ct_code,name:rawName,selector:p.ct_code+' | '+rawName};
  return {code:code,name:rawName,selector:(code&&rawName)?code+' | '+rawName:''};
 }
@@ -256,6 +263,7 @@ function registry(){
        (byFile.get(s.file)||[]).filter(x=>normalizeName(x.name||x.sheet)===normalizeName(i.name)).length===1)codes.add(normCode(i.code));
    }
   }
+  const approved=Object.entries(approvedMushroomMasters).find(([key,g])=>g.ids.includes(s.component_id));if(approved){codes.clear();codes.add(approved[0]);}
   if(codes.size===1){const code=[...codes][0];codeOf.set(s.id,code);if(!byCode.has(code))byCode.set(code,[]);byCode.get(code).push(s);}
  }
  registryLibrary=lib;return registryCache={sheets,codeOf,byCode,byFile};
@@ -273,6 +281,7 @@ function signature(sheet){
 }
 function matchingMasters(sheet){
  const reg=registry(),code=reg.codeOf.get(sheet.id),group=reg.byCode.get(code)||[];
+ const approved=mushroomMaster(sheet);if(approved)return {code,conflicts:[],matches:group.filter(x=>approved.ids.includes(x.component_id))};
  const sig=signature(sheet);
  const conflicts=group.filter(s=>s.component_id!==sheet.component_id&&(!sig||signature(s)!==sig));
  const matches=group.filter(s=>s.component_id===sheet.component_id||(sig&&signature(s)===sig));
@@ -323,7 +332,8 @@ function showDependencyReport(sheet,savedIds=null){
  '<p>Fixed amounts of prepared ingredients remain unchanged. Formula dependencies are recalculated when supported; unresolved formulas require review.</p></div>';
 }
 function currentDraft(sheet){
- var old=A.drafts.get(sheet.component_id)||A.published.get(sheet.component_id)||{};
+ const g=mushroomMaster(sheet);if(g)sheet=canonicalSheet(sheet);
+ var old=g?state(sheet):A.drafts.get(sheet.component_id)||A.published.get(sheet.component_id)||{};
  return {component_id:sheet.component_id,editor_id:user().id,cells:structuredClone(old.cells||{}),
   added_rows:structuredClone(old.added_rows||[]),removed_rows:[...(old.removed_rows||[])]};
 }
@@ -333,11 +343,11 @@ async function save(sheet,obj){
  const payload={...obj,updated_at:new Date().toISOString()};
  sourceStatus('⏳ Saving changes automatically…');
  try{
- const group=matchingMasters(sheet),previous=state(sheet),payloads=[payload],seen=new Set([sheet.component_id]);
+ const group=matchingMasters(sheet),previous=state(sheet),payloads=[payload],seen=new Set([payload.component_id]);
  const changed=Object.keys(obj.cells||{}).filter(key=>JSON.stringify(obj.cells[key])!==JSON.stringify(previous.cells?.[key]));
  const structural=JSON.stringify(obj.added_rows||[])!==JSON.stringify(previous.added_rows||[])||JSON.stringify(obj.removed_rows||[])!==JSON.stringify(previous.removed_rows||[]);
  const recipeChange=structural||changed.some(key=>{const [row,col]=key.split(':').map(Number);return ingredientRow(sheet,row)||isYield(sheet,row,col);});
- for(const peer of recipeChange?group.matches:[]){
+ for(const peer of recipeChange&&!mushroomMaster(sheet)?group.matches:[]){
   if(seen.has(peer.component_id))continue;seen.add(peer.component_id);
   const copy=currentDraft(peer);
   for(const key of changed){
@@ -437,6 +447,7 @@ async function restoreRows(sheet){
  await save(sheet,obj);render(sheet,'jeWorkbookGrid');
 }
 async function publish(sheet){
+ sheet=canonicalSheet(sheet);
  if(sheet.variantServing)throw Error('Publish the shared source recipe instead.');
  if(bridge()?.getRole()!=='admin')throw Error('Owner approval is required');
  if(!A.drafts.has(sheet.component_id))throw Error('No unpublished changes to publish');
