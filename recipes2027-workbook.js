@@ -74,6 +74,8 @@ function isYield(sheet,row,col){const a=yieldAddress(sheet);return Number(row)==
 function yieldValue(sheet,originalOnly=false){const a=yieldAddress(sheet);const raw=originalOnly?original(sheet,a.row,a.col):cellValue(sheet,a.row,a.col);const n=Number(String(raw||sheet.yield||'').match(/^\s*(\d+(?:\.\d+)?)/)?.[1]);return n>0?n:null;}
 function linkedFormulaValue(sheet,row,col,cell){
  if(col!==0||!cell?.f||typeof cell.v!=='number')return null;
+ // A finished dough mass is not a number of wrappers. Preserve archived per-order dough weights until a measured wrapper standard is available.
+ if(String(original(sheet,row,3)).trim()==='DD-INTERNAL'&&/SUM\s*\(/i.test(cell.f))return cell.v;
  // Finished dough is now measured in pounds; a pounds value is not a piece denominator.
  // Archived per-serving wrapper consumption is retained until an actual wrapper weight is specified.
  const doughRef=String(cell.f).match(/'((?:[^']|'')+)'!\$?N\$?3/i);
