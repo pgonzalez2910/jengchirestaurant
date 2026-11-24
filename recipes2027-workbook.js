@@ -188,6 +188,7 @@ function render(sheet,targetId){
  html+='</tbody></table>';
  el.innerHTML=html;
  bindServingInput(sheet,el.querySelector('.jc-direct-yield'));
+ showDependencyReport(sheet,A.lastSync?.id===sheet.id?A.lastSync.ids:null);
  return true;
 }
 function bindServingInput(sheet,input){
@@ -218,6 +219,87 @@ function bindServingInput(sheet,input){
  input.addEventListener('blur',commit);
  input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();commit();}if(e.key==='Escape'){input.value=committed||'';preview(committed);}});
 }
+// Internal-code registry: explicit registration takes precedence; never infer a code from
+// an ambiguous global product name. Local ingredient references can identify a unique master.
+let registryCache=null,registryLibrary=null;
+function registry(){
+ const lib=bridge()?.getLibrary();if(registryLibrary===lib&&registryCache)return registryCache;
+ const sheets=(lib?.sheets||[]).filter(s=>s.component_id&&!/^(database\d*|lookup lists|product match|lookups)$/i.test(s.sheet||''));
+ const codeOf=new Map(),byCode=new Map(),byFile=new Map();
+ const normCode=x=>String(x||'').trim().toUpperCase();
+ const internal=x=>/[-_]INTERNAL$/i.test(String(x||''));
+ for(const s of sheets){if(!byFile.has(s.file))byFile.set(s.file,[]);byFile.get(s.file).push(s);}
+ for(const s of sheets){
+  const codes=new Set();
+  for(const r of s.rows||[])for(const v of r.c||[]){
+   const match=String(v.v??'').match(/\b(?:CT\s+)?internal\s+(?:product\s+)?code\s*:\s*([A-Z0-9_-]+)\b/i);
+   if(match&&internal(match[1]))codes.add(normCode(match[1]));
+  }
+  if(!codes.size){
+   for(const parent of byFile.get(s.file)||[])if(parent.id!==s.id)for(const i of parent.ingredients||[]){
+    if(internal(i.code)&&normalizeName(i.name)===normalizeName(s.name||s.sheet)&&
+       (byFile.get(s.file)||[]).filter(x=>normalizeName(x.name||x.sheet)===normalizeName(i.name)).length===1)codes.add(normCode(i.code));
+   }
+  }
+  if(codes.size===1){const code=[...codes][0];codeOf.set(s.id,code);if(!byCode.has(code))byCode.set(code,[]);byCode.get(code).push(s);}
+ }
+ registryLibrary=lib;return registryCache={sheets,codeOf,byCode,byFile};
+}
+function originalLines(sheet){
+ return (sheet.ingredients||[]).filter(i=>i.code&&i.q!==''&&Number.isFinite(Number(i.q))&&ingredientRow(sheet,i.r))
+ .map(i=>({row:Number(i.r),code:String(i.code).toUpperCase(),q:Number(i.q),unit:normalizeName(i.u)}));
+}
+function signature(sheet){
+ const lines=originalLines(sheet);
+ // Require exact ingredient quantities, codes, row addresses and yield. Missing/ambiguous units are not merged.
+ const y=String(sheet.yield??'').trim().toLowerCase().replace(/\s+/g,' ');
+ if(!lines.length||!y||!yieldValue(sheet,true))return null;
+ return JSON.stringify([normalizeName(sheet.name||sheet.sheet),y,lines,yieldAddress(sheet)]);
+}
+function matchingMasters(sheet){
+ const reg=registry(),code=reg.codeOf.get(sheet.id),group=reg.byCode.get(code)||[];
+ const sig=signature(sheet);
+ const conflicts=group.filter(s=>s.component_id!==sheet.component_id&&(!sig||signature(s)!==sig));
+ const matches=group.filter(s=>s.component_id===sheet.component_id||(sig&&signature(s)===sig));
+ return {code,conflicts,matches};
+}
+function dependencyReport(sheet){
+ const reg=registry(),group=matchingMasters(sheet),visited=new Set(),found=new Map();
+ const queue=[sheet,...group.matches];
+ while(queue.length){
+  const child=queue.shift();if(visited.has(child.id))continue;visited.add(child.id);
+  const code=reg.codeOf.get(child.id);
+  for(const parent of reg.sheets){
+   if(parent.id===child.id||parent.component_id===child.component_id)continue;
+   const raw=state(parent);
+   const ing=(parent.ingredients||[]).filter(i=>ingredientRow(parent,i.r)&&!(raw.removed_rows||[]).map(String).includes(String(i.r)));
+   const codes=[...ing.map(i=>productForRow(parent,i.r).code),...(raw.added_rows||[]).map(x=>x.cells?.[3])];
+   const byCode=!!code&&codes.some(x=>String(x||'').toUpperCase()===code);
+   const refs=parent.file===child.file&&(parent.rows||[]).some(r=>(r.c||[]).some(c=>String(c.f||'').toLowerCase().includes(("'"+String(child.sheet).replace(/'/g,"''")+"'!").toLowerCase())));
+   if(!byCode&&!refs)continue;
+   if(!found.has(parent.id)){
+    const conflict=byCode&&(reg.byCode.get(code)||[]).some(x=>signature(x)!==signature(child)&&x.component_id!==child.component_id);
+    found.set(parent.id,{sheet:parent,kind:conflict?'Code conflict — review required':refs?'Formula dependency — evaluate on open':'Consumes master output — portion retained'});
+   }
+   if(!visited.has(parent.id))queue.push(parent);
+  }
+ }
+ return {group,found:[...found.values()].filter(x=>x.sheet.component_id!==sheet.component_id)};
+}
+function showDependencyReport(sheet,savedIds=null){
+ if(A.active!==sheet)return;
+ const grid=document.getElementById('jeWorkbookGrid');if(!grid)return;
+ let panel=document.getElementById('jcDependencyReport');
+ if(!panel){panel=document.createElement('details');panel.id='jcDependencyReport';panel.className='jc-dependency-report';grid.closest('.je-wb-scroll')?.before(panel);}
+ const {group,found}=dependencyReport(sheet);
+ const ids=new Set(savedIds||[]),copies=group.matches.filter(x=>x.id!==sheet.id);
+ panel.innerHTML='<summary>Recipe dependencies · '+H(group.code||sheet.name)+' · '+found.length+' linked worksheet'+(found.length===1?'':'s')+(group.conflicts.length?' · ⚠ Code conflict':'')+'</summary>'+
+ '<div class="jc-dependency-body">'+(savedIds?'<p>Saved '+ids.size+' component draft'+(ids.size===1?'':'s')+'. Original workbooks unchanged.</p>':'')+
+ copies.map(x=>'<div>✓ '+H(x.file)+' / '+H(x.sheet)+' — '+(ids.has(x.component_id)?'draft synchronized':'matching master')+'</div>').join('')+
+ group.conflicts.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — different source formula or yield; not merged</div>').join('')+
+ found.map(x=>'<div>'+H(x.sheet.file)+' / '+H(x.sheet.sheet)+' — '+H(x.kind)+'</div>').join('')+
+ '<p>Fixed amounts of prepared ingredients remain unchanged. Formula dependencies are recalculated when supported; unresolved formulas require review.</p></div>';
+}
 function currentDraft(sheet){
  var old=A.drafts.get(sheet.component_id)||A.published.get(sheet.component_id)||{};
  return {component_id:sheet.component_id,editor_id:user().id,cells:structuredClone(old.cells||{}),
@@ -228,10 +310,31 @@ async function save(sheet,obj){
  const payload={...obj,updated_at:new Date().toISOString()};
  sourceStatus('⏳ Saving changes automatically…');
  try{
- const {error}=await client().from('jc_recipe_workbook_drafts').upsert(payload,{onConflict:'component_id,editor_id'});
+ const group=matchingMasters(sheet),previous=state(sheet),payloads=[payload],seen=new Set([sheet.component_id]);
+ const changed=Object.keys(obj.cells||{}).filter(key=>JSON.stringify(obj.cells[key])!==JSON.stringify(previous.cells?.[key]));
+ const structural=JSON.stringify(obj.added_rows||[])!==JSON.stringify(previous.added_rows||[])||JSON.stringify(obj.removed_rows||[])!==JSON.stringify(previous.removed_rows||[]);
+ for(const peer of group.matches){
+  if(seen.has(peer.component_id))continue;seen.add(peer.component_id);
+  const copy=currentDraft(peer);
+  for(const key of changed){
+   const [row,col]=key.split(':').map(Number);
+   if(!ingredientRow(sheet,row)&&!isYield(sheet,row,col))continue;
+   // Refuse to overwrite a separately edited conflicting ingredient or yield.
+   if(Object.prototype.hasOwnProperty.call(copy.cells,key)&&JSON.stringify(copy.cells[key])!==JSON.stringify(previous.cells?.[key])&&JSON.stringify(copy.cells[key])!==JSON.stringify(obj.cells[key]))throw Error('Conflicting saved master draft for '+group.code+' in '+peer.file+'; review before synchronizing');
+   copy.cells[key]=obj.cells[key];
+  }
+  if(structural){
+   if(JSON.stringify(copy.added_rows||[])!==JSON.stringify(previous.added_rows||[])||JSON.stringify(copy.removed_rows||[])!==JSON.stringify(previous.removed_rows||[]))throw Error('Conflicting master ingredient rows in '+peer.file);
+   copy.added_rows=structuredClone(obj.added_rows||[]);copy.removed_rows=structuredClone(obj.removed_rows||[]);
+  }
+  payloads.push({...copy,updated_at:payload.updated_at});
+ }
+ const {error}=await client().from('jc_recipe_workbook_drafts').upsert(payloads,{onConflict:'component_id,editor_id'});
  if(error)throw error;
- A.drafts.set(sheet.component_id,payload);
- sourceStatus('✓ All changes automatically saved · '+new Date().toLocaleTimeString()+' · Unpublished draft');
+ for(const p of payloads)A.drafts.set(p.component_id,p);
+ A.lastSync={id:sheet.id,ids:payloads.map(p=>p.component_id)};
+ showDependencyReport(sheet,A.lastSync.ids);
+ sourceStatus('✓ Saved '+payloads.length+' master draft'+(payloads.length===1?'':'s')+(group.code?' · '+group.code:'')+(group.conflicts.length?' · ⚠ Conflicting code copies require review':'')+' · Unpublished');
  }catch(error){sourceStatus('⚠ Changes not saved · '+(error.message||error));throw error;}
  return true;
 }
