@@ -413,7 +413,31 @@ function groupConvert(q,from,to,name){
  }
  return null;
 }
+function scaledBatchDraft(sheet,to){
+ const src=canonicalSheet(sheet),address=yieldAddress(src),from=yieldValue(src);
+ if(!(from>0&&to>0&&Number.isFinite(to)))throw Error('Enter a positive batch yield');
+ const obj=currentDraft(src),factor=to/from;
+ const removed=new Set((obj.removed_rows||[]).map(String));
+ for(const row of src.rows||[]){
+  const rr=Number(row.r);
+  if(!ingredientRow(src,rr)||removed.has(String(rr)))continue;
+  const q=cellValue(src,rr,0),product=productForRow(src,rr);
+  if(q!==''&&q!=null&&product.code&&Number.isFinite(Number(q)))obj.cells[k(rr,0)]=Number((Number(q)*factor).toFixed(6));
+ }
+ for(const extra of obj.added_rows||[]){
+  const q=extra.cells?.[0];if(q!==''&&q!=null&&Number.isFinite(Number(q)))extra.cells[0]=Number((Number(q)*factor).toFixed(6));
+ }
+ const unit=mushroomMaster(src)===approvedMushroomMasters['PK-J-INTERNAL']?'lb':String(cellValue(src,address.row,address.col)||src.yield||'').replace(/^\s*[\d,.]+\s*/,'').trim();
+ obj.cells[k(address.row,address.col)]=unit?to+' '+unit:to;
+ return obj;
+}
 async function setCell(sheet,row,col,value){
+ if(!sheet.variantServing&&!isProtected(sheet)&&isYield(sheet,row,col)&&mushroomMaster(sheet)===approvedMushroomMasters['PK-J-INTERNAL']){
+  const m=String(value).trim().match(/^(\d+(?:\.\d+)?)\s*(?:lb|lbs)?$/i);
+  if(!m||!(Number(m[1])>0))throw Error('Enter the target Pork Jelly yield in pounds');
+  const to=Number(m[1]);if(to===yieldValue(sheet))return true;
+  await save(sheet,scaledBatchDraft(sheet,to));return true;
+ }
  if(sheet.variantServing)throw Error('Fixed three-piece menu variation.');
  const registeredNote=String(original(sheet,row,col)).match(/\b(?:CT\s+)?internal\s+(?:product\s+)?code\s*:\s*([A-Z0-9_-]+)/i);
  if(registeredNote&&String(value).trim()!==''&&!String(value).toUpperCase().includes(registeredNote[1].toUpperCase()))throw Error('Use Update CT code to change the registered identifier. You may clear the display note without changing the registered code.');
@@ -474,7 +498,7 @@ async function publish(sheet){
  if(sheet.variantServing)throw Error('Publish the shared source recipe instead.');
  if(bridge()?.getRole()!=='admin')throw Error('Owner approval is required');
  if(!A.drafts.has(sheet.component_id))throw Error('No unpublished changes to publish');
- const count=(bridge()?.getLibrary()?.sheets||[]).filter(x=>x.component_id===sheet.component_id).length;
+ const count=(bridge()?.getLibrary()?.sheets||[]).filter(x=>mushroomMaster(sheet)?mushroomMaster(sheet).ids.includes(x.component_id):x.component_id===sheet.component_id).length;
  if(!confirm('Publish this master component to '+count+' matching worksheet'+(count!==1?'s':'')+'? This will approve shared changes.'))return;
  const {data,error}=await client().rpc('jc_recipe_publish_workbook_component',{p_component_id:sheet.component_id});
  if(error)throw error;
@@ -489,24 +513,13 @@ async function scaleBatch(sheet){
  const unit=String(cellValue(sheet,address.row,address.col)||sheet.yield||'').replace(/^\s*[\d,.]+\s*/,'').trim();
  const result=prompt('New target batch yield'+(unit?' ('+unit+')':'')+':',fmt(from));
  if(result===null)return;
- const to=Number(result);
+ const to=Number(String(result).trim().replace(/\s*lbs?$/i,''));
  if(!(to>0)||!Number.isFinite(to))throw Error('Enter a positive target yield');
  if(isProtected(sheet)){await setCell(sheet,address.row,address.col,to);render(sheet,'jeWorkbookGrid');return;}
  const factor=to/from;
  if(!confirm('Scale '+sheet.name+' by '+factor.toFixed(3)+' ×? Ingredient quantities change proportionally. Actual finished yield must still be measured.'))return;
- const obj=currentDraft(sheet);
- for(const ingredient of sheet.ingredients||[]){
-  const row=ingredient.r;
-  const old=Number(cellValue(sheet,row,0));
-  if(Number.isFinite(old))obj.cells[k(row,0)]=Number((old*factor).toFixed(6));
- }
- for(const extra of obj.added_rows||[]){
-  const q=Number(extra.cells?.[0]);
-  if(Number.isFinite(q)&&extra.cells?.[0]!=='')extra.cells[0]=Number((q*factor).toFixed(6));
- }
- obj.cells[k(address.row,address.col)]=unit?to.toFixed(3)+' '+unit:to;
- await save(sheet,obj);render(sheet,'jeWorkbookGrid');
- sourceStatus('Target yield and ingredient quantities scaled together · actual measured yield remains separate');
+ await save(sheet,scaledBatchDraft(sheet,to));render(sheet,'jeWorkbookGrid');
+ sourceStatus('✓ Saved · target yield and ingredient quantities scaled together');
 }
 async function changeCode(){
  if(bridge()?.getRole()!=='admin')throw Error('Owner approval is required');
