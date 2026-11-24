@@ -233,8 +233,9 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
  var isQty=(col===0 && (sheet.ingredients||[]).some(x=>x.r===r));
   var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'')+(isYield(sheet,r,col)&&editable?' jc-wb-yield-edit':'');
   var title=(cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
+  var masterLabel=col===2&&isIngredient?masterYieldLabel(sheet,r):'';
   html+='<td class="'+cls2+'" data-r="'+r+'" data-c="'+col+'"'+(span?' colspan="'+span[0]+'" rowspan="'+span[1]+'"':'')+
-    ' style="'+H(sty)+'" title="'+H(title)+'">'+(editable&&isYield(sheet,r,col)&&(isProtected(sheet)||isPorkJelly(sheet))?'<input class="jc-direct-yield'+(isPorkJelly(sheet)?' jc-batch-yield':'')+'" type="number" min="'+(isPorkJelly(sheet)?'0.001':'1')+'" step="'+(isPorkJelly(sheet)?'any':'1')+'" aria-label="'+(isPorkJelly(sheet)?'Target batch yield in pounds':'Serving yield in pieces')+'" value="'+H(yieldValue(sheet)||'')+'">'+(isPorkJelly(sheet)?'<span class="jc-yield-unit">lb</span>':dumplingCountYield(sheet,cellValue(sheet,r,col))?'<span class="jc-yield-unit">dumplings</span>':''):'<span class="jc-wb-value">'+H(val)+'</span>')+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
+    ' style="'+H(sty)+'" title="'+H(title)+'">'+(editable&&isYield(sheet,r,col)&&(isProtected(sheet)||isPorkJelly(sheet))?'<input class="jc-direct-yield'+(isPorkJelly(sheet)?' jc-batch-yield':'')+'" type="number" min="'+(isPorkJelly(sheet)?'0.001':'1')+'" step="'+(isPorkJelly(sheet)?'any':'1')+'" aria-label="'+(isPorkJelly(sheet)?'Target batch yield in pounds':'Serving yield in pieces')+'" value="'+H(yieldValue(sheet)||'')+'">'+(isPorkJelly(sheet)?'<span class="jc-yield-unit">lb</span>':dumplingCountYield(sheet,cellValue(sheet,r,col))?'<span class="jc-yield-unit">dumplings</span>':''):'<span class="jc-wb-value">'+H(val)+'</span>')+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+(masterLabel?'<span class="jc-master-yield" title="Live master batch yield; this dish’s prepared portion is calculated independently">'+H(masterLabel)+'</span>':'')+'</td>';
  }
  return html+'</tr>';
 }
@@ -290,6 +291,14 @@ function preparedSource(sheet,code){
  if(sig&&candidates.every(x=>signature(x)===sig))return canonicalSheet(first);
  return null;
 }
+function masterYieldLabel(sheet,row){
+ const live=liveFillingLine(sheet,row),p=live||productForRow(sheet,row);
+ if(!p.code||!/-INTERNAL$/i.test(p.code))return '';
+ const source=preparedSource(sheet,p.code);if(!source)return '';
+ const y=measuredYield(source);if(!y)return '';
+ const master=mushroomMaster(source)?.master||source.component_id;
+ return 'Master: '+fmt(y.q)+' '+y.unit+(A.drafts.has(master)?' · draft':' · published/source');
+}
 function measuredYield(sheet){
  const a=yieldAddress(sheet),raw=String(cellValue(sheet,a.row,a.col)||'').trim();
  const m=raw.match(/^(\d+(?:\.\d+)?)\s*(lb|oz|fl oz|qt|gal|cup|pt|each|pcs?|pieces?|dumplings?)\b/i);
@@ -319,7 +328,7 @@ function showLiveBreakdown(sheet){
  let panel=document.getElementById('jcLiveBreakdown');
  const result=livePrepBreakdown(sheet);
  if(!result.groups.length&&!result.warnings.length){panel?.remove();return;}
- if(!panel){panel=document.createElement('details');panel.id='jcLiveBreakdown';panel.className='jc-dependency-report jc-live-breakdown';grid.closest('.je-wb-scroll')?.after(panel);}
+ if(!panel){panel=document.createElement('details');panel.id='jcLiveBreakdown';panel.className='jc-dependency-report jc-live-breakdown';grid.closest('.je-wb-scroll')?.before(panel);}
  panel.innerHTML='<summary>Live prepared-ingredient breakdown · '+result.groups.length+' resolved component'+(result.groups.length===1?'':'s')+(result.warnings.length?' · '+result.warnings.length+' require review':'')+'</summary><div class="jc-dependency-body"><p>Calculated from current master batches and this recipe’s portion. Fixed prepared portions are retained; raw inputs below are for allocation, not additional inventory consumption.</p>'+
  result.groups.map(g=>'<section class="jc-live-prep"><strong>'+H(g.name)+' · '+H(fmt(g.portion)+' '+g.unit)+' used</strong><span>Master yield '+H(fmt(g.yield.q)+' '+g.yield.unit)+'</span><table><thead><tr><th>Raw / supporting ingredient</th><th>Quantity</th><th>Unit</th></tr></thead><tbody>'+g.lines.map(x=>'<tr><td>'+H(x.name)+'</td><td>'+H(fmt(x.q))+'</td><td>'+H(x.unit)+'</td></tr>').join('')+'</tbody></table></section>').join('')+
  result.warnings.map(x=>'<div>⚠ '+H(x)+'</div>').join('')+'</div>';
