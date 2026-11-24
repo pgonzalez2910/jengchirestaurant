@@ -59,7 +59,7 @@ function rendered(sheet,row,col,cell){
  var derived=linkedFormulaValue(sheet,row,col,cell);if(derived!==null)v=derived;
  var p=productForRow(sheet,row);
  if(col===7 && p.selector && (v===''||String(v).includes(' | ')||p.code==='R1326'))v=p.selector;
- if(col===3 && p.code && (cell?.f||v===''||p.code==='R1326'))v=p.code;
+ if(col===3 && p.code && (cell?.f||v===''||String(v)!==p.code))v=p.code;
  if(col===2 && p.name && (cell?.f||v===''||p.code==='R1326'))v=p.name;
  if(col===0 && (typeof v==='number'||v!==''&&/^[-+]?\d+(\.\d+)?$/.test(String(v))))v=fmt(v);
  if(col===6 && row===4 && typeof v==='number')v=fmt(v);
