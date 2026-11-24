@@ -39,8 +39,24 @@ function productForRow(sheet,row){
  var p=lookupProduct(code); if(p)return {code:p.ct_code,name:p.canonical_name,selector:p.ct_code+' | '+p.canonical_name};
  return {code:code,name:rawName,selector:sel};
 }
+function linkedFormulaValue(sheet,row,col,cell){
+ if(col!==0||!cell?.f||typeof cell.v!=='number')return null;
+ const refs=[...String(cell.f).matchAll(/'((?:[^']|'')+)'!\$?[AM]\$?(\d+)/g)];
+ if(!refs.length)return null;
+ const depName=refs[0][1].replace(/''/g,"'"),depRow=Number(refs[0][2]);
+ if(refs.some(x=>x[1]!==refs[0][1]||Number(x[2])!==depRow))return null;
+ const source=(bridge()?.getLibrary()?.sheets||[]).find(x=>x.file===sheet.file&&x.sheet===depName);
+ if(!source)return null;
+ const input=(source.ingredients||[]).find(x=>Number(x.r)===depRow);if(!input)return null;
+ const base=Number(input.q),now=Number(cellValue(source,depRow,0));
+ if(!(base>0)||!Number.isFinite(now))return null;
+ const current=state(sheet)?.cells||{};
+ if(Object.prototype.hasOwnProperty.call(current,k(row,0)))return null;
+ return Number((cell.v*now/base).toFixed(6));
+}
 function rendered(sheet,row,col,cell){
  var v=cellValue(sheet,row,col);
+ var derived=linkedFormulaValue(sheet,row,col,cell);if(derived!==null)v=derived;
  var p=productForRow(sheet,row);
  if(col===7 && p.selector && (v===''||String(v).includes(' | ')||p.code==='R1326'))v=p.selector;
  if(col===3 && p.code && (cell?.f||v===''||p.code==='R1326'))v=p.code;
@@ -103,7 +119,7 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
   var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'');
   var title=(cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
   html+='<td class="'+cls2+'" data-r="'+r+'" data-c="'+col+'"'+(span?' colspan="'+span[0]+'" rowspan="'+span[1]+'"':'')+
-    ' style="'+H(sty)+'" title="'+H(title)+'"><span class="jc-wb-value">'+H(val)+'</span></td>';
+    ' style="'+H(sty)+'" title="'+H(title)+'"><span class="jc-wb-value">'+H(val)+'</span>'+(editable&&(col===1||col===7)&&r<=lastUsed&&r>=7?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
  }
  return html+'</tr>';
 }
@@ -303,6 +319,8 @@ document.addEventListener('dblclick',e=>{
 document.addEventListener('click',e=>{
  const td=e.target.closest?.('#jeWorkbookGrid tr[data-row]');
  if(td){document.querySelectorAll('#jeWorkbookGrid tr.jc-wb-selected').forEach(x=>x.classList.remove('jc-wb-selected'));td.classList.add('jc-wb-selected');A.selectedRow=td.dataset.row;}
+ const picker=e.target.closest?.('#jeWorkbookGrid td.jc-wb-editable');
+ if(picker&&[1,7].includes(Number(picker.dataset.c))&&!picker.querySelector('input,select,textarea'))editCell(picker);
 });
 window.JCRecipeAdvanced={
  load,render,addRow,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,
