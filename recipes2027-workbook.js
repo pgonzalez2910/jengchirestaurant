@@ -39,6 +39,9 @@ function productForRow(sheet,row){
  var p=lookupProduct(code); if(p&&normalizeName(p.canonical_name)===normalizeName(rawName))return {code:p.ct_code,name:rawName,selector:p.ct_code+' | '+rawName};
  return {code:code,name:rawName,selector:(code&&rawName)?code+' | '+rawName:''};
 }
+let protectedMain=null;
+function isProtected(sheet){return !!sheet&&protectedMain===sheet.id;}
+function yieldValue(sheet,originalOnly=false){const raw=originalOnly?original(sheet,4,6):cellValue(sheet,4,6);const n=Number(String(raw||sheet.yield||'').match(/^\s*(\d+(?:\.\d+)?)/)?.[1]);return n>0?n:null;}
 function linkedFormulaValue(sheet,row,col,cell){
  if(col!==0||!cell?.f||typeof cell.v!=='number')return null;
  const refs=[...String(cell.f).matchAll(/'((?:[^']|'')+)'!\$?[AM]\$?(\d+)/g)];
@@ -51,19 +54,20 @@ function linkedFormulaValue(sheet,row,col,cell){
  const base=Number(input.q),now=Number(cellValue(source,depRow,0));
  if(!(base>0)||!Number.isFinite(now))return null;
  const current=state(sheet)?.cells||{};
- if(Object.prototype.hasOwnProperty.call(current,k(row,0)))return null;
+ if(!isProtected(sheet)&&Object.prototype.hasOwnProperty.call(current,k(row,0)))return null;
  return Number((cell.v*now/base).toFixed(6));
 }
 function rendered(sheet,row,col,cell){
  var v=cellValue(sheet,row,col);
  var derived=linkedFormulaValue(sheet,row,col,cell);if(derived!==null)v=derived;
+ if(isProtected(sheet)&&ingredientRow(sheet,row)&&col===0){const base=yieldValue(sheet,true),target=yieldValue(sheet);const q=derived??cell?.v;if(base&&target&&q!==''&&q!=null&&Number.isFinite(Number(q)))v=Number(q)*target/base;}
  if(ingredientRow(sheet,row)&&[2,3,7].includes(col)){
  const p=productForRow(sheet,row);
  if(col===7)v=p.selector||'';
  if(col===3&&p.code)v=p.code;
  if(col===2&&p.name)v=p.name;
  }
- if(col===0 && (typeof v==='number'||v!==''&&/^[-+]?\d+(\.\d+)?$/.test(String(v))))v=fmt(v);
+ if(col===0 && ingredientRow(sheet,row) && (typeof v==='number'||v!==''&&/^[-+]?\d+(\.\d+)?$/.test(String(v))))v=fmt(v);
  if(col===6 && row===4 && typeof v==='number')v=fmt(v);
  return v??'';
 }
@@ -115,7 +119,7 @@ function allMerge(sheet){
 }
 function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
  var r=rawRow.r, cells=new Map((rawRow.c||[]).map(c=>[c.c,c]));
- var remove=(state(sheet).removed_rows||[]).some(x=>String(x)===String(r));
+ var remove=!isProtected(sheet)&&(state(sheet).removed_rows||[]).some(x=>String(x)===String(r));
  var blank=isBlank(rawRow)&&!(state(sheet).cells&&Object.keys(state(sheet).cells).some(x=>x.startsWith(r+':')));
  var unused=(r>lastUsed+2&&r<noteAt&&blank);
  var cls=(remove?' jc-wb-removed':'')+(unused?' jc-wb-spare-row':'')+(blank&&r>=noteAt?' jc-wb-empty-note':'');
@@ -126,6 +130,7 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
   var isIngredient=ingredientRow(sheet,r),header=Number(r)===ingredientBounds(sheet).start-1;
   var picture=(col===5||col===6)&&isIngredient;
   var editable=canEdit()&&!picture&&!header&&(isIngredient?[0,1,4,7].includes(col):col!==7);
+ if(isProtected(sheet))editable=canEdit()&&((Number(r)===4&&col===6)||(!isIngredient&&Number(r)>noteAt&&col===1&&!/Prep\s*\/\s*Plating Instructions/i.test(String(cell.v||''))));
   var val=rendered(sheet,r,col,cell);
   var sty=allStyles(sheet)[cell.s||0]||''; if(col===7&&(isIngredient||header))sty+=';color:#17243a!important;background:'+(header?'#a3ce68':'#fff')+'!important;text-align:left!important;white-space:normal!important;'; if(col===7&&header)val='PRODUCT SELECTOR · Code | Name';
   var isQty=(col===0 && (sheet.ingredients||[]).some(x=>x.r===r));
@@ -150,7 +155,7 @@ function addedHtml(sheet,item){
 }
 function render(sheet,targetId){
  var el=document.getElementById(targetId);if(!el||!sheet)return false;
- A.active=sheet;var heights=sheet.heights||{},widths=sheet.widths||{};
+ A.active=sheet;A.selectedCell=null;var heights=sheet.heights||{},widths=sheet.widths||{};
  var cols=Array.from({length:8},(_,i)=>Math.max(58,Math.min(440,Math.round((widths[i]||[14,10,31,19,16,16,18,42][i])*7))));
  var merge=allMerge(sheet),items=state(sheet),lastUsed=Math.max(7,...(sheet.ingredients||[]).map(x=>Number(x.r)||7)),noteAt=notesRow(sheet);
  var html='<table class="jc-excel-sheet jc-wb-advanced" aria-label="'+H(sheet.name)+' Excel worksheet"><colgroup>'+
@@ -158,7 +163,7 @@ function render(sheet,targetId){
  var added=Array.isArray(items.added_rows)?items.added_rows:[];
  for(var row of sheet.rows||[]){
   html+=rowHtml(sheet,row,7,merge,true,lastUsed,noteAt);
-  for(var x of added.filter(x=>Number(x.after)===Number(row.r)))html+=addedHtml(sheet,x);
+  for(var x of added.filter(x=>Number(x.after)===Number(row.r)))if(!isProtected(sheet))html+=addedHtml(sheet,x);
  }
  html+='</tbody></table>';
  el.innerHTML=html;
@@ -202,6 +207,8 @@ function groupConvert(q,from,to,name){
  return null;
 }
 async function setCell(sheet,row,col,value){
+ if(isProtected(sheet)&&ingredientRow(sheet,row))throw Error('Main dish ingredients are calculated; edit the supporting recipe.');
+ if(isProtected(sheet)&&Number(row)===4&&col===6){if(!/^\d+(?:\.\d+)?$/.test(String(value).trim())||!(Number(value)>0))throw Error('Enter a positive serving yield');value=Number(value);}
  var obj=currentDraft(sheet),key=k(row,col);
  const originalValue=cellValue(sheet,row,col);
  if(String(value)===String(originalValue))return true;
@@ -211,7 +218,7 @@ async function setCell(sheet,row,col,value){
   if(!target)throw Error('Added ingredient row no longer exists');
   target.cells=target.cells||{};target.cells[col]=(col===0&&value!==''?Number(value):value);if(col===7&&value.includes(' | ')){const [code,...name]=value.split(' | ');target.cells[3]=code;target.cells[2]=name.join(' | ');}
  }else{
-  obj.cells[key]=(col===0&&value!==''?Number(value):value);
+  obj.cells[key]=(col===0&&ingredientRow(sheet,row)&&value!==''?Number(value):value);
   if(col===7&&String(value).includes(' | ')){
    const parts=String(value).split(' | '),code=parts.shift().trim(),productName=parts.join(' | ').trim();
    const actual=lookupProduct(code);
@@ -230,6 +237,7 @@ async function setCell(sheet,row,col,value){
  return true;
 }
 async function addRow(sheet){
+ if(isProtected(sheet))throw Error('Add ingredients to the supporting recipe, not the calculated main dish.');
  var max=Math.max(7,...(sheet.ingredients||[]).map(x=>Number(x.r)||7));
  var obj=currentDraft(sheet);
  obj.added_rows.push({id:'new-'+Date.now()+'-'+Math.random().toString(36).slice(2,9),after:max,cells:{0:'',1:'oz',2:'',3:'',4:'',5:'',6:'',7:''}});
@@ -237,6 +245,7 @@ async function addRow(sheet){
  return true;
 }
 async function removeRow(sheet,rowKey){
+ if(isProtected(sheet))throw Error('Calculated main dish rows are protected.');
  if(rowKey==null||!ingredientRow(sheet,rowKey))throw Error('First select an ingredient row to remove');
  if(!confirm('Remove this worksheet row from the working draft? Your original Excel workbook is protected.'))return false;
  var obj=currentDraft(sheet);
@@ -245,6 +254,7 @@ async function removeRow(sheet,rowKey){
  await save(sheet,obj);render(sheet,'jeWorkbookGrid');A.selectedRow=null;return true;
 }
 async function restoreRows(sheet){
+ if(isProtected(sheet))throw Error('Calculated main dish rows are protected.');
  var obj=currentDraft(sheet);obj.removed_rows=[];
  await save(sheet,obj);render(sheet,'jeWorkbookGrid');
 }
@@ -267,6 +277,7 @@ async function scaleBatch(sheet){
  if(result===null)return;
  const to=Number(result);
  if(!(to>0)||!Number.isFinite(to))throw Error('Enter a positive target yield');
+ if(isProtected(sheet)){await setCell(sheet,4,6,to);render(sheet,'jeWorkbookGrid');return;}
  const factor=to/from;
  if(!confirm('Scale '+sheet.name+' by '+factor.toFixed(3)+' ×? Ingredient quantities change proportionally. Actual finished yield must still be measured.'))return;
  const obj=currentDraft(sheet);
@@ -326,7 +337,7 @@ function editCell(td){
  async function complete(commit=true){
   if(committed)return;committed=true;
   try{if(commit&&control.value!==initialValue){if(col===7&&ingredientRow(sheet,row)&&old&&control.value!==old&&!confirm('Replace '+old+' with '+control.value+'?')){render(sheet,'jeWorkbookGrid');return;}await setCell(sheet,row,col,control.value)}}catch(e){sourceStatus('Not saved: '+e.message)}
-  render(sheet,'jeWorkbookGrid');
+  if(A.active===sheet)render(sheet,'jeWorkbookGrid');
  }
  control.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();complete()}if(e.key==='Escape'){e.preventDefault();complete(false)}});
  control.addEventListener('blur',()=>complete());
@@ -340,9 +351,19 @@ document.addEventListener('click',e=>{
  const td=e.target.closest?.('#jeWorkbookGrid tr[data-row]');
  if(td){document.querySelectorAll('#jeWorkbookGrid tr.jc-wb-selected').forEach(x=>x.classList.remove('jc-wb-selected'));td.classList.add('jc-wb-selected');A.selectedRow=td.dataset.row;}
  const picker=e.target.closest?.('#jeWorkbookGrid td.jc-wb-editable');
+ A.selectedCell=picker||null;
  if(picker&&A.active&&ingredientRow(A.active,picker.dataset.r)&&[1,7].includes(Number(picker.dataset.c))&&!picker.querySelector('input,select,textarea'))editCell(picker);
 });
+document.addEventListener('keydown',async e=>{
+ if(!['Delete','Backspace'].includes(e.key)||e.target.closest?.('input,textarea,select,[contenteditable]'))return;
+ const td=A.selectedCell,sheet=A.active;if(!td?.isConnected||!sheet||!canEdit())return;
+ const row=Number(td.dataset.r),col=Number(td.dataset.c);
+ if(!Number.isFinite(row)||ingredientRow(sheet,row)||row<=notesRow(sheet)||col!==1)return;
+ if(/Prep\s*\/\s*Plating Instructions/i.test(String(original(sheet,row,col))))return;
+ e.preventDefault();try{await setCell(sheet,row,col,'');if(A.active===sheet)render(sheet,'jeWorkbookGrid');}catch(err){sourceStatus('Not saved: '+err.message);}
+});
 window.JCRecipeAdvanced={
+ setProtectedMain:id=>{protectedMain=id||null;},
  load,render,addRow,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,
  get selectedRow(){return A.selectedRow},
  get active(){return A.active},
