@@ -279,27 +279,33 @@ function matchingMasters(sheet){
  return {code,conflicts,matches};
 }
 function dependencyReport(sheet){
- const reg=registry(),group=matchingMasters(sheet),visited=new Set(),found=new Map();
- const queue=[sheet,...group.matches];
+ const reg=registry(),group=matchingMasters(sheet),visited=new Set(),found=new Map(),ambiguous=new Map();
+ const queue=[...new Map([sheet,...group.matches].map(x=>[x.id,{sheet:x,depth:0}])).values()];
  while(queue.length){
-  const child=queue.shift();if(visited.has(child.id))continue;visited.add(child.id);
+  const {sheet:child,depth}=queue.shift();if(visited.has(child.id))continue;visited.add(child.id);
   const code=reg.codeOf.get(child.id);
+  const peers=matchingMasters(child);
+  const valid=new Set([child.id,...peers.matches.map(x=>x.id)]);
   for(const parent of reg.sheets){
    if(parent.id===child.id||parent.component_id===child.component_id)continue;
    const raw=state(parent);
    const ing=(parent.ingredients||[]).filter(i=>ingredientRow(parent,i.r)&&!(raw.removed_rows||[]).map(String).includes(String(i.r)));
    const codes=[...ing.map(i=>productForRow(parent,i.r).code),...(raw.added_rows||[]).map(x=>x.cells?.[3])];
-   const byCode=!!code&&codes.some(x=>String(x||'').toUpperCase()===code);
+   const byCode=!!code&&codes.some(x=>String(x||'').trim().toUpperCase()===code);
    const refs=parent.file===child.file&&(parent.rows||[]).some(r=>(r.c||[]).some(c=>String(c.f||'').toLowerCase().includes(("'"+String(child.sheet).replace(/'/g,"''")+"'!").toLowerCase())));
    if(!byCode&&!refs)continue;
-   if(!found.has(parent.id)){
-    const conflict=byCode&&(reg.byCode.get(code)||[]).some(x=>signature(x)!==signature(child)&&x.component_id!==child.component_id);
-    found.set(parent.id,{sheet:parent,kind:conflict?'Code conflict — review required':refs?'Formula dependency — evaluate on open':'Consumes master output — portion retained'});
+   if(!refs&&byCode){
+    const local=(reg.byFile.get(parent.file)||[]).filter(x=>x.id!==parent.id&&reg.codeOf.get(x.id)===code);
+    if(local.length){if(local.every(x=>!valid.has(x.id)))continue;if(local.some(x=>!valid.has(x.id))){ambiguous.set(parent.id,parent);continue;}}
+    else if(peers.conflicts.length){ambiguous.set(parent.id,parent);continue;}
    }
-   if(!visited.has(parent.id))queue.push(parent);
+   if(!found.has(parent.id))found.set(parent.id,{sheet:parent,depth:depth+1,kind:refs?'Formula dependency — evaluate on open':'Consumes master output — portion retained'});
+   if(!visited.has(parent.id))queue.push({sheet:parent,depth:depth+1});
   }
  }
- return {group,found:[...found.values()].filter(x=>x.sheet.component_id!==sheet.component_id)};
+ const roots=new Set([sheet,...group.matches].map(x=>x.id));
+ const confirmed=[...found.values()].filter(x=>!roots.has(x.sheet.id)&&x.sheet.component_id!==sheet.component_id);
+ return {group,found:confirmed,ambiguous:[...ambiguous.values()].filter(x=>!found.has(x.id)&&!roots.has(x.id))};
 }
 function showDependencyReport(sheet,savedIds=null){
  if(sheet.variantServing)return;
@@ -307,13 +313,13 @@ function showDependencyReport(sheet,savedIds=null){
  const grid=document.getElementById('jeWorkbookGrid');if(!grid)return;
  let panel=document.getElementById('jcDependencyReport');
  if(!panel){panel=document.createElement('details');panel.id='jcDependencyReport';panel.className='jc-dependency-report';grid.closest('.je-wb-scroll')?.before(panel);}
- const {group,found}=dependencyReport(sheet);
+ const {group,found,ambiguous}=dependencyReport(sheet);
  const ids=new Set(savedIds||[]),copies=group.matches.filter(x=>x.id!==sheet.id);
- panel.innerHTML='<summary>Recipe dependencies · '+H(group.code||sheet.name)+' · '+found.length+' linked worksheet'+(found.length===1?'':'s')+(group.conflicts.length?' · ⚠ Code conflict':'')+'</summary>'+
+ panel.innerHTML='<summary>Recipe dependencies · '+H(group.code||sheet.name)+' · '+found.length+' verified linked worksheet'+(found.length===1?'':'s')+(group.conflicts.length?' · ⚠ Code conflict':'')+'</summary>'+
  '<div class="jc-dependency-body">'+(savedIds?'<p>Saved '+ids.size+' component draft'+(ids.size===1?'':'s')+'. Original workbooks unchanged.</p>':'')+
  copies.map(x=>'<div>✓ '+H(x.file)+' / '+H(x.sheet)+' — '+(ids.has(x.component_id)?'draft synchronized':'matching master')+'</div>').join('')+
  group.conflicts.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — different source formula or yield; not merged</div>').join('')+
- found.map(x=>'<div>'+H(x.sheet.file)+' / '+H(x.sheet.sheet)+' — '+H(x.kind)+'</div>').join('')+
+ found.map(x=>'<div>'+H(x.sheet.file)+' / '+H(x.sheet.sheet)+' — '+H((x.depth===1?'Direct: ':'Indirect: ')+x.kind)+'</div>').join('')+ (ambiguous.length?'<p>Unresolved code references ('+ambiguous.length+') — excluded from verified dependencies:</p>'+ambiguous.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — source not uniquely identified</div>').join(''):'')+
  '<p>Fixed amounts of prepared ingredients remain unchanged. Formula dependencies are recalculated when supported; unresolved formulas require review.</p></div>';
 }
 function currentDraft(sheet){
