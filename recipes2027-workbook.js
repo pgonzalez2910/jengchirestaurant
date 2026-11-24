@@ -36,8 +36,8 @@ function productForRow(sheet,row){
  if(/^(water|tap water|hot water|cold water)$/i.test(rawName.trim())) return {code:'R1326',name:'Tap Water',selector:'R1326 | Tap Water'};
  var parsed=sel.match(/^\s*([^|]+)\s*\|\s*(.+)$/);
  if(parsed){code=parsed[1].trim();rawName=parsed[2].trim();}
- var p=lookupProduct(code); if(p)return {code:p.ct_code,name:p.canonical_name,selector:p.ct_code+' | '+p.canonical_name};
- return {code:code,name:rawName,selector:sel||((code&&rawName)?code+' | '+rawName:'')};
+ var p=lookupProduct(code); if(p&&normalizeName(p.canonical_name)===normalizeName(rawName))return {code:p.ct_code,name:rawName,selector:p.ct_code+' | '+rawName};
+ return {code:code,name:rawName,selector:(code&&rawName)?code+' | '+rawName:''};
 }
 function linkedFormulaValue(sheet,row,col,cell){
  if(col!==0||!cell?.f||typeof cell.v!=='number')return null;
@@ -57,10 +57,12 @@ function linkedFormulaValue(sheet,row,col,cell){
 function rendered(sheet,row,col,cell){
  var v=cellValue(sheet,row,col);
  var derived=linkedFormulaValue(sheet,row,col,cell);if(derived!==null)v=derived;
- var p=productForRow(sheet,row);
- if(col===7 && row>=7 && row<notesRow(sheet) && p.selector)v=p.selector;
- if(col===3 && p.code && (cell?.f||v===''||String(v)!==p.code))v=p.code;
- if(col===2 && p.name && (cell?.f||v===''||p.code==='R1326'))v=p.name;
+ if(ingredientRow(sheet,row)&&[2,3,7].includes(col)){
+ const p=productForRow(sheet,row);
+ if(col===7)v=p.selector||'';
+ if(col===3&&p.code)v=p.code;
+ if(col===2&&p.name)v=p.name;
+ }
  if(col===0 && (typeof v==='number'||v!==''&&/^[-+]?\d+(\.\d+)?$/.test(String(v))))v=fmt(v);
  if(col===6 && row===4 && typeof v==='number')v=fmt(v);
  return v??'';
@@ -93,6 +95,16 @@ function isBlank(row){return !row?.c?.some(x=>String(x.v??'').trim()&&!/^\s*[-�
 function notesRow(sheet){
  return (sheet.rows||[]).find(row=>(row.c||[]).some(x=>/Toast Button Modifiers\s*\/\s*Notes/i.test(String(x.v||''))))?.r||sheet.max_row+1;
 }
+const boundsCache=new WeakMap();
+function ingredientBounds(sheet){
+ if(boundsCache.has(sheet))return boundsCache.get(sheet);
+ const header=(sheet.rows||[]).find(r=>(r.c||[]).some(c=>Number(c.c)===0&&/^\s*(qty|quantity)\s*$/i.test(String(c.v)))&&(r.c||[]).some(c=>Number(c.c)===1&&/units?/i.test(String(c.v))))?.r;
+ const first=Math.min(...(sheet.ingredients||[]).map(x=>Number(x.r)).filter(Number.isFinite));
+ const start=header!=null?Number(header)+1:Number.isFinite(first)?first:Infinity;
+ const end=(sheet.rows||[]).find(r=>Number(r.r)>=start&&(r.c||[]).some(c=>/Toast Button Modifiers|Prep\s*\/\s*Plating Instructions/i.test(String(c.v||''))))?.r??notesRow(sheet);
+ const result={start,end:Number(end)};boundsCache.set(sheet,result);return result;
+}
+function ingredientRow(sheet,row){if(String(row).startsWith('new-'))return true;const b=ingredientBounds(sheet);return Number(row)>=b.start&&Number(row)<b.end;}
 function allMerge(sheet){
  var starts=new Map(),covered=new Set();
  (sheet.merges||[]).forEach(m=>{
@@ -111,15 +123,16 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
  for(var col=0;col<=maxCol;col++){
   if(merge.covered.has(k(r,col)))continue;
   var cell=cells.get(col)||{c:col,v:''};var span=merge.starts.get(k(r,col));
-  var picture=(col===5||col===6)&&r>=7&&r<noteAt;
-  var editable=canEdit()&&!picture;
+  var isIngredient=ingredientRow(sheet,r),header=Number(r)===ingredientBounds(sheet).start-1;
+  var picture=(col===5||col===6)&&isIngredient;
+  var editable=canEdit()&&!picture&&!header&&(isIngredient?[0,1,4,7].includes(col):col!==7);
   var val=rendered(sheet,r,col,cell);
-  var sty=allStyles(sheet)[cell.s||0]||''; if(col===7&&r>=6&&r<noteAt)sty+=';color:#17243a!important;background:#fff!important;text-align:left!important;white-space:normal!important;'; if(col===7&&r===6)val='PRODUCT SELECTOR · Code | Name';
+  var sty=allStyles(sheet)[cell.s||0]||''; if(col===7&&(isIngredient||header))sty+=';color:#17243a!important;background:'+(header?'#a3ce68':'#fff')+'!important;text-align:left!important;white-space:normal!important;'; if(col===7&&header)val='PRODUCT SELECTOR · Code | Name';
   var isQty=(col===0 && (sheet.ingredients||[]).some(x=>x.r===r));
   var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'');
   var title=(cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
   html+='<td class="'+cls2+'" data-r="'+r+'" data-c="'+col+'"'+(span?' colspan="'+span[0]+'" rowspan="'+span[1]+'"':'')+
-    ' style="'+H(sty)+'" title="'+H(title)+'"><span class="jc-wb-value">'+H(val)+'</span>'+(editable&&(col===1||col===7)&&r<noteAt&&r>=7?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
+    ' style="'+H(sty)+'" title="'+H(title)+'"><span class="jc-wb-value">'+H(val)+'</span>'+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
  }
  return html+'</tr>';
 }
@@ -131,7 +144,7 @@ function addedHtml(sheet,item){
   var style=mark[map.get(c)?.s||0]||'';
   var v=cl[c]??'';
   if(c===0&&v!==''&&Number.isFinite(Number(v)))v=fmt(v);
-  h+='<td class="jc-wb-cell jc-wb-editable" data-r="'+H(id)+'" data-c="'+c+'" style="'+H(style)+'"><span class="jc-wb-value">'+H(v)+'</span></td>';
+  h+='<td class="jc-wb-cell'+(canEdit()&&[0,1,4,7].includes(c)?' jc-wb-editable':'')+'" data-r="'+H(id)+'" data-c="'+c+'" style="'+H(style)+'"><span class="jc-wb-value">'+H(v)+'</span></td>';
  }
  return h+'</tr>';
 }
@@ -147,9 +160,7 @@ function render(sheet,targetId){
   html+=rowHtml(sheet,row,7,merge,true,lastUsed,noteAt);
   for(var x of added.filter(x=>Number(x.after)===Number(row.r)))html+=addedHtml(sheet,x);
  }
- html+='</tbody></table><datalist id="jcProductOptions">';
- for(var p of A.products)html+='<option value="'+H(p.ct_code+' | '+p.canonical_name)+'"></option>';
- html+='</datalist>';
+ html+='</tbody></table>';
  el.innerHTML=html;
  return true;
 }
@@ -191,7 +202,7 @@ async function setCell(sheet,row,col,value){
  var obj=currentDraft(sheet),key=k(row,col);
  const originalValue=cellValue(sheet,row,col);
  if(String(value)===String(originalValue))return true;
- if(col===0&&value!==''&&(!Number.isFinite(Number(value))||Number(value)<0))throw Error('Ingredient quantity must be a nonnegative number');
+ if(col===0&&ingredientRow(sheet,row)&&value!==''&&(!Number.isFinite(Number(value))||Number(value)<0))throw Error('Ingredient quantity must be a nonnegative number');
  if(typeof row==='string'&&row.startsWith('new-')){
   const target=obj.added_rows.find(x=>x.id===row);
   if(!target)throw Error('Added ingredient row no longer exists');
@@ -204,7 +215,7 @@ async function setCell(sheet,row,col,value){
    if(actual){obj.cells[k(row,2)]=actual.canonical_name;obj.cells[k(row,3)]=actual.ct_code;obj.cells[key]=actual.ct_code+' | '+actual.canonical_name;}
    else if(productName){obj.cells[k(row,2)]=productName;obj.cells[k(row,3)]=code;}
   }
-  if(col===1){
+  if(col===1&&ingredientRow(sheet,row)){
    const originalUnit=unitFor(sheet,row),q=qtyFor(sheet,row),p=productForRow(sheet,row);
    if(q!==null){
     const cv=groupConvert(q,originalUnit,value,p.name);
@@ -223,7 +234,7 @@ async function addRow(sheet){
  return true;
 }
 async function removeRow(sheet,rowKey){
- if(rowKey==null)throw Error('First select the row you want to remove');
+ if(rowKey==null||!ingredientRow(sheet,rowKey))throw Error('First select an ingredient row to remove');
  if(!confirm('Remove this worksheet row from the working draft? Your original Excel workbook is protected.'))return false;
  var obj=currentDraft(sheet);
  if(String(rowKey).startsWith('new-'))obj.added_rows=obj.added_rows.filter(x=>x.id!==rowKey);
@@ -289,11 +300,11 @@ function editCell(td){
  const row=td.dataset.r.startsWith('new-')?td.dataset.r:Number(td.dataset.r),col=Number(td.dataset.c);
  const old=String(col===7&&!String(row).startsWith('new-')?productForRow(sheet,row).selector:row.toString().startsWith('new-')?(state(sheet).added_rows||[]).find(x=>x.id===row)?.cells?.[col]||'':cellValue(sheet,row,col));
  var control;
- if(col===7){
+ if(col===7&&ingredientRow(sheet,row)){
   control=document.createElement('select');
   const values=[...new Set(['',old,...A.products.map(p=>p.ct_code+' | '+p.canonical_name)])];
   values.forEach(v=>{const opt=document.createElement('option');opt.value=v;opt.textContent=v||'Select a product…';control.appendChild(opt)});control.value=old;
- }else if(col===1){
+ }else if(col===1&&ingredientRow(sheet,row)){
   control=document.createElement('select');
   UNITS.forEach(u=>{const opt=document.createElement('option');opt.value=u;opt.textContent=u;control.appendChild(opt)});
   if(old&&!UNITS.includes(old)){const opt=document.createElement('option');opt.value=old;opt.textContent=old;control.prepend(opt)}
@@ -306,10 +317,11 @@ function editCell(td){
  }
  control.className='jc-wb-edit-control';control.setAttribute('aria-label','Edit worksheet cell');
  td.replaceChildren(control);control.focus();if(control.select)control.select();if(control.tagName==='SELECT'&&control.showPicker){try{control.showPicker()}catch(_){}}
+ const initialValue=control.value;
  let committed=false;
  async function complete(commit=true){
   if(committed)return;committed=true;
-  try{if(commit)await setCell(sheet,row,col,control.value)}catch(e){sourceStatus('Not saved: '+e.message)}
+  try{if(commit&&control.value!==initialValue){if(col===7&&ingredientRow(sheet,row)&&old&&control.value!==old&&!confirm('Replace '+old+' with '+control.value+'?')){render(sheet,'jeWorkbookGrid');return;}await setCell(sheet,row,col,control.value)}}catch(e){sourceStatus('Not saved: '+e.message)}
   render(sheet,'jeWorkbookGrid');
  }
  control.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();complete()}if(e.key==='Escape'){e.preventDefault();complete(false)}});
@@ -324,7 +336,7 @@ document.addEventListener('click',e=>{
  const td=e.target.closest?.('#jeWorkbookGrid tr[data-row]');
  if(td){document.querySelectorAll('#jeWorkbookGrid tr.jc-wb-selected').forEach(x=>x.classList.remove('jc-wb-selected'));td.classList.add('jc-wb-selected');A.selectedRow=td.dataset.row;}
  const picker=e.target.closest?.('#jeWorkbookGrid td.jc-wb-editable');
- if(picker&&[1,7].includes(Number(picker.dataset.c))&&!picker.querySelector('input,select,textarea'))editCell(picker);
+ if(picker&&A.active&&ingredientRow(A.active,picker.dataset.r)&&[1,7].includes(Number(picker.dataset.c))&&!picker.querySelector('input,select,textarea'))editCell(picker);
 });
 window.JCRecipeAdvanced={
  load,render,addRow,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,
