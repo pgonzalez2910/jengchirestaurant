@@ -6496,12 +6496,22 @@ async function afterLogin(){
   if(editorRole){try{if(!lib.sheets.length)await loadCloudLibrary();await reloadServerEdits(false);}catch(e){console.warn('Optional legacy Excel view unavailable:',e);}}
   if(currentSheet)drawSheets();
 }
+let cloudLibraryPending=null,cloudLibraryError=null;
 async function loadCloudLibrary(){
-  if(!client||!editorRole)return;
+ if(!client||!editorRole)return;
+ if(cloudLibraryPending)return cloudLibraryPending;
+ cloudLibraryError=null;
+ cloudLibraryPending=loadCloudLibraryImpl().catch(e=>{cloudLibraryError=e;throw e;}).finally(()=>{cloudLibraryPending=null;});
+ return cloudLibraryPending;
+}
+async function loadCloudLibraryImpl(){
   const sheets=[],styles={};let start=0;
+  const getPage=offset=>client.from('jc_recipe_library_locations').select('id,component_id,workbook_name,worksheet_name,worksheet_order,source_sha256,snapshot').order('id').range(offset,offset+49);
   for(;;){
-    const {data,error}=await client.from('jc_recipe_library_locations').select('id,component_id,workbook_name,worksheet_name,worksheet_order,source_sha256,snapshot').range(start,start+49);
-    if(error)throw error;if(!data?.length)break;
+    const pages=await Promise.all([0,50,100].map(n=>getPage(start+n)));
+    for(const page of pages)if(page.error)throw page.error;
+    const data=pages.flatMap(page=>page.data||[]);
+    if(!data.length)break;
     for(const row of data){
       const snap=row.snapshot||{};
       const sheet={...snap,id:row.id,component_id:row.component_id,file:row.workbook_name,sheet:row.worksheet_name,order:row.worksheet_order,file_sha256:row.source_sha256};
@@ -6509,7 +6519,7 @@ async function loadCloudLibrary(){
       delete sheet.styles;
       sheets.push(sheet);
     }
-    start+=data.length;if(data.length<50)break;
+    start+=data.length;if(data.length<150)break;
   }
   lib={...lib,sheets,styles_by_file:styles,file_count:new Set(sheets.map(x=>x.file)).size,worksheet_count:sheets.length,canonical_component_count:new Set(sheets.map(x=>x.component_id)).size};
   const previousFile=currentFile,previousSheet=currentSheet?.sheet;
@@ -6922,6 +6932,9 @@ window.JCRecipeBridge={
  getUser:()=>loginUser,
  getRole:()=>editorRole,
  getLibrary:()=>lib,
+ ensureLibrary:()=>lib.sheets.length?Promise.resolve():loadCloudLibrary(),
+ libraryLoading:()=>Boolean(cloudLibraryPending),
+ libraryError:()=>cloudLibraryError?.message||'',
  renderWorkbookSheet:(file,sheetId,targetId,editable)=>{
    const sheet=(sheetsForFile.get(file)||[]).find(s=>s.id===sheetId);
    if(!sheet)return false;
@@ -7059,10 +7072,11 @@ async function refresh(){if(state.loading||!user())return;state.loading=true;try
  c.from('jc_recipe_core_recipes').select('id,name,normalized_name,department,menu_category,recipe_kind,status,published_version,published_data,updated_at,source_filename').order('name'),
  c.from('jc_recipe_core_links').select('parent_recipe_id,ingredient_key,child_recipe_id,quantity,unit'),
  c.from('jc_recipe_core_drafts').select('recipe_id,editor_id,base_version,content,updated_at').eq('editor_id',user().id),
- c.from('jc_recipe_core_products').select('id,canonical_name,ct_code,code_status').order('canonical_name')]);
+ c.from('jc_recipe_core_products').select('id,canonical_name,ct_code,code_status').order('canonical_name'),
+ bridge()?.ensureLibrary?.().catch(e=>console.warn('Source loading:',e.message||e)),
+ window.JCRecipeAdvanced?.load?.().catch(e=>console.warn('Advanced workbook data:',e.message||e))]);
  if(r.error)throw r.error;if(l.error)throw l.error;if(d.error)throw d.error;
  cache.recipes=r.data||[];cache.links=l.data||[];cache.drafts=d.data||[];cache.products=p.data||[];
- if(window.JCRecipeAdvanced?.load)try{await window.JCRecipeAdvanced.load()}catch(e){console.warn('Advanced workbook data:',e.message||e)}
  collectCandidates();state.authReady=true;render();}
  catch(e){state.authReady=true;render();toast('Unable to load RecipeOS: '+(e.message||e),true)}finally{state.loading=false;}}
 function navItem(id,label,icon){const n=id==='recipes'?cache.recipes.length:id==='masters'?cache.recipes.filter(r=>r.recipe_kind==='subrecipe').length:'';return `<button type="button" class="je-nav ${state.view===id?'active':''}" data-go="${id}"><i class="fa-solid ${icon}"></i><span>${H(label)}</span>${n!==''?`<em>${n}</em>`:''}</button>`;}
@@ -7156,11 +7170,11 @@ function workbookPage(){
  const c=workbookContext(r),s=c.active;
  let html='<section class="je-wb-clean"><div class="je-wb-clean-head"><div><button data-go="menu" class="je-wb-path"><i class="fa-solid fa-arrow-left"></i> Menu</button> <span>/ '+H(r.menu_category||'Recipes')+'</span><p class="je-eyebrow">JENG CHI · ORIGINAL EXCEL RECIPE</p><h1>'+H(r.name)+'</h1><p>'+H(c.file||'Original Excel source requires verification')+'</p></div>';
  html+='<div class="je-wb-head-controls"><span class="je-wb-status"><i class="fa-solid fa-file-excel"></i> '+c.sheets.length+' worksheet tab'+(c.sheets.length!==1?'s':'')+'</span><button class="je-button secondary" data-wb-details="1"><i class="fa-solid fa-sliders"></i> Recipe controls</button></div></div>';
- if(!c.file||!c.sheets.length){html+='<div class="je-wb-unmatched"><i class="fa-solid fa-file-circle-question"></i><h3>Original workbook needs source review</h3><p>No ingredients or worksheets are substituted.</p></div></section>';return html;}
+ if(!c.file||!c.sheets.length){const pending=Boolean(user()&&(state.loading||bridge()?.libraryLoading?.()));const error=bridge()?.libraryError?.();html+='<div class="je-wb-unmatched"><i class="fa-solid '+(pending?'fa-circle-notch fa-spin':'fa-file-circle-question')+'"></i><h3>'+(!user()?'Sign in to open the protected recipe library':pending?'Loading protected Excel worksheets…':error?'Unable to load the worksheet library':'Original workbook needs source review')+'</h3><p>'+H(pending?'Retrieving original recipes and saved edits.':error||'No ingredients or worksheets are substituted.')+'</p></div></section>';return html;}
  html+='<div class="je-wb-clean-workspace"><div class="je-wb-tabs" role="tablist" aria-label="Recipe and supporting sub-recipe Excel tabs">';
  const ordered=[...(c.main?[c.main]:[]),...c.sheets.filter(x=>x.id!==c.main?.id)];
  ordered.forEach((x,index)=>{const main=x.id===c.main?.id;html+='<button role="tab" aria-selected="'+(x.id===s?.id)+'" class="je-tab-recipe '+(main?'je-tab-main':'je-tab-sub je-tab-palette-'+(index%5))+' '+(x.id===s?.id?'active':'')+'" data-wb-sheet="'+H(x.id)+'" title="'+H(main?'Main finished dish':'Supporting sub-recipe')+'"><i class="fa-solid '+(main?'fa-crown':'fa-link')+'"></i> '+H(x.sheet)+(main?'<span class="je-tab-main-label">MAIN DISH</span>':'')+'</button>';});
- html+='</div><div class="je-wb-clean-toolbar"><div><strong>'+H(s?.name||s?.sheet||r.name)+'</strong><small>'+H(s?.sheet||'')+' · '+(s?.ingredients?.length??0)+' ingredient rows</small></div><div class="je-wb-toolbar-actions"><button type="button" class="je-button secondary" data-go="menu" aria-label="Return to restaurant menu"><i class="fa-solid fa-house"></i> Menu</button><button type="button" class="je-button secondary" data-wb-details="1"><i class="fa-solid fa-sliders"></i> Recipe controls</button><span id="jeWorkbookSave">'+(writable()?'Editable draft · automatic cloud save':'Read-only worksheet')+'</span><button class="je-button secondary" data-wb-main="1"><i class="fa-solid fa-house"></i> Main recipe</button></div></div>';
+ html+='</div><div class="je-wb-clean-toolbar"><div><strong>'+H(r.name)+'</strong></div><div class="je-wb-toolbar-actions"><button type="button" class="je-button secondary" data-go="menu" aria-label="Return to restaurant menu" title="Restaurant menu"><i class="fa-solid fa-house"></i></button><button type="button" class="je-button secondary" data-wb-details="1" title="Recipe controls" aria-label="Recipe controls"><i class="fa-solid fa-sliders"></i></button><span id="jeWorkbookSave">'+(writable()?'Editable draft · automatic cloud save':'Read-only worksheet')+'</span><button class="je-button secondary" data-wb-main="1" title="Main recipe" aria-label="Main recipe"><i class="fa-solid fa-crown"></i></button></div></div>';
  
  html+='<div class="je-wb-actionbar"><div class="je-wb-action-left">';
  if(writable()){
@@ -7173,7 +7187,7 @@ function workbookPage(){
  html+='<button class="je-button gold" data-wb-publish="1"><i class="fa-solid fa-shield-halved"></i> Publish component</button>';
  }
  }
- html+='</div><div class="je-wb-action-right"><span class="jc-view-tools" aria-label="Worksheet view"><button type="button" data-jc-view="fit" aria-pressed="true">Fit page</button><button type="button" data-jc-view="width">Fit width</button><button type="button" data-jc-view="actual">Actual size</button><button type="button" data-jc-view="minus" aria-label="Zoom out">−</button><span data-jc-zoom-label>100%</span><button type="button" data-jc-view="plus" aria-label="Zoom in">+</button></span><button class="je-button je-wb-print" data-wb-print="1"><i class="fa-solid fa-print"></i> Print Landscape</button></div></div>';
+ html+='</div><div class="je-wb-action-right"><button type="button" class="je-button je-wb-print" data-wb-print="1" title="Print landscape" aria-label="Print landscape"><i class="fa-solid fa-print"></i></button></div></div>';
  html+='<details class="je-wb-unit-tool"><summary><i class="fa-solid fa-ruler-combined"></i> U.S. Measurement Converter · oz / lb / fl oz / cups / qt / gal</summary>';
  html+='<div class="je-wb-unit-row"><label>Quantity <input id="jcMeasureQty" type="number" value="440" min="0" step="any"></label>';
  const measurementUnits=['oz','lb','fl oz','tsp','tbsp','cup','pt','qt','gal','each','piece','bottle'];
@@ -7291,7 +7305,7 @@ if(t.dataset.editKind&&state.content){state.content.recipe_kind=t.value;setDirty
 if(t.dataset.ing!==undefined&&t.dataset.field&&state.content){const x=state.content.ingredients?.[Number(t.dataset.ing)];if(!x)return;const f=t.dataset.field;x[f]=f==='quantity'?(t.value===''?'':Number(t.value)):t.value;if(f==='master_id')x.name=recipeName(t.value);setDirty();return;}
 });
 const onAuthChange=async()=>{const logged=!!user();root.hidden=false;document.body.classList.add('je-live');if(!logged){cache.recipes=PUBLIC_CATALOG.map(r=>({...r,published_data:null}));cache.drafts=[];cache.links=[];cache.products=[];state.authReady=true;state.view=state.view==='editor'?'menu':state.view;document.body.classList.remove('je-excel');render();return;}await refresh();};
-window.JCRecipeCore={onAuthChange,onCloudChange:()=>{if(user())refresh()},onSheetChange:()=>{},openDashboard:()=>go('overview')};
+window.JCRecipeCore={onAuthChange,onCloudChange:()=>{if(user()&&!state.loading){collectCandidates();render()}},onSheetChange:()=>{},openDashboard:()=>go('overview')};
 onAuthChange();
 let jcPreviousUser=user()?.id||null;
 setInterval(()=>{const currentId=user()?.id||null;if(currentId!==jcPreviousUser){jcPreviousUser=currentId;onAuthChange().catch(console.warn)}},2500);
@@ -7348,11 +7362,21 @@ setInterval(()=>{const currentId=user()?.id||null;if(currentId!==jcPreviousUser)
 #jcCoreApp .je-wb-foot{padding:3px 8px;font-size:9px}
 #jcCoreApp .je-wb-fit .jc-wb-spare-row,#jcCoreApp .je-wb-fit .jc-wb-empty-note{display:none}
 #jcCoreApp .je-wb-fit .jc-wb-advanced tr{height:auto!important}
+#jcCoreApp .je-wb-fit .jc-wb-advanced td{font-size:14px!important;line-height:1.1!important;padding:2px 4px!important}
+#jcCoreApp .je-wb-fit .jc-wb-advanced tr:first-child td{font-size:28px!important}
+#jcCoreApp .je-wb-fit .jc-wb-advanced td[rowspan]{min-height:0!important}
+#jcCoreApp .je-wb-fit .jc-wb-advanced{width:100%!important}
+#jcCoreApp .je-wb-fit #jeWorkbookGrid{width:100%}
 #jcCoreApp .je-wb-fit .jc-wb-advanced td{padding:3px 5px;line-height:1.13}
 #jcCoreApp .je-wb-fit #jeWorkbookGrid{width:max-content}
 #jcCoreApp .je-wb-clean-workspace .je-wb-scroll:has(#jeWorkbookGrid){overflow-x:auto}
 }
 
+@media screen {
+#jcCoreApp .je-wb-clean-workspace .je-wb-print{min-width:32px;justify-content:center}
+#jcCoreApp .je-wb-clean-workspace .je-wb-toolbar-actions{gap:6px}
+#jcCoreApp .je-wb-clean-workspace .je-wb-scroll{background:#fff}
+}
 @media print{#jcCoreApp .jc-view-tools{display:none!important}#jcCoreApp #jeWorkbookGrid{zoom:1!important}}
 </style>
 <script>
@@ -7363,14 +7387,14 @@ function refresh(){
  if(!section||!grid)return;
  section.classList.toggle('je-wb-fit',mode==='fit'); section.classList.toggle('je-wb-scaled',mode!=='actual');
  const scroll=grid.closest('.je-wb-scroll'),table=grid.querySelector('table');if(!scroll||!table)return;
- grid.style.setProperty('--jc-fit-zoom','1');
+ grid.style.setProperty('--jc-fit-zoom','1');grid.style.width='';
  const w=table.offsetWidth,h=table.offsetHeight;
  if(!w||!h)return;
  const availableW=Math.max(100,scroll.clientWidth-20);
- const availableH=Math.max(140,window.innerHeight-scroll.getBoundingClientRect().top-64);
- let scale=mode==='actual'?1:mode==='width'?Math.min(1.5,availableW/w):mode==='manual'?manual:Math.min(1.5,availableW/w,availableH/h);
+ const availableH=Math.max(140,window.innerHeight-scroll.getBoundingClientRect().top-58);
+ let scale=Math.min(1,availableH/h);if(window.innerWidth<901)scale=Math.min(scale,availableW/w);
  scale=Math.max(.15,scale);
- grid.style.setProperty('--jc-fit-zoom',String(scale));
+ grid.style.setProperty('--jc-fit-zoom',String(scale)); if(window.innerWidth>=901){grid.style.width=(100/scale)+'%';}else grid.style.width='';
  const controls=section.querySelector('.jc-view-tools');
  if(controls){controls.querySelectorAll('[data-jc-view]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.jcView===mode)));const label=controls.querySelector('[data-jc-zoom-label]');if(label)label.textContent=Math.round(scale*100)+'%';}
  }
