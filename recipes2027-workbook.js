@@ -228,6 +228,31 @@ async function publish(sheet){
  await load();sourceStatus('Published master component · version '+data);
  render(sheet,'jeWorkbookGrid');
 }
+async function scaleBatch(sheet){
+ if(!canEdit())throw Error('Authorized editor required');
+ const from=Number(String(cellValue(sheet,4,6)||sheet.yield||'').match(/\d+(?:\.\d+)?/)?.[0]||0);
+ if(!(from>0))throw Error('A numeric source target yield is required before scaling');
+ const unit=String(cellValue(sheet,4,6)||sheet.yield||'').replace(/^\s*[\d,.]+\s*/,'').trim();
+ const result=prompt('New target batch yield'+(unit?' ('+unit+')':'')+':',fmt(from));
+ if(result===null)return;
+ const to=Number(result);
+ if(!(to>0)||!Number.isFinite(to))throw Error('Enter a positive target yield');
+ const factor=to/from;
+ if(!confirm('Scale '+sheet.name+' by '+factor.toFixed(3)+' ×? Ingredient quantities change proportionally. Actual finished yield must still be measured.'))return;
+ const obj=currentDraft(sheet);
+ for(const ingredient of sheet.ingredients||[]){
+  const row=ingredient.r;
+  const old=Number(cellValue(sheet,row,0));
+  if(Number.isFinite(old))obj.cells[k(row,0)]=Number((old*factor).toFixed(6));
+ }
+ for(const extra of obj.added_rows||[]){
+  const q=Number(extra.cells?.[0]);
+  if(Number.isFinite(q)&&extra.cells?.[0]!=='')extra.cells[0]=Number((q*factor).toFixed(6));
+ }
+ obj.cells[k(4,6)]=unit?to.toFixed(3)+' '+unit:to;
+ await save(sheet,obj);render(sheet,'jeWorkbookGrid');
+ sourceStatus('Target yield and ingredient quantities scaled together · actual measured yield remains separate');
+}
 async function changeCode(){
  if(bridge()?.getRole()!=='admin')throw Error('Owner approval is required');
  const old=prompt('Current CrunchTime product code:');if(!old)return;
@@ -280,7 +305,7 @@ document.addEventListener('click',e=>{
  if(td){document.querySelectorAll('#jeWorkbookGrid tr.jc-wb-selected').forEach(x=>x.classList.remove('jc-wb-selected'));td.classList.add('jc-wb-selected');A.selectedRow=td.dataset.row;}
 });
 window.JCRecipeAdvanced={
- load,render,addRow,removeRow,restoreRows,publish,changeCode,print,groupConvert,
+ load,render,addRow,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,
  get selectedRow(){return A.selectedRow},
  get active(){return A.active},
  get productCount(){return A.products.length},
