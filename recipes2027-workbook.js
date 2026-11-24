@@ -199,7 +199,7 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
   var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'')+(isYield(sheet,r,col)&&editable?' jc-wb-yield-edit':'');
   var title=(cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
   html+='<td class="'+cls2+'" data-r="'+r+'" data-c="'+col+'"'+(span?' colspan="'+span[0]+'" rowspan="'+span[1]+'"':'')+
-    ' style="'+H(sty)+'" title="'+H(title)+'">'+(isProtected(sheet)&&editable&&isYield(sheet,r,col)?'<input class="jc-direct-yield" type="number" min="1" step="1" aria-label="Serving yield in pieces" value="'+H(yieldValue(sheet)||'')+'">'+(dumplingCountYield(sheet,cellValue(sheet,r,col))?'<span class="jc-yield-unit">dumplings</span>':''):'<span class="jc-wb-value">'+H(val)+'</span>')+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
+    ' style="'+H(sty)+'" title="'+H(title)+'">'+(editable&&isYield(sheet,r,col)&&(isProtected(sheet)||isPorkJelly(sheet))?'<input class="jc-direct-yield'+(isPorkJelly(sheet)?' jc-batch-yield':'')+'" type="number" min="'+(isPorkJelly(sheet)?'0.001':'1')+'" step="'+(isPorkJelly(sheet)?'any':'1')+'" aria-label="'+(isPorkJelly(sheet)?'Target batch yield in pounds':'Serving yield in pieces')+'" value="'+H(yieldValue(sheet)||'')+'">'+(isPorkJelly(sheet)?'<span class="jc-yield-unit">lb</span>':dumplingCountYield(sheet,cellValue(sheet,r,col))?'<span class="jc-yield-unit">dumplings</span>':''):'<span class="jc-wb-value">'+H(val)+'</span>')+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
  }
  return html+'</tr>';
 }
@@ -230,9 +230,37 @@ function render(sheet,targetId){
  }
  html+='</tbody></table>';
  el.innerHTML=html;
- bindServingInput(sheet,el.querySelector('.jc-direct-yield'));
+ if(isPorkJelly(sheet))bindBatchYieldInput(sheet,el.querySelector('.jc-batch-yield'));else bindServingInput(sheet,el.querySelector('.jc-direct-yield'));
  showDependencyReport(sheet,A.lastSync?.id===sheet.id?A.lastSync.ids:null);
  return true;
+}
+function bindBatchYieldInput(sheet,input){
+ if(!input)return;
+ let timer=null,busy=false,queued=false;
+ const read=()=>{const n=Number(input.value);return input.value!==''&&Number.isFinite(n)&&n>0?n:null};
+ function preview(draft){
+  for(const node of document.querySelectorAll('#jeWorkbookGrid td[data-c="0"] .jc-wb-value')){
+   const rr=node.closest('td').dataset.r;
+   const q=rr.startsWith('new-')?draft.added_rows?.find(x=>x.id===rr)?.cells?.[0]:draft.cells[k(Number(rr),0)];
+   if(q!==undefined&&q!==null&&q!=='')node.textContent=fmt(q);
+  }
+ }
+ function restore(){const n=yieldValue(sheet);input.value=n||'';if(n)preview(scaledBatchDraft(sheet,n));}
+ async function commit(){
+  clearTimeout(timer);if(busy){queued=true;return;}
+  const n=read();if(n===null){restore();sourceStatus('Not saved: enter a positive yield in pounds');return;}
+  if(n===yieldValue(sheet)){preview(scaledBatchDraft(sheet,n));return;}
+  busy=true;queued=false;
+  try{const obj=scaledBatchDraft(sheet,n);preview(obj);await save(sheet,obj);
+   if(A.active===sheet){const next=read();if(next&&next!==n){preview(scaledBatchDraft(sheet,next));queued=true;}else{input.value=n;preview(obj);}}
+  }catch(e){if(A.active===sheet){restore();sourceStatus('Not saved: '+e.message);}}
+  finally{busy=false;if(queued&&A.active===sheet){queued=false;commit();}}
+ }
+ input.addEventListener('focus',()=>input.select());
+ input.addEventListener('input',()=>{clearTimeout(timer);const n=read();if(n===null)return;preview(scaledBatchDraft(sheet,n));sourceStatus('⏳ Recalculating batch · saving automatically');timer=setTimeout(commit,750);});
+ input.addEventListener('change',commit);
+ input.addEventListener('blur',commit);
+ input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();commit();}if(e.key==='Escape'&&!busy){clearTimeout(timer);restore();}});
 }
 function bindServingInput(sheet,input){
  if(!input)return;
@@ -413,6 +441,7 @@ function groupConvert(q,from,to,name){
  }
  return null;
 }
+function isPorkJelly(sheet){return mushroomMaster(sheet)===approvedMushroomMasters['PK-J-INTERNAL'];}
 function scaledBatchDraft(sheet,to){
  const src=canonicalSheet(sheet),address=yieldAddress(src),from=yieldValue(src);
  if(!(from>0&&to>0&&Number.isFinite(to)))throw Error('Enter a positive batch yield');
