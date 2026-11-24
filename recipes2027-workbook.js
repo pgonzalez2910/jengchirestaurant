@@ -17,7 +17,7 @@ function original(sheet,row,col){
  var cell=record?.c?.find(x=>Number(x.c)===Number(col));
  return cell?.v??'';
 }
-const approvedMushroomMasters={"DM-PREP-INTERNAL":{"name":"Dried Mushroom Prep","master":"2aae8bf9-10fb-5051-8e1a-a2fece6d31cc","ids":["2aae8bf9-10fb-5051-8e1a-a2fece6d31cc","b0978670-2650-516c-9111-7e58a290e024","14a4b515-ceda-5c3f-be31-def83e73fefb","00343328-cfd5-58bb-b52f-c2de52ed09f7","44d2072f-2321-5799-bebf-620c88d5889a","af6d1eaa-251d-5f7f-b74d-dc45af81e8a5"],"defaults":{"4:6":"15 lb","8:0":2,"8:1":"lb","8:2":"Produce Mushroom Dried","8:3":"P6758","8:7":"P6758 | Produce Mushroom Dried","9:0":10,"9:1":"qt","9:2":"Tap Water","9:3":"R1326","9:7":"R1326 | Tap Water"}},"FM-PREP-INTERNAL":{"name":"Fungus Mushroom Prep","master":"63854625-ea09-5853-be55-e46f077cd0f3","ids":["63854625-ea09-5853-be55-e46f077cd0f3","a381962a-6796-59f4-8ed7-4bddd27e03fe","69b40037-1d21-5de2-b201-5c9618a3ced1","d71c68d9-dcc6-5f33-9033-69dcfb1d629e"],"defaults":{"4:6":"15 lb","8:0":2.5,"8:1":"lb","8:2":"Mushroom Fungus Strips","8:3":"P2874","8:7":"P2874 | Mushroom Fungus Strips","9:0":18,"9:1":"qt","9:2":"Tap Water","9:3":"R1326","9:7":"R1326 | Tap Water"}},"SL-INTERNAL":{"name":"Special Lard","master":"4593d49a-4de7-5b2c-94ba-d75738596152","ids":["4593d49a-4de7-5b2c-94ba-d75738596152","c4453b8d-c554-5515-9137-54443c69fe00","36c6cd6b-b059-5aa5-b467-1d7938c23914","6d8cd551-2f20-5005-9069-18a6ccd5f727"],"defaults":{"4:6":"90 lb (5 batches)"}},"PK-J-INTERNAL":{"name":"Pork Jelly","master":"b7d4bffe-ad3a-5584-a923-27739b5efefa","ids":["b7d4bffe-ad3a-5584-a923-27739b5efefa","ab76cd2d-8ae9-54eb-8b4e-7c89a8c8194b"],"defaults":{"4:6":"35 lb","16:0":3.5,"16:1":"bottle","16:2":"Gelatin Mix Unflavored","16:3":"P6712","16:7":"P6712 | Gelatin Mix Unflavored"}}};
+const approvedMushroomMasters={"DM-PREP-INTERNAL":{"name":"Dried Mushroom Prep","master":"2aae8bf9-10fb-5051-8e1a-a2fece6d31cc","ids":["2aae8bf9-10fb-5051-8e1a-a2fece6d31cc","b0978670-2650-516c-9111-7e58a290e024","14a4b515-ceda-5c3f-be31-def83e73fefb","00343328-cfd5-58bb-b52f-c2de52ed09f7","44d2072f-2321-5799-bebf-620c88d5889a","af6d1eaa-251d-5f7f-b74d-dc45af81e8a5"],"defaults":{"4:6":"15 lb","8:0":2,"8:1":"lb","8:2":"Produce Mushroom Dried","8:3":"P6758","8:7":"P6758 | Produce Mushroom Dried","9:0":10,"9:1":"qt","9:2":"Tap Water","9:3":"R1326","9:7":"R1326 | Tap Water"}},"FM-PREP-INTERNAL":{"name":"Fungus Mushroom Prep","master":"63854625-ea09-5853-be55-e46f077cd0f3","ids":["63854625-ea09-5853-be55-e46f077cd0f3","a381962a-6796-59f4-8ed7-4bddd27e03fe","69b40037-1d21-5de2-b201-5c9618a3ced1","d71c68d9-dcc6-5f33-9033-69dcfb1d629e"],"defaults":{"4:6":"15 lb","8:0":2.5,"8:1":"lb","8:2":"Mushroom Fungus Strips","8:3":"P2874","8:7":"P2874 | Mushroom Fungus Strips","9:0":18,"9:1":"qt","9:2":"Tap Water","9:3":"R1326","9:7":"R1326 | Tap Water"}},"SL-INTERNAL":{"name":"Special Lard","master":"4593d49a-4de7-5b2c-94ba-d75738596152","ids":["4593d49a-4de7-5b2c-94ba-d75738596152","c4453b8d-c554-5515-9137-54443c69fe00","36c6cd6b-b059-5aa5-b467-1d7938c23914","6d8cd551-2f20-5005-9069-18a6ccd5f727"],"defaults":{"4:6":"90 lb (5 batches)"}},"PK-J-INTERNAL":{"name":"Pork Jelly","master":"b7d4bffe-ad3a-5584-a923-27739b5efefa","ids":["b7d4bffe-ad3a-5584-a923-27739b5efefa","ab76cd2d-8ae9-54eb-8b4e-7c89a8c8194b"],"defaults":{"4:6":"35 lb","16:0":3.5,"16:1":"bottle","16:2":"Gelatin Mix Unflavored","16:3":"P6712","16:7":"P6712 | Gelatin Mix Unflavored"}},"DD-INTERNAL":{"name":"White Dumpling Dough","master":"e08a0d11-ee85-5a69-85b0-6ade9e8cecd7","ids":["e08a0d11-ee85-5a69-85b0-6ade9e8cecd7","45e82113-9e38-54df-8625-ac3551bc7018","24b1125f-e083-59c0-9375-5584533dce7c","6090d151-088c-5798-b64e-59a0df220f4e","0077b05e-ae47-5e49-b2f3-f2594eaaebd5","10a88043-3446-553d-9ca3-7d0a339dda6a","9d57db67-cfa9-51f0-ae5f-9d901b762c5d","f67bed53-ae93-5313-bbc3-243fb4e2a904","2eef8213-695e-5054-ac3f-f4f1fbcc3863","2fb05b4c-c6ae-5db5-87a7-4a975e97377d","07ba04fd-0213-5165-95b2-0a9d1cf214ee"],"defaults":{"4:6":"95 lb","8:0":54,"8:1":"lb","8:2":"Flour All Purpose","8:3":"P1167","8:7":"P1167 | Flour All Purpose","9:0":18,"9:1":"lb","9:2":"Special Lard","9:3":"SL-INTERNAL","9:7":"SL-INTERNAL | Special Lard","10:0":13.76,"10:1":"qt","10:2":"Tap Water","10:3":"R1326","10:7":"R1326 | Tap Water"}}};
 function mushroomMaster(sheet){return Object.values(approvedMushroomMasters).find(g=>g.ids.includes(sheet?.component_id));}
 function canonicalSheet(sheet){const g=mushroomMaster(sheet);return g?(bridge()?.getLibrary()?.sheets||[]).find(x=>x.component_id===g.master)||sheet:sheet;}
 function state(sheet){
@@ -44,6 +44,7 @@ function productForRow(sheet,row){
  if(/^(water|tap water|hot water|cold water)$/i.test(rawName.trim())) return {code:'R1326',name:'Tap Water',selector:'R1326 | Tap Water'};
  var parsed=sel.match(/^\s*([^|]+)\s*\|\s*(.+)$/);
  if(parsed){code=parsed[1].trim();rawName=parsed[2].trim();}
+ if(code==='DD-INTERNAL'&&(bridge()?.getLibrary()?.sheets||[]).some(x=>x.file===sheet.file&&x.component_id==='62423561-d4a2-5384-98b9-7acc25bbca72'))return {code,name:rawName,selector:code+' | '+rawName};
  if(approvedMushroomMasters[code]){rawName=approvedMushroomMasters[code].name;return {code,name:rawName,selector:code+' | '+rawName};}
  var p=lookupProduct(code); if(p&&normalizeName(p.canonical_name)===normalizeName(rawName))return {code:p.ct_code,name:rawName,selector:p.ct_code+' | '+rawName};
  return {code:code,name:rawName,selector:(code&&rawName)?code+' | '+rawName:''};
@@ -73,6 +74,13 @@ function isYield(sheet,row,col){const a=yieldAddress(sheet);return Number(row)==
 function yieldValue(sheet,originalOnly=false){const a=yieldAddress(sheet);const raw=originalOnly?original(sheet,a.row,a.col):cellValue(sheet,a.row,a.col);const n=Number(String(raw||sheet.yield||'').match(/^\s*(\d+(?:\.\d+)?)/)?.[1]);return n>0?n:null;}
 function linkedFormulaValue(sheet,row,col,cell){
  if(col!==0||!cell?.f||typeof cell.v!=='number')return null;
+ // Finished dough is now measured in pounds; a pounds value is not a piece denominator.
+ // Archived per-serving wrapper consumption is retained until an actual wrapper weight is specified.
+ const doughRef=String(cell.f).match(/'((?:[^']|'')+)'!\$?N\$?3/i);
+ if(doughRef&&/SUM\(/i.test(cell.f)){
+  const dep=(bridge()?.getLibrary()?.sheets||[]).find(x=>x.file===sheet.file&&x.sheet===doughRef[1].replace(/''/g,"'"));
+  if(dep&&mushroomMaster(dep)===approvedMushroomMasters['DD-INTERNAL'])return cell.v;
+ }
  const refs=[...String(cell.f).matchAll(/'((?:[^']|'')+)'!\$?[AM]\$?(\d+)/g)];
  if(!refs.length)return null;
  const depName=refs[0][1].replace(/''/g,"'"),depRow=Number(refs[0][2]);
@@ -283,7 +291,7 @@ function signature(sheet){
 }
 function matchingMasters(sheet){
  const reg=registry(),code=reg.codeOf.get(sheet.id),group=reg.byCode.get(code)||[];
- const approved=mushroomMaster(sheet);if(approved)return {code,conflicts:[],matches:group.filter(x=>approved.ids.includes(x.component_id))};
+ const approved=mushroomMaster(sheet);if(approved)return {code,conflicts:code==='DD-INTERNAL'?group.filter(x=>!approved.ids.includes(x.component_id)):[],matches:group.filter(x=>approved.ids.includes(x.component_id))};
  const sig=signature(sheet);
  const conflicts=group.filter(s=>s.component_id!==sheet.component_id&&(!sig||signature(s)!==sig));
  const matches=group.filter(s=>s.component_id===sheet.component_id||(sig&&signature(s)===sig));
@@ -331,7 +339,7 @@ function showDependencyReport(sheet,savedIds=null){
  copies.map(x=>'<div>✓ '+H(x.file)+' / '+H(x.sheet)+' — '+(ids.has(approved?.master||x.component_id)?'shared master draft saved':approved?'shared canonical master':'matching master')+'</div>').join('')+
  group.conflicts.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — different source formula or yield; not merged</div>').join('')+
  found.map(x=>'<div>'+H(x.sheet.file)+' / '+H(x.sheet.sheet)+' — '+H((x.depth===1?'Direct: ':'Indirect: ')+x.kind)+'</div>').join('')+ (ambiguous.length?'<p>Unresolved code references ('+ambiguous.length+') — excluded from verified dependencies:</p>'+ambiguous.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — source not uniquely identified</div>').join(''):'')+
- '<p>Fixed amounts of prepared ingredients remain unchanged. Formula dependencies are recalculated when supported; unresolved formulas require review.</p></div>';
+ (group.code==='DD-INTERNAL'?'<p>Shared finished dough yield is measured in pounds. Original per-dish wrapper portions are retained; pounds are never used as a piece count. Purple dough is a separate formulation.</p>':'')+'<p>Fixed amounts of prepared ingredients remain unchanged. Formula dependencies are recalculated when supported; unresolved formulas require review.</p></div>';
 }
 function currentDraft(sheet){
  const g=mushroomMaster(sheet);if(g)sheet=canonicalSheet(sheet);
