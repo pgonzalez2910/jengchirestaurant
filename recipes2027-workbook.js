@@ -212,7 +212,7 @@ async function setCell(sheet,row,col,value){
   if(col===7&&String(value).includes(' | ')){
    const parts=String(value).split(' | '),code=parts.shift().trim(),productName=parts.join(' | ').trim();
    const actual=lookupProduct(code);
-   if(actual){obj.cells[k(row,2)]=actual.canonical_name;obj.cells[k(row,3)]=actual.ct_code;obj.cells[key]=actual.ct_code+' | '+actual.canonical_name;}
+   if(actual&&normalizeName(actual.canonical_name)===normalizeName(productName)){obj.cells[k(row,2)]=actual.canonical_name;obj.cells[k(row,3)]=actual.ct_code;obj.cells[key]=actual.ct_code+' | '+actual.canonical_name;}
    else if(productName){obj.cells[k(row,2)]=productName;obj.cells[k(row,3)]=code;}
   }
   if(col===1&&ingredientRow(sheet,row)){
@@ -302,8 +302,9 @@ function editCell(td){
  var control;
  if(col===7&&ingredientRow(sheet,row)){
   control=document.createElement('select');
-  const values=[...new Set(['',old,...A.products.map(p=>p.ct_code+' | '+p.canonical_name)])];
-  values.forEach(v=>{const opt=document.createElement('option');opt.value=v;opt.textContent=v||'Select a product…';control.appendChild(opt)});control.value=old;
+  const sourceCode=String(original(sheet,row,3)||''),sourceName=String(original(sheet,row,2)||''); const sourceChoice=sourceCode&&sourceName?sourceCode+' | '+sourceName:'';
+  const values=[...new Set(['',old,sourceChoice,...A.products.map(p=>p.ct_code+' | '+p.canonical_name)])];
+  values.forEach(v=>{const opt=document.createElement('option');opt.value=v;opt.textContent=v||'Select a product…';if(v===sourceChoice&&v!==old)opt.textContent+=' (Original recipe)';if(!v)opt.disabled=true;control.appendChild(opt)});control.value=old;
  }else if(col===1&&ingredientRow(sheet,row)){
   control=document.createElement('select');
   UNITS.forEach(u=>{const opt=document.createElement('option');opt.value=u;opt.textContent=u;control.appendChild(opt)});
