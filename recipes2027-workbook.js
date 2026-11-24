@@ -74,7 +74,19 @@ function isYield(sheet,row,col){const a=yieldAddress(sheet);return Number(row)==
 function yieldValue(sheet,originalOnly=false){const a=yieldAddress(sheet);const raw=originalOnly?original(sheet,a.row,a.col):cellValue(sheet,a.row,a.col);const n=Number(String(raw||sheet.yield||'').match(/^\s*(\d+(?:\.\d+)?)/)?.[1]);return n>0?n:null;}
 // Direct per-serving links use live batch quantities and the explicit visible piece yield.
 // Archived helper columns M/N are not present in library snapshots.
+const explicitPorkJellyLinks={
+ 'b1400339-c678-5491-905e-1c2d42be51c1':{row:9,src:'dceab539-4783-59eb-9998-86666be3acb2',sourceRow:9},
+ 'beaf9807-9bdc-55f2-a59f-59f58c7b61f4':{row:10,src:'f8424828-bb4d-521b-afa3-253e45c7dac8',sourceRow:10},
+ 'b502e50d-4cdd-5caa-9dd4-443596fc1cf6':{row:14,src:'4347a594-ce3e-5532-99e9-b53a44d46af7',sourceRow:13},
+ 'c9341297-6c4e-571e-854f-390ae3dbe12e':{row:11,src:'e16eb7a1-94dd-5452-9cd9-5ad9008c6f44',sourceRow:11}
+};
 function fillingReference(sheet,row){
+ const pinned=explicitPorkJellyLinks[sheet.component_id];
+ if(pinned&&Number(row)===pinned.row){
+  const src=(bridge()?.getLibrary()?.sheets||[]).find(x=>x.component_id===pinned.src&&x.file===sheet.file);
+  if(!src)throw Error('Linked filling unavailable for '+sheet.name);
+  return {src,row:pinned.sourceRow};
+ }
  const cell=(sheet.rows||[]).find(x=>Number(x.r)===Number(row))?.c?.find(x=>Number(x.c)===0);
  const f=String(cell?.f||'');
  const direct=f.match(/'((?:[^']|'')+)'!\$?M\$?(\d+)\s*\*\s*\$?N\$?3\s*\/\s*'((?:[^']|'')+)'!\$?N\$?3/i);
@@ -99,8 +111,11 @@ function preparedQuantityFactor(code){
  if(String(code).trim().toUpperCase()!=='PK-J-INTERNAL')return 1;
  const g=approvedMushroomMasters['PK-J-INTERNAL'];
  const src=(bridge()?.getLibrary()?.sheets||[]).find(x=>x.component_id===g.master);
- const y=src?yieldValue(src):null;
- return y>0?y/35:1;
+ const stored=A.drafts.get(g.master)||A.published.get(g.master);
+ const raw=stored?.cells?.['4:6']??g.defaults['4:6'];
+ const y=Number(String(raw).match(/^\s*(\d+(?:\.\d+)?)/)?.[1]);
+ if(!(y>0))throw Error('Invalid saved Pork Jelly master yield');
+ return y/35;
 }
 function linkedPreparedQuantity(q,code){
  return q!==''&&q!=null&&Number.isFinite(Number(q))?Number(q)*preparedQuantityFactor(code):q;
@@ -195,12 +210,14 @@ async function load(){
  A.loading=(async()=>{
   var uid=user().id, c=client();
   const [d,p,prod]=await Promise.all([
-   c.from('jc_recipe_workbook_drafts').select('component_id,cells,added_rows,removed_rows,editor_id').eq('editor_id',uid),
+   c.from('jc_recipe_workbook_drafts').select('component_id,cells,added_rows,removed_rows,editor_id,updated_at').eq('editor_id',uid),
    c.from('jc_recipe_workbook_publications').select('component_id,version,cells,added_rows,removed_rows'),
    c.from('jc_recipe_core_products').select('id,ct_code,canonical_name,code_status,previous_codes').order('canonical_name').limit(1500)
   ]);
   if(d.error)throw d.error;if(p.error)throw p.error;if(prod.error)throw prod.error;
-  A.drafts=new Map((d.data||[]).map(x=>[x.component_id,x]));
+  const incoming=new Map((d.data||[]).map(x=>[x.component_id,x]));
+  for(const [id,old] of A.drafts)if(old.updated_at&&(!incoming.get(id)?.updated_at||old.updated_at>incoming.get(id).updated_at))incoming.set(id,old);
+  A.drafts=incoming;
   A.published=new Map((p.data||[]).map(x=>[x.component_id,x]));
   A.products=prod.data||[];
   return true;
@@ -547,6 +564,15 @@ async function flushPending(){
  if(flushBatchInput)await flushBatchInput();
  if(pendingSaves.size)await Promise.all([...pendingSaves]);
 }
+async function refreshPorkJelly(){
+ if(!user())return;
+ const id=approvedMushroomMasters['PK-J-INTERNAL'].master;
+ const {data,error}=await client().from('jc_recipe_workbook_drafts').select('component_id,editor_id,cells,added_rows,removed_rows,updated_at').eq('component_id',id).eq('editor_id',user().id).maybeSingle();
+ if(error)throw error;
+ if(data){const old=A.drafts.get(id);if(!old?.updated_at||!data.updated_at||data.updated_at>=old.updated_at)A.drafts.set(id,data);}
+ else if(!pendingSaves.size)A.drafts.delete(id);
+ return data;
+}
 async function saveNow(sheet,obj){
  if(sheet.variantServing)throw Error('Fixed three-piece menu variation: edit the shared supporting recipe instead.');
  if(!canEdit())throw Error('Authorized editing session required');
@@ -576,6 +602,11 @@ async function saveNow(sheet,obj){
  const {error}=await client().from('jc_recipe_workbook_drafts').upsert(payloads,{onConflict:'component_id,editor_id'});
  if(error)throw error;
  for(const p of payloads)A.drafts.set(p.component_id,p);
+ if(payloads.some(p=>p.component_id===approvedMushroomMasters['PK-J-INTERNAL'].master)){
+  const confirmed=await refreshPorkJelly();
+  const expected=payloads.find(p=>p.component_id===approvedMushroomMasters['PK-J-INTERNAL'].master);
+  if(!confirmed||String(confirmed.cells?.['4:6'])!==String(expected.cells?.['4:6']))throw Error('Pork Jelly saved yield could not be verified. Reload before editing.');
+ }
  A.lastSync={id:sheet.id,ids:payloads.map(p=>p.component_id)};
  showDependencyReport(sheet,A.lastSync.ids);
  if(A.active&&A.active.id!==sheet.id&&!document.querySelector('#jeWorkbookGrid input:focus,#jeWorkbookGrid select:focus,#jeWorkbookGrid textarea:focus'))render(A.active,'jeWorkbookGrid');
@@ -798,7 +829,7 @@ document.addEventListener('keydown',async e=>{
 window.JCRecipeAdvanced={
  setProtectedMain:id=>{protectedMain=id||null;},
  load,render,addRow,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,flushPending,
- build:'20261124-dynamic15',
+ build:'20261124-dynamic16',refreshPorkJelly,
  get selectedRow(){return A.selectedRow},
  get active(){return A.active},
  get productCount(){return A.products.length},
