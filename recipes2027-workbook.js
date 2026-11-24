@@ -41,7 +41,22 @@ function productForRow(sheet,row){
 }
 let protectedMain=null;
 function isProtected(sheet){return !!sheet&&protectedMain===sheet.id;}
-function yieldValue(sheet,originalOnly=false){const raw=originalOnly?original(sheet,4,6):cellValue(sheet,4,6);const n=Number(String(raw||sheet.yield||'').match(/^\s*(\d+(?:\.\d+)?)/)?.[1]);return n>0?n:null;}
+const yieldCache=new WeakMap();
+function yieldAddress(sheet){
+ if(yieldCache.has(sheet))return yieldCache.get(sheet);
+ let address=null;
+ for(const row of sheet.rows||[]){
+  const label=(row.c||[]).find(c=>/^\s*yield\s*:?\s*$/i.test(String(c.v??'')));
+  if(!label)continue;
+  const nr=Number(row.r)+1,nc=Number(label.c);
+  const merged=(sheet.merges||[]).find(m=>nr>=m[1]&&nr<=m[3]&&nc>=m[0]&&nc<=m[2]);
+  address=merged?{row:Number(merged[1]),col:Number(merged[0])}:{row:nr,col:nc};break;
+ }
+ if(!address)address={row:4,col:6};
+ yieldCache.set(sheet,address);return address;
+}
+function isYield(sheet,row,col){const a=yieldAddress(sheet);return Number(row)===a.row&&Number(col)===a.col;}
+function yieldValue(sheet,originalOnly=false){const a=yieldAddress(sheet);const raw=originalOnly?original(sheet,a.row,a.col):cellValue(sheet,a.row,a.col);const n=Number(String(raw||sheet.yield||'').match(/^\s*(\d+(?:\.\d+)?)/)?.[1]);return n>0?n:null;}
 function linkedFormulaValue(sheet,row,col,cell){
  if(col!==0||!cell?.f||typeof cell.v!=='number')return null;
  const refs=[...String(cell.f).matchAll(/'((?:[^']|'')+)'!\$?[AM]\$?(\d+)/g)];
@@ -60,7 +75,7 @@ function linkedFormulaValue(sheet,row,col,cell){
 function rendered(sheet,row,col,cell){
  var v=cellValue(sheet,row,col);
  var derived=linkedFormulaValue(sheet,row,col,cell);if(derived!==null)v=derived;
- if(isProtected(sheet)&&ingredientRow(sheet,row)&&col===0){const base=yieldValue(sheet,true),target=yieldValue(sheet);const q=derived??cell?.v;if(base&&target&&q!==''&&q!=null&&Number.isFinite(Number(q)))v=Number(q)*target/base;}
+ if(isProtected(sheet)&&ingredientRow(sheet,row)&&col===0){const base=yieldValue(sheet,true),target=yieldValue(sheet);const q=derived??original(sheet,row,col);if(base&&target&&q!==''&&q!=null&&Number.isFinite(Number(q)))v=Number(q)*target/base;}
  if(ingredientRow(sheet,row)&&[2,3,7].includes(col)){
  const p=productForRow(sheet,row);
  if(col===7)v=p.selector||'';
@@ -68,7 +83,7 @@ function rendered(sheet,row,col,cell){
  if(col===2&&p.name)v=p.name;
  }
  if(col===0 && ingredientRow(sheet,row) && (typeof v==='number'||v!==''&&/^[-+]?\d+(\.\d+)?$/.test(String(v))))v=fmt(v);
- if(col===6 && row===4 && typeof v==='number')v=fmt(v);
+ if(isYield(sheet,row,col)&&typeof v==='number')v=fmt(v);
  return v??'';
 }
 async function load(){
@@ -130,11 +145,11 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
   var isIngredient=ingredientRow(sheet,r),header=Number(r)===ingredientBounds(sheet).start-1;
   var picture=(col===5||col===6)&&isIngredient;
   var editable=canEdit()&&!picture&&!header&&(isIngredient?[0,1,4,7].includes(col):col!==7);
- if(isProtected(sheet))editable=canEdit()&&((Number(r)===4&&col===6)||(!isIngredient&&Number(r)>noteAt&&col===1&&!/Prep\s*\/\s*Plating Instructions/i.test(String(cell.v||''))));
+ if(isProtected(sheet))editable=canEdit()&&(isYield(sheet,r,col)||(!isIngredient&&Number(r)>noteAt&&col===1&&!/Prep\s*\/\s*Plating Instructions/i.test(String(cell.v||''))));
   var val=rendered(sheet,r,col,cell);
   var sty=allStyles(sheet)[cell.s||0]||''; if(col===7&&(isIngredient||header))sty+=';color:#17243a!important;background:'+(header?'#a3ce68':'#fff')+'!important;text-align:left!important;white-space:normal!important;'; if(col===7&&header)val='PRODUCT SELECTOR · Code | Name';
   var isQty=(col===0 && (sheet.ingredients||[]).some(x=>x.r===r));
-  var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'');
+  var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'')+(isYield(sheet,r,col)&&editable?' jc-wb-yield-edit':'');
   var title=(cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
   html+='<td class="'+cls2+'" data-r="'+r+'" data-c="'+col+'"'+(span?' colspan="'+span[0]+'" rowspan="'+span[1]+'"':'')+
     ' style="'+H(sty)+'" title="'+H(title)+'"><span class="jc-wb-value">'+H(val)+'</span>'+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
@@ -208,7 +223,7 @@ function groupConvert(q,from,to,name){
 }
 async function setCell(sheet,row,col,value){
  if(isProtected(sheet)&&ingredientRow(sheet,row))throw Error('Main dish ingredients are calculated; edit the supporting recipe.');
- if(isProtected(sheet)&&Number(row)===4&&col===6){if(!/^\d+(?:\.\d+)?$/.test(String(value).trim())||!(Number(value)>0))throw Error('Enter a positive serving yield');value=Number(value);}
+ if(isProtected(sheet)&&isYield(sheet,row,col)){if(!/^\d+(?:\.\d+)?$/.test(String(value).trim())||!(Number(value)>0))throw Error('Enter a positive serving yield');value=Number(value);}
  var obj=currentDraft(sheet),key=k(row,col);
  const originalValue=cellValue(sheet,row,col);
  if(String(value)===String(originalValue))return true;
@@ -270,14 +285,14 @@ async function publish(sheet){
 }
 async function scaleBatch(sheet){
  if(!canEdit())throw Error('Authorized editor required');
- const from=Number(String(cellValue(sheet,4,6)||sheet.yield||'').match(/\d+(?:\.\d+)?/)?.[0]||0);
+ const address=yieldAddress(sheet);const from=yieldValue(sheet)||0;
  if(!(from>0))throw Error('A numeric source target yield is required before scaling');
- const unit=String(cellValue(sheet,4,6)||sheet.yield||'').replace(/^\s*[\d,.]+\s*/,'').trim();
+ const unit=String(cellValue(sheet,address.row,address.col)||sheet.yield||'').replace(/^\s*[\d,.]+\s*/,'').trim();
  const result=prompt('New target batch yield'+(unit?' ('+unit+')':'')+':',fmt(from));
  if(result===null)return;
  const to=Number(result);
  if(!(to>0)||!Number.isFinite(to))throw Error('Enter a positive target yield');
- if(isProtected(sheet)){await setCell(sheet,4,6,to);render(sheet,'jeWorkbookGrid');return;}
+ if(isProtected(sheet)){await setCell(sheet,address.row,address.col,to);render(sheet,'jeWorkbookGrid');return;}
  const factor=to/from;
  if(!confirm('Scale '+sheet.name+' by '+factor.toFixed(3)+' ×? Ingredient quantities change proportionally. Actual finished yield must still be measured.'))return;
  const obj=currentDraft(sheet);
@@ -290,7 +305,7 @@ async function scaleBatch(sheet){
   const q=Number(extra.cells?.[0]);
   if(Number.isFinite(q)&&extra.cells?.[0]!=='')extra.cells[0]=Number((q*factor).toFixed(6));
  }
- obj.cells[k(4,6)]=unit?to.toFixed(3)+' '+unit:to;
+ obj.cells[k(address.row,address.col)]=unit?to.toFixed(3)+' '+unit:to;
  await save(sheet,obj);render(sheet,'jeWorkbookGrid');
  sourceStatus('Target yield and ingredient quantities scaled together · actual measured yield remains separate');
 }
@@ -337,9 +352,23 @@ function editCell(td){
  async function complete(commit=true){
   if(committed)return;committed=true;
   try{if(commit&&control.value!==initialValue){if(col===7&&ingredientRow(sheet,row)&&old&&control.value!==old&&!confirm('Replace '+old+' with '+control.value+'?')){render(sheet,'jeWorkbookGrid');return;}await setCell(sheet,row,col,control.value)}}catch(e){sourceStatus('Not saved: '+e.message)}
-  if(A.active===sheet)render(sheet,'jeWorkbookGrid');
+  if(A.active===sheet){
+ if(isYield(sheet,row,col)||!document.querySelector('#jeWorkbookGrid .jc-wb-edit-control:focus'))render(sheet,'jeWorkbookGrid');
+ else {td.replaceChildren();const span=document.createElement('span');span.className='jc-wb-value';span.textContent=rendered(sheet,row,col,{v:original(sheet,row,col)});td.appendChild(span);}
+ }
  }
  control.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();complete()}if(e.key==='Escape'){e.preventDefault();complete(false)}});
+ if(isProtected(sheet)&&isYield(sheet,row,col)){
+ control.addEventListener('input',()=>{
+ const n=Number(control.value),base=yieldValue(sheet,true);if(!(n>0&&base>0))return;
+ for(const node of document.querySelectorAll('#jeWorkbookGrid td[data-c="0"] .jc-wb-value')){
+ const rr=Number(node.closest('td').dataset.r);if(!ingredientRow(sheet,rr))continue;
+ const sourceCell=(sheet.rows||[]).find(x=>Number(x.r)===rr)?.c?.find(x=>Number(x.c)===0);
+ const q=linkedFormulaValue(sheet,rr,0,sourceCell)??original(sheet,rr,0);
+ if(q!==''&&q!=null&&Number.isFinite(Number(q)))node.textContent=fmt(Number(q)*n/base);
+ }
+ });
+ }
  control.addEventListener('blur',()=>complete());
  if(control.tagName==='SELECT')control.addEventListener('change',()=>complete());
 }
@@ -352,7 +381,7 @@ document.addEventListener('click',e=>{
  if(td){document.querySelectorAll('#jeWorkbookGrid tr.jc-wb-selected').forEach(x=>x.classList.remove('jc-wb-selected'));td.classList.add('jc-wb-selected');A.selectedRow=td.dataset.row;}
  const picker=e.target.closest?.('#jeWorkbookGrid td.jc-wb-editable');
  A.selectedCell=picker||null;
- if(picker&&A.active&&ingredientRow(A.active,picker.dataset.r)&&[1,7].includes(Number(picker.dataset.c))&&!picker.querySelector('input,select,textarea'))editCell(picker);
+ if(picker&&A.active&&!picker.querySelector('input,select,textarea'))editCell(picker);
 });
 document.addEventListener('keydown',async e=>{
  if(!['Delete','Backspace'].includes(e.key)||e.target.closest?.('input,textarea,select,[contenteditable]'))return;
