@@ -264,6 +264,66 @@ function extraFillingHtml(sheet,rows){
  if(!rows.length)return '';
  return rows.map(x=>'<tr class="jc-wb-row jc-live-extra"><td data-live-extra="'+H(x.key)+'">'+H(fmt(x.q))+'</td><td>'+H(x.unit)+'</td><td>'+H(x.name)+'</td><td>'+H(x.code)+'</td><td></td><td colspan="2"></td><td>'+H(x.selector)+'</td></tr>').join('');
 }
+function liveIngredientLines(sheet){
+ const out=[],st=state(sheet),removed=new Set((st.removed_rows||[]).map(String));
+ for(const row of sheet.rows||[]){
+  const rr=Number(row.r);if(!ingredientRow(sheet,rr)||removed.has(String(rr)))continue;
+  const live=liveFillingLine(sheet,rr);
+  if(live){if(live.q!==''&&live.code)out.push(live);continue;}
+  const p=productForRow(sheet,rr),cell=(row.c||[]).find(c=>Number(c.c)===0);
+  let q=linkedFormulaValue(sheet,rr,0,cell)??cellValue(sheet,rr,0);
+  if(isProtected(sheet)){const base=yieldValue(sheet,true),target=yieldValue(sheet);if(base&&target&&q!==''&&q!=null&&Number.isFinite(Number(q)))q=Number(q)*target/base;}
+  if(q!==''&&q!=null&&Number.isFinite(Number(q))&&p.code)out.push({...p,q:Number(q),unit:String(cellValue(sheet,rr,1)||'')});
+ }
+ for(const row of st.added_rows||[]){const v=row.cells||{};if(v[0]!==''&&v[0]!=null&&Number.isFinite(Number(v[0]))&&v[3])out.push({q:Number(v[0]),unit:String(v[1]||''),code:String(v[3]),name:String(v[2]||'')});}
+ out.push(...extraFillingLines(sheet));
+ return out;
+}
+function preparedSource(sheet,code){
+ const reg=registry(),key=String(code||'').trim().toUpperCase(),all=(reg.byCode.get(key)||[]).filter(x=>x.component_id!==sheet.component_id);
+ const local=all.filter(x=>x.file===sheet.file);
+ const candidates=local.length?local:all;
+ if(!candidates.length)return null;
+ const roots=new Map(candidates.map(x=>[mushroomMaster(x)?.master||x.component_id,x]));
+ if(roots.size===1)return canonicalSheet([...roots.values()][0]);
+ const first=candidates[0],sig=signature(first);
+ if(sig&&candidates.every(x=>signature(x)===sig))return canonicalSheet(first);
+ return null;
+}
+function measuredYield(sheet){
+ const a=yieldAddress(sheet),raw=String(cellValue(sheet,a.row,a.col)||'').trim();
+ const m=raw.match(/^(\d+(?:\.\d+)?)\s*(lb|oz|fl oz|qt|gal|cup|pt|each|pcs?|pieces?|dumplings?)\b/i);
+ if(!m||!(Number(m[1])>0))return null;
+ const unit=/^(?:pcs?|pieces?|dumplings?)$/i.test(m[2])?'each':m[2].toLowerCase();
+ return {q:Number(m[1]),unit};
+}
+function livePrepBreakdown(sheet){
+ const groups=[],warnings=[];
+ function visit(parent,line,factor,path,depth){
+  if(depth>8||!/-INTERNAL$/i.test(line.code)||!(line.q>0))return;
+  const src=preparedSource(parent,line.code);
+  if(!src){warnings.push(line.name+' — master not uniquely resolved');return;}
+  const id=mushroomMaster(src)?.master||src.component_id;
+  if(path.includes(id)){warnings.push(line.name+' — circular dependency');return;}
+  const y=measuredYield(src),cv=y?groupConvert(line.q*factor,line.unit,y.unit,line.name):null;
+  if(!cv||!y){warnings.push(line.name+' — compatible measured yield required');return;}
+  const ratio=cv.quantity/y.q,lines=liveIngredientLines(src).filter(x=>x.q!==0);
+  groups.push({code:line.code,name:mushroomMaster(src)?.name||src.name,portion:line.q*factor,unit:line.unit,yield:y,depth,lines:lines.map(x=>({...x,q:x.q*ratio}))});
+  for(const child of lines)visit(src,child,ratio,[...path,id],depth+1);
+ }
+ for(const line of liveIngredientLines(sheet))visit(sheet,line,1,[sheet.component_id],0);
+ return {groups,warnings:[...new Set(warnings)]};
+}
+function showLiveBreakdown(sheet){
+ const grid=document.getElementById('jeWorkbookGrid');if(!grid)return;
+ let panel=document.getElementById('jcLiveBreakdown');
+ const result=livePrepBreakdown(sheet);
+ if(!result.groups.length&&!result.warnings.length){panel?.remove();return;}
+ if(!panel){panel=document.createElement('details');panel.id='jcLiveBreakdown';panel.className='jc-dependency-report jc-live-breakdown';grid.closest('.je-wb-scroll')?.after(panel);}
+ panel.innerHTML='<summary>Live prepared-ingredient breakdown · '+result.groups.length+' resolved component'+(result.groups.length===1?'':'s')+(result.warnings.length?' · '+result.warnings.length+' require review':'')+'</summary><div class="jc-dependency-body"><p>Calculated from current master batches and this recipe’s portion. Fixed prepared portions are retained; raw inputs below are for allocation, not additional inventory consumption.</p>'+
+ result.groups.map(g=>'<section class="jc-live-prep"><strong>'+H(g.name)+' · '+H(fmt(g.portion)+' '+g.unit)+' used</strong><span>Master yield '+H(fmt(g.yield.q)+' '+g.yield.unit)+'</span><table><thead><tr><th>Raw / supporting ingredient</th><th>Quantity</th><th>Unit</th></tr></thead><tbody>'+g.lines.map(x=>'<tr><td>'+H(x.name)+'</td><td>'+H(fmt(x.q))+'</td><td>'+H(x.unit)+'</td></tr>').join('')+'</tbody></table></section>').join('')+
+ result.warnings.map(x=>'<div>⚠ '+H(x)+'</div>').join('')+'</div>';
+}
 function render(sheet,targetId){
  const master=canonicalSheet(sheet);if(master!==sheet){sheet={...master,id:sheet.id,component_id:sheet.component_id,file:master.file,sheet:sheet.sheet,name:mushroomMaster(sheet).name};}
  var el=document.getElementById(targetId);if(!el||!sheet)return false;
@@ -284,6 +344,7 @@ function render(sheet,targetId){
  el.innerHTML=html;
  if(isPorkJelly(sheet))bindBatchYieldInput(sheet,el.querySelector('.jc-batch-yield'));else bindServingInput(sheet,el.querySelector('.jc-direct-yield'));
  showDependencyReport(sheet,A.lastSync?.id===sheet.id?A.lastSync.ids:null);
+ showLiveBreakdown(sheet);
  return true;
 }
 function bindBatchYieldInput(sheet,input){
@@ -401,7 +462,7 @@ function dependencyReport(sheet){
    if(parent.id===child.id||parent.component_id===child.component_id)continue;
    const raw=state(parent);
    const ing=(parent.ingredients||[]).filter(i=>ingredientRow(parent,i.r)&&!(raw.removed_rows||[]).map(String).includes(String(i.r)));
-   const codes=[...ing.map(i=>productForRow(parent,i.r).code),...(raw.added_rows||[]).map(x=>x.cells?.[3])];
+   const codes=[...ing.map(i=>liveFillingLine(parent,i.r)?.code||productForRow(parent,i.r).code),...(raw.added_rows||[]).map(x=>x.cells?.[3])];
    const byCode=!!code&&codes.some(x=>String(x||'').trim().toUpperCase()===code);
    const refs=parent.file===child.file&&(parent.rows||[]).some(r=>(r.c||[]).some(c=>String(c.f||'').toLowerCase().includes(("'"+String(child.sheet).replace(/'/g,"''")+"'!").toLowerCase())));
    if(!byCode&&!refs)continue;
@@ -470,6 +531,7 @@ async function save(sheet,obj){
  for(const p of payloads)A.drafts.set(p.component_id,p);
  A.lastSync={id:sheet.id,ids:payloads.map(p=>p.component_id)};
  showDependencyReport(sheet,A.lastSync.ids);
+ if(A.active&&A.active.id!==sheet.id&&!document.querySelector('#jeWorkbookGrid input:focus,#jeWorkbookGrid select:focus,#jeWorkbookGrid textarea:focus'))render(A.active,'jeWorkbookGrid');
  sourceStatus('✓ Saved '+payloads.length+' master draft'+(payloads.length===1?'':'s')+(group.code?' · '+group.code:'')+(group.conflicts.length?' · ⚠ Conflicting code copies require review':'')+' · Unpublished');
  }catch(error){sourceStatus('⚠ Changes not saved · '+(error.message||error));throw error;}
  return true;
