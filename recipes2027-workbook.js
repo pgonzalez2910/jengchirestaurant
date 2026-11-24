@@ -40,7 +40,13 @@ function blankNoteCells(sheet){
  const merges=src.merges||[];
  for(const row of [...(src.rows||[])].sort((a,b)=>Number(a.r)-Number(b.r))){
   const rr=Number(row.r),cells=row.c||[],values=cells.filter(c=>String(c.v??'').trim()!=='');
-  if(cells.some(c=>noteHeaderText(c.v))){section=true;continue;}
+  if(cells.some(c=>noteHeaderText(c.v))){
+   section=true;
+   for(const m of merges.filter(m=>Number(m[1])===rr&&Number(m[3])===rr&&Number(m[0])<=1&&Number(m[2])>=5)){
+    for(let c=Number(m[0]);c<=Number(m[2]);c++)if(!cells.some(x=>Number(x.c)===c&&noteHeaderText(x.v)))keys.add(k(rr,c));
+   }
+   continue;
+  }
   if(!section)continue;
   const marker=cells.some(c=>Number(c.c)===0&&noteMarker(c.v));
   const wide=merges.filter(m=>Number(m[1])===rr&&Number(m[3])===rr&&Number(m[0])<=1&&Number(m[2])>=5);
@@ -49,7 +55,7 @@ function blankNoteCells(sheet){
   // A separate numeric grid is not a note section.
   if(!marker&&!wide.length&&substantive.some(c=>Number(c.c)>=2||typeof c.v==='number'||/^\s*\d+(?:\.\d+)?\s*$/.test(String(c.v)))){section=false;continue;}
   if(marker){keys.add(k(rr,1));for(const m of wide)if(Number(m[0])!==0)keys.add(k(rr,Number(m[0])));}
-  else if(wide.length){for(const m of wide)keys.add(k(rr,Number(m[0])));}
+  else if(wide.length){for(const m of wide)for(let c=Number(m[0]);c<=Number(m[2]);c++)keys.add(k(rr,c));}
   else if(substantive.length<=1){keys.add(k(rr,0));keys.add(k(rr,1));}
   // Preserve the asterisk itself even if an unusual source merge covers column A.
   if(marker)keys.delete(k(rr,0));
