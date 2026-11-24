@@ -37,7 +37,7 @@ function productForRow(sheet,row){
  var parsed=sel.match(/^\s*([^|]+)\s*\|\s*(.+)$/);
  if(parsed){code=parsed[1].trim();rawName=parsed[2].trim();}
  var p=lookupProduct(code); if(p)return {code:p.ct_code,name:p.canonical_name,selector:p.ct_code+' | '+p.canonical_name};
- return {code:code,name:rawName,selector:sel};
+ return {code:code,name:rawName,selector:sel||((code&&rawName)?code+' | '+rawName:'')};
 }
 function linkedFormulaValue(sheet,row,col,cell){
  if(col!==0||!cell?.f||typeof cell.v!=='number')return null;
@@ -58,7 +58,7 @@ function rendered(sheet,row,col,cell){
  var v=cellValue(sheet,row,col);
  var derived=linkedFormulaValue(sheet,row,col,cell);if(derived!==null)v=derived;
  var p=productForRow(sheet,row);
- if(col===7 && p.selector && (v===''||String(v).includes(' | ')||p.code==='R1326'))v=p.selector;
+ if(col===7 && row>=7 && row<notesRow(sheet) && p.selector)v=p.selector;
  if(col===3 && p.code && (cell?.f||v===''||String(v)!==p.code))v=p.code;
  if(col===2 && p.name && (cell?.f||v===''||p.code==='R1326'))v=p.name;
  if(col===0 && (typeof v==='number'||v!==''&&/^[-+]?\d+(\.\d+)?$/.test(String(v))))v=fmt(v);
@@ -114,12 +114,12 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
   var picture=(col===5||col===6)&&r>=7&&r<noteAt;
   var editable=canEdit()&&!picture;
   var val=rendered(sheet,r,col,cell);
-  var sty=allStyles(sheet)[cell.s||0]||'';
+  var sty=allStyles(sheet)[cell.s||0]||''; if(col===7&&r>=6&&r<noteAt)sty+=';color:#17243a!important;background:#fff!important;text-align:left!important;white-space:normal!important;'; if(col===7&&r===6)val='PRODUCT SELECTOR · Code | Name';
   var isQty=(col===0 && (sheet.ingredients||[]).some(x=>x.r===r));
   var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'');
   var title=(cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
   html+='<td class="'+cls2+'" data-r="'+r+'" data-c="'+col+'"'+(span?' colspan="'+span[0]+'" rowspan="'+span[1]+'"':'')+
-    ' style="'+H(sty)+'" title="'+H(title)+'"><span class="jc-wb-value">'+H(val)+'</span>'+(editable&&(col===1||col===7)&&r<=lastUsed&&r>=7?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
+    ' style="'+H(sty)+'" title="'+H(title)+'"><span class="jc-wb-value">'+H(val)+'</span>'+(editable&&(col===1||col===7)&&r<noteAt&&r>=7?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
  }
  return html+'</tr>';
 }
@@ -195,7 +195,7 @@ async function setCell(sheet,row,col,value){
  if(typeof row==='string'&&row.startsWith('new-')){
   const target=obj.added_rows.find(x=>x.id===row);
   if(!target)throw Error('Added ingredient row no longer exists');
-  target.cells=target.cells||{};target.cells[col]=(col===0&&value!==''?Number(value):value);
+  target.cells=target.cells||{};target.cells[col]=(col===0&&value!==''?Number(value):value);if(col===7&&value.includes(' | ')){const [code,...name]=value.split(' | ');target.cells[3]=code;target.cells[2]=name.join(' | ');}
  }else{
   obj.cells[key]=(col===0&&value!==''?Number(value):value);
   if(col===7&&String(value).includes(' | ')){
@@ -287,9 +287,13 @@ function editCell(td){
  if(!canEdit()||!td.classList.contains('jc-wb-editable')||td.querySelector('input,select,textarea'))return;
  const sheet=A.active;if(!sheet)return;
  const row=td.dataset.r.startsWith('new-')?td.dataset.r:Number(td.dataset.r),col=Number(td.dataset.c);
- const old=String(row.toString().startsWith('new-')?(state(sheet).added_rows||[]).find(x=>x.id===row)?.cells?.[col]||'':cellValue(sheet,row,col));
+ const old=String(col===7&&!String(row).startsWith('new-')?productForRow(sheet,row).selector:row.toString().startsWith('new-')?(state(sheet).added_rows||[]).find(x=>x.id===row)?.cells?.[col]||'':cellValue(sheet,row,col));
  var control;
- if(col===1){
+ if(col===7){
+  control=document.createElement('select');
+  const values=[...new Set(['',old,...A.products.map(p=>p.ct_code+' | '+p.canonical_name)])];
+  values.forEach(v=>{const opt=document.createElement('option');opt.value=v;opt.textContent=v||'Select a product…';control.appendChild(opt)});control.value=old;
+ }else if(col===1){
   control=document.createElement('select');
   UNITS.forEach(u=>{const opt=document.createElement('option');opt.value=u;opt.textContent=u;control.appendChild(opt)});
   if(old&&!UNITS.includes(old)){const opt=document.createElement('option');opt.value=old;opt.textContent=old;control.prepend(opt)}
@@ -301,7 +305,7 @@ function editCell(td){
   control=document.createElement('textarea');control.rows=2;control.value=old;
  }
  control.className='jc-wb-edit-control';control.setAttribute('aria-label','Edit worksheet cell');
- td.replaceChildren(control);control.focus();if(control.select)control.select();
+ td.replaceChildren(control);control.focus();if(control.select)control.select();if(control.tagName==='SELECT'&&control.showPicker){try{control.showPicker()}catch(_){}}
  let committed=false;
  async function complete(commit=true){
   if(committed)return;committed=true;
