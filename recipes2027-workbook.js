@@ -27,7 +27,38 @@ function state(sheet){
  var p=A.published.get(sheet.component_id)||{cells:{},added_rows:[],removed_rows:[],version:0};
  return A.drafts.get(sheet.component_id)||p;
 }
+// Active recipe books have empty Notes/Prep sections. Immutable source snapshots
+// retain original text and registered identifiers for audit and dependency resolution.
+const blankNoteCache=new WeakMap();
+const noteHeaderText=v=>/^\s*(?:Toast Button Modifiers\s*\/\s*Notes|Prep\s*\/\s*Plating Instructions)\s*:?\s*$/i.test(String(v??''));
+const noteMarker=v=>/^\s*[*]+\s*$/.test(String(v??''));
+const separatePanel=v=>/^(?:\s*(?:Linked (?:Portions|Recipes|Sub-Recipes)|CrunchTime Registration|Chocolate Rolls\s*[—–-]\s*Production Yield|Production Yield\s*\/|Portion Yield|Stock Yield|Actual Yield|Target Yield|Yield\s*\/\s*Portion|Orders per (?:Actual|Target)|Portion Size|Portions\s*\/\s*Batch|Cost Control|Used In\s*\/\s*Return To|Return To\s*$|Recipe Reference|Open\s+|Return to\s+|Large Noodle Portions|Pork Chop Breading))/i.test(String(v??''));
+function blankNoteCells(sheet){
+ const src=canonicalSheet(sheet);
+ if(blankNoteCache.has(src))return blankNoteCache.get(src);
+ const keys=new Set();let section=false;
+ const merges=src.merges||[];
+ for(const row of [...(src.rows||[])].sort((a,b)=>Number(a.r)-Number(b.r))){
+  const rr=Number(row.r),cells=row.c||[],values=cells.filter(c=>String(c.v??'').trim()!=='');
+  if(cells.some(c=>noteHeaderText(c.v))){section=true;continue;}
+  if(!section)continue;
+  const marker=cells.some(c=>Number(c.c)===0&&noteMarker(c.v));
+  const wide=merges.filter(m=>Number(m[1])===rr&&Number(m[3])===rr&&Number(m[0])<=1&&Number(m[2])>=5);
+  const substantive=values.filter(c=>!noteMarker(c.v));
+  if(!marker&&substantive.some(c=>separatePanel(c.v))){section=false;continue;}
+  // A separate numeric grid is not a note section.
+  if(!marker&&!wide.length&&substantive.some(c=>Number(c.c)>=2||typeof c.v==='number'||/^\s*\d+(?:\.\d+)?\s*$/.test(String(c.v)))){section=false;continue;}
+  if(marker){keys.add(k(rr,1));for(const m of wide)if(Number(m[0])!==0)keys.add(k(rr,Number(m[0])));}
+  else if(wide.length){for(const m of wide)keys.add(k(rr,Number(m[0])));}
+  else if(substantive.length<=1){keys.add(k(rr,0));keys.add(k(rr,1));}
+  // Preserve the asterisk itself even if an unusual source merge covers column A.
+  if(marker)keys.delete(k(rr,0));
+ }
+ blankNoteCache.set(src,keys);return keys;
+}
+function isBlankNoteCell(sheet,row,col){return blankNoteCells(sheet).has(k(row,col));}
 function cellValue(sheet,row,col){
+ if(isBlankNoteCell(sheet,row,col))return '';
  if(sheet.variantServing){if(isYield(sheet,row,col))return sheet.variantServing;if(Number(row)===2&&Number(col)===2)return sheet.name;if(Number(row)===4&&Number(col)===0)return '';}
  var item=state(sheet),key=k(row,col);
  return Object.prototype.hasOwnProperty.call(item.cells||{},key)?item.cells[key]:original(sheet,row,col);
@@ -187,6 +218,7 @@ function dumplingCountYield(sheet,raw){
  return isProtected(sheet)||/\bfilling\b/i.test(name)||/\bdumplings?\b/i.test(name);
 }
 function rendered(sheet,row,col,cell){
+ if(isBlankNoteCell(sheet,row,col))return '';
  const live=ingredientRow(sheet,row)?liveFillingLine(sheet,row):null;
  if(live&&[0,1,2,3,7].includes(col))return col===0?(live.q===''?'':fmt(live.q)):col===1?live.unit:col===2?live.name:col===3?live.code:live.selector;
  var v=cellValue(sheet,row,col);
@@ -266,13 +298,13 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
   var picture=(col===5||col===6)&&isIngredient;
   var editable=canEdit()&&!picture&&!header&&(isIngredient?[0,1,4,7].includes(col):col!==7);
  if(isProtected(sheet))editable=canEdit()&&(isYield(sheet,r,col)||(!isIngredient&&Number(r)>noteAt&&col===1&&!/Prep\s*\/\s*Plating Instructions/i.test(String(cell.v||''))));
-  if(sheet.variantServing)editable=false;
+  if(sheet.variantServing||isBlankNoteCell(sheet,r,col))editable=false;
   var val=rendered(sheet,r,col,cell);
   var sty=allStyles(sheet)[cell.s||0]||''; if(col===7&&(isIngredient||header))sty+=';color:#17243a!important;background:'+(header?'#a3ce68':'#fff')+'!important;text-align:left!important;white-space:normal!important;'; if(col===7&&header)val='PRODUCT SELECTOR · Code | Name';
   if(isIngredient&&[0,1,2,3,7].includes(col)&&fillingReference(sheet,r))editable=false;
  var isQty=(col===0 && (sheet.ingredients||[]).some(x=>x.r===r));
   var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'')+(isYield(sheet,r,col)&&editable?' jc-wb-yield-edit':'');
-  var title=(cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
+  var title=(!isBlankNoteCell(sheet,r,col)&&cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
   html+='<td class="'+cls2+'" data-r="'+r+'" data-c="'+col+'"'+(span?' colspan="'+span[0]+'" rowspan="'+span[1]+'"':'')+
     ' style="'+H(sty)+'" title="'+H(title)+'">'+(editable&&isYield(sheet,r,col)&&(isProtected(sheet)||isPorkJelly(sheet))?'<input class="jc-direct-yield'+(isPorkJelly(sheet)?' jc-batch-yield':'')+'" type="'+(isPorkJelly(sheet)?'text':'number')+'" inputmode="decimal" min="'+(isPorkJelly(sheet)?'0.001':'1')+'" step="'+(isPorkJelly(sheet)?'any':'1')+'" aria-label="'+(isPorkJelly(sheet)?'Target batch yield in pounds':'Serving yield in pieces')+'" value="'+H(yieldValue(sheet)||'')+'">'+(isPorkJelly(sheet)?'<span class="jc-yield-unit">lb</span>':dumplingCountYield(sheet,cellValue(sheet,r,col))?'<span class="jc-yield-unit">dumplings</span>':''):'<span class="jc-wb-value">'+H(val)+'</span>')+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
  }
@@ -653,6 +685,7 @@ function scaledBatchDraft(sheet,to){
  return obj;
 }
 async function setCell(sheet,row,col,value){
+ if(isBlankNoteCell(sheet,row,col))throw Error('Notes and prep instructions are intentionally blank in the active Recipe Book.');
  if(!sheet.variantServing&&!isProtected(sheet)&&isYield(sheet,row,col)&&mushroomMaster(sheet)===approvedMushroomMasters['PK-J-INTERNAL']){
   const m=String(value).trim().match(/^(\d+(?:\.\d+)?)\s*(?:lb|lbs)?$/i);
   if(!m||!(Number(m[1])>0))throw Error('Enter the target Pork Jelly yield in pounds');
@@ -828,7 +861,7 @@ document.addEventListener('keydown',async e=>{
 window.JCRecipeAdvanced={
  setProtectedMain:id=>{protectedMain=id||null;},
  load,render,addRow,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,flushPending,
- build:'20261124-clean17',refreshPorkJelly,
+ build:'20261124-notes18',refreshPorkJelly,
  get selectedRow(){return A.selectedRow},
  get active(){return A.active},
  get productCount(){return A.products.length},
