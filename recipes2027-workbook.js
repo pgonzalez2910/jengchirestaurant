@@ -52,6 +52,11 @@ function yieldAddress(sheet){
   const merged=(sheet.merges||[]).find(m=>nr>=m[1]&&nr<=m[3]&&nc>=m[0]&&nc<=m[2]);
   address=merged?{row:Number(merged[1]),col:Number(merged[0])}:{row:nr,col:nc};break;
  }
+ if(address&&!/^\s*\d/.test(String(original(sheet,address.row,address.col)))) {
+ const row=(sheet.rows||[]).find(x=>Number(x.r)===address.row);
+ const candidates=(row?.c||[]).filter(x=>Number(x.c)>=address.col&&Number(x.c)<=7&&/^\s*\d/.test(String(x.v??'')));
+ if(candidates.length===1)address={row:address.row,col:Number(candidates[0].c)};
+ }
  if(!address)address={row:4,col:6};
  yieldCache.set(sheet,address);return address;
 }
@@ -152,7 +157,7 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
   var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'')+(isYield(sheet,r,col)&&editable?' jc-wb-yield-edit':'');
   var title=(cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
   html+='<td class="'+cls2+'" data-r="'+r+'" data-c="'+col+'"'+(span?' colspan="'+span[0]+'" rowspan="'+span[1]+'"':'')+
-    ' style="'+H(sty)+'" title="'+H(title)+'"><span class="jc-wb-value">'+H(val)+'</span>'+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
+    ' style="'+H(sty)+'" title="'+H(title)+'">'+(isProtected(sheet)&&editable&&isYield(sheet,r,col)?'<input class="jc-direct-yield" type="number" min="1" step="1" aria-label="Serving yield in pieces" value="'+H(yieldValue(sheet)||'')+'">':'<span class="jc-wb-value">'+H(val)+'</span>')+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
  }
  return html+'</tr>';
 }
@@ -182,7 +187,36 @@ function render(sheet,targetId){
  }
  html+='</tbody></table>';
  el.innerHTML=html;
+ bindServingInput(sheet,el.querySelector('.jc-direct-yield'));
  return true;
+}
+function bindServingInput(sheet,input){
+ if(!input)return;
+ let committed=yieldValue(sheet),pending=false;
+ function preview(n){
+  const base=yieldValue(sheet,true);if(!(base>0&&Number.isInteger(n)&&n>0))return;
+  for(const node of document.querySelectorAll('#jeWorkbookGrid td[data-c="0"] .jc-wb-value')){
+   const rr=Number(node.closest('td').dataset.r);if(!ingredientRow(sheet,rr))continue;
+   const sourceCell=(sheet.rows||[]).find(x=>Number(x.r)===rr)?.c?.find(x=>Number(x.c)===0);
+   const q=linkedFormulaValue(sheet,rr,0,sourceCell)??original(sheet,rr,0);
+   if(q!==''&&q!=null&&Number.isFinite(Number(q)))node.textContent=fmt(Number(q)*n/base);
+  }
+ }
+ async function commit(){
+  if(pending)return;
+  const n=Number(input.value);
+  if(!Number.isInteger(n)||n<1){input.value=committed||'';preview(committed);sourceStatus('Enter a positive whole-number serving yield');return;}
+  if(n===committed)return;
+  pending=true;input.disabled=true;
+  try{const a=yieldAddress(sheet);await setCell(sheet,a.row,a.col,n);committed=n;preview(n);}
+  catch(err){input.value=committed||'';preview(committed);sourceStatus('Not saved: '+err.message);}
+  finally{pending=false;input.disabled=false;}
+ }
+ input.addEventListener('focus',()=>input.select());
+ input.addEventListener('input',()=>preview(Number(input.value)));
+ input.addEventListener('change',commit);
+ input.addEventListener('blur',commit);
+ input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();commit();}if(e.key==='Escape'){input.value=committed||'';preview(committed);}});
 }
 function currentDraft(sheet){
  var old=A.drafts.get(sheet.component_id)||A.published.get(sheet.component_id)||{};
