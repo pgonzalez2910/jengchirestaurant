@@ -172,10 +172,13 @@ function currentDraft(sheet){
 async function save(sheet,obj){
  if(!canEdit())throw Error('Authorized editing session required');
  const payload={...obj,updated_at:new Date().toISOString()};
+ sourceStatus('⏳ Saving changes automatically…');
+ try{
  const {error}=await client().from('jc_recipe_workbook_drafts').upsert(payload,{onConflict:'component_id,editor_id'});
  if(error)throw error;
  A.drafts.set(sheet.component_id,payload);
- sourceStatus('Saved to Supabase · unpublished draft');
+ sourceStatus('✓ All changes automatically saved · '+new Date().toLocaleTimeString()+' · Unpublished draft');
+ }catch(error){sourceStatus('⚠ Changes not saved · '+(error.message||error));throw error;}
  return true;
 }
 function qtyFor(sheet,row){
