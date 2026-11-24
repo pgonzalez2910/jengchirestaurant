@@ -1,0 +1,12 @@
+const assert=require('node:assert/strict');
+const factory=require('./free-formula-engine.js');
+const validation=require('./formula-validation.js');
+const serving=validation.testServing(factory);
+assert.equal(serving.passed,true,JSON.stringify(serving));
+const e=factory({Database:[['P1','Flour'],['P2','Water']],Recipe:[[6,12,'P2','=INDEX(Database!$B:$B,MATCH(C1,Database!$A:$A,0))','=B1/A1','=IF(A1=0,0,B1/A1)','=SUM(A1:B1)','=ROUND(2/3,3)']]});
+const at=col=>e.getCellValue({sheet:e.getSheetId('Recipe'),row:0,col});
+assert.equal(at(3),'Water');assert.equal(at(4),2);assert.equal(at(5),2);assert.equal(at(6),18);assert.equal(at(7),0.667);
+e.setCellContents({sheet:e.getSheetId('Recipe'),row:0,col:0},[[8]]);
+assert.equal(at(4),1.5);assert.equal(at(5),1.5);
+e.destroy();
+console.log(JSON.stringify({serving,lookup:'pass',arithmetic:'pass',recalculation:'pass'}));
