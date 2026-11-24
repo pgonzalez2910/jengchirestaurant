@@ -77,11 +77,22 @@ function yieldValue(sheet,originalOnly=false){const a=yieldAddress(sheet);const 
 function fillingReference(sheet,row){
  const cell=(sheet.rows||[]).find(x=>Number(x.r)===Number(row))?.c?.find(x=>Number(x.c)===0);
  const f=String(cell?.f||'');
- const m=f.match(/'((?:[^']|'')+)'!\$?M\$?(\d+)\s*\*\s*\$?N\$?3\s*\/\s*'((?:[^']|'')+)'!\$?N\$?3/i);
- if(!m||m[1]!==m[3])return null;
- const src=(bridge()?.getLibrary()?.sheets||[]).find(x=>x.file===sheet.file&&x.sheet===m[1].replace(/''/g,"'"));
+ const direct=f.match(/'((?:[^']|'')+)'!\$?M\$?(\d+)\s*\*\s*\$?N\$?3\s*\/\s*'((?:[^']|'')+)'!\$?N\$?3/i);
+ const indexed=f.match(/INDEX\(\s*'((?:[^']|'')+)'!\$?M\$?(\d+):\$?M\$?(\d+)\s*,\s*MATCH\(\s*(\d+)\s*,\s*'((?:[^']|'')+)'!\$?O\$?\d+:\$?O\$?\d+\s*,\s*0\s*\)\s*\)\s*\*\s*\$?N\$?3\s*\/\s*'((?:[^']|'')+)'!\$?N\$?3/i);
+ if(!direct&&!indexed)return null;
+ if(direct&&direct[1]!==direct[3]||indexed&&(indexed[1]!==indexed[5]||indexed[1]!==indexed[6]))return null;
+ const depName=(direct||indexed)[1].replace(/''/g,"'");
+ const src=(bridge()?.getLibrary()?.sheets||[]).find(x=>x.file===sheet.file&&x.sheet===depName);
  if(!src||!/\bfilling\b/i.test(String(src.name)+' '+String(src.sheet))||!dumplingCountYield(src,cellValue(src,yieldAddress(src).row,yieldAddress(src).col)))return null;
- return {src,row:Number(m[2])};
+ let rr=direct?Number(direct[2]):null;
+ if(indexed){
+  const candidates=(src.ingredients||[]).filter(i=>Number(i.r)>=Number(indexed[2])&&Number(i.r)<=Number(indexed[3])).sort((a,b)=>Number(a.r)-Number(b.r));
+  const item=candidates.find(i=>Number(i.i)===Number(indexed[4])-1)||candidates[Number(indexed[4])-1];
+  const target=(sheet.ingredients||[]).find(i=>Number(i.r)===Number(row));
+  if(!item||target?.code&&item.code!==target.code)return null;
+  rr=Number(item.r);
+ }
+ return {src,row:rr};
 }
 // Approved yield-linked consumption policy: preserve each parent's share of the original 35 lb Pork Jelly batch.
 function preparedQuantityFactor(code){
