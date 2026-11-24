@@ -72,6 +72,38 @@ function yieldAddress(sheet){
 }
 function isYield(sheet,row,col){const a=yieldAddress(sheet);return Number(row)===a.row&&Number(col)===a.col;}
 function yieldValue(sheet,originalOnly=false){const a=yieldAddress(sheet);const raw=originalOnly?original(sheet,a.row,a.col):cellValue(sheet,a.row,a.col);const n=Number(String(raw||sheet.yield||'').match(/^\s*(\d+(?:\.\d+)?)/)?.[1]);return n>0?n:null;}
+// Direct per-serving links use live batch quantities and the explicit visible piece yield.
+// Archived helper columns M/N are not present in library snapshots.
+function fillingReference(sheet,row){
+ const cell=(sheet.rows||[]).find(x=>Number(x.r)===Number(row))?.c?.find(x=>Number(x.c)===0);
+ const f=String(cell?.f||'');
+ const m=f.match(/'((?:[^']|'')+)'!\$?M\$?(\d+)\s*\*\s*\$?N\$?3\s*\/\s*'((?:[^']|'')+)'!\$?N\$?3/i);
+ if(!m||m[1]!==m[3])return null;
+ const src=(bridge()?.getLibrary()?.sheets||[]).find(x=>x.file===sheet.file&&x.sheet===m[1].replace(/''/g,"'"));
+ if(!src||!/\bfilling\b/i.test(String(src.name)+' '+String(src.sheet))||!dumplingCountYield(src,cellValue(src,yieldAddress(src).row,yieldAddress(src).col)))return null;
+ return {src,row:Number(m[2])};
+}
+function fillingLine(sheet,src,row,servings,outputUnit){
+ const count=yieldValue(src);if(!(count>0&&servings>0))return null;
+ const st=state(src);
+ let q,u,p;
+ if(typeof row==='string'&&row.startsWith('new-')){
+  const v=(st.added_rows||[]).find(x=>x.id===row)?.cells||{};
+  q=v[0];u=String(v[1]||'');p={code:String(v[3]||''),name:String(v[2]||''),selector:String(v[7]||'')};
+ }else{
+  if((st.removed_rows||[]).map(String).includes(String(row)))return {q:'',unit:'',code:'',name:'',selector:''};
+  q=cellValue(src,row,0);u=String(cellValue(src,row,1)||'');p=productForRow(src,row);
+ }
+ if(q===''||q==null||!p.code)return {q:'',unit:'',code:'',name:'',selector:''};
+ if(!Number.isFinite(Number(q)))return null;
+ let amount=Number(q)*servings/count,unit=u;
+ if(outputUnit&&u){const cv=groupConvert(amount,u,outputUnit,p.name);if(cv){amount=cv.quantity;unit=outputUnit;}}
+ return {q:amount,unit,code:p.code,name:p.name,selector:p.code+' | '+p.name};
+}
+function liveFillingLine(sheet,row,servings=yieldValue(sheet)){
+ const ref=fillingReference(sheet,row);if(!ref)return null;
+ return fillingLine(sheet,ref.src,ref.row,servings,String(original(sheet,row,1)||'oz'));
+}
 function linkedFormulaValue(sheet,row,col,cell){
  if(col!==0||!cell?.f||typeof cell.v!=='number')return null;
  // A finished dough mass is not a number of wrappers. Preserve archived per-order dough weights until a measured wrapper standard is available.
@@ -118,6 +150,8 @@ function dumplingCountYield(sheet,raw){
  return isProtected(sheet)||/\bfilling\b/i.test(name)||/\bdumplings?\b/i.test(name);
 }
 function rendered(sheet,row,col,cell){
+ const live=ingredientRow(sheet,row)?liveFillingLine(sheet,row):null;
+ if(live&&[0,1,2,3,7].includes(col))return col===0?(live.q===''?'':fmt(live.q)):col===1?live.unit:col===2?live.name:col===3?live.code:live.selector;
  var v=cellValue(sheet,row,col);
  var derived=linkedFormulaValue(sheet,row,col,cell);if(derived!==null)v=derived;
  if(isProtected(sheet)&&ingredientRow(sheet,row)&&col===0){const base=yieldValue(sheet,true),target=yieldValue(sheet);const q=derived??original(sheet,row,col);if(base&&target&&q!==''&&q!=null&&Number.isFinite(Number(q)))v=Number(q)*target/base;}
@@ -195,7 +229,8 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
   if(sheet.variantServing)editable=false;
   var val=rendered(sheet,r,col,cell);
   var sty=allStyles(sheet)[cell.s||0]||''; if(col===7&&(isIngredient||header))sty+=';color:#17243a!important;background:'+(header?'#a3ce68':'#fff')+'!important;text-align:left!important;white-space:normal!important;'; if(col===7&&header)val='PRODUCT SELECTOR · Code | Name';
-  var isQty=(col===0 && (sheet.ingredients||[]).some(x=>x.r===r));
+  if(isIngredient&&[0,1,2,3,7].includes(col)&&fillingReference(sheet,r))editable=false;
+ var isQty=(col===0 && (sheet.ingredients||[]).some(x=>x.r===r));
   var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'')+(isYield(sheet,r,col)&&editable?' jc-wb-yield-edit':'');
   var title=(cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
   html+='<td class="'+cls2+'" data-r="'+r+'" data-c="'+col+'"'+(span?' colspan="'+span[0]+'" rowspan="'+span[1]+'"':'')+
@@ -215,6 +250,20 @@ function addedHtml(sheet,item){
  }
  return h+'</tr>';
 }
+function extraFillingLines(sheet){
+ const sources=new Map();
+ for(const r of sheet.rows||[]){const ref=fillingReference(sheet,r.r);if(ref){if(!sources.has(ref.src.id))sources.set(ref.src.id,{src:ref.src,mapped:new Set()});sources.get(ref.src.id).mapped.add(ref.row);}}
+ const extra=[];
+ for(const {src,mapped} of sources.values()){
+  const candidates=[...(src.rows||[]).filter(r=>ingredientRow(src,r.r)).map(r=>Number(r.r)),...(state(src).added_rows||[]).map(r=>r.id)];
+  for(const rr of candidates){if(mapped.has(rr))continue;const x=fillingLine(sheet,src,rr,yieldValue(sheet),'oz');if(x&&x.q!==''&&x.code)extra.push({...x,key:src.id+':'+rr});}
+ }
+ return extra;
+}
+function extraFillingHtml(sheet,rows){
+ if(!rows.length)return '';
+ return rows.map(x=>'<tr class="jc-wb-row jc-live-extra"><td data-live-extra="'+H(x.key)+'">'+H(fmt(x.q))+'</td><td>'+H(x.unit)+'</td><td>'+H(x.name)+'</td><td>'+H(x.code)+'</td><td></td><td colspan="2"></td><td>'+H(x.selector)+'</td></tr>').join('');
+}
 function render(sheet,targetId){
  const master=canonicalSheet(sheet);if(master!==sheet){sheet={...master,id:sheet.id,component_id:sheet.component_id,file:master.file,sheet:sheet.sheet,name:mushroomMaster(sheet).name};}
  var el=document.getElementById(targetId);if(!el||!sheet)return false;
@@ -224,10 +273,13 @@ function render(sheet,targetId){
  var html='<table class="jc-excel-sheet jc-wb-advanced" aria-label="'+H(sheet.name)+' Excel worksheet"><colgroup>'+
  cols.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><tbody>';
  var added=Array.isArray(items.added_rows)?items.added_rows:[];
+ const liveExtra=extraFillingLines(sheet);let insertedLive=false;
  for(var row of sheet.rows||[]){
+  if(!insertedLive&&Number(row.r)>=noteAt){html+=extraFillingHtml(sheet,liveExtra);insertedLive=true;}
   html+=rowHtml(sheet,row,7,merge,true,lastUsed,noteAt);
   for(var x of added.filter(x=>Number(x.after)===Number(row.r)))if(!isProtected(sheet))html+=addedHtml(sheet,x);
  }
+ if(!insertedLive)html+=extraFillingHtml(sheet,liveExtra);
  html+='</tbody></table>';
  el.innerHTML=html;
  if(isPorkJelly(sheet))bindBatchYieldInput(sheet,el.querySelector('.jc-batch-yield'));else bindServingInput(sheet,el.querySelector('.jc-direct-yield'));
@@ -270,6 +322,7 @@ function bindServingInput(sheet,input){
   for(const node of document.querySelectorAll('#jeWorkbookGrid td[data-c="0"] .jc-wb-value')){
    const rr=Number(node.closest('td').dataset.r);if(!ingredientRow(sheet,rr))continue;
    const sourceCell=(sheet.rows||[]).find(x=>Number(x.r)===rr)?.c?.find(x=>Number(x.c)===0);
+   const live=liveFillingLine(sheet,rr,n);if(live){node.textContent=live.q===''?'':fmt(live.q);continue;}
    const q=linkedFormulaValue(sheet,rr,0,sourceCell)??original(sheet,rr,0);
    if(q!==''&&q!=null&&Number.isFinite(Number(q)))node.textContent=fmt(Number(q)*n/base);
   }
@@ -470,7 +523,7 @@ async function setCell(sheet,row,col,value){
  if(sheet.variantServing)throw Error('Fixed three-piece menu variation.');
  const registeredNote=String(original(sheet,row,col)).match(/\b(?:CT\s+)?internal\s+(?:product\s+)?code\s*:\s*([A-Z0-9_-]+)/i);
  if(registeredNote&&String(value).trim()!==''&&!String(value).toUpperCase().includes(registeredNote[1].toUpperCase()))throw Error('Use Update CT code to change the registered identifier. You may clear the display note without changing the registered code.');
- if(isProtected(sheet)&&ingredientRow(sheet,row))throw Error('Main dish ingredients are calculated; edit the supporting recipe.');
+ if((isProtected(sheet)||fillingReference(sheet,row))&&ingredientRow(sheet,row))throw Error('Main dish ingredients are calculated; edit the supporting recipe.');
  if(isProtected(sheet)&&isYield(sheet,row,col)){if(!/^\d+(?:\.\d+)?$/.test(String(value).trim())||!(Number(value)>0))throw Error('Enter a positive serving yield');value=Number(value);}
  if(isYield(sheet,row,col)&&dumplingCountYield(sheet,cellValue(sheet,row,col))){const m=String(value).match(/^\s*(\d+)\s*(?:dumplings?|pcs?|pieces?)?\s*$/i);if(!m||Number(m[1])<1)throw Error('Enter a positive whole-number dumpling yield');value=Number(m[1]);}
  var obj=currentDraft(sheet),key=k(row,col);
