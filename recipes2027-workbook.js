@@ -71,11 +71,24 @@ function linkedFormulaValue(sheet,row,col,cell){
  const source=(bridge()?.getLibrary()?.sheets||[]).find(x=>x.file===sheet.file&&x.sheet===depName);
  if(!source)return null;
  const input=(source.ingredients||[]).find(x=>Number(x.r)===depRow);if(!input)return null;
- const base=Number(input.q),now=Number(cellValue(source,depRow,0));
+ const base=Number(input.q),raw=cellValue(source,depRow,0);
+ if(raw===''||raw==null)return 0;
+ const now=Number(raw);
  if(!(base>0)||!Number.isFinite(now))return null;
+ let converted=now;
+ const oldUnit=String(input.u||''),newUnit=String(cellValue(source,depRow,1)||oldUnit);
+ if(normalizeName(oldUnit)!==normalizeName(newUnit)){
+  const cv=groupConvert(now,newUnit,oldUnit,productForRow(source,depRow).name);
+  if(!cv)return null;converted=cv.quantity;
+ }
+ let batchFactor=1;
+ if(/!\$?N\$?3\b/i.test(String(cell.f))&&String(cell.f).includes('/')){
+  const oldYield=yieldValue(source,true),newYield=yieldValue(source);
+  if(oldYield&&newYield)batchFactor=oldYield/newYield;
+ }
  const current=state(sheet)?.cells||{};
  if(!isProtected(sheet)&&Object.prototype.hasOwnProperty.call(current,k(row,0)))return null;
- return Number((cell.v*now/base).toFixed(6));
+ return Number((cell.v*converted/base*batchFactor).toFixed(6));
 }
 function rendered(sheet,row,col,cell){
  var v=cellValue(sheet,row,col);
@@ -313,7 +326,8 @@ async function save(sheet,obj){
  const group=matchingMasters(sheet),previous=state(sheet),payloads=[payload],seen=new Set([sheet.component_id]);
  const changed=Object.keys(obj.cells||{}).filter(key=>JSON.stringify(obj.cells[key])!==JSON.stringify(previous.cells?.[key]));
  const structural=JSON.stringify(obj.added_rows||[])!==JSON.stringify(previous.added_rows||[])||JSON.stringify(obj.removed_rows||[])!==JSON.stringify(previous.removed_rows||[]);
- for(const peer of group.matches){
+ const recipeChange=structural||changed.some(key=>{const [row,col]=key.split(':').map(Number);return ingredientRow(sheet,row)||isYield(sheet,row,col);});
+ for(const peer of recipeChange?group.matches:[]){
   if(seen.has(peer.component_id))continue;seen.add(peer.component_id);
   const copy=currentDraft(peer);
   for(const key of changed){
@@ -359,6 +373,7 @@ function groupConvert(q,from,to,name){
  return null;
 }
 async function setCell(sheet,row,col,value){
+ if(/\b(?:CT\s+)?internal\s+(?:product\s+)?code\s*:/i.test(String(original(sheet,row,col))))throw Error('The registered internal product code is protected.');
  if(isProtected(sheet)&&ingredientRow(sheet,row))throw Error('Main dish ingredients are calculated; edit the supporting recipe.');
  if(isProtected(sheet)&&isYield(sheet,row,col)){if(!/^\d+(?:\.\d+)?$/.test(String(value).trim())||!(Number(value)>0))throw Error('Enter a positive serving yield');value=Number(value);}
  var obj=currentDraft(sheet),key=k(row,col);
