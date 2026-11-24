@@ -378,37 +378,56 @@ function masterYieldLabel(sheet,row){
 }
 function measuredYield(sheet){
  const a=yieldAddress(sheet),raw=String(cellValue(sheet,a.row,a.col)||'').trim();
- const m=raw.match(/^(\d+(?:\.\d+)?)\s*(lb|oz|fl oz|qt|gal|cup|pt|each|pcs?|pieces?|dumplings?)\b/i);
- if(!m||!(Number(m[1])>0))return null;
- const unit=/^(?:pcs?|pieces?|dumplings?)$/i.test(m[2])?'each':m[2].toLowerCase();
+ const m=raw.match(/^(\d+(?:\.\d+)?)\s*(lb|lbs|oz|fl oz|qt|qtt|qts|gal|cups?|pt|each|pcs?|pieces?|dumplings?|portions?|count)\b/i);
+ if(!m||!(Number(m[1])>0)){
+  // Archived dough counts identify wrappers, not finished weight.
+  if(/^\s*\d+(?:\.\d+)?\s*$/.test(raw)&&/\bdough\b/i.test(sheet.name+' '+sheet.sheet))return {q:Number(raw),unit:'each'};
+  return null;
+ }
+ const u=m[2].toLowerCase(),unit=/^(?:pcs?|pieces?|dumplings?|portions?|count)$/.test(u)?'each':u==='lbs'?'lb':/^(qtt|qts)$/.test(u)?'qt':u==='cups'?'cup':u;
  return {q:Number(m[1]),unit};
 }
 function livePrepBreakdown(sheet){
- const groups=[],warnings=[];
+ const groups=[],warnings=[],links=new Set(),resolved=new Set(),issues=new Map();
+ function issue(line,reason,src=null){
+  const key=line.code+'|'+(src?.component_id||'')+'|'+reason;
+  issues.set(key,{code:line.code,name:line.name,reason,source:src?.sheet||'',portion:line.q,unit:line.unit});
+ }
  function visit(parent,line,factor,path,depth){
-  if(depth>8||!/-INTERNAL$/i.test(line.code)||!(line.q>0))return;
+  if(depth>8||! /-INTERNAL$/i.test(line.code)||!(line.q>0))return;
   const src=preparedSource(parent,line.code);
-  if(!src){warnings.push(line.name+' — master not uniquely resolved');return;}
+  if(!src){issue(line,'Master recipe not uniquely identified');return;}
   const id=mushroomMaster(src)?.master||src.component_id;
-  if(path.includes(id)){warnings.push(line.name+' — circular dependency');return;}
+  links.add(id);
+  if(path.includes(id)){issue(line,'Circular dependency',src);return;}
   const y=measuredYield(src),cv=y?groupConvert(line.q*factor,line.unit,y.unit,line.name):null;
-  if(!cv||!y){warnings.push(line.name+' — compatible measured yield required');return;}
+  if(!y){issue(line,'Finished batch yield is missing or has no usable unit',src);return;}
+  if(!cv){issue(line,'Yield is in '+y.unit+' but portion is in '+line.unit+'; compatible finished weight or volume required',src);return;}
   const ratio=cv.quantity/y.q,lines=liveIngredientLines(src).filter(x=>x.q!==0);
+  resolved.add(id);
   groups.push({code:line.code,name:mushroomMaster(src)?.name||src.name,portion:line.q*factor,unit:line.unit,yield:y,depth,lines:lines.map(x=>({...x,q:x.q*ratio}))});
   for(const child of lines)visit(src,child,ratio,[...path,id],depth+1);
  }
  for(const line of liveIngredientLines(sheet))visit(sheet,line,1,[sheet.component_id],0);
- return {groups,warnings:[...new Set(warnings)]};
+ for(const x of issues.values())warnings.push(x.name+' — '+x.reason);
+ return {groups,warnings,issues:[...issues.values()],linkedCount:links.size,resolvedCount:resolved.size};
+}
+function breakdownAmount(q,unit){
+ // Display small allocations in practical units, leaving stored recipe data untouched.
+ const u=String(unit||'').toLowerCase().trim();
+ const to=u==='lb'&&Math.abs(q)<1?'oz':(u==='qt'||u==='gal'||u==='cup'||u==='pt')&&Math.abs(q)<1?'fl oz':null;
+ if(to){const cv=groupConvert(q,u,to,'');if(cv)return {q:cv.quantity,unit:to};}
+ return {q,unit};
 }
 function showLiveBreakdown(sheet){
  const grid=document.getElementById('jeWorkbookGrid');if(!grid)return;
  let panel=document.getElementById('jcLiveBreakdown');
  const result=livePrepBreakdown(sheet);
- if(!result.groups.length&&!result.warnings.length){panel?.remove();return;}
+ if(!result.groups.length&&!result.issues.length){panel?.remove();return;}
  if(!panel){panel=document.createElement('details');panel.id='jcLiveBreakdown';panel.className='jc-dependency-report jc-live-breakdown';grid.closest('.je-wb-scroll')?.before(panel);}
- panel.innerHTML='<summary>Live prepared-ingredient breakdown · '+result.groups.length+' resolved component'+(result.groups.length===1?'':'s')+(result.warnings.length?' · '+result.warnings.length+' require review':'')+'</summary><div class="jc-dependency-body"><p>Calculated from current master batches and this recipe’s portion. Pork Jelly consumption follows the approved master-batch ratio; other fixed prepared portions remain unchanged. Raw inputs below are allocations, not additional inventory consumption.</p>'+
- result.groups.map(g=>'<section class="jc-live-prep"><strong>'+H(g.name)+' · '+H(fmt(g.portion)+' '+g.unit)+' used</strong><span>Master yield '+H(fmt(g.yield.q)+' '+g.yield.unit)+'</span><table><thead><tr><th>Raw / supporting ingredient</th><th>Quantity</th><th>Unit</th></tr></thead><tbody>'+g.lines.map(x=>'<tr><td>'+H(x.name)+'</td><td>'+H(fmt(x.q))+'</td><td>'+H(x.unit)+'</td></tr>').join('')+'</tbody></table></section>').join('')+
- result.warnings.map(x=>'<div>⚠ '+H(x)+'</div>').join('')+'</div>';
+ panel.innerHTML='<summary>Live prepared-ingredient breakdown · '+result.resolvedCount+' calculated'+(result.issues.length?' · '+result.issues.length+' need yield or link review':'')+'</summary><div class="jc-dependency-body"><p>Raw ingredient allocation for the selected recipe. Not additional inventory consumption.</p>'+
+ result.groups.map(g=>'<section class="jc-live-prep"><div class="jc-prep-heading"><strong>'+H(g.name)+'</strong><span>'+H(fmt(g.portion)+' '+g.unit)+' used · Batch yield '+H(fmt(g.yield.q)+' '+g.yield.unit)+'</span></div><table><thead><tr><th>Raw / supporting ingredient</th><th>Quantity</th><th>Unit</th></tr></thead><tbody>'+g.lines.map(x=>{const v=breakdownAmount(x.q,x.unit);return '<tr><td>'+H(x.name)+'</td><td>'+H(fmt(v.q))+'</td><td>'+H(v.unit)+'</td></tr>';}).join('')+'</tbody></table></section>').join('')+
+ (result.issues.length?'<div class="jc-prep-review"><strong>Items requiring review</strong>'+result.issues.map(x=>'<div><b>'+H(x.name)+'</b> · '+H(x.code)+'<span>'+H(x.reason)+(x.source?' · Linked worksheet: '+H(x.source):'')+'</span></div>').join('')+'</div>':'')+'</div>';
 }
 function render(sheet,targetId){
  const master=canonicalSheet(sheet);if(master!==sheet){sheet={...master,id:sheet.id,component_id:sheet.component_id,file:master.file,sheet:sheet.sheet,name:mushroomMaster(sheet).name};}
@@ -485,7 +504,7 @@ function bindServingInput(sheet,input){
   if(!Number.isInteger(n)||n<1){input.value=committed||'';preview(committed);sourceStatus('Enter a positive whole-number serving yield');return;}
   if(n===committed)return;
   pending=true;input.disabled=true;
-  try{const a=yieldAddress(sheet);await setCell(sheet,a.row,a.col,n);committed=n;preview(n);}
+  try{const a=yieldAddress(sheet);await setCell(sheet,a.row,a.col,n);committed=n;preview(n);showLiveBreakdown(sheet);}
   catch(err){input.value=committed||'';preview(committed);sourceStatus('Not saved: '+err.message);}
   finally{pending=false;input.disabled=false;}
  }
@@ -583,7 +602,7 @@ function showDependencyReport(sheet,savedIds=null){
  copies.map(x=>'<div>✓ '+H(x.file)+' / '+H(x.sheet)+' — '+(ids.has(approved?.master||x.component_id)?'shared master draft saved':approved?'shared canonical master':'matching master')+'</div>').join('')+
  group.conflicts.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — different source formula or yield; not merged</div>').join('')+
  found.map(x=>'<div>'+H(x.sheet.file)+' / '+H(x.sheet.sheet)+' — '+H((x.depth===1?'Direct: ':'Indirect: ')+x.kind)+'</div>').join('')+ (ambiguous.length?'<p>Unresolved code references ('+ambiguous.length+') — excluded from verified dependencies:</p>'+ambiguous.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — source not uniquely identified</div>').join(''):'')+
- (group.code==='DD-INTERNAL'?'<p>Shared finished dough yield is measured in pounds. Original per-dish wrapper portions are retained; pounds are never used as a piece count. Purple dough is a separate formulation.</p>':'')+'<p>Pork Jelly portions are linked to master yield. Other fixed prepared portions are retained. Formula dependencies are recalculated when supported; unresolved formulas require review.</p></div>';
+ (group.code==='DD-INTERNAL'?'<p>Shared finished dough yield is measured in pounds. Original per-dish wrapper portions are retained; pounds are never used as a piece count. Purple dough is a separate formulation.</p>':'')+(group.code==='PK-J-INTERNAL'?'<p>Pork Jelly portions are linked to master yield.</p>':'')+'</div>';
 }
 function currentDraft(sheet){
  const g=mushroomMaster(sheet);if(g)sheet=canonicalSheet(sheet);
@@ -646,6 +665,7 @@ async function saveNow(sheet,obj){
  }
  A.lastSync={id:sheet.id,ids:payloads.map(p=>p.component_id)};
  showDependencyReport(sheet,A.lastSync.ids);
+ if(A.active===sheet)showLiveBreakdown(sheet);
  if(A.active&&A.active.id!==sheet.id&&!document.querySelector('#jeWorkbookGrid input:focus,#jeWorkbookGrid select:focus,#jeWorkbookGrid textarea:focus'))render(A.active,'jeWorkbookGrid');
  sourceStatus('✓ Saved '+payloads.length+' master draft'+(payloads.length===1?'':'s')+(group.code?' · '+group.code:'')+(group.conflicts.length?' · ⚠ Conflicting code copies require review':'')+' · Unpublished');
  }catch(error){sourceStatus('⚠ Changes not saved · '+(error.message||error));throw error;}
@@ -867,7 +887,7 @@ document.addEventListener('keydown',async e=>{
 window.JCRecipeAdvanced={
  setProtectedMain:id=>{protectedMain=id||null;},
  load,render,addRow,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,flushPending,
- build:'20261124-notes18',refreshPorkJelly,
+ build:'20261124-breakdown19',refreshPorkJelly,
  get selectedRow(){return A.selectedRow},
  get active(){return A.active},
  get productCount(){return A.products.length},
