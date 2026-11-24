@@ -21,6 +21,7 @@ function state(sheet){
  return A.drafts.get(sheet.component_id)||p;
 }
 function cellValue(sheet,row,col){
+ if(sheet.variantServing){if(isYield(sheet,row,col))return sheet.variantServing;if(Number(row)===2&&Number(col)===2)return sheet.name;if(Number(row)===4&&Number(col)===0)return '';}
  var item=state(sheet),key=k(row,col);
  return Object.prototype.hasOwnProperty.call(item.cells||{},key)?item.cells[key]:original(sheet,row,col);
 }
@@ -164,6 +165,7 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
   var picture=(col===5||col===6)&&isIngredient;
   var editable=canEdit()&&!picture&&!header&&(isIngredient?[0,1,4,7].includes(col):col!==7);
  if(isProtected(sheet))editable=canEdit()&&(isYield(sheet,r,col)||(!isIngredient&&Number(r)>noteAt&&col===1&&!/Prep\s*\/\s*Plating Instructions/i.test(String(cell.v||''))));
+  if(sheet.variantServing)editable=false;
   var val=rendered(sheet,r,col,cell);
   var sty=allStyles(sheet)[cell.s||0]||''; if(col===7&&(isIngredient||header))sty+=';color:#17243a!important;background:'+(header?'#a3ce68':'#fff')+'!important;text-align:left!important;white-space:normal!important;'; if(col===7&&header)val='PRODUCT SELECTOR · Code | Name';
   var isQty=(col===0 && (sheet.ingredients||[]).some(x=>x.r===r));
@@ -300,6 +302,7 @@ function dependencyReport(sheet){
  return {group,found:[...found.values()].filter(x=>x.sheet.component_id!==sheet.component_id)};
 }
 function showDependencyReport(sheet,savedIds=null){
+ if(sheet.variantServing)return;
  if(A.active!==sheet)return;
  const grid=document.getElementById('jeWorkbookGrid');if(!grid)return;
  let panel=document.getElementById('jcDependencyReport');
@@ -319,6 +322,7 @@ function currentDraft(sheet){
   added_rows:structuredClone(old.added_rows||[]),removed_rows:[...(old.removed_rows||[])]};
 }
 async function save(sheet,obj){
+ if(sheet.variantServing)throw Error('Fixed three-piece menu variation: edit the shared supporting recipe instead.');
  if(!canEdit())throw Error('Authorized editing session required');
  const payload={...obj,updated_at:new Date().toISOString()};
  sourceStatus('⏳ Saving changes automatically…');
@@ -373,6 +377,7 @@ function groupConvert(q,from,to,name){
  return null;
 }
 async function setCell(sheet,row,col,value){
+ if(sheet.variantServing)throw Error('Fixed three-piece menu variation.');
  if(/\b(?:CT\s+)?internal\s+(?:product\s+)?code\s*:/i.test(String(original(sheet,row,col))))throw Error('The registered internal product code is protected.');
  if(isProtected(sheet)&&ingredientRow(sheet,row))throw Error('Main dish ingredients are calculated; edit the supporting recipe.');
  if(isProtected(sheet)&&isYield(sheet,row,col)){if(!/^\d+(?:\.\d+)?$/.test(String(value).trim())||!(Number(value)>0))throw Error('Enter a positive serving yield');value=Number(value);}
@@ -426,6 +431,7 @@ async function restoreRows(sheet){
  await save(sheet,obj);render(sheet,'jeWorkbookGrid');
 }
 async function publish(sheet){
+ if(sheet.variantServing)throw Error('Publish the shared source recipe instead.');
  if(bridge()?.getRole()!=='admin')throw Error('Owner approval is required');
  if(!A.drafts.has(sheet.component_id))throw Error('No unpublished changes to publish');
  const count=(bridge()?.getLibrary()?.sheets||[]).filter(x=>x.component_id===sheet.component_id).length;
@@ -436,6 +442,7 @@ async function publish(sheet){
  render(sheet,'jeWorkbookGrid');
 }
 async function scaleBatch(sheet){
+ if(sheet.variantServing)throw Error('Secret Menu serving is fixed at three pieces.');
  if(!canEdit())throw Error('Authorized editor required');
  const address=yieldAddress(sheet);const from=yieldValue(sheet)||0;
  if(!(from>0))throw Error('A numeric source target yield is required before scaling');
