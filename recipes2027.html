@@ -7296,7 +7296,59 @@ function jcBunDoughValue(s,row,col){
  const isLine=c===0&&!(normalizeName(s.name||s.sheet)==='green onion')&&ingredientRow(s,r)&&['SBD-INTERNAL','GOD-INTERNAL'].includes(String(original(s,r,3)))&&/^(vegetable buns|pork buns|green onion)(?: (?:small|large))?$/.test(normalizeName(s.name||s.sheet));
  if(!isHeader&&!isLine)return null;
  const each=jcBunDoughPerPiece(s),count=yieldValue(s);if(each==null||!(count>0))return null;
- return isHeader&&r===6?each:each*count;
+ return isHeader&&/BUN\s*:/i.test(String(original(s,r,4)))?(jcBunOrder(s)?each:each*count):each*count;
+}
+
+
+// Keep dough mass separate from wrapper/bun production counts. Never infer measured yield from input mass.
+function jcDoughScope(s){return /^(0[1-9]|1[0-5]|17|24|25) - /i.test(String(s?.file||''))||jcBunSheet(s);}
+function jcDoughPrep(s){return jcDoughScope(s)&&/\bdough\b/i.test(String(s?.sheet||'')+' '+String(s?.name||''))&&!/^dough$/i.test(String(s?.sheet||''));}
+function jcDoughMass(s){
+ if(!jcDoughPrep(s))return null;
+ const a=yieldAddress(s),raw=String(cellValue(s,a.row,a.col)||'').trim();
+ const weight=raw.match(/^(\d+(?:\.\d+)?)\s*(lb|lbs|oz)\b/i);
+ if(weight&&Number(weight[1])>0)return {oz:Number(weight[1])*(weight[2].toLowerCase()==='oz'?1:16),basis:'Recipe target yield'};
+ let oz=0,lines=liveIngredientLines(s);
+ if(!lines.length)return null;
+ for(const x of lines){let q=x.q,u=x.unit;
+  if(/^l(?:iter|itre)?s?$/i.test(String(u))&&/water/i.test(x.name)){q=q*1.05668821;u='qt';}
+  const cv=groupConvert(q,u,'oz',x.name);if(!cv||!Number.isFinite(cv.quantity))return null;oz+=cv.quantity;
+ }
+ return oz>0?{oz,basis:'Estimated dough yield (input weight)'}:null;
+}
+function jcDoughCount(s){
+ if(!jcDoughPrep(s))return null;
+ const a=yieldAddress(s),raw=String(cellValue(s,a.row,a.col)||'').trim();
+ const m=raw.match(/^(\d+(?:\.\d+)?)\s*(?:buns?|dumplings?|dough balls?|pieces?|pcs?)?$/i);
+ return m&&Number(m[1])>0?Number(m[1]):null;
+}
+function jcPortionUnit(s){
+ if(!jcDoughScope(s))return '';
+ if(jcDoughPrep(s))return '';
+ if(jcBunSheet(s)&&/^(pork buns|vegetable buns|green onion)(?: (?:small|large))?$/i.test(String(s.name||s.sheet)))return 'buns';
+ if(/\bdumplings?\b/i.test(String(s.name||s.sheet))||/\bfilling\b/i.test(String(s.name||s.sheet))&&/dumplings?/i.test(String(s.file)))return 'dumplings';
+ return '';
+}
+function jcDoughSummaryRows(s){
+ if(!jcDoughScope(s))return '';
+ const row=(label,value)=>'<tr class="jc-dough-summary-row"><td colspan="4" style="background:#f0f4e9;border:1px solid #222;font-weight:bold">'+H(label)+'</td><td colspan="3" style="border:1px solid #222;text-align:center;font-weight:bold">'+H(value)+'</td><td></td></tr>';
+ const weight=oz=>fmt(oz/16)+' lb / '+fmt(oz)+' oz';
+ if(jcDoughPrep(s)){
+  const mass=jcDoughMass(s),count=jcDoughCount(s);
+  let html=row(mass?.basis||'Dough yield (weight)',''+(mass?weight(mass.oz):'Not verified'));
+  if(count){const unit=/green onion/i.test(s.name+' '+s.sheet)?'dough balls':/steam buns/i.test(s.name+' '+s.sheet)?'buns':'wrappers';
+   html+=row('Production count',fmt(count)+' '+unit);
+   if(mass&&unit==='buns')html+=row('Estimated dough / bun',fmt(mass.oz/count)+' oz');
+  }
+  return html;
+ }
+ const unit=jcPortionUnit(s),count=yieldValue(s);if(!unit||!count||/\bfilling\b/i.test(s.name+' '+s.sheet))return '';
+ const dough=liveIngredientLines(s).filter(x=>/dough/i.test(x.name)&&/-INTERNAL$/i.test(x.code));
+ if(dough.length!==1)return row(jcBunOrder(s)||unit==='dumplings'?'Order size':'Production yield',fmt(count)+' '+unit);
+ const d=dough[0],cv=groupConvert(d.q,d.unit,'oz',d.name);
+ let html=row(jcBunOrder(s)||unit==='dumplings'?'Order size':'Production yield',fmt(count)+' '+unit);
+ if(cv){html+=row((jcBunOrder(s)||unit==='dumplings'?'Dough / order':'Dough / batch')+' — '+d.name,weight(cv.quantity));html+=row('Dough / '+(unit==='buns'?'bun':'dumpling'),fmt(cv.quantity/count)+' oz');}
+ return html;
 }
 
 function blankNoteCells(sheet){
@@ -7495,7 +7547,13 @@ function dumplingCountYield(sheet,raw){
 }
 function rendered(sheet,row,col,cell){
  if(isBlankNoteCell(sheet,row,col))return '';
- const bunDough=jcBunDoughValue(sheet,row,col);if(bunDough!==null)return fmt(bunDough);
+ const bunDough=jcBunDoughValue(sheet,row,col);if(bunDough!==null)return fmt(bunDough)+(Number(col)===6?' oz':'');
+ if(jcBunSheet(sheet)&&!jcBunOrder(sheet)&&Number(col)===4&&/^\s*DOUGH\s*\/\s*BUN\s*:/i.test(String(cell?.v??'')))return 'DOUGH / BATCH (oz):';
+ if(jcDoughPrep(sheet)&&/^\s*YIELD(?:\s*\(BUNS\))?\s*:/i.test(String(cell?.v??''))&&jcDoughCount(sheet))return 'PRODUCTION COUNT:';
+ if(jcDoughScope(sheet)&&isYield(sheet,row,col)){
+  const unit=jcPortionUnit(sheet),v=cellValue(sheet,row,col);
+  if(unit&&/^\s*\d+(?:\.\d+)?\s*$/.test(String(v)))return fmt(v)+' '+unit;
+ }
  const live=ingredientRow(sheet,row)?liveFillingLine(sheet,row):null;
  if(live&&[0,1,2,3,7].includes(col))return col===0?(live.q===''?'':fmt(live.q)):col===1?live.unit:col===2?live.name:col===3?live.code:live.selector;
  var v=cellValue(sheet,row,col);
@@ -7652,6 +7710,7 @@ function masterYieldLabel(sheet,row){
  return 'Master: '+fmt(y.q)+' '+y.unit+(p.code==='PK-J-INTERNAL'?' · yield-linked':'')+(A.drafts.has(master)?' · draft':' · published/source');
 }
 function measuredYield(sheet){
+ const dough=jcDoughMass(sheet);if(dough)return {q:dough.oz/16,unit:'lb',estimated:dough.basis.startsWith('Estimated')};
  const a=yieldAddress(sheet),raw=String(cellValue(sheet,a.row,a.col)||'').trim();
  const m=raw.match(/^(\d+(?:\.\d+)?)\s*(lb|lbs|oz|fl oz|qt|qtt|qts|gal|cups?|pt|each|pcs?|pieces?|dumplings?|portions?|count)\b/i);
  if(!m||!(Number(m[1])>0)){
@@ -7701,11 +7760,11 @@ function showLiveBreakdown(sheet){
  if(!result.groups.length&&!result.issues.length){panel?.remove();return;}
  if(!panel){panel=document.createElement('details');panel.id='jcLiveBreakdown';panel.className='jc-dependency-report jc-live-breakdown';grid.closest('.je-wb-scroll')?.before(panel);}
  panel.innerHTML='<summary>Live prepared-ingredient breakdown · '+result.resolvedCount+' calculated'+(result.issues.length?' · '+result.issues.length+' need yield or link review':'')+'</summary><div class="jc-dependency-body"><p>Raw ingredient allocation for the selected recipe. Not additional inventory consumption.</p>'+
- result.groups.map(g=>'<section class="jc-live-prep"><div class="jc-prep-heading"><strong>'+H(g.name)+'</strong><span>'+H(fmt(g.portion)+' '+g.unit)+' used · Batch yield '+H(fmt(g.yield.q)+' '+g.yield.unit)+'</span></div><table><thead><tr><th>Raw / supporting ingredient</th><th>Quantity</th><th>Unit</th></tr></thead><tbody>'+g.lines.map(x=>{const v=breakdownAmount(x.q,x.unit);return '<tr><td>'+H(x.name)+'</td><td>'+H(fmt(v.q))+'</td><td>'+H(v.unit)+'</td></tr>';}).join('')+'</tbody></table></section>').join('')+
+ result.groups.map(g=>'<section class="jc-live-prep"><div class="jc-prep-heading"><strong>'+H(g.name)+'</strong><span>'+H(fmt(g.portion)+' '+g.unit)+' used · Batch yield '+H(fmt(g.yield.q)+' '+g.yield.unit+(g.yield.estimated?' (estimated)':''))+'</span></div><table><thead><tr><th>Raw / supporting ingredient</th><th>Quantity</th><th>Unit</th></tr></thead><tbody>'+g.lines.map(x=>{const v=breakdownAmount(x.q,x.unit);return '<tr><td>'+H(x.name)+'</td><td>'+H(fmt(v.q))+'</td><td>'+H(v.unit)+'</td></tr>';}).join('')+'</tbody></table></section>').join('')+
  (result.issues.length?'<div class="jc-prep-review"><strong>Items requiring review</strong>'+result.issues.map(x=>'<div><b>'+H(x.name)+'</b> · '+H(x.code)+'<span>'+H(x.reason)+(x.source?' · Linked worksheet: '+H(x.source):'')+'</span></div>').join('')+'</div>':'')+'</div>';
 }
 function render(sheet,targetId){
- const master=canonicalSheet(sheet);if(master!==sheet){sheet={...master,id:sheet.id,component_id:sheet.component_id,file:master.file,sheet:sheet.sheet,name:mushroomMaster(sheet).name};}
+ const master=canonicalSheet(sheet);if(master!==sheet){sheet={...master,id:sheet.id,component_id:sheet.component_id,file:sheet.file,sheet:sheet.sheet,name:mushroomMaster(sheet).name};}
  var el=document.getElementById(targetId);if(!el||!sheet)return false;
  flushBatchInput=null;A.active=sheet;A.selectedCell=null;var heights=sheet.heights||{},widths=sheet.widths||{};
  var cols=Array.from({length:8},(_,i)=>Math.max(58,Math.min(440,Math.round((widths[i]||[14,10,31,19,16,16,18,42][i])*7))));
@@ -7719,6 +7778,7 @@ function render(sheet,targetId){
  for(var row of sheet.rows||[]){
   if(bunBoundary!==null&&Number(row.r)>=bunBoundary)continue;
   if(!insertedLive&&Number(row.r)>=noteAt){html+=extraFillingHtml(sheet,liveExtra);insertedLive=true;}
+  if(Number(row.r)===ingredientBounds(sheet).start-1)html+=jcDoughSummaryRows(sheet);
   html+=rowHtml(sheet,row,7,merge,true,lastUsed,noteAt);
    if(!insertedPrep&&prepSteps.length&&(row.c||[]).some(c=>/^\s*Prep\s*\/\s*Plating Instructions\s*:?\s*$/i.test(String(c.v??'')))){html+=jcPrepRows(prepSteps,false);insertedPrep=true;}
   for(var x of added.filter(x=>Number(x.after)===Number(row.r)))if(!isProtected(sheet))html+=addedHtml(sheet,x);
@@ -8637,4 +8697,4 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 #jcCoreApp #jeWorkbookGrid .jc-shared-prep-row .jc-wb-value{display:block;white-space:normal!important;overflow:visible!important;overflow-wrap:anywhere}
 @media print{#jcCoreApp #jeWorkbookGrid .jc-shared-prep-row{break-inside:avoid;page-break-inside:avoid}}
 </style>
-</body></html>
+<style>#jcCoreApp #jeWorkbookGrid .jc-dough-summary-row td{height:auto!important;min-height:30px;padding:6px!important;white-space:normal!important;line-height:1.3!important}</style></body></html>
