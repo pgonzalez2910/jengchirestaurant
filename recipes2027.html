@@ -7924,16 +7924,25 @@ function ingredientRow(sheet,row){if(jcWontonOrder(sheet)){const n=Number(row);r
 // Compact view only: never remove or renumber archived data or saved recipe rows.
 const JC_SPARE_INGREDIENT_ROWS=3;
 function jcCompactMeaningful(v){return v!==null&&v!==undefined&&!/^\s*(?:[-–—]|\*|•)?\s*$/.test(String(v));}
+function jcCompactNoteStart(sheet,items,boundary){
+ const standard=notesRow(sheet);
+ if(jcWontonOrder(sheet)||boundary!==null)return standard;
+ // Some older dough and bakery templates have only asterisk markers, no Notes heading.
+ const last=Math.max(0,...(sheet.ingredients||[]).filter(i=>[i.name,i.code,i.selector].some(v=>jcCompactMeaningful(v)&&String(v).trim()!=='0')).map(i=>Number(i.r)||0));
+ const marker=(sheet.rows||[]).find(r=>Number(r.r)>last&&Number(r.r)<standard&&(r.c||[]).some(c=>Number(c.c)===0&&/^\s*[*•]+\s*$/.test(String(c.v??''))));
+ return marker?Number(marker.r):standard;
+}
 function jcCompactPlan(sheet,items,boundary){
  const rows=(sheet.rows||[]).filter(r=>boundary===null||Number(r.r)<boundary);
- const visible=new Set(),spares=new Set(),occupied=new Set(),empty=[],locked=new Set(),bounds=ingredientBounds(sheet);
+ const visible=new Set(),spares=new Set(),occupied=new Set(),empty=[],locked=new Set(),bounds=ingredientBounds(sheet),noteAt=jcCompactNoteStart(sheet,items,boundary);
  const edits=items.cells||{},removed=new Set((items.removed_rows||[]).map(String)),editedRows=new Set(Object.keys(edits).filter(k=>jcCompactMeaningful(edits[k])).map(k=>Number(k.split(':')[0])));
  const ingredients=new Map((sheet.ingredients||[]).map(i=>[Number(i.r),i])),addedByRow=new Map(),added=items.added_rows||[];
  for(const item of added){const after=Number(item.after);if(!addedByRow.has(after))addedByRow.set(after,[]);addedByRow.get(after).push(item);}
  for(const m of sheet.merges||[]){const [c0,r0,c1,r1]=m.map(Number);if(r1<=r0||c0>=5&&c1<=6&&ingredientRow(sheet,r0))continue;for(let r=r0;r<=r1;r++)locked.add(r);}
  let inNotes=false;
  for(const row of rows){
-  const n=Number(row.r),cells=row.c||[],isIng=ingredientRow(sheet,n);
+  const n=Number(row.r),cells=row.c||[],isIng=ingredientRow(sheet,n)&&(jcWontonOrder(sheet)||n<noteAt);
+  if(n>=noteAt&&!jcWontonOrder(sheet))inNotes=true;
   if(!isIng&&cells.some(c=>/^\s*Return\s+to(?:\s|$)/i.test(String(c.v??''))))continue;
   if(!isIng){
    if(cells.some(c=>noteHeaderText(c.v))){inNotes=true;visible.add(n);continue;}
@@ -7945,7 +7954,7 @@ function jcCompactPlan(sheet,items,boundary){
   const ing=ingredients.get(n);
   const hasStored=[0,2,3,4,7].some(col=>{
    const key=k(n,col),c=cells.find(c=>Number(c.c)===col),v=Object.prototype.hasOwnProperty.call(edits,key)?edits[key]:c?.v;
-   if(col===0&&Number(v)===0&&c?.f&&!Object.prototype.hasOwnProperty.call(edits,key))return false;
+   if(col===0&&Number(v)===0&&!Object.prototype.hasOwnProperty.call(edits,key))return false;
    return jcCompactMeaningful(v)&&!(col!==0&&String(v).trim()==='0');
   });
   const hasSource=ing&&[ing.name,ing.code,ing.selector].some(v=>jcCompactMeaningful(v)&&String(v).trim()!=='0');
@@ -7966,7 +7975,7 @@ function jcCompactPlan(sheet,items,boundary){
  const last=Math.max(bounds.start-1,...occupied,...added.map(x=>Number(x.after)).filter(Number.isFinite));
  for(const n of empty.filter(r=>r>last).slice(0,JC_SPARE_INGREDIENT_ROWS)){visible.add(n);spares.add(n);}
  const missing=Number.isFinite(bounds.start)?Math.max(0,JC_SPARE_INGREDIENT_ROWS-spares.size):0;
- return {visible,spares,missing,addedByRow};
+ return {visible,spares,missing,addedByRow,noteAt};
 }
 function jcCompactSpareHtml(sheet,count){
  const edit=canEdit()&&!isProtected(sheet)&&!sheet.variantServing&&!jcBunOrder(sheet)&&!jcWontonOrder(sheet);
@@ -7997,7 +8006,7 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt,compactSpar
  var blank=isBlank(rawRow)&&!(state(sheet).cells&&Object.keys(state(sheet).cells).some(x=>x.startsWith(r+':')));
  var inSpan=merge.spanRows.has(Number(r));
  var unused=false; // The compact planner determines retained rows.
- var cls=(remove?' jc-wb-removed':'')+(compactSpare?' jc-compact-spare':'')+(unused?' jc-wb-spare-row':'')+(blank&&r>=noteAt&&!inSpan?' jc-wb-empty-note':'')+(inSpan?' jc-wb-span-row':'');
+ var cls=(remove?' jc-wb-removed':'')+(compactSpare?' jc-compact-spare':'')+(inSpan?' jc-wb-span-row':''); // Retained rows must not be hidden by the legacy CSS heuristic.
  var html='<tr class="jc-wb-row'+cls+'" data-row="'+r+'" style="height:'+Math.max(23,Math.min(100,Number(sheet.heights?.[r]||25)))*1.33+'px">';
  for(var col=0;col<=maxCol;col++){
   if(merge.covered.has(k(r,col)))continue;
@@ -8189,7 +8198,7 @@ function render(sheet,targetId){
  flushBatchInput=null;A.active=sheet;A.selectedCell=null;var heights=sheet.heights||{},widths=sheet.widths||{};
  var cols=Array.from({length:8},(_,i)=>Math.max(58,Math.min(440,Math.round((widths[i]||[14,10,31,19,16,16,18,42][i])*7))));
  var items=state(sheet),lastUsed=Math.max(7,...(sheet.ingredients||[]).map(x=>Number(x.r)||7)),noteAt=notesRow(sheet);
- const bunBoundary=jcBunBoundary(sheet)??jcLegacyPrepBoundary(sheet),plan=jcCompactPlan(sheet,items,bunBoundary),merge=allMerge(sheet,plan);
+ const bunBoundary=jcBunBoundary(sheet)??jcLegacyPrepBoundary(sheet),plan=jcCompactPlan(sheet,items,bunBoundary),merge=allMerge(sheet,plan);noteAt=plan.noteAt;
  var html='<table class="jc-excel-sheet jc-wb-advanced" aria-label="'+H(sheet.name)+' Excel worksheet"><colgroup>'+
  cols.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><tbody>';
  var added=Array.isArray(items.added_rows)?items.added_rows:[],renderedAdded=new Set();
@@ -8923,7 +8932,7 @@ window.JCRecipeAdvanced={
  setProtectedMain:id=>{protectedMain=id||null;},
  setMainDish:id=>{activeMainDish=id||null;},
  load,render,addRow,searchIngredient,linkedMasterTabs,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,flushPending,formatNumber:fmt,
- build:'20261124-breakdown19',refreshPorkJelly,
+ build:'20261125-compact20',refreshPorkJelly,
  get selectedRow(){return A.selectedRow},
  get active(){return A.active},
  get productCount(){return A.products.length},
@@ -9230,7 +9239,7 @@ function workbookPage(){
  html+='<div class="je-wb-clean-workspace"><div class="je-wb-tabs" role="tablist" aria-label="Recipe and supporting sub-recipe Excel tabs">';
  const ordered=[...(c.main?[c.main]:[]),...c.sheets.filter(x=>x.id!==c.main?.id)];
  ordered.forEach((x,index)=>{const main=x.id===c.main?.id;html+='<button role="tab" aria-selected="'+(x.id===s?.id)+'" class="je-tab-recipe '+(main?'je-tab-main':'je-tab-sub je-tab-palette-'+(index%5))+' '+(x.id===s?.id?'active':'')+'" data-wb-sheet="'+H(x.id)+'" title="'+H(main?'Main finished dish':'Supporting sub-recipe')+'"><i class="fa-solid '+(main?'fa-crown':'fa-link')+'"></i> '+H(x.component_id==='45995ac6-b065-5458-8849-e20525f2c464'?'Boiled Cabbage Prep 10-6':x.component_id==='f7b22836-5ff2-539a-b11e-c803b77bfd1f'?'Boiled Cabbage Prep 40-25':x.component_id==='a6e61cec-1b57-5137-a314-53899033bc59'?'Wonton in Spicy Sauce — 8 PCS':x.component_id==='151bd190-98cf-59a4-84b4-79d423b3e51a'?'Wonton Production Batch':/^Boiled Napa Prep\b/i.test(x.sheet)?'Boiled Napa Prep':x.component_id==='7ac0962c-6b81-5f67-a1ba-a895ed7db52c'?'Hot Pot Sticker Filling':x.sheet)+(main?'<span class="je-tab-main-label">MAIN DISH</span>':'')+'</button>';});
- html+='</div><div class="je-wb-clean-toolbar"><div><strong>'+H(r.name)+'</strong> <span style="font-size:10px;color:#64748b;margin-left:6px">BREAKDOWN 19</span></div><div class="je-wb-toolbar-actions"><button type="button" class="je-button secondary" data-go="menu" aria-label="Return to restaurant menu" title="Restaurant menu"><i class="fa-solid fa-house"></i></button><button type="button" class="je-button secondary" data-wb-details="1" title="Recipe controls" aria-label="Recipe controls"><i class="fa-solid fa-sliders"></i></button><span id="jeWorkbookSave" class="jc-autosave ready" role="status" aria-live="polite"><i class="fa-solid fa-cloud"></i> '+(writable()?'Auto-save ready':'Read-only worksheet')+'</span><button class="je-button secondary" data-wb-main="1" title="Main recipe" aria-label="Main recipe"><i class="fa-solid fa-crown"></i></button></div></div>';
+ html+='</div><div class="je-wb-clean-toolbar"><div><strong>'+H(r.name)+'</strong> <span style="font-size:10px;color:#64748b;margin-left:6px" title="Compact worksheet renderer · three spare ingredient rows">COMPACT 20</span></div><div class="je-wb-toolbar-actions"><button type="button" class="je-button secondary" data-go="menu" aria-label="Return to restaurant menu" title="Restaurant menu"><i class="fa-solid fa-house"></i></button><button type="button" class="je-button secondary" data-wb-details="1" title="Recipe controls" aria-label="Recipe controls"><i class="fa-solid fa-sliders"></i></button><span id="jeWorkbookSave" class="jc-autosave ready" role="status" aria-live="polite"><i class="fa-solid fa-cloud"></i> '+(writable()?'Auto-save ready':'Read-only worksheet')+'</span><button class="je-button secondary" data-wb-main="1" title="Main recipe" aria-label="Main recipe"><i class="fa-solid fa-crown"></i></button></div></div>';
  
  html+='<div class="je-wb-actionbar"><div class="je-wb-action-left">';
  if(writable()&&r.id!=='cb3dc74e-d5d2-422c-9f36-37ca58fd4d0d'&&!secretLink(r)&&s&&s.file===c.file&&!s.menuPackage&&!c.main?.menuPackage&&c.sheets.length>1&&s.id!==c.main?.id)html+='<button class="je-button gold" data-w-main-pick="'+H(s.id)+'"><i class="fa-solid fa-crown"></i> Set as Main Dish</button>';
@@ -9268,7 +9277,7 @@ function renderWorkbook(){
  const recipe=recipeById(state.selectedId);const protectedId=c.main&&(c.nativeSheetCount??c.sheets.length)>1&&recipe?.menu_category!=='Buns'&&(/dumpling|bun|wonton|pot sticker/i.test(recipe?.menu_category||'')||/dumpling/i.test(recipe?.department||''))?c.main.id:null;
  window.JCRecipeAdvanced?.setProtectedMain?.(protectedId);
  window.JCRecipeAdvanced?.setMainDish?.(c.main?.id);
- if(window.JCRecipeAdvanced?.build!=='20261124-breakdown19'){el.textContent='Dynamic recipe engine unavailable. Reload this page before editing; archived values are not shown as current calculations.';return;}
+ if(window.JCRecipeAdvanced?.build!=='20261125-compact20'){el.textContent='Dynamic recipe engine unavailable. Reload this page before editing; archived values are not shown as current calculations.';return;}
  try{
   const loaded=window.JCRecipeAdvanced.render(c.active,'jeWorkbookGrid');
   if(!loaded)throw Error('Worksheet renderer returned no content');
