@@ -8010,7 +8010,7 @@ function masterYieldLabel(sheet,row){
  return 'Master: '+fmt(y.q)+' '+y.unit+(p.code==='PK-J-INTERNAL'?' · yield-linked':'')+(A.drafts.has(master)?' · draft':' · published/source');
 }
 function measuredYield(sheet){
- if(sheet.component_id===jcWontonSauceId){const actual=Number(cellValue(sheet,6,6));if(actual>0)return {q:actual,unit:'L'};const target=yieldValue(sheet);return target>0?{q:target,unit:'L',estimated:true}:null;}
+ if(sheet.component_id===jcWontonSauceId){const a=yieldAddress(sheet),raw=String(cellValue(sheet,a.row,a.col)||sheet.yield||''),unit=/\bqt\b/i.test(raw)?'qt':'L';const actual=Number(cellValue(sheet,6,6));if(actual>0)return {q:actual,unit};const target=yieldValue(sheet);return target>0?{q:target,unit,estimated:true}:null;}
  // Target yields are usable for planned allocation, but are not measured output.
  const porkUnit=sheet.component_id===jcPorkChopIds.prep||sheet.component_id===jcPorkChopIds.bread||jcLegacyChopPrepIds.includes(sheet.component_id)?'each':jcPorkMarIds.includes(sheet.component_id)?'qt':jcPorkTrimIds.includes(sheet.component_id)?'lb':null;
  if(porkUnit){const actual=porkUnit!=='lb'?Number(cellValue(sheet,6,6)):0;const n=yieldValue(sheet);
@@ -8448,9 +8448,19 @@ function scaledBatchDraft(sheet,to){
 }
 async function setCell(sheet,row,col,value){
  if(sheet.component_id===jcWontonSauceId&&(isYield(sheet,row,col)||(Number(row)===6&&Number(col)===6))){
-  const target=isYield(sheet,row,col),raw=String(value).trim(),m=raw.match(/^(\d+(?:\.\d+)?)\s*(?:L)?\s*(?:\(estimated\))?$/i);
-  if((target||raw)&&(!m||!(Number(m[1])>0)))throw Error('Enter a positive yield in liters, or leave actual yield blank.');
-  const draft=currentDraft(sheet);draft.cells[k(row,col)]=raw?(target?Number(m[1])+' L (estimated)':Number(m[1])):'';await save(sheet,draft);return true;
+  const target=isYield(sheet,row,col),raw=String(value).trim(),m=raw.match(/^(\d+(?:\.\d+)?)\s*(qt|L)?\s*(?:\(estimated\))?$/i);
+  if((target||raw)&&(!m||!(Number(m[1])>0)))throw Error('Enter a positive yield in quarts or liters, or leave actual yield blank.');
+  const a=yieldAddress(sheet),prior=String(cellValue(sheet,a.row,a.col)||sheet.yield||''),unit=/\bqt\b/i.test(prior)?'qt':'L';
+  if(target){
+   const next=groupConvert(Number(m[1]),m[2]||unit,unit,'')?.quantity;
+   if(!(next>0))throw Error('Invalid batch yield');
+   const draft=scaledBatchDraft(sheet,next);
+   draft.cells[k(a.row,a.col)]=next+' '+unit+' (estimated)';
+   if(Math.abs(next-yieldValue(sheet))>1e-10)draft.cells['6:6']='';
+   await save(sheet,draft);
+  }else{
+   const draft=currentDraft(sheet);draft.cells[k(row,col)]=raw?groupConvert(Number(m[1]),m[2]||unit,unit,'').quantity:'';await save(sheet,draft);
+  }return true;
  }
  if(sheet.component_id===jcPorkChopIds.prep&&isYield(sheet,row,col)){
   const m=String(value).trim().match(/^(\d+)\s*(?:each|pcs?|pieces?)?$/i);
