@@ -8141,19 +8141,31 @@ function dependencyReport(sheet){
  const confirmed=[...found.values()].filter(x=>!roots.has(x.sheet.id)&&x.sheet.component_id!==sheet.component_id);
  return {group,found:confirmed,ambiguous:[...ambiguous.values()].filter(x=>!found.has(x.id)&&!roots.has(x.id))};
 }
+function jcUpdateScope(sheet,report=null){
+ try{
+  const d=report||dependencyReport(sheet),root=canonicalSheet(sheet).component_id;
+  const linked=new Set([...d.found.map(x=>x.sheet.component_id),...d.group.matches.map(x=>x.component_id)].filter(x=>x&&x!==root&&x!==sheet.component_id));
+  return {count:linked.size,review:d.ambiguous.length+d.group.conflicts.length};
+ }catch(e){console.warn('Update scope unavailable',e);return {count:0,review:0,unknown:true};}
+}
+function jcScopeLabel(scope){
+ return scope.unknown?'UPDATE SCOPE UNVERIFIED':scope.count?'SHARED MASTER · '+scope.count+' linked worksheet'+(scope.count===1?'':'s'):scope.review?'UPDATE SCOPE REQUIRES REVIEW':'SINGLE RECIPE · no detected downstream links';
+}
 function showDependencyReport(sheet,savedIds=null){
  if(sheet.variantServing)return;
  if(A.active!==sheet)return;
  const grid=document.getElementById('jeWorkbookGrid');if(!grid)return;
  let panel=document.getElementById('jcDependencyReport');
  if(!panel){panel=document.createElement('details');panel.id='jcDependencyReport';panel.className='jc-dependency-report';grid.closest('.je-wb-scroll')?.before(panel);}
- const {group,found,ambiguous}=dependencyReport(sheet);
+ const report=dependencyReport(sheet),{group,found,ambiguous}=report;
+ const scope=jcUpdateScope(sheet,report),scopeColor=scope.review||scope.unknown?'#9d3b2b':scope.count?'#825512':'#245b90';
+ const scopeText=jcScopeLabel(scope)+(scope.review?' · '+scope.review+' require review':'');
  const currentMaster=sheet.component_id==='85eaebdf-1cc7-5a7e-a041-866805cefdb0';
  const version=A.published.get(sheet.component_id)?.version||0;
  const masterStatus=currentMaster?'<p><strong>Shared Ground Pork Sauce master</strong> · '+(A.drafts.has(sheet.component_id)?'Unpublished draft active in your session':version?'Published version '+version:'Original source')+' · All linked portions, including Noodle with Pork Sauce, use this same master. Original superseded worksheets are retained in the archive.</p>':'';
  const ids=new Set(savedIds||[]),copies=group.matches.filter(x=>x.id!==sheet.id);const approved=mushroomMaster(sheet);
- panel.innerHTML='<summary>Recipe dependencies · '+H(group.code||sheet.name)+' · '+found.length+' verified linked worksheet'+(found.length===1?'':'s')+(group.conflicts.length?' · ⚠ Code conflict':'')+'</summary>'+
- '<div class="jc-dependency-body">'+masterStatus+(savedIds?'<p>Saved '+ids.size+' component draft'+(ids.size===1?'':'s')+'. Original workbooks unchanged.</p>':'')+
+ panel.innerHTML='<summary><span style="color:'+scopeColor+';font-weight:800">'+H(scopeText)+'</span> · Recipe dependencies · '+H(group.code||sheet.name)+'</summary>'+
+ '<div class="jc-dependency-body"><p>Update scope identifies linked worksheets, not completed recalculations. Shared edits use the same master; portions remain independent. Drafts are visible to the editor; publish to share the approved version.</p>'+masterStatus+(savedIds?'<p>Saved '+ids.size+' component draft'+(ids.size===1?'':'s')+'. Original workbooks unchanged.</p>':'')+
  copies.map(x=>'<div>✓ '+H(x.file)+' / '+H(x.sheet)+' — '+(ids.has(approved?.master||x.component_id)?'shared master draft saved':approved?'shared canonical master':jcSharedSteamDough(sheet)&&jcSharedSteamDough(x)?'shared dough formula — independent production count':'matching master')+'</div>').join('')+
  group.conflicts.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — different source formula or yield; not merged</div>').join('')+
  found.map(x=>'<div>'+H(x.sheet.file)+' / '+H(x.sheet.sheet)+' — '+H((x.depth===1?'Direct: ':'Indirect: ')+x.kind)+'</div>').join('')+ (ambiguous.length?'<p>Unresolved code references ('+ambiguous.length+') — excluded from verified dependencies:</p>'+ambiguous.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — source not uniquely identified</div>').join(''):'')+
@@ -8196,12 +8208,16 @@ async function saveNow(sheet,obj){
  if(sheet.variantServing)throw Error('Fixed linked menu variation: edit the shared supporting recipe instead.');
  if(!canEdit())throw Error('Authorized editing session required');
  const payload={...obj,updated_at:new Date().toISOString()};
+ let editScope='Recipe change';
  sourceStatus('⏳ Saving changes automatically…');
  try{
  const group=matchingMasters(sheet),previous=state(sheet),payloads=[payload],seen=new Set([payload.component_id]);
  const changed=Object.keys(obj.cells||{}).filter(key=>JSON.stringify(obj.cells[key])!==JSON.stringify(previous.cells?.[key]));
  const structural=JSON.stringify(obj.added_rows||[])!==JSON.stringify(previous.added_rows||[])||JSON.stringify(obj.removed_rows||[])!==JSON.stringify(previous.removed_rows||[]);
  const recipeChange=structural||changed.some(key=>{const [row,col]=key.split(':').map(Number);return ingredientRow(sheet,row)||jcDoughWeightCell(sheet,row,col)||(isYield(sheet,row,col)&&!jcSteamLocalYield(sheet,row,col));});
+ const impact=recipeChange?jcUpdateScope(sheet):{count:0,review:0};
+ editScope=recipeChange?jcScopeLabel(impact)+(impact.review?' · review required':''):'SINGLE RECIPE · local edit';
+ sourceStatus('⏳ Saving · '+editScope);
  for(const peer of recipeChange&&!mushroomMaster(sheet)?group.matches:[]){
   if(seen.has(peer.component_id))continue;seen.add(peer.component_id);
   const copy=currentDraft(peer);
@@ -8230,7 +8246,7 @@ async function saveNow(sheet,obj){
  showDependencyReport(sheet,A.lastSync.ids);
  if(A.active===sheet)showLiveBreakdown(sheet);
  if(A.active&&A.active.id!==sheet.id&&!document.querySelector('#jeWorkbookGrid input:focus,#jeWorkbookGrid select:focus,#jeWorkbookGrid textarea:focus'))render(A.active,'jeWorkbookGrid');
- sourceStatus('✓ Saved '+payloads.length+' master draft'+(payloads.length===1?'':'s')+(group.code?' · '+group.code:'')+(group.conflicts.length?' · ⚠ Conflicting code copies require review':'')+' · Unpublished');
+ sourceStatus('✓ Saved to Supabase · '+editScope+' · Unpublished');
  }catch(error){sourceStatus('⚠ Changes not saved · '+(error.message||error));throw error;}
  return true;
 }
@@ -8360,10 +8376,10 @@ async function publish(sheet){
  if(bridge()?.getRole()!=='admin')throw Error('Owner approval is required');
  if(!A.drafts.has(sheet.component_id))throw Error('No unpublished changes to publish');
  const count=(bridge()?.getLibrary()?.sheets||[]).filter(x=>mushroomMaster(sheet)?mushroomMaster(sheet).ids.includes(x.component_id):x.component_id===sheet.component_id).length;
- if(!confirm('Publish this master component to '+count+' matching worksheet'+(count!==1?'s':'')+'? This will approve shared changes.'))return;
+ const scope=jcUpdateScope(sheet);if(!confirm('Publish '+sheet.name+'?\n'+jcScopeLabel(scope)+(scope.review?' · '+scope.review+' unresolved references require review':'')+'\nThis approves the master version for authorized users; linked recipes calculate from that version.'))return;
  const {data,error}=await client().rpc('jc_recipe_publish_workbook_component',{p_component_id:sheet.component_id});
  if(error)throw error;
- await load();if(sheet.component_id==='85eaebdf-1cc7-5a7e-a041-866805cefdb0')await refreshPorkJelly();sourceStatus('Published master component · version '+data);
+ await load();if(sheet.component_id==='85eaebdf-1cc7-5a7e-a041-866805cefdb0')await refreshPorkJelly();sourceStatus('Published · version '+data+' · '+jcScopeLabel(jcUpdateScope(sheet)));
  render(sheet,'jeWorkbookGrid');
 }
 async function scaleBatch(sheet){
