@@ -7876,7 +7876,7 @@ function liveIngredientLines(sheet){
 }
 function preparedSource(sheet,code){
  const key=String(code||'').trim().toUpperCase();
- const explicit=key==='PCSCE-INTERNAL'&&/^Noodle with Pork Sauce/i.test(String(sheet.file||''))?'e2c7df2e-861f-564d-87ca-8caa1f60152d':({'PCSCE-INTERNAL':'85eaebdf-1cc7-5a7e-a041-866805cefdb0','SPW-INTERNAL':'151bd190-98cf-59a4-84b4-79d423b3e51a'}[key]);
+ const explicit={'PCSCE-INTERNAL':'85eaebdf-1cc7-5a7e-a041-866805cefdb0','SPW-INTERNAL':'151bd190-98cf-59a4-84b4-79d423b3e51a'}[key];
  if(explicit)return (bridge()?.getLibrary()?.sheets||[]).find(s=>s.component_id===explicit&&s.component_id!==sheet.component_id)||null;
  const reg=registry(),all=(reg.byCode.get(key)||[]).filter(x=>x.component_id!==sheet.component_id);
  // The lobster worksheet contains purple sweet potato powder but the menu row still says white dough. Do not allocate the unrelated white master automatically.
@@ -8052,7 +8052,7 @@ function bindServingInput(sheet,input){
 let registryCache=null,registryLibrary=null;
 function registry(){
  const lib=bridge()?.getLibrary();if(registryLibrary===lib&&registryCache)return registryCache;
- const sheets=(lib?.sheets||[]).filter(s=>s.component_id&&!/^(database\d*|lookup lists|product match|lookups)$/i.test(s.sheet||''));
+ const sheets=(lib?.sheets||[]).filter(s=>s.component_id&&!['e2c7df2e-861f-564d-87ca-8caa1f60152d','e157dad3-c766-5696-be80-0a094c6fb106'].includes(s.component_id)&&!/^(database\d*|lookup lists|product match|lookups)$/i.test(s.sheet||''));
  const codeOf=new Map(),byCode=new Map(),byFile=new Map();
  const normCode=x=>String(x||'').trim().toUpperCase();
  const internal=x=>/[-_]INTERNAL$/i.test(String(x||''));
@@ -8071,7 +8071,7 @@ function registry(){
   }
   if(jcNapa40Ids.has(s.component_id)){codes.clear();codes.add('BNP40-INTERNAL');}
  if(s.component_id===jcHotDoughId){codes.clear();codes.add('HPSD-INTERNAL');}
- if(['85eaebdf-1cc7-5a7e-a041-866805cefdb0','e2c7df2e-861f-564d-87ca-8caa1f60152d'].includes(s.component_id)){codes.clear();codes.add('PCSCE-INTERNAL');}
+ if(s.component_id==='85eaebdf-1cc7-5a7e-a041-866805cefdb0'){codes.clear();codes.add('PCSCE-INTERNAL');}
  if(s.component_id==='151bd190-98cf-59a4-84b4-79d423b3e51a'){codes.clear();codes.add('SPW-INTERNAL');}
  const approved=Object.entries(approvedMushroomMasters).find(([key,g])=>g.ids.includes(s.component_id));if(approved){codes.clear();codes.add(approved[0]);}
   if(codes.size===1){const code=[...codes][0];codeOf.set(s.id,code);if(!byCode.has(code))byCode.set(code,[]);byCode.get(code).push(s);}
@@ -8150,7 +8150,7 @@ function showDependencyReport(sheet,savedIds=null){
  const {group,found,ambiguous}=dependencyReport(sheet);
  const currentMaster=sheet.component_id==='85eaebdf-1cc7-5a7e-a041-866805cefdb0';
  const version=A.published.get(sheet.component_id)?.version||0;
- const masterStatus=currentMaster?'<p><strong>Shared Ground Pork Sauce master</strong> · '+(A.drafts.has(sheet.component_id)?'Unpublished draft active in your session':version?'Published version '+version:'Original source')+' · Linked portions use this same master. Noodle with Pork Sauce has a different source formula and remains separate pending approval.</p>':'';
+ const masterStatus=currentMaster?'<p><strong>Shared Ground Pork Sauce master</strong> · '+(A.drafts.has(sheet.component_id)?'Unpublished draft active in your session':version?'Published version '+version:'Original source')+' · All linked portions, including Noodle with Pork Sauce, use this same master. Original superseded worksheets are retained in the archive.</p>':'';
  const ids=new Set(savedIds||[]),copies=group.matches.filter(x=>x.id!==sheet.id);const approved=mushroomMaster(sheet);
  panel.innerHTML='<summary>Recipe dependencies · '+H(group.code||sheet.name)+' · '+found.length+' verified linked worksheet'+(found.length===1?'':'s')+(group.conflicts.length?' · ⚠ Code conflict':'')+'</summary>'+
  '<div class="jc-dependency-body">'+masterStatus+(savedIds?'<p>Saved '+ids.size+' component draft'+(ids.size===1?'':'s')+'. Original workbooks unchanged.</p>':'')+
@@ -8178,11 +8178,19 @@ async function flushPending(){
 async function refreshPorkJelly(){
  if(!user())return;
  const id=approvedMushroomMasters['PK-J-INTERNAL'].master;
- const {data,error}=await client().from('jc_recipe_workbook_drafts').select('component_id,editor_id,cells,added_rows,removed_rows,updated_at').eq('component_id',id).eq('editor_id',user().id).maybeSingle();
- if(error)throw error;
- if(data){const old=A.drafts.get(id);if(!old?.updated_at||!data.updated_at||data.updated_at>=old.updated_at)A.drafts.set(id,data);}
- else if(!pendingSaves.size)A.drafts.delete(id);
- return data;
+ const sauce='85eaebdf-1cc7-5a7e-a041-866805cefdb0',ids=[id,sauce],uid=user().id;
+ const [drafts,published]=await Promise.all([
+  client().from('jc_recipe_workbook_drafts').select('component_id,editor_id,cells,added_rows,removed_rows,updated_at').in('component_id',ids).eq('editor_id',uid),
+  client().from('jc_recipe_workbook_publications').select('component_id,version,cells,added_rows,removed_rows').in('component_id',ids)
+ ]);
+ if(drafts.error)throw drafts.error;if(published.error)throw published.error;if(user()?.id!==uid)return;
+ for(const key of ids){
+  const data=(drafts.data||[]).find(d=>d.component_id===key),p=(published.data||[]).find(d=>d.component_id===key);
+  if(p)A.published.set(key,p);else A.published.delete(key);
+  if(data){const old=A.drafts.get(key);if(!old?.updated_at||!data.updated_at||data.updated_at>=old.updated_at)A.drafts.set(key,data);}
+  else if(!pendingSaves.size)A.drafts.delete(key);
+ }
+ return (drafts.data||[]).find(d=>d.component_id===id);
 }
 async function saveNow(sheet,obj){
  if(sheet.variantServing)throw Error('Fixed linked menu variation: edit the shared supporting recipe instead.');
@@ -8355,7 +8363,7 @@ async function publish(sheet){
  if(!confirm('Publish this master component to '+count+' matching worksheet'+(count!==1?'s':'')+'? This will approve shared changes.'))return;
  const {data,error}=await client().rpc('jc_recipe_publish_workbook_component',{p_component_id:sheet.component_id});
  if(error)throw error;
- await load();sourceStatus('Published master component · version '+data);
+ await load();if(sheet.component_id==='85eaebdf-1cc7-5a7e-a041-866805cefdb0')await refreshPorkJelly();sourceStatus('Published master component · version '+data);
  render(sheet,'jeWorkbookGrid');
 }
 async function scaleBatch(sheet){
@@ -8800,7 +8808,7 @@ function baseWorkbookContext(r){
  const exact=sourceSheet(r);
  const file=exact?.file||matches[0]?.file||null;
  const hidden=s=>/^(database\d*|lookup lists|product match|lookups|dough)$/i.test(String(s.sheet||'').trim());
- const sheets=file?all.filter(s=>s.file===file&&!hidden(s)&&!(r.id==='cb3dc74e-d5d2-422c-9f36-37ca58fd4d0d'&&s.component_id==='e157dad3-c766-5696-be80-0a094c6fb106')).sort((a,b)=>(a.order??0)-(b.order??0)):[];
+ const sheets=file?all.filter(s=>s.file===file&&!hidden(s)&&!['e2c7df2e-861f-564d-87ca-8caa1f60152d','e157dad3-c766-5696-be80-0a094c6fb106'].includes(s.component_id)).sort((a,b)=>(a.order??0)-(b.order??0)):[];
  if(sheets.some(s=>s.component_id==='a4177efb-cf7f-570d-8a0a-08306074ba16')){const original=sheets.find(s=>s.component_id==='a4177efb-cf7f-570d-8a0a-08306074ba16');const order={...original,name:'Hot Pot Sticker Order',variantServing:10};const shared=[order,...sheets.filter(s=>s.id!==original.id)];return {file,sheets:shared,main:order,active:shared.find(x=>x.id===state.wbSheet)||order};}
  let chosen='';try{chosen=localStorage.getItem('jc-main-dish:'+user()?.id+':'+r.id)||'';}catch(e){}
  const main=(appetizerOrderComponents[r.id]?sheets.find(s=>s.component_id===appetizerOrderComponents[r.id]):null)||(r.id==='7c094a1c-8a09-40c4-927d-d0760bed5ff8'?sheets.find(s=>s.component_id==='430f8e78-e09f-4d0a-a795-512935abc812'):null)||sheets.find(s=>s.id===chosen)||sheets.find(s=>s.component_id===secretSourceComponents[r.id])||sheets.find(s=>norm(s.name)===r.normalized_name||norm(s.sheet)===r.normalized_name)||sheets.find(s=>s.id===exact?.id)||sheets[0]||null;
@@ -8812,6 +8820,7 @@ function baseWorkbookContext(r){
 function workbookContext(r){
  const c=baseWorkbookContext(r);if(!c.main)return c;
  const sheets=[...c.sheets],seen=new Set(sheets.map(x=>x.component_id));
+ if(r.normalized_name==='noodle with pork sauce'){const master=sourceSheets().find(x=>x.component_id==='85eaebdf-1cc7-5a7e-a041-866805cefdb0');if(master&&!seen.has(master.component_id)){seen.add(master.component_id);sheets.push(master);}}
  // Use the original master objects, not copies or separate drafts.
  for(const source of c.sheets){
   let masters=[];try{masters=window.JCRecipeAdvanced?.linkedMasterTabs?.(source)||[];}catch(e){console.warn('Sub-recipe tab resolution:',e);}
