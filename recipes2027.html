@@ -7887,8 +7887,13 @@ function originalLines(sheet){
  return (sheet.ingredients||[]).filter(i=>i.code&&i.q!==''&&Number.isFinite(Number(i.q))&&ingredientRow(sheet,i.r))
  .map(i=>({row:Number(i.r),code:String(i.code).toUpperCase(),q:Number(i.q),unit:normalizeName(i.u)}));
 }
+// Verified SBD worksheets share ingredient formulation, not bun sizing or production count.
+const jcSharedSteamDoughIds=new Set(['42df9d0f-18d3-5d5a-8b8c-8c4fc9d2f5ca','78598fc5-9c20-5e55-8614-30107f783554']);
+function jcSharedSteamDough(sheet){return jcSharedSteamDoughIds.has(sheet?.component_id);}
+function jcSteamLocalYield(sheet,row,col){return jcSharedSteamDough(sheet)&&isYield(sheet,row,col);}
 function signature(sheet){
  const lines=originalLines(sheet);
+ if(jcSharedSteamDough(sheet)&&lines.length)return JSON.stringify(['SBD-INTERNAL','shared dough formula',lines]);
  // Require exact ingredient quantities, codes, row addresses and yield. Missing/ambiguous units are not merged.
  const y=String(sheet.yield??'').trim().toLowerCase().replace(/\s+/g,' ');
  if(!lines.length||!y||!yieldValue(sheet,true))return null;
@@ -7941,10 +7946,10 @@ function showDependencyReport(sheet,savedIds=null){
  const ids=new Set(savedIds||[]),copies=group.matches.filter(x=>x.id!==sheet.id);const approved=mushroomMaster(sheet);
  panel.innerHTML='<summary>Recipe dependencies · '+H(group.code||sheet.name)+' · '+found.length+' verified linked worksheet'+(found.length===1?'':'s')+(group.conflicts.length?' · ⚠ Code conflict':'')+'</summary>'+
  '<div class="jc-dependency-body">'+(savedIds?'<p>Saved '+ids.size+' component draft'+(ids.size===1?'':'s')+'. Original workbooks unchanged.</p>':'')+
- copies.map(x=>'<div>✓ '+H(x.file)+' / '+H(x.sheet)+' — '+(ids.has(approved?.master||x.component_id)?'shared master draft saved':approved?'shared canonical master':'matching master')+'</div>').join('')+
+ copies.map(x=>'<div>✓ '+H(x.file)+' / '+H(x.sheet)+' — '+(ids.has(approved?.master||x.component_id)?'shared master draft saved':approved?'shared canonical master':jcSharedSteamDough(sheet)&&jcSharedSteamDough(x)?'shared dough formula — independent production count':'matching master')+'</div>').join('')+
  group.conflicts.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — different source formula or yield; not merged</div>').join('')+
  found.map(x=>'<div>'+H(x.sheet.file)+' / '+H(x.sheet.sheet)+' — '+H((x.depth===1?'Direct: ':'Indirect: ')+x.kind)+'</div>').join('')+ (ambiguous.length?'<p>Unresolved code references ('+ambiguous.length+') — excluded from verified dependencies:</p>'+ambiguous.map(x=>'<div>⚠ '+H(x.file)+' / '+H(x.sheet)+' — source not uniquely identified</div>').join(''):'')+
- (group.code==='DD-INTERNAL'?'<p>Shared finished dough yield is measured in pounds. Original per-dish wrapper portions are retained; pounds are never used as a piece count. Purple dough is a separate formulation.</p>':'')+(group.code==='PK-J-INTERNAL'?'<p>Pork Jelly portions are linked to master yield.</p>':'')+'</div>';
+ (group.code==='SBD-INTERNAL'&&jcSharedSteamDough(sheet)?'<p>Shared dough ingredient formula. Pork and Vegetable Buns retain independent production counts and portion weights. Ingredient edits synchronize; local piece counts do not. Measured finished weight and bun sizing require kitchen confirmation.</p>':'')+(group.code==='DD-INTERNAL'?'<p>Shared finished dough yield is measured in pounds. Original per-dish wrapper portions are retained; pounds are never used as a piece count. Purple dough is a separate formulation.</p>':'')+(group.code==='PK-J-INTERNAL'?'<p>Pork Jelly portions are linked to master yield.</p>':'')+'</div>';
 }
 function currentDraft(sheet){
  const g=mushroomMaster(sheet);if(g)sheet=canonicalSheet(sheet);
@@ -7980,13 +7985,13 @@ async function saveNow(sheet,obj){
  const group=matchingMasters(sheet),previous=state(sheet),payloads=[payload],seen=new Set([payload.component_id]);
  const changed=Object.keys(obj.cells||{}).filter(key=>JSON.stringify(obj.cells[key])!==JSON.stringify(previous.cells?.[key]));
  const structural=JSON.stringify(obj.added_rows||[])!==JSON.stringify(previous.added_rows||[])||JSON.stringify(obj.removed_rows||[])!==JSON.stringify(previous.removed_rows||[]);
- const recipeChange=structural||changed.some(key=>{const [row,col]=key.split(':').map(Number);return ingredientRow(sheet,row)||isYield(sheet,row,col);});
+ const recipeChange=structural||changed.some(key=>{const [row,col]=key.split(':').map(Number);return ingredientRow(sheet,row)||(isYield(sheet,row,col)&&!jcSteamLocalYield(sheet,row,col));});
  for(const peer of recipeChange&&!mushroomMaster(sheet)?group.matches:[]){
   if(seen.has(peer.component_id))continue;seen.add(peer.component_id);
   const copy=currentDraft(peer);
   for(const key of changed){
    const [row,col]=key.split(':').map(Number);
-   if(!ingredientRow(sheet,row)&&!isYield(sheet,row,col))continue;
+   if(jcSteamLocalYield(sheet,row,col)||(!ingredientRow(sheet,row)&&!isYield(sheet,row,col)))continue;
    // Refuse to overwrite a separately edited conflicting ingredient or yield.
    if(Object.prototype.hasOwnProperty.call(copy.cells,key)&&JSON.stringify(copy.cells[key])!==JSON.stringify(previous.cells?.[key])&&JSON.stringify(copy.cells[key])!==JSON.stringify(obj.cells[key]))throw Error('Conflicting saved master draft for '+group.code+' in '+peer.file+'; review before synchronizing');
    copy.cells[key]=obj.cells[key];
@@ -8133,6 +8138,7 @@ async function publish(sheet){
 }
 async function scaleBatch(sheet){
  if(jcBunOrder(sheet))throw Error('Edit the master batch recipe; order quantities are linked.');
+ if(jcSharedSteamDough(sheet))throw Error('Steam Buns Dough shares a weight formula. Edit the production count directly to change local bun sizing; edit ingredient quantities to change the shared formula.');
  if(sheet.variantServing)throw Error('Secret Menu serving is fixed at three pieces.');
  if(!canEdit())throw Error('Authorized editor required');
  const address=yieldAddress(sheet);const from=yieldValue(sheet)||0;
