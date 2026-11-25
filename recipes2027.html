@@ -8440,6 +8440,70 @@ const cache={recipes:[],links:[],drafts:[],products:[],versionRows:[],source:[],
 const PUBLIC_CATALOG=JSON.parse(document.getElementById('jcAutoCatalog')?.textContent||'[]');
 const root=$('jcCoreApp');
 if(!root){console.warn('[Jeng Chi] RecipeOS root unavailable');return;}
+
+// Remember navigation per authenticated user and browser tab, not recipe content.
+const jcRefreshViews=new Set(['menu','workbook','detail','overview','recipes','masters','production','products','quality','reports','activity','archive']);
+let jcResumeUser=null,jcResumeScroll=null,jcResumeRoute=null,jcResumeReady=false;
+function jcResumeKey(id){return 'jc-recipeos-location-v1:'+id;}
+function jcLocationSnapshot(){
+ const ctx=state.view==='workbook'?workbookContext(recipeById(state.selectedId)):null;
+ return {view:jcRefreshViews.has(state.view)?state.view:'detail',category:state.menuCategory,recipe:state.selectedId,sheet:ctx?.active?.id||null,detailTab:state.detailTab,menuSearch:state.menuSearch};
+}
+function jcRouteKey(x){return JSON.stringify([x.view,x.category,x.recipe,x.sheet]);}
+function jcScrollSnapshot(){
+ const grid=root.querySelector('.je-wb-scroll'),nav=root.querySelector('.je-menu-navscroll');
+ return {top:grid?.scrollTop||0,left:grid?.scrollLeft||0,nav:nav?.scrollTop||0,window:window.scrollY||0};
+}
+function jcSaveLocation(){
+ const id=user()?.id;if(!id||!jcResumeReady||id!==jcResumeUser||!state.authReady)return;
+ try{
+  const route=jcLocationSnapshot(),key=jcRouteKey(route);
+  const scroll=jcResumeScroll&&jcResumeScroll.key===key?jcResumeScroll.position:jcScrollSnapshot();
+  sessionStorage.setItem(jcResumeKey(id),JSON.stringify({...route,scroll}));
+ }catch(e){/* Storage unavailable: normal navigation remains functional. */}
+}
+function jcRestoreLocation(){
+ const id=user()?.id;if(!id||jcResumeUser===id&&jcResumeReady)return;
+ jcResumeUser=id;jcResumeReady=true;jcResumeScroll=null;jcResumeRoute=null;
+ try{
+  const saved=JSON.parse(sessionStorage.getItem(jcResumeKey(id))||'null');
+  if(!saved||!jcRefreshViews.has(saved.view))return;
+  if(typeof saved.category==='string'&&menuDishes(saved.category).length)state.menuCategory=saved.category;
+  if(typeof saved.menuSearch==='string')state.menuSearch=saved.menuSearch.slice(0,250);
+  const recipe=recipeById(saved.recipe);
+  if(['workbook','detail','production'].includes(saved.view)&&!recipe){state.view='menu';state.selectedId=null;state.wbSheet=null;return;}
+  state.view=saved.view;state.selectedId=recipe?.id||null;
+  state.detailTab=['ingredients','relationships','source','history'].includes(saved.detailTab)?saved.detailTab:'ingredients';
+  state.wbSheet=null;
+  if(state.view==='workbook'){
+   const ctx=workbookContext(recipe);
+   if(!ctx.main){state.view='menu';return;}
+   state.wbSheet=ctx.sheets.some(x=>x.id===saved.sheet)?saved.sheet:ctx.main.id;
+   state.menuCategory=jcMenuCategory(recipe)||state.menuCategory;
+  }
+  const route=jcLocationSnapshot();jcResumeScroll={key:jcRouteKey(route),position:saved.scroll||{}};
+ }catch(e){/* Invalid saved location: keep the default menu. */}
+}
+function jcAfterLocationRender(){
+ if(!jcResumeReady||user()?.id!==jcResumeUser)return;
+ const route=jcLocationSnapshot(),key=jcRouteKey(route),pending=jcResumeScroll;
+ jcResumeRoute=key;
+ jcSaveLocation();
+ if(pending?.key===key){
+  const grid=root.querySelector('.je-wb-scroll'),nav=root.querySelector('.je-menu-navscroll');
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+   if(jcResumeRoute!==key||jcResumeScroll!==pending)return;
+   const pos=pending.position;const safe=x=>Number.isFinite(x)?Math.max(0,x):0;
+   if(grid?.isConnected){grid.scrollTop=safe(pos.top);grid.scrollLeft=safe(pos.left);}
+   if(nav?.isConnected)nav.scrollTop=safe(pos.nav);
+   if(route.view!=='workbook')window.scrollTo({top:safe(pos.window),behavior:'instant'});
+   jcResumeScroll=null;jcSaveLocation();
+  }));
+ }else jcResumeScroll=null;
+}
+root.addEventListener('scroll',()=>{if(!jcResumeScroll)jcSaveLocation();},true);
+window.addEventListener('pagehide',jcSaveLocation);
+
 const depIcon=d=>DEPS[d]?.icon||'fa-book';
 const recipeById=id=>cache.recipes.find(r=>r.id===id);
 const recipeName=id=>recipeById(id)?.name||'Unrecognized master';
@@ -8489,7 +8553,7 @@ async function refresh(){if(state.loading||!user())return;state.loading=true;try
  window.JCRecipeAdvanced?.load?.().catch(e=>console.warn('Advanced workbook data:',e.message||e))]);
  if(r.error)throw r.error;if(l.error)throw l.error;if(d.error)throw d.error;
  cache.recipes=r.data||[];cache.links=l.data||[];cache.drafts=d.data||[];cache.products=p.data||[];
- collectCandidates();state.authReady=true;render();}
+ collectCandidates();state.authReady=true;jcRestoreLocation();render();}
  catch(e){state.authReady=true;render();toast('Unable to load RecipeOS: '+(e.message||e),true)}finally{state.loading=false;}}
 function navItem(id,label,icon){const n=id==='recipes'?cache.recipes.length:id==='masters'?cache.recipes.filter(r=>r.recipe_kind==='subrecipe').length:'';return `<button type="button" class="je-nav ${state.view===id?'active':''}" data-go="${id}"><i class="fa-solid ${icon}"></i><span>${H(label)}</span>${n!==''?`<em>${n}</em>`:''}</button>`;}
 
@@ -8549,7 +8613,7 @@ function btn(label,icon,action,cls='secondary'){return `<button type="button" cl
 function metric(label,value,sub,icon,color='green'){return `<div class="je-metric ${color}"><div class="label"><span>${H(label)}</span><i class="fa-solid ${icon}"></i></div><strong>${H(value)}</strong><div class="sub">${H(sub)}</div></div>`;}
 function body(){if(!state.authReady)return '<div class="je-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>Connecting to protected recipe library…</div>';
 if(state.view==='menu')return menuPage();if(state.view==='overview')return overview();if(state.view==='recipes')return recipesPage();if(state.view==='masters')return mastersPage();if(state.view==='production')return productionPage();if(state.view==='products')return productsPage();if(state.view==='quality')return qualityPage();if(state.view==='reports')return reportsPage();if(state.view==='activity')return activityPage();if(state.view==='archive')return archivePage();if(state.view==='workbook')return workbookPage();if(state.view==='detail')return detailPage();if(state.view==='editor')return editorPage();return menuPage();}
-function render(){root.hidden=false;document.body.classList.add('je-live');root.innerHTML=shell();if(state.view==='workbook')renderWorkbook();const oldCount=$('jcLibCounts');if(oldCount){const d=dataSummary();oldCount.textContent=`${d.count} recipes · ${d.files} original workbooks · ${d.published} published`;}}
+function render(){root.hidden=false;document.body.classList.add('je-live');root.innerHTML=shell();if(state.view==='workbook')renderWorkbook();jcAfterLocationRender();const oldCount=$('jcLibCounts');if(oldCount){const d=dataSummary();oldCount.textContent=`${d.count} recipes · ${d.files} original workbooks · ${d.published} published`;}}
 function overview(){const d=dataSummary(),review=cache.recipes.filter(r=>hasDraft(r.id)&&r.status!=='PUBLISHED').length;const recent=cache.recipes.filter(r=>hasDraft(r.id)).slice(0,7);return `${heading('Jeng Chi · 2027 Recipe Book','Recipe Intelligence Center','One connected kitchen. One source of truth. Every recipe, component, and production batch.',btn('Explore Recipe Library','fa-arrow-right','data-go="recipes"','secondary'))}
 <section class="je-hero"><div style="z-index:1"><div class="je-kicker"><i class="fa-solid fa-circle-nodes"></i> THE CENTRAL RECIPE OPERATING SYSTEM</div><h2>One master recipe.<br>Every kitchen, perfectly connected.</h2><p>Manage original kitchen formulas, master components, Excel specifications and production quantities in a protected, version-controlled workspace.</p>${btn('Open Master Components','fa-diagram-project','data-go="masters"','gold')}</div><div class="je-hero-stat"><strong>${num(d.count)}</strong><span>registered kitchen recipes<br>across three departments</span></div></section>
 <div class="je-metrics">${metric('Recipe collection',d.count,'3 kitchen departments',ICON.recipes,'green')}${metric('Original Excel worksheets',d.sheets,`${d.files} source workbooks`,ICON.archive,'blue')}${metric('Saved recipe drafts',d.drafts,'No automatic publication','fa-pen-ruler','orange')}${metric('Published official masters',d.masters,'Shared component records','fa-diagram-project','green')}</div>
@@ -8734,7 +8798,7 @@ if(t.id==='jeProductionRecipe'){state.selectedId=t.value;state.productionQty='';
 if(t.dataset.editKind&&state.content){state.content.recipe_kind=t.value;setDirty();return;}
 if(t.dataset.ing!==undefined&&t.dataset.field&&state.content){const x=state.content.ingredients?.[Number(t.dataset.ing)];if(!x)return;const f=t.dataset.field;x[f]=f==='quantity'?(t.value===''?'':Number(t.value)):t.value;if(f==='master_id')x.name=recipeName(t.value);setDirty();return;}
 });
-const onAuthChange=async()=>{const logged=!!user();root.hidden=false;document.body.classList.add('je-live');if(!logged){cache.recipes=PUBLIC_CATALOG.map(r=>({...r,published_data:null}));cache.drafts=[];cache.links=[];cache.products=[];state.authReady=true;state.view=state.view==='editor'?'menu':state.view;document.body.classList.remove('je-excel');render();return;}await refresh();};
+const onAuthChange=async()=>{const logged=!!user();root.hidden=false;document.body.classList.add('je-live');if(!logged){jcResumeReady=false;jcResumeUser=null;jcResumeScroll=null;jcResumeRoute=null;state.view='menu';state.selectedId=null;state.wbSheet=null;cache.recipes=PUBLIC_CATALOG.map(r=>({...r,published_data:null}));cache.drafts=[];cache.links=[];cache.products=[];state.authReady=true;state.view=state.view==='editor'?'menu':state.view;document.body.classList.remove('je-excel');render();return;}await refresh();};
 window.JCRecipeCore={onAuthChange,onCloudChange:()=>{if(user()&&!state.loading){collectCandidates();render()}},onSheetChange:()=>{},openDashboard:()=>go('overview')};
 onAuthChange();
 let jcPreviousUser=user()?.id||null;
@@ -8837,7 +8901,6 @@ function refresh(){
    const blank=cells.length>0&&cells.every(cell=>!cell.textContent.trim()||cell.textContent.trim()==='*');
    row.classList.toggle('jc-wb-compact-empty',blank);
  }
- scroll.scrollLeft=0;
  }
 function schedule(){cancelAnimationFrame(frame);frame=requestAnimationFrame(refresh);}
 document.addEventListener('click',e=>{
