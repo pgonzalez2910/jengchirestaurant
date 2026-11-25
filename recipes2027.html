@@ -7921,25 +7921,81 @@ function ingredientBounds(sheet){
  const result={start,end:Number(jcBunBoundary(sheet)??jcLegacyPrepBoundary(sheet)??end)};boundsCache.set(sheet,result);return result;
 }
 function ingredientRow(sheet,row){if(jcWontonOrder(sheet)){const n=Number(row);return n>=10&&n<=24||n>=29&&n<=39;}if(String(row).startsWith('new-'))return true;const b=ingredientBounds(sheet);return Number(row)>=b.start&&Number(row)<b.end;}
-function allMerge(sheet){
- var starts=new Map(),covered=new Set(),spanRows=new Set();
+// Compact view only: never remove or renumber archived data or saved recipe rows.
+const JC_SPARE_INGREDIENT_ROWS=3;
+function jcCompactMeaningful(v){return v!==null&&v!==undefined&&!/^\s*(?:[-–—]|\*|•)?\s*$/.test(String(v));}
+function jcCompactPlan(sheet,items,boundary){
+ const rows=(sheet.rows||[]).filter(r=>boundary===null||Number(r.r)<boundary);
+ const visible=new Set(),spares=new Set(),occupied=new Set(),empty=[],locked=new Set(),bounds=ingredientBounds(sheet);
+ const edits=items.cells||{},removed=new Set((items.removed_rows||[]).map(String)),editedRows=new Set(Object.keys(edits).filter(k=>jcCompactMeaningful(edits[k])).map(k=>Number(k.split(':')[0])));
+ const ingredients=new Map((sheet.ingredients||[]).map(i=>[Number(i.r),i])),addedByRow=new Map(),added=items.added_rows||[];
+ for(const item of added){const after=Number(item.after);if(!addedByRow.has(after))addedByRow.set(after,[]);addedByRow.get(after).push(item);}
+ for(const m of sheet.merges||[]){const [c0,r0,c1,r1]=m.map(Number);if(r1<=r0||c0>=5&&c1<=6&&ingredientRow(sheet,r0))continue;for(let r=r0;r<=r1;r++)locked.add(r);}
+ let inNotes=false;
+ for(const row of rows){
+  const n=Number(row.r),cells=row.c||[],isIng=ingredientRow(sheet,n);
+  if(!isIng&&cells.some(c=>/^\s*Return\s+to(?:\s|$)/i.test(String(c.v??''))))continue;
+  if(!isIng){
+   if(cells.some(c=>noteHeaderText(c.v))){inNotes=true;visible.add(n);continue;}
+   if(!inNotes||locked.has(n)){visible.add(n);continue;}
+   const hasText=cells.some(c=>{const col=Number(c.c);return col<=7&&!isBlankNoteCell(sheet,n,col)&&jcCompactMeaningful(Object.prototype.hasOwnProperty.call(edits,k(n,col))?edits[k(n,col)]:c.v);});
+   if(hasText||editedRows.has(n)||cells.some(c=>c.f&&!isBlankNoteCell(sheet,n,Number(c.c))))visible.add(n);
+   continue;
+  }
+  const ing=ingredients.get(n);
+  const hasStored=[0,2,3,4,7].some(col=>{
+   const key=k(n,col),c=cells.find(c=>Number(c.c)===col),v=Object.prototype.hasOwnProperty.call(edits,key)?edits[key]:c?.v;
+   if(col===0&&Number(v)===0&&c?.f&&!Object.prototype.hasOwnProperty.call(edits,key))return false;
+   return jcCompactMeaningful(v)&&!(col!==0&&String(v).trim()==='0');
+  });
+  const hasSource=ing&&[ing.name,ing.code,ing.selector].some(v=>jcCompactMeaningful(v)&&String(v).trim()!=='0');
+  const hasFormula=cells.some(c=>{
+   const col=Number(c.c),formula=String(c.f||'');if(!formula||![0,1,2,3,4,7].includes(col))return false;
+   const selectorOnly=col!==0&&new RegExp('\\$?H\\$?'+n+'\\b','i').test(formula)&&!/\b(?:Filling|Dough|Recipe)\b/i.test(formula.replace(/Database|Lookup Lists/gi,''));
+   return !selectorOnly;
+  });
+  let hasLive=false;
+  if(!hasStored&&!hasSource&&!editedRows.has(n)&&!hasFormula&&!locked.has(n)){
+   const line=liveFillingLine(sheet,n);hasLive=!!line&&(jcCompactMeaningful(line.name)||jcCompactMeaningful(line.code)||line.q!==''&&line.q!=null);
+  }
+  if(hasStored||hasSource||editedRows.has(n)||hasFormula||hasLive||locked.has(n)||removed.has(String(n))){occupied.add(n);visible.add(n);}
+  else empty.push(n);
+ }
+ const last=Math.max(bounds.start-1,...occupied,...added.map(x=>Number(x.after)).filter(Number.isFinite));
+ for(const n of empty.filter(r=>r>last).slice(0,JC_SPARE_INGREDIENT_ROWS)){visible.add(n);spares.add(n);}
+ const missing=Number.isFinite(bounds.start)?Math.max(0,JC_SPARE_INGREDIENT_ROWS-spares.size):0;
+ return {visible,spares,missing,addedByRow};
+}
+function jcCompactSpareHtml(sheet,count){
+ const edit=canEdit()&&!isProtected(sheet)&&!sheet.variantServing&&!jcBunOrder(sheet)&&!jcWontonOrder(sheet);
+ return Array.from({length:count},()=>'<tr class="jc-wb-row jc-compact-spare"><td></td><td></td><td></td><td></td><td></td><td colspan="2" style="background:#000"></td><td>'+(edit?'<button type="button" class="je-link" data-wb-add="1" aria-label="Add ingredient">+ Add ingredient</button>':'')+'</td></tr>').join('');
+}
+function allMerge(sheet,plan=null){
+ var starts=new Map(),covered=new Set(),spanRows=new Set(),pictureStyles=new Map();
  const bounds=ingredientBounds(sheet);
  (sheet.merges||[]).forEach(m=>{
   var [c0,r0,c1,r1]=m.map(Number);
   // Keep picture merges inside the ingredient section, not in Notes/Prep.
-  if(c0>=5&&c1<=6&&r0>=bounds.start&&r0<bounds.end&&r1>=bounds.end)r1=bounds.end-1;
+  if(c0>=5&&c1<=6&&ingredientRow(sheet,r0)){
+   if(r0>=bounds.start&&r0<bounds.end&&r1>=bounds.end)r1=bounds.end-1;
+   if(plan&&r1>r0){
+    const anchor=(sheet.rows||[]).find(row=>Number(row.r)===r0)?.c?.find(c=>Number(c.c)===c0);
+    for(let r=r0;r<=r1;r++)if(plan.visible.has(r)){starts.set(k(r,c0),[c1-c0+1,1]);pictureStyles.set(k(r,c0),anchor?.s||0);for(let c=c0+1;c<=c1;c++)covered.add(k(r,c));}
+    return;
+   }
+  }
   starts.set(k(r0,c0),[c1-c0+1,r1-r0+1]);
   for(var r=r0;r<=r1;r++){if(r1>r0)spanRows.add(r);for(var c=c0;c<=c1;c++)if(r!==r0||c!==c0)covered.add(k(r,c));}
  });
- return {starts,covered,spanRows};
+ return {starts,covered,spanRows,pictureStyles};
 }
-function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
+function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt,compactSpare=false){
  var r=rawRow.r, cells=new Map((rawRow.c||[]).map(c=>[c.c,c]));
  var remove=!isProtected(sheet)&&(state(sheet).removed_rows||[]).some(x=>String(x)===String(r));
  var blank=isBlank(rawRow)&&!(state(sheet).cells&&Object.keys(state(sheet).cells).some(x=>x.startsWith(r+':')));
  var inSpan=merge.spanRows.has(Number(r));
- var unused=(!inSpan&&r>lastUsed+2&&r<noteAt&&blank);
- var cls=(remove?' jc-wb-removed':'')+(unused?' jc-wb-spare-row':'')+(blank&&r>=noteAt&&!inSpan?' jc-wb-empty-note':'')+(inSpan?' jc-wb-span-row':'');
+ var unused=(!compactSpare&&!inSpan&&r>lastUsed+2&&r<noteAt&&blank);
+ var cls=(remove?' jc-wb-removed':'')+(compactSpare?' jc-compact-spare':'')+(unused?' jc-wb-spare-row':'')+(blank&&r>=noteAt&&!inSpan?' jc-wb-empty-note':'')+(inSpan?' jc-wb-span-row':'');
  var html='<tr class="jc-wb-row'+cls+'" data-row="'+r+'" style="height:'+Math.max(23,Math.min(100,Number(sheet.heights?.[r]||25)))*1.33+'px">';
  for(var col=0;col<=maxCol;col++){
   if(merge.covered.has(k(r,col)))continue;
@@ -7950,7 +8006,8 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
  if(isProtected(sheet))editable=canEdit()&&(isYield(sheet,r,col)||(!isIngredient&&Number(r)>noteAt&&col===1&&!/Prep\s*\/\s*Plating Instructions/i.test(String(cell.v||''))));
   if(jcWontonOrder(sheet)||(sheet.component_id==='bea1bdb2-59ae-5cd3-8020-8309c423c692'&&(isYield(sheet,r,col)||(r===8&&col===0)))||sheet.variantServing||isBlankNoteCell(sheet,r,col)||(jcFixedBunSize(sheet)&&isYield(sheet,r,col))||jcBunDoughValue(sheet,r,col)!==null||(jcDumplingDough(sheet)&&isYield(sheet,r,col))||(jcDoughWeightHeader(sheet)&&Number(r)===5&&col===6)||(sheet.component_id===jcHotDoughId&&col===6&&[3,6].includes(Number(r))))editable=false;
   var val=rendered(sheet,r,col,cell);
-  var sty=allStyles(sheet)[cell.s||0]||'';
+  var sty=allStyles(sheet)[merge.pictureStyles?.get(k(r,col))??cell.s??0]||'';
+  if(merge.pictureStyles?.has(k(r,col)))sty+=';background:#000!important;';
   if(jcSauceQuartMaster(sheet)&&col===6&&[4,6].includes(Number(r)))sty+=';text-align:left!important;padding-left:10px!important;';
   if(col===7&&(isIngredient||header))sty+=';color:#17243a!important;background:'+(header?'#a3ce68':'#fff')+'!important;text-align:left!important;white-space:normal!important;'; if(col===7&&header)val='PRODUCT SELECTOR · Code | Name';
   if(isIngredient&&[0,1,2,3,7].includes(col)&&(fillingReference(sheet,r)||jcTurnoverDoughLine(sheet,r)))editable=false;
@@ -8129,23 +8186,28 @@ function render(sheet,targetId){
  var el=document.getElementById(targetId);if(!el||!sheet)return false;
  flushBatchInput=null;A.active=sheet;A.selectedCell=null;var heights=sheet.heights||{},widths=sheet.widths||{};
  var cols=Array.from({length:8},(_,i)=>Math.max(58,Math.min(440,Math.round((widths[i]||[14,10,31,19,16,16,18,42][i])*7))));
- var merge=allMerge(sheet),items=state(sheet),lastUsed=Math.max(7,...(sheet.ingredients||[]).map(x=>Number(x.r)||7)),noteAt=notesRow(sheet);
+ var items=state(sheet),lastUsed=Math.max(7,...(sheet.ingredients||[]).map(x=>Number(x.r)||7)),noteAt=notesRow(sheet);
+ const bunBoundary=jcBunBoundary(sheet)??jcLegacyPrepBoundary(sheet),plan=jcCompactPlan(sheet,items,bunBoundary),merge=allMerge(sheet,plan);
  var html='<table class="jc-excel-sheet jc-wb-advanced" aria-label="'+H(sheet.name)+' Excel worksheet"><colgroup>'+
  cols.map(w=>'<col style="width:'+w+'px">').join('')+'</colgroup><tbody>';
- var added=Array.isArray(items.added_rows)?items.added_rows:[];
- const liveExtra=extraFillingLines(sheet);let insertedLive=false;
+ var added=Array.isArray(items.added_rows)?items.added_rows:[],renderedAdded=new Set();
+ const liveExtra=extraFillingLines(sheet);let insertedLive=false,insertedSpare=false;
+ const insertLive=()=>{if(!insertedLive){html+=extraFillingHtml(sheet,liveExtra);insertedLive=true;}};
+ const insertSpare=()=>{if(!insertedSpare){insertLive();html+=jcCompactSpareHtml(sheet,plan.missing);insertedSpare=true;}};
+ const insertAdded=items=>{if(!isProtected(sheet))for(const x of items||[]){if(!renderedAdded.has(x.id)){html+=addedHtml(sheet,x);renderedAdded.add(x.id);}}};
   const prepSteps=(sheet.id===activeMainDish&&![jcWontonSauceId,jcWontonBatchId,'85eaebdf-1cc7-5a7e-a041-866805cefdb0'].includes(sheet.component_id))||sheet.variantServing?[]:(jcPrepProcedures[jcPrepKey(sheet)]||[]);let insertedPrep=false;
- const bunBoundary=jcBunBoundary(sheet)??jcLegacyPrepBoundary(sheet);
  for(var row of sheet.rows||[]){
-  if(bunBoundary!==null&&Number(row.r)>=bunBoundary)continue;
-  if(!ingredientRow(sheet,row.r)&&(row.c||[]).some(c=>/^\s*Return\s+to(?:\s|$)/i.test(String(c.v??''))))continue;
-  if(!insertedLive&&Number(row.r)>=noteAt){html+=extraFillingHtml(sheet,liveExtra);insertedLive=true;}
-  html+=rowHtml(sheet,row,7,merge,true,lastUsed,noteAt);
+  const n=Number(row.r);
+  if(bunBoundary!==null&&n>=bunBoundary)continue;
+  if(!insertedLive&&plan.spares.has(n)&&!jcWontonOrder(sheet)){insertAdded(added.filter(x=>Number(x.after)<n));insertLive();}
+  if(n>=noteAt&&!insertedSpare){insertAdded(added);insertSpare();}
+  if(!plan.visible.has(n)){insertAdded(plan.addedByRow.get(n));continue;}
+  html+=rowHtml(sheet,row,7,merge,true,lastUsed,noteAt,plan.spares.has(n));
    if(!insertedPrep&&prepSteps.length&&(row.c||[]).some(c=>/^\s*Prep\s*\/\s*Plating Instructions\s*:?\s*$/i.test(String(c.v??'')))){html+='</tbody><tbody class="jc-prep-instruction-body">'+jcPrepRows(prepSteps,false)+'</tbody><tbody>';insertedPrep=true;}
-  for(var x of added.filter(x=>Number(x.after)===Number(row.r)))if(!isProtected(sheet))html+=addedHtml(sheet,x);
+  insertAdded(plan.addedByRow.get(n));
  }
- if(!insertedLive)html+=extraFillingHtml(sheet,liveExtra);
-  if(bunBoundary!==null){html+='<tr class="jc-shared-prep-header"><td colspan="7" style="background:#a4c987;font-weight:bold;border:1px solid #222">Toast Button Modifiers/Notes</td><td></td></tr><tr><td style="border:1px solid #222;text-align:center">*</td><td colspan="6" style="border:1px solid #222;height:30px"></td><td></td></tr>';}
+ insertAdded(added);insertSpare();
+  if(bunBoundary!==null){html+='<tr class="jc-shared-prep-header"><td colspan="7" style="background:#a4c987;font-weight:bold;border:1px solid #222">Toast Button Modifiers/Notes</td><td></td></tr>';}
  if(!insertedPrep&&prepSteps.length)html+='</tbody><tbody class="jc-prep-instruction-body">'+jcPrepRows(prepSteps,true)+'</tbody><tbody>';
  if(bunBoundary!==null&&!prepSteps.length)html+='<tr class="jc-shared-prep-header"><td colspan="7" style="background:#a4c987;font-weight:bold;border:1px solid #222">Prep/Plating Instructions</td><td></td></tr><tr><td style="border:1px solid #222">*</td><td colspan="6" style="border:1px solid #222;height:30px"></td><td></td></tr>';
  html+='</tbody></table>';
@@ -9375,6 +9437,8 @@ setInterval(()=>{const currentId=user()?.id||null;if(currentId!==jcPreviousUser)
 #jcCoreApp .je-app:has(.je-wb-clean-workspace) .je-website-copyright{padding:4px 8px;font-size:9px;gap:0}
 #jcCoreApp .je-wb-foot{padding:3px 8px;font-size:9px}
 #jcCoreApp .je-wb-fit .jc-wb-spare-row,#jcCoreApp .je-wb-fit .jc-wb-empty-note{display:none}
+#jcCoreApp .jc-compact-spare td{height:25px;min-height:25px;border:1px solid #c0c8c5}
+@media print{body.je-print-workbook #jcCoreApp .jc-compact-spare{display:none!important}}
 #jcCoreApp .je-wb-fit .jc-wb-advanced tr{height:auto!important}
 #jcCoreApp .je-wb-fit .jc-wb-advanced td{font-size:14px!important;line-height:1.1!important;padding:2px 4px!important}
 #jcCoreApp .je-wb-fit .jc-wb-advanced > tbody:first-of-type > tr:first-child > td{font-size:28px!important}
