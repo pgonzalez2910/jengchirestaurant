@@ -8447,7 +8447,7 @@ let jcResumeUser=null,jcResumeScroll=null,jcResumeRoute=null,jcResumeReady=false
 function jcResumeKey(id){return 'jc-recipeos-location-v1:'+id;}
 function jcLocationSnapshot(){
  const ctx=state.view==='workbook'?workbookContext(recipeById(state.selectedId)):null;
- return {view:jcRefreshViews.has(state.view)?state.view:'detail',category:state.menuCategory,recipe:state.selectedId,sheet:ctx?.active?.id||null,detailTab:state.detailTab,menuSearch:state.menuSearch};
+ return {view:jcRefreshViews.has(state.view)?state.view:'detail',category:state.menuCategory,recipe:state.selectedId,sheet:ctx?.active?.id||state.wbSheet||null,detailTab:state.detailTab,menuSearch:state.menuSearch};
 }
 function jcRouteKey(x){return JSON.stringify([x.view,x.category,x.recipe,x.sheet]);}
 function jcScrollSnapshot(){
@@ -8477,8 +8477,8 @@ function jcRestoreLocation(){
   state.wbSheet=null;
   if(state.view==='workbook'){
    const ctx=workbookContext(recipe);
-   if(!ctx.main){state.view='menu';return;}
-   state.wbSheet=ctx.sheets.some(x=>x.id===saved.sheet)?saved.sheet:ctx.main.id;
+   // Keep the requested worksheet even while the protected source library is unavailable.
+   state.wbSheet=ctx.main?(ctx.sheets.some(x=>x.id===saved.sheet)?saved.sheet:ctx.main.id):(typeof saved.sheet==='string'?saved.sheet:null);
    state.menuCategory=jcMenuCategory(recipe)||state.menuCategory;
   }
   const route=jcLocationSnapshot();jcResumeScroll={key:jcRouteKey(route),position:saved.scroll||{}};
@@ -8491,6 +8491,7 @@ function jcAfterLocationRender(){
  jcSaveLocation();
  if(pending?.key===key){
   const grid=root.querySelector('.je-wb-scroll'),nav=root.querySelector('.je-menu-navscroll');
+  if(route.view==='workbook'&&!grid)return; // Keep pending scroll until the worksheet exists.
   requestAnimationFrame(()=>requestAnimationFrame(()=>{
    if(jcResumeRoute!==key||jcResumeScroll!==pending)return;
    const pos=pending.position;const safe=x=>Number.isFinite(x)?Math.max(0,x):0;
@@ -8613,7 +8614,20 @@ function btn(label,icon,action,cls='secondary'){return `<button type="button" cl
 function metric(label,value,sub,icon,color='green'){return `<div class="je-metric ${color}"><div class="label"><span>${H(label)}</span><i class="fa-solid ${icon}"></i></div><strong>${H(value)}</strong><div class="sub">${H(sub)}</div></div>`;}
 function body(){if(!state.authReady)return '<div class="je-loading"><i class="fa-solid fa-circle-notch fa-spin"></i>Connecting to protected recipe library…</div>';
 if(state.view==='menu')return menuPage();if(state.view==='overview')return overview();if(state.view==='recipes')return recipesPage();if(state.view==='masters')return mastersPage();if(state.view==='production')return productionPage();if(state.view==='products')return productsPage();if(state.view==='quality')return qualityPage();if(state.view==='reports')return reportsPage();if(state.view==='activity')return activityPage();if(state.view==='archive')return archivePage();if(state.view==='workbook')return workbookPage();if(state.view==='detail')return detailPage();if(state.view==='editor')return editorPage();return menuPage();}
-function render(){root.hidden=false;document.body.classList.add('je-live');root.innerHTML=shell();if(state.view==='workbook')renderWorkbook();jcAfterLocationRender();const oldCount=$('jcLibCounts');if(oldCount){const d=dataSummary();oldCount.textContent=`${d.count} recipes · ${d.files} original workbooks · ${d.published} published`;}}
+function render(){
+ root.hidden=false;document.body.classList.add('je-live');
+ if(jcResumeReady&&user()?.id===jcResumeUser){
+  const route=jcLocationSnapshot(),key=jcRouteKey(route);
+  if(!jcResumeScroll&&jcResumeRoute===key)jcResumeScroll={key,position:jcScrollSnapshot()};
+  // Persist the navigation before the potentially failing worksheet calculation.
+  if(jcResumeRoute!==key&&jcResumeScroll?.key!==key)jcResumeScroll={key,position:{top:0,left:0,nav:root.querySelector('.je-menu-navscroll')?.scrollTop||0,window:0}};
+  jcSaveLocation();
+ }
+ root.innerHTML=shell();
+ try{if(state.view==='workbook')renderWorkbook();}
+ finally{jcAfterLocationRender();}
+ const oldCount=$('jcLibCounts');if(oldCount){const d=dataSummary();oldCount.textContent=`${d.count} recipes · ${d.files} original workbooks · ${d.published} published`;}
+}
 function overview(){const d=dataSummary(),review=cache.recipes.filter(r=>hasDraft(r.id)&&r.status!=='PUBLISHED').length;const recent=cache.recipes.filter(r=>hasDraft(r.id)).slice(0,7);return `${heading('Jeng Chi · 2027 Recipe Book','Recipe Intelligence Center','One connected kitchen. One source of truth. Every recipe, component, and production batch.',btn('Explore Recipe Library','fa-arrow-right','data-go="recipes"','secondary'))}
 <section class="je-hero"><div style="z-index:1"><div class="je-kicker"><i class="fa-solid fa-circle-nodes"></i> THE CENTRAL RECIPE OPERATING SYSTEM</div><h2>One master recipe.<br>Every kitchen, perfectly connected.</h2><p>Manage original kitchen formulas, master components, Excel specifications and production quantities in a protected, version-controlled workspace.</p>${btn('Open Master Components','fa-diagram-project','data-go="masters"','gold')}</div><div class="je-hero-stat"><strong>${num(d.count)}</strong><span>registered kitchen recipes<br>across three departments</span></div></section>
 <div class="je-metrics">${metric('Recipe collection',d.count,'3 kitchen departments',ICON.recipes,'green')}${metric('Original Excel worksheets',d.sheets,`${d.files} source workbooks`,ICON.archive,'blue')}${metric('Saved recipe drafts',d.drafts,'No automatic publication','fa-pen-ruler','orange')}${metric('Published official masters',d.masters,'Shared component records','fa-diagram-project','green')}</div>
@@ -8696,8 +8710,18 @@ function renderWorkbook(){
  window.JCRecipeAdvanced?.setProtectedMain?.(protectedId);
  window.JCRecipeAdvanced?.setMainDish?.(c.main?.id);
  if(window.JCRecipeAdvanced?.build!=='20261124-breakdown19'){el.textContent='Dynamic recipe engine unavailable. Reload this page before editing; archived values are not shown as current calculations.';return;}
- const loaded=window.JCRecipeAdvanced.render(c.active,'jeWorkbookGrid');
- if(!loaded)el.textContent='Loading the original worksheet…';
+ try{
+  const loaded=window.JCRecipeAdvanced.render(c.active,'jeWorkbookGrid');
+  if(!loaded)throw Error('Worksheet renderer returned no content');
+ }catch(error){
+  console.error('[Jeng Chi] Worksheet render failed',c.active?.id,error);
+  el.replaceChildren();
+  const message=document.createElement('div');message.className='je-wb-unmatched';
+  const heading=document.createElement('h3');heading.textContent='Unable to display this worksheet';
+  const detail=document.createElement('p');detail.textContent='The worksheet could not be calculated or rendered. Recipe data has not been changed by this display error.';
+  const retry=document.createElement('button');retry.type='button';retry.className='je-button secondary';retry.textContent='Retry worksheet';retry.addEventListener('click',()=>render());
+  message.append(heading,detail,retry);el.append(message);
+ }
 }
 
 function detailPage(){const r=recipeById(state.selectedId);if(!r){state.view='recipes';return recipesPage();}const c=getContent(r),source=sourceSheet(r),used=cache.links.filter(l=>l.child_recipe_id===r.id),children=cache.links.filter(l=>l.parent_recipe_id===r.id),issues=getIssues(r);const tabNames=[['ingredients','Ingredients'],['relationships','Dependencies'],['source','Excel Source'],['history','Version History']];return `<div class="je-space" style="margin-bottom:22px"><button class="je-link" data-go="recipes"><i class="fa-solid fa-arrow-left"></i> Back to recipe library</button><span class="je-muted">Recipe ID ${H(r.id.slice(0,8))}</span></div><div class="je-detailtop"><div class="je-detailmain"><div class="je-flex" style="margin-bottom:13px"><span class="je-avatar"><i class="fa-solid ${depIcon(r.department)}"></i></span><span class="je-eyebrow" style="margin:0">${H(DEPS[r.department]?.label||r.department)} / ${H(typeText(r))}</span>${statusHTML(r)}</div><h1 class="je-h1" style="font-size:29px">${H(r.name)}</h1><p class="je-lead">${source?'Original workbook: '+H(source.file):'Original worksheet match requires review'} </p><div class="je-info-grid"><article><small>Batch yield</small><b>${c?.yield?.quantity?num(c.yield.quantity)+' '+H(c.yield.unit||'unit pending'):'Pending'}</b></article><article><small>Ingredient lines</small><b>${c?.ingredients?.length??'—'}</b></article><article><small>Official version</small><b>${r.published_version||'Not published'}</b></article></div><div class="je-toolbar">${writable()?btn(hasDraft(r.id)?'Continue Recipe Draft':'Open Recipe Editor','fa-pen-to-square','data-edit="1"','gold'):''}${source?btn('View Original Excel','fa-file-excel','data-excel-recipe="'+r.id+'"'):''}${r.status==='PUBLISHED'?btn('Batch Production','fa-scale-balanced','data-production="'+r.id+'"'):''}</div></div><div class="je-recipe-visual"><i class="fa-solid ${depIcon(r.department)}"></i></div></div>${issues.length?`<div class="je-alert warning" style="margin-bottom:18px"><i class="fa-solid fa-triangle-exclamation"></i> <strong>Review required before publication:</strong> ${H(issues.slice(0,3).join(' · '))}</div>`:''}<div class="je-tabs" style="margin-bottom:18px;display:inline-flex">${tabNames.map(([k,l])=>`<button class="je-tab ${state.detailTab===k?'active':''}" data-detail-tab="${k}">${l}</button>`).join('')}</div><div class="je-detailgrid"><section class="je-panel"><div class="je-panel-header"><div><h3>${H(tabNames.find(t=>t[0]===state.detailTab)?.[1])}</h3><p>${state.detailTab==='ingredients'?'Prepared draft or published formula — exactly as stored':state.detailTab==='relationships'?'Shared master usage across finished dishes':state.detailTab==='source'?'The untouched worksheet remains accessible':'Protected version history and restoration'}</p></div></div>${detailPrimary(r,c,source,used,children)}</section><aside><div class="je-panel"><div class="je-panel-header"><h3>Recipe control</h3></div><div class="je-panel-inner">${[['Status',statusHTML(r)],['Recipe kind',H(typeText(r))],['Department',H(DEPS[r.department]?.label||r.department)],['Original source',source?'Available':'Review required'],['Published version',r.published_version||'—']].map(([l,v])=>`<div class="je-space" style="padding:10px 0;border-bottom:1px solid #edf1f2"><span class="je-muted">${l}</span><strong style="font-size:11px;text-align:right">${v}</strong></div>`).join('')}<div class="je-alert info" style="margin-top:17px">${r.status==='PUBLISHED'?'Changes to published masters are protected by draft review and owner approval.':'Nothing in this recipe has been published automatically.'}</div></div></div>${used.length?`<div class="je-panel" style="margin-top:18px"><div class="je-panel-header"><h3>Used in · ${used.length}</h3></div><div class="je-panel-inner">${used.slice(0,8).map(x=>`<button class="je-link" data-open="${x.parent_recipe_id}" style="display:block;margin-bottom:12px">${H(recipeName(x.parent_recipe_id))}</button>`).join('')}</div></div>`:''}</aside></div>`;}
