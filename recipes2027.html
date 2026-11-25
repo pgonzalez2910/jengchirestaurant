@@ -7293,7 +7293,7 @@ function jcBunDoughPerPiece(s){
 function jcBunDoughValue(s,row,col){
  if(!jcBunSheet(s))return null;
  const r=Number(row),c=Number(col),isHeader=c===6&&[5,6].includes(r)&&/^\s*DOUGH\s*\//i.test(String(original(s,r,4)));
- const isLine=c===0&&ingredientRow(s,r)&&['SBD-INTERNAL','GOD-INTERNAL'].includes(String(original(s,r,3)))&&/^(vegetable buns|pork buns|green onion)(?: (?:small|large))?$/.test(normalizeName(s.name||s.sheet));
+ const isLine=c===0&&!(normalizeName(s.name||s.sheet)==='green onion')&&ingredientRow(s,r)&&['SBD-INTERNAL','GOD-INTERNAL'].includes(String(original(s,r,3)))&&/^(vegetable buns|pork buns|green onion)(?: (?:small|large))?$/.test(normalizeName(s.name||s.sheet));
  if(!isHeader&&!isLine)return null;
  const each=jcBunDoughPerPiece(s),count=yieldValue(s);if(each==null||!(count>0))return null;
  return isHeader&&r===6?each:each*count;
@@ -7436,7 +7436,7 @@ function fillingLine(sheet,src,row,servings,outputUnit){
   q=v[0];u=String(v[1]||'');p={code:String(v[3]||''),name:String(v[2]||''),selector:String(v[7]||'')};
  }else{
   if((st.removed_rows||[]).map(String).includes(String(row)))return {q:'',unit:'',code:'',name:'',selector:''};
-  q=cellValue(src,row,0);u=String(cellValue(src,row,1)||'');p=productForRow(src,row);
+  q=jcBunDoughValue(src,row,0)??cellValue(src,row,0);u=String(cellValue(src,row,1)||'');p=productForRow(src,row);
  }
  if(q===''||q==null||!p.code)return {q:'',unit:'',code:'',name:'',selector:''};
  if(!Number.isFinite(Number(q)))return null;
@@ -7619,6 +7619,8 @@ function liveIngredientLines(sheet){
  const out=[],st=state(sheet),removed=new Set((st.removed_rows||[]).map(String));
  for(const row of sheet.rows||[]){
   const rr=Number(row.r);if(!ingredientRow(sheet,rr)||removed.has(String(rr)))continue;
+  const bunDough=jcBunDoughValue(sheet,rr,0);
+  if(bunDough!==null){const p=productForRow(sheet,rr);if(p.code)out.push({...p,q:bunDough,unit:'oz'});continue;}
   const live=liveFillingLine(sheet,rr);
   if(live){if(live.q!==''&&live.code)out.push(live);continue;}
   const p=productForRow(sheet,rr),cell=(row.c||[]).find(c=>Number(c.c)===0);
@@ -8033,14 +8035,16 @@ async function setCell(sheet,row,col,value){
  return true;
 }
 async function addRow(sheet){
+ if(jcBunOrder(sheet))throw Error('Add ingredients to the master batch recipe, not the linked order.');
  if(isProtected(sheet))throw Error('Add ingredients to the supporting recipe, not the calculated main dish.');
- var max=Math.max(7,...(sheet.ingredients||[]).map(x=>Number(x.r)||7));
+ var max=Math.max(7,...(sheet.ingredients||[]).filter(x=>!jcBunSheet(sheet)||ingredientRow(sheet,x.r)).map(x=>Number(x.r)||7));
  var obj=currentDraft(sheet);
  obj.added_rows.push({id:'new-'+Date.now()+'-'+Math.random().toString(36).slice(2,9),after:max,cells:{0:'',1:'oz',2:'',3:'',4:'',5:'',6:'',7:''}});
  await save(sheet,obj);render(sheet,'jeWorkbookGrid');
  return true;
 }
 async function removeRow(sheet,rowKey){
+ if(jcBunOrder(sheet))throw Error('Remove ingredients from the master batch recipe, not the linked order.');
  if(isProtected(sheet))throw Error('Calculated main dish rows are protected.');
  if(rowKey==null||!ingredientRow(sheet,rowKey))throw Error('First select an ingredient row to remove');
  if(!confirm('Remove this worksheet row from the working draft? Your original Excel workbook is protected.'))return false;
@@ -8067,6 +8071,7 @@ async function publish(sheet){
  render(sheet,'jeWorkbookGrid');
 }
 async function scaleBatch(sheet){
+ if(jcBunOrder(sheet))throw Error('Edit the master batch recipe; order quantities are linked.');
  if(sheet.variantServing)throw Error('Secret Menu serving is fixed at three pieces.');
  if(!canEdit())throw Error('Authorized editor required');
  const address=yieldAddress(sheet);const from=yieldValue(sheet)||0;
