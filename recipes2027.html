@@ -7506,6 +7506,18 @@ function lookupProduct(code){
  if(!code)return null;
  return A.products.find(p=>p.ct_code===code||(Array.isArray(p.previous_codes)&&p.previous_codes.includes(code)))||null;
 }
+// Display the official catalog label without changing a stored product identifier.
+function canonicalProductLabel(code,name){
+ code=String(code||'').trim();name=String(name||'').trim();
+ const matches=A.products.filter(p=>String(p.ct_code||'').trim().toUpperCase()===code.toUpperCase());
+ const names=new Set(matches.map(p=>String(p.canonical_name||'').trim()).filter(Boolean));
+ if(names.size===1)name=[...names][0];
+ return {code,name,selector:code&&name?code+' | '+name:name||''};
+}
+function addedProductLabel(cells){
+ const v=cells||{},sel=String(v[7]||''),m=sel.match(/^\s*([^|]+)\s*\|\s*(.+)$/);
+ return canonicalProductLabel(v[3]||m?.[1]||'',v[2]||m?.[2]||'');
+}
 function productForRow(sheet,row){
  var rawName=String(cellValue(sheet,row,2)||'');
  var code=String(cellValue(sheet,row,3)||'');
@@ -7518,8 +7530,7 @@ function productForRow(sheet,row){
  if(code==='DD-INTERNAL'&&(bridge()?.getLibrary()?.sheets||[]).some(x=>x.file===sheet.file&&x.component_id==='62423561-d4a2-5384-98b9-7acc25bbca72'))return {code,name:rawName,selector:code+' | '+rawName};
  if(code==='BNP40-INTERNAL'||code==='BNP70-INTERNAL')return {code,name:'Boiled Napa Prep',selector:code+' | Boiled Napa Prep'};
  if(approvedMushroomMasters[code]){rawName=approvedMushroomMasters[code].name;return {code,name:rawName,selector:code+' | '+rawName};}
- var p=lookupProduct(code); if(p&&normalizeName(p.canonical_name)===normalizeName(rawName))return {code:p.ct_code,name:rawName,selector:p.ct_code+' | '+rawName};
- return {code:code,name:rawName,selector:(code&&rawName)?code+' | '+rawName:''};
+ return canonicalProductLabel(code,rawName);
 }
 let protectedMain=null,activeMainDish=null;
 function isProtected(sheet){return !!sheet&&protectedMain===sheet.id;}
@@ -7570,7 +7581,7 @@ function jcWontonAllocation(sheet,ref,row,outputUnit){
  if(!y||!portion)throw Error('Verify the linked '+src.name+' batch yield and unit.');
  const st=state(src),added=typeof row==='string'&&row.startsWith('new-'),cells=added?(st.added_rows||[]).find(x=>x.id===row)?.cells:null;
  if(!added&&(st.removed_rows||[]).map(String).includes(String(row)))return {q:'',unit:'',code:'',name:'',selector:''};
- const p=added?{code:String(cells?.[3]||''),name:String(cells?.[2]||''),selector:String(cells?.[7]||'')}:productForRow(src,row);
+ const p=added?addedProductLabel(cells):productForRow(src,row);
  let q=added?cells?.[0]:cellValue(src,row,0),u=String(added?cells?.[1]||'':cellValue(src,row,1)||'');
  if(q===''||q==null||!p.code||!Number.isFinite(Number(q)))return {q:'',unit:'',code:'',name:'',selector:''};
  q=linkedPreparedQuantity(Number(q),p.code)*portion.quantity/y.q;
@@ -7634,7 +7645,7 @@ function fillingLine(sheet,src,row,servings,outputUnit){
  let q,u,p;
  if(typeof row==='string'&&row.startsWith('new-')){
   const v=(st.added_rows||[]).find(x=>x.id===row)?.cells||{};
-  q=v[0];u=String(v[1]||'');p={code:String(v[3]||''),name:String(v[2]||''),selector:String(v[7]||'')};
+  q=v[0];u=String(v[1]||'');p=addedProductLabel(v);
  }else{
   if((st.removed_rows||[]).map(String).includes(String(row)))return {q:'',unit:'',code:'',name:'',selector:''};
   q=jcBunDoughValue(src,row,0)??cellValue(src,row,0);u=String(cellValue(src,row,1)||'');p=productForRow(src,row);
@@ -7828,13 +7839,13 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
  return html+'</tr>';
 }
 function addedHtml(sheet,item){
- const id=item.id,cl=item.cells||{},mark=allStyles(sheet),ing=(sheet.ingredients||[]).at(-1),ref=ing?(sheet.rows||[]).find(r=>r.r===ing.r):null;
+ const id=item.id,cl=item.cells||{},product=addedProductLabel(cl),mark=allStyles(sheet),ing=(sheet.ingredients||[]).at(-1),ref=ing?(sheet.rows||[]).find(r=>r.r===ing.r):null;
  const map=new Map((ref?.c||[]).map(c=>[c.c,c]));
  var h='<tr class="jc-wb-row jc-wb-added" data-row="'+H(id)+'">';
  for(var c=0;c<8;c++){
   var style=mark[map.get(c)?.s||0]||'';
-  var v=cl[c]??'';
-  if(c===0&&v!==''&&Number.isFinite(Number(v)))v=fmt(linkedPreparedQuantity(v,cl[3]));
+  var v=c===2?product.name:c===3?product.code:c===7?product.selector:cl[c]??'';
+  if(c===0&&v!==''&&Number.isFinite(Number(v)))v=fmt(linkedPreparedQuantity(v,product.code));
   h+='<td class="jc-wb-cell'+(canEdit()&&[0,1,4,7].includes(c)?' jc-wb-editable':'')+'" data-r="'+H(id)+'" data-c="'+c+'" style="'+H(style)+'"><span class="jc-wb-value">'+H(v)+'</span></td>';
  }
  return h+'</tr>';
@@ -7870,7 +7881,7 @@ function liveIngredientLines(sheet){
   if(isProtected(sheet)){const base=yieldValue(sheet,true),target=yieldValue(sheet);if(base&&target&&q!==''&&q!=null&&Number.isFinite(Number(q)))q=Number(q)*target/base;}
   if(q!==''&&q!=null&&Number.isFinite(Number(q))&&p.code)out.push({...p,q:Number(q),unit:String(cellValue(sheet,rr,1)||'')});
  }
- for(const row of st.added_rows||[]){const v=row.cells||{};if(v[0]!==''&&v[0]!=null&&Number.isFinite(Number(v[0]))&&v[3])out.push({q:linkedPreparedQuantity(v[0],v[3]),unit:String(v[1]||''),code:String(v[3]),name:String(v[2]||'')});}
+ for(const row of st.added_rows||[]){const v=row.cells||{},p=addedProductLabel(v);if(v[0]!==''&&v[0]!=null&&Number.isFinite(Number(v[0]))&&p.code)out.push({...p,q:linkedPreparedQuantity(v[0],p.code),unit:String(v[1]||'')});}
  out.push(...extraFillingLines(sheet));
  return out;
 }
