@@ -7021,7 +7021,13 @@ var bridge=()=>window.JCRecipeBridge;
 var user=()=>bridge()?.getUser();
 var client=()=>bridge()?.getClient();
 var canEdit=()=>Boolean(user()&&['admin','editor'].includes(bridge()?.getRole()));
-var fmt=v=>(v!==''&&v!==null&&v!==undefined&&Number.isFinite(Number(v))?Number(v).toFixed(3):String(v??''));
+var fmt=v=>{
+ if(v===''||v===null||v===undefined||!Number.isFinite(Number(v)))return String(v??'');
+ const n=Number(v);if(Number.isInteger(n))return String(n);
+ // Display at most three decimals normally; never hide a small nonzero quantity as zero.
+ const digits=Math.abs(n)<0.0005?Math.min(15,Math.max(3,Math.ceil(-Math.log10(Math.abs(n)))+2)):3;
+ return n.toFixed(digits).replace(/\.?0+$/,'');
+};
 var k=(r,c)=>r+':'+c;
 function original(sheet,row,col){
  sheet=canonicalSheet(sheet);
@@ -7052,7 +7058,7 @@ const separatePanel=v=>/^(?:\s*(?:Linked (?:Portions|Recipes|Sub-Recipes)|Crunch
  "freshLemonJuice":[
   "Wash 24 medium lemons under running water. Cut in half and squeeze thoroughly using a clean citrus juicer.",
   "Strain out seeds and excess pulp. Measure the finished juice in fluid ounces.",
-  "Estimated target: 36.000 fl oz (4.500 cups). Record the actual measured yield; do not assume every batch produces the target."
+  "Estimated target: 36 fl oz (4.5 cups). Record the actual measured yield; do not assume every batch produces the target."
  ],
  "shrimpPocketSweetChili":[
   "Combine 15 bottles of Yeo's Sweet Chili Sauce with 8 cups of fresh lemon juice, 60 oz by weight of granulated sugar, and 3 cups of tap water.",
@@ -7453,8 +7459,8 @@ function jcYieldDisplay(s,v){
  const raw=String(v??'').trim(),m=raw.match(/^(\d+(?:\.\d+)?)\s*(.*)$/);if(!m)return v;
  const n=Number(m[1]),unit=jcCountUnit(s,v);
  if(unit&&Number.isInteger(n))return String(n)+' '+unit;
- if(!m[2])return Number.isInteger(n)?String(n):fmt(n);
- return v;
+ if(!m[2])return fmt(n);
+ return fmt(n)+' '+m[2];
 }
 function jcLegacyPrepBoundary(s){
  if(!(jcNapaSheet(s)||s.component_id===jcHotDoughId||/^(green onion dough|green onion pancake dough|turnover dough)$/i.test(s.sheet||'')))return null;
@@ -7807,6 +7813,8 @@ function rendered(sheet,row,col,cell){
  else if(isYield(sheet,row,col))v=jcYieldDisplay(sheet,v);
  if(jcBunSheet(sheet)&&!isYield(sheet,row,col)&&typeof v==='number'&&Number.isFinite(v))v=fmt(v);
  if(Number(row)<ingredientBounds(sheet).start&&typeof v==='string'&&/^\d+(?:\.0+)?\s*(?:pieces?|pcs?|each|orders?|dumplings?|buns?|eggs?)$/i.test(v))v=jcYieldDisplay(sheet,v);
+ if(Number(row)<ingredientBounds(sheet).start&&typeof v==='number'&&Number.isFinite(v))return fmt(v);
+ if(Number(row)<ingredientBounds(sheet).start&&typeof v==='string'&&/^[-+]?\d+(?:\.\d+)?\s*(?:lb|lbs|oz|fl oz|qt|gal|cups?|L)(?:\s*\(estimated\))?$/i.test(v.trim()))return v.trim().replace(/^[-+]?\d+(?:\.\d+)?/,x=>fmt(x));
  return v??'';
 }
 async function loadProductCatalog(c){
@@ -7859,19 +7867,24 @@ function ingredientBounds(sheet){
 }
 function ingredientRow(sheet,row){if(jcWontonOrder(sheet)){const n=Number(row);return n>=10&&n<=24||n>=29&&n<=39;}if(String(row).startsWith('new-'))return true;const b=ingredientBounds(sheet);return Number(row)>=b.start&&Number(row)<b.end;}
 function allMerge(sheet){
- var starts=new Map(),covered=new Set();
+ var starts=new Map(),covered=new Set(),spanRows=new Set();
+ const bounds=ingredientBounds(sheet);
  (sheet.merges||[]).forEach(m=>{
-  var [c0,r0,c1,r1]=m;starts.set(k(r0,c0),[c1-c0+1,r1-r0+1]);
-  for(var r=r0;r<=r1;r++)for(var c=c0;c<=c1;c++)if(r!==r0||c!==c0)covered.add(k(r,c));
+  var [c0,r0,c1,r1]=m.map(Number);
+  // Keep picture merges inside the ingredient section, not in Notes/Prep.
+  if(c0>=5&&c1<=6&&r0>=bounds.start&&r0<bounds.end&&r1>=bounds.end)r1=bounds.end-1;
+  starts.set(k(r0,c0),[c1-c0+1,r1-r0+1]);
+  for(var r=r0;r<=r1;r++){if(r1>r0)spanRows.add(r);for(var c=c0;c<=c1;c++)if(r!==r0||c!==c0)covered.add(k(r,c));}
  });
- return {starts,covered};
+ return {starts,covered,spanRows};
 }
 function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt){
  var r=rawRow.r, cells=new Map((rawRow.c||[]).map(c=>[c.c,c]));
  var remove=!isProtected(sheet)&&(state(sheet).removed_rows||[]).some(x=>String(x)===String(r));
  var blank=isBlank(rawRow)&&!(state(sheet).cells&&Object.keys(state(sheet).cells).some(x=>x.startsWith(r+':')));
- var unused=(r>lastUsed+2&&r<noteAt&&blank);
- var cls=(remove?' jc-wb-removed':'')+(unused?' jc-wb-spare-row':'')+(blank&&r>=noteAt?' jc-wb-empty-note':'');
+ var inSpan=merge.spanRows.has(Number(r));
+ var unused=(!inSpan&&r>lastUsed+2&&r<noteAt&&blank);
+ var cls=(remove?' jc-wb-removed':'')+(unused?' jc-wb-spare-row':'')+(blank&&r>=noteAt&&!inSpan?' jc-wb-empty-note':'')+(inSpan?' jc-wb-span-row':'');
  var html='<tr class="jc-wb-row'+cls+'" data-row="'+r+'" style="height:'+Math.max(23,Math.min(100,Number(sheet.heights?.[r]||25)))*1.33+'px">';
  for(var col=0;col<=maxCol;col++){
   if(merge.covered.has(k(r,col)))continue;
@@ -8040,12 +8053,12 @@ function render(sheet,targetId){
   if(bunBoundary!==null&&Number(row.r)>=bunBoundary)continue;
   if(!insertedLive&&Number(row.r)>=noteAt){html+=extraFillingHtml(sheet,liveExtra);insertedLive=true;}
   html+=rowHtml(sheet,row,7,merge,true,lastUsed,noteAt);
-   if(!insertedPrep&&prepSteps.length&&(row.c||[]).some(c=>/^\s*Prep\s*\/\s*Plating Instructions\s*:?\s*$/i.test(String(c.v??'')))){html+=jcPrepRows(prepSteps,false);insertedPrep=true;}
+   if(!insertedPrep&&prepSteps.length&&(row.c||[]).some(c=>/^\s*Prep\s*\/\s*Plating Instructions\s*:?\s*$/i.test(String(c.v??'')))){html+='</tbody><tbody class="jc-prep-instruction-body">'+jcPrepRows(prepSteps,false)+'</tbody><tbody>';insertedPrep=true;}
   for(var x of added.filter(x=>Number(x.after)===Number(row.r)))if(!isProtected(sheet))html+=addedHtml(sheet,x);
  }
  if(!insertedLive)html+=extraFillingHtml(sheet,liveExtra);
   if(bunBoundary!==null){html+='<tr class="jc-shared-prep-header"><td colspan="7" style="background:#a4c987;font-weight:bold;border:1px solid #222">Toast Button Modifiers/Notes</td><td></td></tr><tr><td style="border:1px solid #222;text-align:center">*</td><td colspan="6" style="border:1px solid #222;height:30px"></td><td></td></tr>';}
- if(!insertedPrep&&prepSteps.length)html+=jcPrepRows(prepSteps,true);
+ if(!insertedPrep&&prepSteps.length)html+='</tbody><tbody class="jc-prep-instruction-body">'+jcPrepRows(prepSteps,true)+'</tbody><tbody>';
  if(bunBoundary!==null&&!prepSteps.length)html+='<tr class="jc-shared-prep-header"><td colspan="7" style="background:#a4c987;font-weight:bold;border:1px solid #222">Prep/Plating Instructions</td><td></td></tr><tr><td style="border:1px solid #222">*</td><td colspan="6" style="border:1px solid #222;height:30px"></td><td></td></tr>';
  html+='</tbody></table>';
  el.innerHTML=html;
@@ -9211,8 +9224,10 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 #jcCoreApp .je-menu-children button{font-size:13px!important;line-height:1.4}
 #jcCoreApp .je-menu-smallhead,#jcCoreApp .je-menu-bottom{font-size:12px!important}
 #jcCoreApp .je-menu-cat>b,#jcCoreApp .je-menu-smallhead span:last-child{font-size:11px!important}
-#jcCoreApp #jeWorkbookGrid .jc-shared-prep-row td{height:auto!important;min-height:30px;padding:7px 6px!important;white-space:normal!important;overflow:visible!important;line-height:1.35!important;vertical-align:middle}
-#jcCoreApp #jeWorkbookGrid .jc-shared-prep-row .jc-wb-value{display:block;white-space:normal!important;overflow:visible!important;overflow-wrap:anywhere}
+#jcCoreApp #jeWorkbookGrid .jc-shared-prep-row td{height:auto!important;min-height:30px;padding:7px 6px!important;white-space:normal!important;overflow:hidden!important;line-height:1.35!important;vertical-align:middle;background:#fff!important;color:#111!important;box-sizing:border-box}
+#jcCoreApp #jeWorkbookGrid .jc-shared-prep-row .jc-wb-value{display:block;width:100%;max-width:100%;white-space:normal!important;overflow:hidden!important;overflow-wrap:anywhere!important;word-break:normal;color:#111!important}
+#jcCoreApp #jeWorkbookGrid .jc-prep-instruction-body{background:#fff!important}
+#jcCoreApp #jeWorkbookGrid .jc-shared-prep-row{background:#fff!important}
 @media print{#jcCoreApp #jeWorkbookGrid .jc-shared-prep-row{break-inside:avoid;page-break-inside:avoid}}
 </style>
 </body></html>
