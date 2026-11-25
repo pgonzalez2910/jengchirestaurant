@@ -7563,9 +7563,21 @@ function cellValue(sheet,row,col){
  return value;
 }
 function normalizeName(s){return String(s||'').toLowerCase().trim().replace(/\s+/g,' ');}
+// Catalog indexes are rebuilt only when the authenticated product catalog is replaced.
+let jcProductIndexSource=null,jcProductNames=new Map(),jcProductLookup=new Map();
+function jcEnsureProductIndex(){
+ if(jcProductIndexSource===A.products)return;
+ jcProductIndexSource=A.products;jcProductNames=new Map();jcProductLookup=new Map();
+ for(const p of A.products){
+  const code=String(p.ct_code||'').trim().toUpperCase(),name=String(p.canonical_name||'').trim();
+  if(!jcProductNames.has(code))jcProductNames.set(code,new Set());
+  if(name)jcProductNames.get(code).add(name);
+  for(const key of [p.ct_code,...(Array.isArray(p.previous_codes)?p.previous_codes:[])])if(!jcProductLookup.has(key))jcProductLookup.set(key,p);
+ }
+}
 function lookupProduct(code){
  if(!code)return null;
- return A.products.find(p=>p.ct_code===code||(Array.isArray(p.previous_codes)&&p.previous_codes.includes(code)))||null;
+ jcEnsureProductIndex();return jcProductLookup.get(code)||null;
 }
 // Display the official catalog label without changing a stored product identifier.
 function canonicalProductLabel(code,name){
@@ -7577,8 +7589,7 @@ function canonicalProductLabel(code,name){
   if(confirmed)code=confirmed;
   else if(['egg yolks','egg white powder','red food dye','almond emulsion','butter powder','citric acid','corn syrup','milk powder','green food dye','purple food dye','ghirardelli chocolate sauce'].includes(normalizeName(name)))return {code:'PENDING-CT #',name,selector:'PENDING-CT # | '+name};
  }
- const matches=A.products.filter(p=>String(p.ct_code||'').trim().toUpperCase()===code.toUpperCase());
- const names=new Set(matches.map(p=>String(p.canonical_name||'').trim()).filter(Boolean));
+ jcEnsureProductIndex();const names=jcProductNames.get(code.toUpperCase())||new Set();
  if(names.size===1)name=[...names][0];
  return {code,name,selector:code&&name?code+' | '+name:name||''};
 }
@@ -7884,7 +7895,7 @@ async function load(){
   for(const [id,old] of A.drafts)if(old.updated_at&&(!incoming.get(id)?.updated_at||old.updated_at>incoming.get(id).updated_at))incoming.set(id,old);
   A.drafts=incoming;
   A.published=new Map((p.data||[]).map(x=>[x.component_id,x]));
-  A.products=prod.data||[];
+  A.products=prod.data||[];jcInvalidateCalculations();
   return true;
  })().finally(()=>{A.loading=null;});
  return A.loading;
@@ -8302,7 +8313,16 @@ function jcPorkDependencyReport(sheet){
  }
  return {group,found:[...found.values()],ambiguous:[...ambiguous.values()]};
 }
+let jcReportLibrary=null,jcReportUser=null,jcReportCache=new Map(),jcCalcRevision=0;
+function jcInvalidateCalculations(){jcCalcRevision++;jcReportCache.clear();}
+function jcReportKey(sheet){return JSON.stringify([sheet.id,sheet.component_id,sheet.file,sheet.variantServing||0,Boolean(sheet.panFriedOption),protectedMain]);}
+function jcEnsureReportCache(){const lib=bridge()?.getLibrary(),uid=user()?.id||null;if(lib!==jcReportLibrary||uid!==jcReportUser){jcReportLibrary=lib;jcReportUser=uid;jcInvalidateCalculations();}}
 function dependencyReport(sheet){
+ jcEnsureReportCache();const key=jcReportKey(sheet);
+ if(jcReportCache.has(key))return jcReportCache.get(key);
+ const result=computeDependencyReport(sheet);jcReportCache.set(key,result);return result;
+}
+function computeDependencyReport(sheet){
  if([jcDumplingSauceId,jcVegetarianSauceId].includes(sheet.component_id)){
   const reg=registry(),group=matchingMasters(sheet),found=new Map();
   const candidates=[...reg.sheets,...reg.sheets.filter(x=>jcSauceSteam.has(x.component_id)).map(jcPanFriedVariant)];
@@ -8317,6 +8337,16 @@ function dependencyReport(sheet){
  if(jcPorkFamilyIds.has(sheet.component_id))return jcPorkDependencyReport(sheet);
  const reg=registry(),group=matchingMasters(sheet),visited=new Set(),found=new Map(),ambiguous=new Map();
  const queue=[...new Map([sheet,...group.matches].map(x=>[x.id,{sheet:x,depth:0}])).values()];
+ // Resolve each parent's ingredient codes at most once per report, not once per graph edge.
+ const facts=new Map();
+ function parentFacts(parent){
+  if(facts.has(parent.id))return facts.get(parent.id);
+  const raw=state(parent),removed=new Set((raw.removed_rows||[]).map(String));
+  const ing=(parent.ingredients||[]).filter(i=>ingredientRow(parent,i.r)&&!removed.has(String(i.r)));
+  const codes=new Set([...ing.map(i=>liveFillingLine(parent,i.r)?.code||productForRow(parent,i.r).code),...(raw.added_rows||[]).map(x=>x.cells?.[3])].map(x=>String(x||'').trim().toUpperCase()));
+  const formulas=(parent.rows||[]).flatMap(r=>(r.c||[]).filter(c=>c.f).map(c=>String(c.f).toLowerCase()));
+  const result={codes,formulas};facts.set(parent.id,result);return result;
+ }
  while(queue.length){
   const {sheet:child,depth}=queue.shift();if(visited.has(child.id))continue;visited.add(child.id);
   const code=reg.codeOf.get(child.id);
@@ -8324,11 +8354,9 @@ function dependencyReport(sheet){
   const valid=new Set([child.id,...peers.matches.map(x=>x.id)]);
   for(const parent of reg.sheets){
    if(parent.id===child.id||parent.component_id===child.component_id)continue;
-   const raw=state(parent);
-   const ing=(parent.ingredients||[]).filter(i=>ingredientRow(parent,i.r)&&!(raw.removed_rows||[]).map(String).includes(String(i.r)));
-   const codes=[...ing.map(i=>liveFillingLine(parent,i.r)?.code||productForRow(parent,i.r).code),...(raw.added_rows||[]).map(x=>x.cells?.[3])];
-   const byCode=!!code&&codes.some(x=>String(x||'').trim().toUpperCase()===code);
-   const refs=parent.file===child.file&&(parent.rows||[]).some(r=>(r.c||[]).some(c=>String(c.f||'').toLowerCase().includes(("'"+String(child.sheet).replace(/'/g,"''")+"'!").toLowerCase())));
+   const {codes,formulas}=parentFacts(parent);
+   const byCode=!!code&&codes.has(code);
+   const refs=parent.file===child.file&&formulas.some(f=>f.includes(("'"+String(child.sheet).replace(/'/g,"''")+"'!").toLowerCase()));
    if(code==='PCSCE-INTERNAL'||code==='WSS-INTERNAL'){
     if(parent.component_id==='e157dad3-c766-5696-be80-0a094c6fb106')continue; // archived portion worksheet
     const direct=jcWontonOrder(parent)&&child.component_id===jcWontonSauceId;
@@ -8363,11 +8391,19 @@ function jcScopeLabel(scope){
  return scope.unknown?'UPDATE SCOPE UNVERIFIED':scope.count?'SHARED MASTER · '+scope.count+' linked worksheet'+(scope.count===1?'':'s'):scope.review?'UPDATE SCOPE REQUIRES REVIEW':'SINGLE RECIPE · no detected downstream links';
 }
 function showDependencyReport(sheet,savedIds=null){
- if(sheet.variantServing)return;
+ if(sheet.variantServing){document.getElementById('jcDependencyReport')?.remove();return;}
  if(A.active!==sheet)return;
  const grid=document.getElementById('jeWorkbookGrid');if(!grid)return;
  let panel=document.getElementById('jcDependencyReport');
  if(!panel){panel=document.createElement('details');panel.id='jcDependencyReport';panel.className='jc-dependency-report';grid.closest('.je-wb-scroll')?.before(panel);}
+ jcEnsureReportCache();const key=jcReportKey(sheet);
+ // A closed report never blocks navigation. Opening it computes the exact same report.
+ if(!panel.open&&!savedIds&&!jcReportCache.has(key)){
+  panel.innerHTML='<summary>Recipe dependencies · '+H(sheet.name)+' · Expand to calculate</summary><div class="jc-dependency-body">Linked worksheets are calculated when this report is opened.</div>';
+  panel.ontoggle=()=>{if(panel.open&&panel.isConnected&&A.active===sheet){try{showDependencyReport(sheet);}catch(e){panel.innerHTML='<summary>Recipe dependencies · calculation requires review</summary><div class="jc-dependency-body">'+H(e.message||e)+'</div>';}}};
+  return;
+ }
+ panel.ontoggle=null;
  const report=dependencyReport(sheet),{group,found,ambiguous}=report;
  const scope=jcUpdateScope(sheet,report),scopeColor=scope.review||scope.unknown?'#9d3b2b':scope.count?'#825512':'#245b90';
  const scopeText=jcScopeLabel(scope)+(scope.review?' · '+scope.review+' require review':'');
@@ -8398,7 +8434,18 @@ async function flushPending(){
  if(flushBatchInput)await flushBatchInput();
  if(pendingSaves.size)await Promise.all([...pendingSaves]);
 }
-async function refreshPorkJelly(){
+let jcMasterRefreshAt=0,jcMasterRefreshUser=null,jcMasterRefreshFlight=null;
+async function refreshPorkJelly(allowRecent=false){
+ if(!user())return;
+ const uid=user().id;
+ if(allowRecent&&jcMasterRefreshUser===uid&&Date.now()-jcMasterRefreshAt<15000)return;
+ if(allowRecent&&jcMasterRefreshFlight?.uid===uid)return jcMasterRefreshFlight.promise;
+ const promise=refreshPorkJellyNow();
+ const entry={uid,promise};jcMasterRefreshFlight=entry;
+ try{const result=await promise;if(user()?.id===uid){jcMasterRefreshUser=uid;jcMasterRefreshAt=Date.now();}return result;}
+ finally{if(jcMasterRefreshFlight===entry)jcMasterRefreshFlight=null;}
+}
+async function refreshPorkJellyNow(){
  if(!user())return;
  const id=approvedMushroomMasters['PK-J-INTERNAL'].master;
  const sauce='85eaebdf-1cc7-5a7e-a041-866805cefdb0',ids=[id,sauce],uid=user().id;
@@ -8407,12 +8454,16 @@ async function refreshPorkJelly(){
   client().from('jc_recipe_workbook_publications').select('component_id,version,cells,added_rows,removed_rows').in('component_id',ids)
  ]);
  if(drafts.error)throw drafts.error;if(published.error)throw published.error;if(user()?.id!==uid)return;
+ let changed=false;
  for(const key of ids){
+  const before=JSON.stringify([A.drafts.get(key),A.published.get(key)]);
   const data=(drafts.data||[]).find(d=>d.component_id===key),p=(published.data||[]).find(d=>d.component_id===key);
   if(p)A.published.set(key,p);else A.published.delete(key);
   if(data){const old=A.drafts.get(key);if(!old?.updated_at||!data.updated_at||data.updated_at>=old.updated_at)A.drafts.set(key,data);}
   else if(!pendingSaves.size)A.drafts.delete(key);
+  if(before!==JSON.stringify([A.drafts.get(key),A.published.get(key)]))changed=true;
  }
+ if(changed)jcInvalidateCalculations();
  return (drafts.data||[]).find(d=>d.component_id===id);
 }
 async function saveNow(sheet,obj){
@@ -8448,6 +8499,7 @@ async function saveNow(sheet,obj){
  const {error}=await client().from('jc_recipe_workbook_drafts').upsert(payloads,{onConflict:'component_id,editor_id'});
  if(error)throw error;
  for(const p of payloads)A.drafts.set(p.component_id,p);
+ jcInvalidateCalculations();
  if(payloads.some(p=>p.component_id===approvedMushroomMasters['PK-J-INTERNAL'].master)){
   const confirmed=await refreshPorkJelly();
   const expected=payloads.find(p=>p.component_id===approvedMushroomMasters['PK-J-INTERNAL'].master);
@@ -9103,9 +9155,10 @@ function workbookContext(r){
  }
  return {...c,sheets,nativeSheetCount:c.sheets.length,active:sheets.find(x=>x.id===state.wbSheet)||c.main};
 }
+let jcRenderedWorkbookContext=null;
 function workbookPage(){
  const r=recipeById(state.selectedId);if(!r)return menuPage();
- const c=workbookContext(r),s=c.active;
+ const c=workbookContext(r),s=c.active; jcRenderedWorkbookContext={recipeId:r.id,sheet:state.wbSheet,context:c};
  const calculated=Boolean(c.main&&s?.id===c.main.id&&r.menu_category!=='Buns'&&(/dumpling|bun|wonton|pot sticker/i.test(r.menu_category||'')||/dumpling/i.test(r.department||''))&&(c.nativeSheetCount??c.sheets.length)>1);
  let html='<section class="je-wb-clean"><div class="je-wb-clean-head"><div><button data-go="menu" class="je-wb-path"><i class="fa-solid fa-arrow-left"></i> Menu</button> <span>/ '+H(r.menu_category||'Recipes')+'</span><p class="je-eyebrow">JENG CHI · ORIGINAL EXCEL RECIPE</p><h1>'+H(r.name)+'</h1><p>'+H((secretLink(r)?'3 pieces per order · Shared master · ':'')+(c.file||'Original Excel source requires verification'))+'</p></div>';
  html+='<div class="je-wb-head-controls"><span class="je-wb-status"><i class="fa-solid fa-file-excel"></i> '+c.sheets.length+' worksheet tab'+(c.sheets.length!==1?'s':'')+'</span><button class="je-button secondary" data-wb-details="1"><i class="fa-solid fa-sliders"></i> Recipe controls</button></div></div>';
@@ -9145,7 +9198,8 @@ function workbookPage(){
 }
 
 function renderWorkbook(){
- const c=workbookContext(recipeById(state.selectedId)),el=$('jeWorkbookGrid');if(!el||!c.active)return;
+ const cached=jcRenderedWorkbookContext; jcRenderedWorkbookContext=null;
+ const c=cached?.recipeId===state.selectedId&&cached.sheet===state.wbSheet?cached.context:workbookContext(recipeById(state.selectedId)),el=$('jeWorkbookGrid');if(!el||!c.active)return;
  if(!user()){el.innerHTML='<div class="je-wb-unmatched">Original worksheet details are restricted to the existing authorized session.</div>';return;}
  const recipe=recipeById(state.selectedId);const protectedId=c.main&&(c.nativeSheetCount??c.sheets.length)>1&&recipe?.menu_category!=='Buns'&&(/dumpling|bun|wonton|pot sticker/i.test(recipe?.menu_category||'')||/dumpling/i.test(recipe?.department||''))?c.main.id:null;
  window.JCRecipeAdvanced?.setProtectedMain?.(protectedId);
@@ -9173,7 +9227,7 @@ function editorGrid(lines,masters){return `<div style="overflow:auto"><table cla
 function editorCards(lines,masters){return lines.map((x,i)=>`<div class="je-edit-row"><div class="je-space"><span class="je-status ${x.type==='subrecipe'?'published':'draft'}">${x.type==='subrecipe'?'Master component':'Ingredient'} ${i+1}</span><button class="je-link" data-remove="${i}" style="color:#a25149">Remove</button></div><div class="je-editor-cardgrid"><div class="je-field"><label>Ingredient name</label>${x.type==='subrecipe'?`<select class="je-input" data-ing="${i}" data-field="master_id"><option value="">Choose a published master</option>${masters.map(m=>`<option value="${m.id}" ${x.master_id===m.id?'selected':''}>${H(m.name)}</option>`).join('')}</select>`:`<input class="je-input" data-ing="${i}" data-field="name" value="${H(x.name||'')}">`}</div><div class="je-field"><label>Qty</label><input class="je-input" data-ing="${i}" data-field="quantity" type="number" step="any" min="0" value="${H(x.quantity??'')}"></div><div class="je-field"><label>US unit</label><input class="je-input" data-ing="${i}" data-field="unit" value="${H(x.unit||'')}"></div><div class="je-field"><label>CT Code</label><input class="je-input" ${x.type==='subrecipe'?'readonly':'data-ing="'+i+'" data-field="ct_code"'} value="${H(x.ct_code||'PENDING')}"></div></div></div>`).join('')||'<div class="je-empty">No ingredient rows. Use Add ingredient or Link master.</div>';}
 function validationChecks(c){const a=c.ingredients||[];return [[a.length>0,'At least one ingredient line'],[Number(c.yield?.quantity)>0,'Positive master batch yield'],[!!String(c.yield?.unit||'').trim(),'Yield has a specified measurement unit'],[a.every(x=>Number(x.quantity)>0&&!!String(x.unit||'').trim()),'Every quantity and unit is valid'],[a.every(x=>x.type==='subrecipe'?!!x.master_id:!!String(x.name||'').trim()),'All ingredient and master references resolved'],[c.recipe_kind!=='unclassified','Recipe classification confirmed']];}
 function go(view){state.view=view;state.menu=false;if(view!=='archive')document.body.classList.remove('je-excel');if(view!=='editor')state.content=null;render();window.scrollTo({top:0,behavior:'instant'});}
-async function selectRecipe(id,tab){try{await window.JCRecipeAdvanced?.refreshPorkJelly?.();}catch(e){toast('Unable to verify shared master: '+(e.message||e),true);return;}state.selectedId=id;state.detailTab=tab||'ingredients';state.wbSheet=null;state.wbQuery='';state.history=[];state.view='workbook';state.content=null;render();}
+async function selectRecipe(id,tab){try{await window.JCRecipeAdvanced?.refreshPorkJelly?.(true);}catch(e){toast('Unable to verify shared master: '+(e.message||e),true);return;}state.selectedId=id;state.detailTab=tab||'ingredients';state.wbSheet=null;state.wbQuery='';state.history=[];state.view='workbook';state.content=null;render();}
 async function loadHistory(){const r=recipeById(state.selectedId);if(!r)return;state.historyLoading=true;render();const {data,error}=await client().from('jc_recipe_core_versions').select('version,published_at,approved_by').eq('recipe_id',r.id).order('version',{ascending:false}).limit(40);state.historyLoading=false;state.history=data||[];if(error)toast(error.message,true);render();}
 async function openEditor(){const r=recipeById(state.selectedId);if(!r||!writable())return;const d=draftFor(r.id);state.content=structuredClone(d||r.published_data|| (sourceSheet(r)?sourceDraft(r,sourceSheet(r)):{name:r.name,recipe_kind:r.recipe_kind==='unclassified'?'finished':r.recipe_kind,yield:{quantity:'',unit:''},ingredients:[]}));state.content.recipe_kind=state.content.recipe_kind||'finished';state.originalContent=structuredClone(state.content);state.view='editor';state.dirty=false;state.productionQty='';render();}
 function setDirty(){state.dirty=true;const status=$('jeSaveStatus');if(status)status.innerHTML='<i class="fa-solid fa-rotate fa-spin"></i> Saving draft…';clearTimeout(state.saveTimer);state.saveTimer=setTimeout(()=>saveDraft(false),900);}
@@ -9187,7 +9241,7 @@ function previewScaling(){const c=state.content,base=Number(c?.yield?.quantity),
 function downloadRegister(){const dep=state.reportDep,records=cache.recipes.filter(r=>dep==='ALL'||r.department===dep),cols=['Recipe','Department','Type','Status','Version','Original Workbook'],quote=s=>'"'+String(s??'').replace(/"/g,'""')+'"',csv=[cols,...records.map(r=>[r.name,r.department,r.recipe_kind,statusOf(r),r.published_version,sourceSheet(r)?.file||''])].map(row=>row.map(quote).join(',')).join('\r\n');const blob=new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`Jeng_Chi_Recipe_Register_${dep.replace(' ','_')}_2027.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function preserveFocusAndRender(e){const target=e?.target,selector=target?.id||null,start=target?.selectionStart;render();if(selector){const next=$(selector);if(next){next.focus();try{if(Number.isInteger(start))next.setSelectionRange(start,start)}catch(_){}}}}
 root.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;
-const ds=b.dataset;if(state.view==='workbook'&&(ds.wbSheet||ds.wbMain||ds.wMainPick||ds.open||ds.go||ds.menu||ds.menuCat||ds.department||ds.wbDetails||ds.wbScale||ds.wbPublish)){try{await window.JCRecipeAdvanced?.flushPending?.();await window.JCRecipeAdvanced?.refreshPorkJelly?.();}catch(e){toast('Save required before leaving: '+(e.message||e),true);return;}}
+const ds=b.dataset;if(state.view==='workbook'&&(ds.wbSheet||ds.wbMain||ds.wMainPick||ds.open||ds.go||ds.menu||ds.menuCat||ds.department||ds.wbDetails||ds.wbScale||ds.wbPublish)){try{await window.JCRecipeAdvanced?.flushPending?.();await window.JCRecipeAdvanced?.refreshPorkJelly?.(!(ds.wbScale||ds.wbPublish));}catch(e){toast('Save required before leaving: '+(e.message||e),true);return;}}
 if(ds.menu){state.menu=!state.menu;render();return;}
 if(ds.go){go(ds.go);return;}
 if(ds.menuCat){state.menuCategory=ds.menuCat;state.menuSearch='';state.menu=false;go('menu');return;}
