@@ -7570,9 +7570,10 @@ function jcEnsureProductIndex(){
  jcProductIndexSource=A.products;jcProductNames=new Map();jcProductLookup=new Map();
  for(const p of A.products){
   const code=String(p.ct_code||'').trim().toUpperCase(),name=String(p.canonical_name||'').trim();
+  if(!code||/^(?:0|-|PENDING|PENDING-CT #|ADD TO MASTER|N\/A|TBD)$/i.test(code))continue;
   if(!jcProductNames.has(code))jcProductNames.set(code,new Set());
   if(name)jcProductNames.get(code).add(name);
-  for(const key of [p.ct_code,...(Array.isArray(p.previous_codes)?p.previous_codes:[])])if(!jcProductLookup.has(key))jcProductLookup.set(key,p);
+  for(const key of [p.ct_code,...(Array.isArray(p.previous_codes)?p.previous_codes:[])])if(String(key||'').trim()&&!/^(?:0|-|PENDING|PENDING-CT #|ADD TO MASTER|N\/A|TBD)$/i.test(String(key).trim())&&!jcProductLookup.has(key))jcProductLookup.set(key,p);
  }
 }
 function lookupProduct(code){
@@ -7587,8 +7588,11 @@ function canonicalProductLabel(code,name){
  if(pendingCode){
   const confirmed={'whipped topping':'P6967','dried shrimp':'P4608','seafood shrimp dried':'P4608','shanghai style wonton wrapper - small':'P7073','shanghai style wonton wrapper - large':'P7037','wrapper wonton shangai small':'P7073','wrapper wonton shangai large':'P7037'}[normalizeName(name)];
   if(confirmed)code=confirmed;
+  else if(normalizeName(name)==='chinese sausage pork')return {code:'PENDING-CT #',name,selector:'PENDING-CT # | '+name};
   else if(['egg yolks','egg white powder','red food dye','almond emulsion','butter powder','citric acid','corn syrup','milk powder','green food dye','purple food dye','ghirardelli chocolate sauce'].includes(normalizeName(name)))return {code:'PENDING-CT #',name,selector:'PENDING-CT # | '+name};
  }
+ if(pendingCode&&!name&&!code)return {code:'',name:'',selector:''};
+ if(pendingCode&&/^(?:|0|-|PENDING|PENDING-CT #|ADD TO MASTER|N\/A|TBD)$/i.test(code))return {code,name,selector:code&&name?code+' | '+name:name||''};
  jcEnsureProductIndex();const names=jcProductNames.get(code.toUpperCase())||new Set();
  if(names.size===1)name=[...names][0];
  return {code,name,selector:code&&name?code+' | '+name:name||''};
@@ -7939,10 +7943,19 @@ function jcCompactPlan(sheet,items,boundary){
  const ingredients=new Map((sheet.ingredients||[]).map(i=>[Number(i.r),i])),addedByRow=new Map(),added=items.added_rows||[];
  for(const item of added){const after=Number(item.after);if(!addedByRow.has(after))addedByRow.set(after,[]);addedByRow.get(after).push(item);}
  for(const m of sheet.merges||[]){const [c0,r0,c1,r1]=m.map(Number);if(r1<=r0||c0>=5&&c1<=6&&ingredientRow(sheet,r0))continue;for(let r=r0;r<=r1;r++)locked.add(r);}
- let inNotes=false;
+ let inNotes=false,legacyNavigation=false;
  for(const row of rows){
   const n=Number(row.r),cells=row.c||[],isIng=ingredientRow(sheet,n)&&(jcWontonOrder(sheet)||n<noteAt);
   if(n>=noteAt&&!jcWontonOrder(sheet))inNotes=true;
+  if(!isIng){
+   const navHeader=cells.some(c=>/^\s*(?:Linked\s+(?:Recipes|Sub-Recipes|Portions)(?:\s*\/\s*(?:Sub-Recipes|Recipe Reference))?|Used In\s*\/\s*Return To|Recipe Reference)(?:\s*[—–-]\s*Return To)?\s*$/i.test(String(c.v??'')));
+   if(navHeader){legacyNavigation=true;continue;}
+   if(legacyNavigation){
+    if(cells.some(c=>noteHeaderText(c.v)||separatePanel(c.v)&&!/^\s*(?:Return to|Open\s+)/i.test(String(c.v??''))))legacyNavigation=false;
+    else continue;
+   }
+   if(cells.some(c=>/^\s*=HYPERLINK\s*\(/i.test(String(c.f||'')))&&cells.every(c=>!jcCompactMeaningful(c.v)||/^\s*=HYPERLINK\s*\(/i.test(String(c.f||''))))continue;
+  }
   if(!isIng&&cells.some(c=>/^\s*Return\s+to(?:\s|$)/i.test(String(c.v??''))))continue;
   if(!isIng){
    if(cells.some(c=>noteHeaderText(c.v))){inNotes=true;visible.add(n);continue;}
@@ -8099,7 +8112,9 @@ function preparedSource(sheet,code){
  const localPork=key==='PCMAR-INTERNAL'?jcPorkChopIds.mar:key==='PCBREAD-INTERNAL'?jcPorkChopIds.bread:key==='PORKLOINTRIM-INTERNAL'?jcPorkChopIds.trim:
  key==='PCPREP-INTERNAL'?(sheet.component_id===jcPorkChopIds.main?jcPorkChopIds.prep:sheet.component_id==='e43778ca-93cc-51e5-9a46-b4f8fba0f498'?jcLegacyChopPrepIds[0]:sheet.component_id==='a36d5a90-159b-5a83-8f98-a88b9420e669'?jcLegacyChopPrepIds[1]:null):null;
  if(localPork)return allPorkSheets.find(s=>s.component_id===localPork&&s.component_id!==sheet.component_id)||null;
- const explicit={'DPS-INTERNAL':'d6c4a891-74e6-4892-bd16-8d4f20709a01','VGSC-INTERNAL':'007898ac-ab10-5efe-9e51-f02c25912de2',...(sheet.component_id===jcDumplingSauceId?{'COIL-INTERNAL':'23673891-8243-5e91-a672-c1003757fd0c'}:{}),'BK03-04-INTERNAL':'448d61c5-ee23-5a00-baae-91eeaa181294','SP-SCS-INTERNAL':'d3728c78-83bb-4c96-b9b0-ea2b33464100','CAB10-INTERNAL':'45995ac6-b065-5458-8849-e20525f2c464','BGC-PREP-INTERNAL':'f7b22836-5ff2-539a-b11e-c803b77bfd1f','PCSCE-INTERNAL':'85eaebdf-1cc7-5a7e-a041-866805cefdb0','WSS-INTERNAL':'f43c917a-5d6b-4f8e-9f42-3c5e6d1b7208','SPW-INTERNAL':'151bd190-98cf-59a4-84b4-79d423b3e51a'}[key];
+ const coldChili=['8dd3294f-f45b-5967-83be-965af5a75f1d','4d79b8f3-d67f-5fef-8fb5-3cd5c60efca2','1f650dd3-93f3-5994-9522-b51f46b87f8f','fe798696-7e4d-52af-a8ea-3fb51fea892b'].includes(sheet.component_id);
+ if(key==='COIL-INTERNAL'&&coldChili)return allPorkSheets.find(s=>s.component_id===jcFourQuartChiliId)||null;
+ const explicit={'TWICEBELLY-INTERNAL':'b9b5f40e-012c-5dee-9952-cdd9cb8aca5f','DPS-INTERNAL':'d6c4a891-74e6-4892-bd16-8d4f20709a01','VGSC-INTERNAL':'007898ac-ab10-5efe-9e51-f02c25912de2',...(sheet.component_id===jcDumplingSauceId?{'COIL-INTERNAL':'23673891-8243-5e91-a672-c1003757fd0c'}:{}),'BK03-04-INTERNAL':'448d61c5-ee23-5a00-baae-91eeaa181294','SP-SCS-INTERNAL':'d3728c78-83bb-4c96-b9b0-ea2b33464100','CAB10-INTERNAL':'45995ac6-b065-5458-8849-e20525f2c464','BGC-PREP-INTERNAL':'f7b22836-5ff2-539a-b11e-c803b77bfd1f','PCSCE-INTERNAL':'85eaebdf-1cc7-5a7e-a041-866805cefdb0','WSS-INTERNAL':'f43c917a-5d6b-4f8e-9f42-3c5e6d1b7208','SPW-INTERNAL':'151bd190-98cf-59a4-84b4-79d423b3e51a'}[key];
  if(explicit)return (bridge()?.getLibrary()?.sheets||[]).find(s=>s.component_id===explicit&&s.component_id!==sheet.component_id)||null;
  const reg=registry(),all=(reg.byCode.get(key)||[]).filter(x=>x.component_id!==sheet.component_id);
  // The lobster worksheet contains purple sweet potato powder but the menu row still says white dough. Do not allocate the unrelated white master automatically.
@@ -8122,6 +8137,7 @@ function masterYieldLabel(sheet,row){
  return 'Master: '+fmt(y.q)+' '+y.unit+(p.code==='PK-J-INTERNAL'?' · yield-linked':'')+(A.drafts.has(master)?' · draft':' · published/source');
 }
 function measuredYield(sheet){
+ if(sheet.component_id==='b9b5f40e-012c-5dee-9952-cdd9cb8aca5f'){const n=yieldValue(sheet);return n>0?{q:n,unit:'lb',estimated:true}:null;}
  if([jcFourQuartChiliId,jcDumplingSauceId,jcVegetarianSauceId].includes(sheet.component_id)){
   const actualRaw=String(cellValue(sheet,6,6)??'').trim(),actualMatch=actualRaw.match(/^(\d+(?:\.\d+)?)\s*(?:qt|qtt|qts)?$/i);
   const actual=actualMatch?Number(actualMatch[1]):0;
@@ -8319,6 +8335,8 @@ function registry(){
  if(s.component_id==='d3728c78-83bb-4c96-b9b0-ea2b33464100'){codes.clear();codes.add('SP-SCS-INTERNAL');}
  if(s.component_id==='85eaebdf-1cc7-5a7e-a041-866805cefdb0'){codes.clear();codes.add('PCSCE-INTERNAL');}
  if(s.component_id===jcWontonSauceId){codes.clear();codes.add('WSS-INTERNAL');}
+ if(s.component_id==='b9b5f40e-012c-5dee-9952-cdd9cb8aca5f'){codes.clear();codes.add('TWICEBELLY-INTERNAL');}
+ if(s.component_id===jcFourQuartChiliId){codes.clear();codes.add('COIL-INTERNAL');}
  if(s.component_id===jcDumplingSauceId){codes.clear();codes.add('DPS-INTERNAL');}
  if(s.component_id===jcVegetarianSauceId){codes.clear();codes.add('VGSC-INTERNAL');}
  if(s.component_id==='151bd190-98cf-59a4-84b4-79d423b3e51a'){codes.clear();codes.add('SPW-INTERNAL');}
@@ -8350,6 +8368,8 @@ function matchingMasters(sheet){
  const approved=mushroomMaster(sheet);if(approved)return {code,conflicts:group.filter(x=>!approved.ids.includes(x.component_id)),matches:group.filter(x=>approved.ids.includes(x.component_id))};
  // Pork chop prep variants intentionally keep their own meat weights and serving specifications.
  if(code==='PCPREP-INTERNAL'&&jcPorkFamilyIds.has(sheet.component_id))return {code,conflicts:[],matches:group.filter(s=>s.component_id===sheet.component_id)};
+ // Hard-boiled egg batch sizes are intentionally independent production standards.
+ if(code==='HBE-INTERNAL')return {code,conflicts:[],matches:group.filter(s=>s.component_id===sheet.component_id)};
  const sig=signature(sheet);
  const conflicts=group.filter(s=>s.component_id!==sheet.component_id&&(!sig||signature(s)!==sig));
  const matches=group.filter(s=>s.component_id===sheet.component_id||(sig&&signature(s)===sig));
@@ -8417,7 +8437,7 @@ function computeDependencyReport(sheet){
   const raw=state(parent),removed=new Set((raw.removed_rows||[]).map(String));
   const ing=(parent.ingredients||[]).filter(i=>ingredientRow(parent,i.r)&&!removed.has(String(i.r)));
   const codes=new Set([...ing.map(i=>liveFillingLine(parent,i.r)?.code||productForRow(parent,i.r).code),...(raw.added_rows||[]).map(x=>x.cells?.[3])].map(x=>String(x||'').trim().toUpperCase()));
-  const formulas=(parent.rows||[]).flatMap(r=>(r.c||[]).filter(c=>c.f).map(c=>String(c.f).toLowerCase()));
+  const formulas=(parent.rows||[]).flatMap(r=>(r.c||[]).filter(c=>c.f&&!/^\s*=HYPERLINK\s*\(/i.test(String(c.f))).map(c=>String(c.f).toLowerCase()));
   const result={codes,formulas};facts.set(parent.id,result);return result;
  }
  while(queue.length){
@@ -8440,6 +8460,7 @@ function computeDependencyReport(sheet){
     if(!visited.has(parent.id))queue.push({sheet:parent,depth:depth+1});continue;
    }
    if(!byCode&&!refs)continue;
+   if(code==='HBE-INTERNAL'&&!refs){const source=preparedSource(parent,code);if(!source||!valid.has(source.id))continue;}
    if(!refs&&byCode){
     const local=(reg.byFile.get(parent.file)||[]).filter(x=>x.id!==parent.id&&reg.codeOf.get(x.id)===code);
     if(local.length){if(local.every(x=>!valid.has(x.id)))continue;if(local.some(x=>!valid.has(x.id))){ambiguous.set(parent.id,parent);continue;}}
@@ -8593,7 +8614,7 @@ function unitFor(sheet,row){return String(cellValue(sheet,row,1)||'').trim();}
 function groupConvert(q,from,to,name){
  from=String(from||'').toLowerCase().trim();to=String(to||'').toLowerCase().trim();
  if(from===to)return {quantity:q,estimated:false};
- const mass={oz:1,lb:16},vol={'fl oz':1,tsp:1/6,tbsp:.5,cup:8,pt:16,qt:32,gal:128,l:33.814022701842996};
+ const mass={oz:1,lb:16},vol={'fl oz':1,tsp:1/6,tbsp:.5,cup:8,cups:8,pt:16,qt:32,gal:128,l:33.814022701842996};
  const pieces={each:1,piece:1,pieces:1,pc:1,pcs:1,count:1,portion:1,portions:1,dozen:12};
  for(var table of [mass,vol,pieces]){
   if(from in table&&to in table)return {quantity:q*table[from]/table[to],estimated:false};
@@ -8932,7 +8953,7 @@ window.JCRecipeAdvanced={
  setProtectedMain:id=>{protectedMain=id||null;},
  setMainDish:id=>{activeMainDish=id||null;},
  load,render,addRow,searchIngredient,linkedMasterTabs,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,flushPending,formatNumber:fmt,
- build:'20261125-compact20',refreshPorkJelly,
+ build:'20261125-compact21',refreshPorkJelly,
  get selectedRow(){return A.selectedRow},
  get active(){return A.active},
  get productCount(){return A.products.length},
@@ -9239,7 +9260,7 @@ function workbookPage(){
  html+='<div class="je-wb-clean-workspace"><div class="je-wb-tabs" role="tablist" aria-label="Recipe and supporting sub-recipe Excel tabs">';
  const ordered=[...(c.main?[c.main]:[]),...c.sheets.filter(x=>x.id!==c.main?.id)];
  ordered.forEach((x,index)=>{const main=x.id===c.main?.id;html+='<button role="tab" aria-selected="'+(x.id===s?.id)+'" class="je-tab-recipe '+(main?'je-tab-main':'je-tab-sub je-tab-palette-'+(index%5))+' '+(x.id===s?.id?'active':'')+'" data-wb-sheet="'+H(x.id)+'" title="'+H(main?'Main finished dish':'Supporting sub-recipe')+'"><i class="fa-solid '+(main?'fa-crown':'fa-link')+'"></i> '+H(x.component_id==='45995ac6-b065-5458-8849-e20525f2c464'?'Boiled Cabbage Prep 10-6':x.component_id==='f7b22836-5ff2-539a-b11e-c803b77bfd1f'?'Boiled Cabbage Prep 40-25':x.component_id==='a6e61cec-1b57-5137-a314-53899033bc59'?'Wonton in Spicy Sauce — 8 PCS':x.component_id==='151bd190-98cf-59a4-84b4-79d423b3e51a'?'Wonton Production Batch':/^Boiled Napa Prep\b/i.test(x.sheet)?'Boiled Napa Prep':x.component_id==='7ac0962c-6b81-5f67-a1ba-a895ed7db52c'?'Hot Pot Sticker Filling':x.sheet)+(main?'<span class="je-tab-main-label">MAIN DISH</span>':'')+'</button>';});
- html+='</div><div class="je-wb-clean-toolbar"><div><strong>'+H(r.name)+'</strong> <span style="font-size:10px;color:#64748b;margin-left:6px" title="Compact worksheet renderer · three spare ingredient rows">COMPACT 20</span></div><div class="je-wb-toolbar-actions"><button type="button" class="je-button secondary" data-go="menu" aria-label="Return to restaurant menu" title="Restaurant menu"><i class="fa-solid fa-house"></i></button><button type="button" class="je-button secondary" data-wb-details="1" title="Recipe controls" aria-label="Recipe controls"><i class="fa-solid fa-sliders"></i></button><span id="jeWorkbookSave" class="jc-autosave ready" role="status" aria-live="polite"><i class="fa-solid fa-cloud"></i> '+(writable()?'Auto-save ready':'Read-only worksheet')+'</span><button class="je-button secondary" data-wb-main="1" title="Main recipe" aria-label="Main recipe"><i class="fa-solid fa-crown"></i></button></div></div>';
+ html+='</div><div class="je-wb-clean-toolbar"><div><strong>'+H(r.name)+'</strong> <span style="font-size:10px;color:#64748b;margin-left:6px" title="Compact worksheet renderer · three spare ingredient rows">COMPACT 21</span></div><div class="je-wb-toolbar-actions"><button type="button" class="je-button secondary" data-go="menu" aria-label="Return to restaurant menu" title="Restaurant menu"><i class="fa-solid fa-house"></i></button><button type="button" class="je-button secondary" data-wb-details="1" title="Recipe controls" aria-label="Recipe controls"><i class="fa-solid fa-sliders"></i></button><span id="jeWorkbookSave" class="jc-autosave ready" role="status" aria-live="polite"><i class="fa-solid fa-cloud"></i> '+(writable()?'Auto-save ready':'Read-only worksheet')+'</span><button class="je-button secondary" data-wb-main="1" title="Main recipe" aria-label="Main recipe"><i class="fa-solid fa-crown"></i></button></div></div>';
  
  html+='<div class="je-wb-actionbar"><div class="je-wb-action-left">';
  if(writable()&&r.id!=='cb3dc74e-d5d2-422c-9f36-37ca58fd4d0d'&&!secretLink(r)&&s&&s.file===c.file&&!s.menuPackage&&!c.main?.menuPackage&&c.sheets.length>1&&s.id!==c.main?.id)html+='<button class="je-button gold" data-w-main-pick="'+H(s.id)+'"><i class="fa-solid fa-crown"></i> Set as Main Dish</button>';
@@ -9277,7 +9298,7 @@ function renderWorkbook(){
  const recipe=recipeById(state.selectedId);const protectedId=c.main&&(c.nativeSheetCount??c.sheets.length)>1&&recipe?.menu_category!=='Buns'&&(/dumpling|bun|wonton|pot sticker/i.test(recipe?.menu_category||'')||/dumpling/i.test(recipe?.department||''))?c.main.id:null;
  window.JCRecipeAdvanced?.setProtectedMain?.(protectedId);
  window.JCRecipeAdvanced?.setMainDish?.(c.main?.id);
- if(window.JCRecipeAdvanced?.build!=='20261125-compact20'){el.textContent='Dynamic recipe engine unavailable. Reload this page before editing; archived values are not shown as current calculations.';return;}
+ if(window.JCRecipeAdvanced?.build!=='20261125-compact21'){el.textContent='Dynamic recipe engine unavailable. Reload this page before editing; archived values are not shown as current calculations.';return;}
  try{
   const loaded=window.JCRecipeAdvanced.render(c.active,'jeWorkbookGrid');
   if(!loaded)throw Error('Worksheet renderer returned no content');
