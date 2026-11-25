@@ -7715,6 +7715,14 @@ function rendered(sheet,row,col,cell){
  if(Number(row)<ingredientBounds(sheet).start&&typeof v==='string'&&/^\d+(?:\.0+)?\s*(?:pieces?|pcs?|each|orders?|dumplings?|buns?|eggs?)$/i.test(v))v=jcYieldDisplay(sheet,v);
  return v??'';
 }
+async function loadProductCatalog(c){
+ const all=[];
+ for(let offset=0;;offset+=500){
+  const res=await c.from('jc_recipe_core_products').select('id,ct_code,canonical_name,code_status,previous_codes').order('canonical_name').order('id').range(offset,offset+499);
+  if(res.error)throw res.error;const rows=res.data||[];all.push(...rows);if(rows.length<500)break;
+ }
+ return {data:all,error:null};
+}
 async function load(){
  if(!user())return false;
  if(A.loading)return A.loading;
@@ -7723,7 +7731,7 @@ async function load(){
   const [d,p,prod]=await Promise.all([
    c.from('jc_recipe_workbook_drafts').select('component_id,cells,added_rows,removed_rows,editor_id,updated_at').eq('editor_id',uid),
    c.from('jc_recipe_workbook_publications').select('component_id,version,cells,added_rows,removed_rows'),
-   c.from('jc_recipe_core_products').select('id,ct_code,canonical_name,code_status,previous_codes').order('canonical_name').limit(1500)
+   loadProductCatalog(c)
   ]);
   if(d.error)throw d.error;if(p.error)throw p.error;if(prod.error)throw prod.error;
   const incoming=new Map((d.data||[]).map(x=>[x.component_id,x]));
@@ -8331,6 +8339,57 @@ function print(){
  window.addEventListener('afterprint',()=>document.body.classList.remove('je-print-workbook'),{once:true});
  window.print();
 }
+function searchIngredient(sheet,row,old='',adding=false){
+ if(!canEdit()||sheet.variantServing||isProtected(sheet)||jcBunOrder(sheet)||(!adding&&fillingReference(sheet,row)))throw Error('Edit the supporting master recipe to keep linked order quantities synchronized.');
+ const existing=document.getElementById('jcIngredientPicker');if(existing)existing.close();
+ const dialog=document.createElement('dialog');dialog.id='jcIngredientPicker';
+ dialog.style.cssText='width:min(620px,92vw);max-height:85vh;border:1px solid #cbd8d3;border-radius:12px;padding:22px;color:#18352d;background:white;box-shadow:0 18px 60px #0004;font:14px Arial,sans-serif';
+ const node=(tag,text)=>{const n=document.createElement(tag);if(text)n.textContent=text;return n;};
+ const heading=node('h2',adding?'Add ingredient':'Search ingredients');heading.style.margin='0 0 8px';
+ const help=node('p',old?'Current: '+old:'Search the central product catalog by code or ingredient name.');help.style.color='#54665e';
+ const input=node('input');input.type='search';input.placeholder='Search name or CT code…';input.setAttribute('aria-label','Search ingredients');input.style.cssText='width:100%;padding:12px;border:1px solid #9cb8aa;border-radius:6px;box-sizing:border-box';
+ const count=node('p');count.setAttribute('aria-live','polite');
+ const results=node('div');results.style.cssText='max-height:290px;overflow:auto;border:1px solid #dce5df;border-radius:6px';
+ const selected=node('p','No product selected');selected.style.fontWeight='bold';
+ const qty=node('input');qty.type='number';qty.min='0';qty.step='any';qty.placeholder='Quantity';qty.setAttribute('aria-label','Ingredient quantity');
+ const unit=node('select');unit.setAttribute('aria-label','Ingredient unit');for(const u of UNITS){const o=node('option',u);o.value=u;unit.append(o);}
+ const fields=node('div');fields.style.cssText='display:flex;gap:10px;align-items:center;margin:12px 0';fields.append(node('span','Quantity / unit'),qty,unit);
+ const error=node('p');error.style.color='#a33131';error.setAttribute('role','alert');
+ const actions=node('div');actions.style.cssText='display:flex;justify-content:flex-end;gap:10px;margin-top:12px';
+ const cancel=node('button','Cancel');cancel.type='button';cancel.className='je-button secondary';
+ const apply=node('button',adding?'Add ingredient':'Apply selection');apply.type='button';apply.className='je-button gold';apply.disabled=true;
+ let choice=null,busy=false;
+ const products=[...new Map(A.products.filter(p=>p.ct_code&&p.canonical_name).map(p=>[p.ct_code+' | '+p.canonical_name,p])).entries()];
+ const norm=v=>String(v||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+ function draw(){
+  const words=norm(input.value).split(/\s+/).filter(Boolean);
+  const matches=products.filter(([label,p])=>words.every(w=>norm(label+' '+(p.previous_codes||[]).join(' ')).includes(w)));
+  count.textContent=matches.length+' matching products'+(matches.length>100?' · showing first 100; refine your search':'');
+  results.replaceChildren();
+  if(!matches.length)results.append(node('p','No matching registered product. Check the spelling or request registration in the central catalog.'));
+  for(const [label] of matches.slice(0,100)){
+   const b=node('button',label);b.type='button';b.style.cssText='display:block;width:100%;text-align:left;padding:10px 12px;background:'+(choice===label?'#dcefe4':'white')+';border:0;border-bottom:1px solid #e5ebe7;cursor:pointer';
+   b.setAttribute('aria-pressed',String(choice===label));b.addEventListener('click',()=>{choice=label;selected.textContent='Selected: '+label;apply.disabled=false;draw();});results.append(b);
+  }
+ }
+ input.addEventListener('input',()=>{choice=null;selected.textContent='No product selected';apply.disabled=true;draw();});
+ input.addEventListener('keydown',e=>{if(e.key==='Enter')e.preventDefault();});
+ cancel.addEventListener('click',()=>{if(!busy)dialog.close();});
+ dialog.addEventListener('cancel',e=>{if(busy)e.preventDefault();});
+ dialog.addEventListener('close',()=>dialog.remove(),{once:true});
+ apply.addEventListener('click',async()=>{
+  if(!choice||busy)return;
+  if(A.active?.id!==sheet.id||!canEdit()){error.textContent='Worksheet changed; reopen the ingredient search.';return;}
+  if(adding&&(qty.value.trim()===''||!Number.isFinite(Number(qty.value))||Number(qty.value)<=0)){error.textContent='Enter a positive quantity.';qty.focus();return;}
+  busy=true;apply.disabled=true;cancel.disabled=true;error.textContent='';
+  try{
+   if(adding){const [code,...names]=choice.split(' | '),name=names.join(' | ');const obj=currentDraft(sheet);const max=Math.max(7,...(sheet.ingredients||[]).filter(x=>!jcBunSheet(sheet)||ingredientRow(sheet,x.r)).map(x=>Number(x.r)||7));obj.added_rows.push({id:'new-'+Date.now()+'-'+Math.random().toString(36).slice(2,9),after:max,cells:{0:Number(qty.value)/preparedQuantityFactor(code),1:unit.value,2:name,3:code,4:'',5:'',6:'',7:choice}});await save(sheet,obj);}
+   else if(choice!==old)await setCell(sheet,row,7,choice);
+   dialog.close();if(A.active?.id===sheet.id)render(sheet,'jeWorkbookGrid');
+  }catch(e){error.textContent=e.message||String(e);busy=false;apply.disabled=false;cancel.disabled=false;}
+ });
+ actions.append(cancel,apply);dialog.append(heading,help,input,count,results,selected);if(adding)dialog.append(fields);dialog.append(error,actions);document.body.append(dialog);draw();dialog.showModal();input.focus();
+}
 function editCell(td){
  if(!canEdit()||!td.classList.contains('jc-wb-editable')||td.querySelector('input,select,textarea'))return;
  const sheet=A.active;if(!sheet)return;
@@ -8338,11 +8397,7 @@ function editCell(td){
  let old=String(col===7&&!String(row).startsWith('new-')?productForRow(sheet,row).selector:row.toString().startsWith('new-')?(state(sheet).added_rows||[]).find(x=>x.id===row)?.cells?.[col]||'':cellValue(sheet,row,col));
  if(col===0&&ingredientRow(sheet,row)&&old!==''){const code=String(row).startsWith('new-')?(state(sheet).added_rows||[]).find(x=>x.id===row)?.cells?.[3]:productForRow(sheet,row).code;old=String(linkedPreparedQuantity(old,code));}
  var control;
- if(col===7&&ingredientRow(sheet,row)){
-  control=document.createElement('select');
-  const sourceCode=String(original(sheet,row,3)||''),sourceName=String(original(sheet,row,2)||''); const sourceChoice=sourceCode&&sourceName?sourceCode+' | '+sourceName:'';
-  const values=[...new Set(['',old,sourceChoice,...A.products.map(p=>p.ct_code+' | '+p.canonical_name)])];
-  values.forEach(v=>{const opt=document.createElement('option');opt.value=v;opt.textContent=v||'Select a product…';if(v===sourceChoice&&v!==old)opt.textContent+=' (Original recipe)';if(!v)opt.disabled=true;control.appendChild(opt)});control.value=old;
+ if(col===7&&ingredientRow(sheet,row)){searchIngredient(sheet,row,old);return;
  }else if(col===1&&ingredientRow(sheet,row)){
   control=document.createElement('select');
   UNITS.forEach(u=>{const opt=document.createElement('option');opt.value=u;opt.textContent=u;control.appendChild(opt)});
@@ -8403,7 +8458,7 @@ document.addEventListener('keydown',async e=>{
 window.JCRecipeAdvanced={
  setProtectedMain:id=>{protectedMain=id||null;},
  setMainDish:id=>{activeMainDish=id||null;},
- load,render,addRow,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,flushPending,
+ load,render,addRow,searchIngredient,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,flushPending,
  build:'20261124-breakdown19',refreshPorkJelly,
  get selectedRow(){return A.selectedRow},
  get active(){return A.active},
@@ -8679,7 +8734,7 @@ function workbookPage(){
  if(writable()&&!secretLink(r)&&s&&c.sheets.length>1&&s.id!==c.main?.id)html+='<button class="je-button gold" data-w-main-pick="'+H(s.id)+'"><i class="fa-solid fa-crown"></i> Set as Main Dish</button>';
  if(writable()&&!s?.variantServing){
  if(!calculated){
- html+='<button class="je-button secondary" data-wb-add="1"><i class="fa-solid fa-plus"></i> Add ingredient row</button>';
+ html+='<button class="je-button secondary" data-wb-add="1"><i class="fa-solid fa-plus"></i> Add ingredient / Search</button>';
  html+='<button class="je-button secondary" data-wb-remove="1"><i class="fa-solid fa-minus"></i> Remove selected row</button>';
  html+='<button class="je-button secondary" data-wb-undo="1"><i class="fa-solid fa-rotate-left"></i> Restore rows</button>';
  }
@@ -8760,7 +8815,7 @@ const adv=window.JCRecipeAdvanced;const currentSheet=()=>workbookContext(recipeB
 if(ds.wbAdd||ds.wbRemove||ds.wbUndo||ds.wbScale||ds.wbCode||ds.wbPublish||ds.wbPrint){
  try{
  if(!adv)throw Error('Worksheet tools have not loaded. Refresh the page.');
- if(ds.wbAdd)await adv.addRow(currentSheet());
+ if(ds.wbAdd)adv.searchIngredient(currentSheet(),null,'',true);
  if(ds.wbRemove)await adv.removeRow(currentSheet(),adv.selectedRow);
  if(ds.wbUndo)await adv.restoreRows(currentSheet());
  if(ds.wbScale)await adv.scaleBatch(currentSheet());
