@@ -7070,6 +7070,20 @@ const separatePanel=v=>/^(?:\s*(?:Linked (?:Portions|Recipes|Sub-Recipes)|Crunch
 
  // Shared operational prep instructions; never mutate archived snapshots or recipe quantities.
  const jcPrepProcedures={
+ eggDropSoup:[
+ 'Measure the listed ingredients for the selected batch. Whisk eggs separately; reserve part of the measured water for the cornstarch slurry.',
+ 'Bring the remaining water, listed corn and seasonings to a simmer. Add the listed coloring if used.',
+ 'Mix the slurry until smooth, add gradually while stirring, and return to a gentle simmer until thickened.',
+ 'Stream in beaten eggs while stirring gently. Cook until the eggs are fully set.',
+ 'Stir gently, portion according to the recipe, record finished yield and follow the two-hour soup replacement schedule.'
+ ],
+ hotSourSoup:[
+ 'Measure the listed ingredients. Prepare and drain the mushrooms, cut the bamboo shoots and tofu, and whisk eggs separately.',
+ 'Bring the measured water to a simmer, reserving some for the tapioca starch slurry. Add the prepared vegetables, tofu, sauces and seasonings.',
+ 'Mix the starch with reserved cool water until smooth, add gradually while stirring, and return to a gentle simmer.',
+ 'Stream in beaten eggs while stirring gently; cook until fully set. Finish with the listed vinegar.',
+ 'Stir gently, portion according to the recipe, record finished yield and follow the two-hour soup replacement schedule.'
+ ],
  porkBellyPrep:[
   "Inspect and weigh the raw rind-on pork belly. Keep refrigerated until preparation; retain the rind and usable fat.",
   "Place pork belly in a stockpot, cover with potable water and bring to a gentle simmer. Skim impurities; avoid a rolling boil.",
@@ -9853,6 +9867,8 @@ const jcPendingPrepDrafts={
 };
 function jcPendingPrepSteps(sheet){return jcPendingPrepDrafts[normalizeName(sheet?.name)]||jcPendingPrepDrafts[normalizeName(sheet?.sheet)]||[];}
  function jcPrepKey(sheet){
+ if(sheet?.component_id==='18fd1efa-6909-5de7-a1ef-93de26ebeb65')return 'eggDropSoup';
+ if(sheet?.component_id==='e20d5cfc-30db-57b6-b508-6f5e17620c59')return 'hotSourSoup';
  if(sheet?.component_id==='b9b5f40e-012c-5dee-9952-cdd9cb8aca5f')return 'porkBellyPrep';
  if(sheet?.component_id===jcDumplingSauceId)return 'dumplingSauce';
  if(sheet?.component_id===jcVegetarianSauceId)return 'vegetarianSauce';
@@ -10342,6 +10358,7 @@ function linkedFormulaValue(sheet,row,col,cell){
  const source=(bridge()?.getLibrary()?.sheets||[]).find(x=>x.file===sheet.file&&x.sheet===depName);
  if(!source)return null;
  const input=(source.ingredients||[]).find(x=>Number(x.r)===depRow);if(!input)return null;
+ if((state(source).removed_rows||[]).map(String).includes(String(depRow)))return '';
  const base=Number(input.q),raw=linkedPreparedQuantity(cellValue(source,depRow,0),productForRow(source,depRow).code);
  if(raw===''||raw==null)return 0;
  const now=Number(raw);
@@ -10562,6 +10579,30 @@ function allMerge(sheet,plan=null){
  });
  return {starts,covered,spanRows,pictureStyles};
 }
+function jcDeleteTarget(sheet,row){
+ if(!sheet||!ingredientRow(sheet,row))return null;
+ if(String(row).startsWith('new-'))return {sheet:canonicalSheet(sheet),row};
+ const ref=fillingReference(sheet,row);
+ if(ref)return jcDeleteTarget(ref.src,ref.row);
+ if(sheet.variantServing||isProtected(sheet)||jcBunOrder(sheet)||jcHotServing(sheet)||jcWontonOrder(sheet)||jcTurnoverDoughLine(sheet,row))return null;
+ const source=canonicalSheet(sheet),p=productForRow(source,row);
+ return p.name||p.code?{sheet:source,row:Number(row)}:null;
+}
+function jcRowDeleteButton(sheet,row){
+ if(!canEdit())return '';
+ const target=jcDeleteTarget(sheet,row);if(!target)return '';
+ return '<button type="button" class="jc-row-delete" data-jc-delete-sheet="'+H(target.sheet.id)+'" data-jc-delete-row="'+H(target.row)+'" aria-label="Delete ingredient" title="Delete ingredient from its source recipe"><i class="fa-solid fa-trash"></i></button>';
+}
+async function jcDeleteIngredient(sheet,row){
+ if(!canEdit())throw Error('Authorized editor required');
+ const t=jcDeleteTarget(sheet,row);if(!t)throw Error('Edit the source recipe to remove this calculated ingredient.');
+ const src=t.sheet,rr=t.row,st=state(src),added=String(rr).startsWith('new-');
+ const p=added?addedProductLabel((st.added_rows||[]).find(x=>x.id===rr)?.cells||{}):productForRow(src,rr);
+ if(!p.name&&!p.code)throw Error('Ingredient not found');
+ if(!confirm('Delete '+p.name+' from '+(src.name||src.sheet)+'? All linked recipes will recalculate. The original workbook remains preserved.'))return false;
+ const d=currentDraft(src);if(added)d.added_rows=d.added_rows.filter(x=>x.id!==rr);else if(!d.removed_rows.map(String).includes(String(rr)))d.removed_rows.push(Number(rr));
+ await save(src,d);A.selectedRow=null;return true;
+}
 function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt,compactSpare=false){
  var r=rawRow.r, cells=new Map((rawRow.c||[]).map(c=>[c.c,c]));
  var remove=!isProtected(sheet)&&(state(sheet).removed_rows||[]).some(x=>String(x)===String(r));
@@ -10590,7 +10631,7 @@ function rowHtml(sheet,rawRow,maxCol,merge,rowsExist,lastUsed,noteAt,compactSpar
   var cls2='jc-wb-cell'+(editable?' jc-wb-editable':'')+(isQty?' jc-wb-qty':'')+((isYield(sheet,r,col)||jcDoughWeightCell(sheet,r,col))&&editable?' jc-wb-yield-edit':'');
   var title=(!isBlankNoteCell(sheet,r,col)&&cell.f?'Original Excel formula: '+cell.f+' (changes are saved separately)':'');
   html+='<td class="'+cls2+'" data-r="'+r+'" data-c="'+col+'"'+(span?' colspan="'+span[0]+'" rowspan="'+span[1]+'"':'')+
-    ' style="'+H(sty)+'" title="'+H(title)+'">'+(editable&&isYield(sheet,r,col)&&(isProtected(sheet)||isPorkJelly(sheet))?'<input class="jc-direct-yield'+(isPorkJelly(sheet)?' jc-batch-yield':'')+'" type="'+(isPorkJelly(sheet)?'text':'number')+'" inputmode="decimal" min="'+(isPorkJelly(sheet)?'0.001':'1')+'" step="'+(isPorkJelly(sheet)?'any':'1')+'" aria-label="'+(isPorkJelly(sheet)?'Target batch yield in pounds':'Serving yield in pieces')+'" value="'+H(yieldValue(sheet)||'')+'">'+(isPorkJelly(sheet)?'<span class="jc-yield-unit">lb</span>':jcCountUnit(sheet,cellValue(sheet,r,col))?'<span class="jc-yield-unit">'+H(jcCountUnit(sheet,cellValue(sheet,r,col)))+'</span>':''):'<span class="jc-wb-value">'+H(val)+'</span>')+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+'</td>';
+    ' style="'+H(sty)+'" title="'+H(title)+'">'+(editable&&isYield(sheet,r,col)&&(isProtected(sheet)||isPorkJelly(sheet))?'<input class="jc-direct-yield'+(isPorkJelly(sheet)?' jc-batch-yield':'')+'" type="'+(isPorkJelly(sheet)?'text':'number')+'" inputmode="decimal" min="'+(isPorkJelly(sheet)?'0.001':'1')+'" step="'+(isPorkJelly(sheet)?'any':'1')+'" aria-label="'+(isPorkJelly(sheet)?'Target batch yield in pounds':'Serving yield in pieces')+'" value="'+H(yieldValue(sheet)||'')+'">'+(isPorkJelly(sheet)?'<span class="jc-yield-unit">lb</span>':jcCountUnit(sheet,cellValue(sheet,r,col))?'<span class="jc-yield-unit">'+H(jcCountUnit(sheet,cellValue(sheet,r,col)))+'</span>':''):'<span class="jc-wb-value">'+H(val)+'</span>')+(editable&&isIngredient&&(col===1||col===7)?'<span class="jc-wb-picker-caret" aria-hidden="true">▾</span>':'')+(col===7&&isIngredient&&!remove?jcRowDeleteButton(sheet,r):'')+'</td>';
  }
  return html+'</tr>';
 }
@@ -10602,7 +10643,7 @@ function addedHtml(sheet,item){
   var style=mark[map.get(c)?.s||0]||'';
   var v=c===2?product.name:c===3?product.code:c===7?product.selector:cl[c]??'';
   if(c===0&&v!==''&&Number.isFinite(Number(v)))v=fmt(linkedPreparedQuantity(v,product.code));
-  h+='<td class="jc-wb-cell'+(canEdit()&&[0,1,4,7].includes(c)?' jc-wb-editable':'')+'" data-r="'+H(id)+'" data-c="'+c+'" style="'+H(style)+'"><span class="jc-wb-value">'+H(v)+'</span></td>';
+  h+='<td class="jc-wb-cell'+(canEdit()&&[0,1,4,7].includes(c)?' jc-wb-editable':'')+'" data-r="'+H(id)+'" data-c="'+c+'" style="'+H(style)+'"><span class="jc-wb-value">'+H(v)+'</span>'+(c===7?jcRowDeleteButton(sheet,id):'')+'</td>';
  }
  return h+'</tr>';
 }
@@ -10636,7 +10677,8 @@ function extraFillingLines(sheet){
 }
 function extraFillingHtml(sheet,rows){
  if(!rows.length)return '';
- return rows.map(x=>'<tr class="jc-wb-row jc-live-extra"><td data-live-extra="'+H(x.key)+'">'+H(fmt(x.q))+'</td><td>'+H(x.unit)+'</td><td>'+H(x.name)+'</td><td>'+H(x.code)+'</td><td>'+(/^service-sauce:/.test(x.key)?'INTERNAL':'')+'</td><td colspan="2"></td><td>'+H(x.selector)+'</td></tr>').join('');
+ const deleteExtra=x=>{const ix=String(x.key).lastIndexOf(':'),src=(bridge()?.getLibrary()?.sheets||[]).find(s=>s.id===String(x.key).slice(0,ix));return src?jcRowDeleteButton(src,String(x.key).slice(ix+1)):'';};
+ return rows.map(x=>'<tr class="jc-wb-row jc-live-extra"><td data-live-extra="'+H(x.key)+'">'+H(fmt(x.q))+'</td><td>'+H(x.unit)+'</td><td>'+H(x.name)+'</td><td>'+H(x.code)+'</td><td>'+(/^service-sauce:/.test(x.key)?'INTERNAL':'')+'</td><td colspan="2"></td><td>'+H(x.selector)+deleteExtra(x)+'</td></tr>').join('');
 }
 function liveIngredientLines(sheet){
  const out=[],st=state(sheet),removed=new Set((st.removed_rows||[]).map(String));
@@ -11510,7 +11552,9 @@ document.addEventListener('dblclick',e=>{
  const td=e.target.closest?.('#jeWorkbookGrid td.jc-wb-editable');
  if(td)editCell(td);
 });
-document.addEventListener('click',e=>{
+document.addEventListener('click',async e=>{
+ const del=e.target.closest?.('[data-jc-delete-sheet]');
+ if(del){e.preventDefault();e.stopPropagation();if(del.disabled)return;del.disabled=true;try{await flushPending();const src=(bridge()?.getLibrary()?.sheets||[]).find(x=>x.id===del.dataset.jcDeleteSheet);if(!src)throw Error('Source recipe unavailable');if(await jcDeleteIngredient(src,del.dataset.jcDeleteRow)){if(window.JCRecipeCore?.refreshWorkbookTabs)window.JCRecipeCore.refreshWorkbookTabs();else if(A.active)render(A.active,'jeWorkbookGrid');}}catch(err){sourceStatus('Not saved: '+err.message);alert(err.message);}finally{del.disabled=false;}return;}
  const td=e.target.closest?.('#jeWorkbookGrid tr[data-row]');
  if(td){document.querySelectorAll('#jeWorkbookGrid tr.jc-wb-selected').forEach(x=>x.classList.remove('jc-wb-selected'));td.classList.add('jc-wb-selected');A.selectedRow=td.dataset.row;}
  const picker=e.target.closest?.('#jeWorkbookGrid td.jc-wb-editable');
@@ -11526,6 +11570,7 @@ document.addEventListener('keydown',async e=>{
  e.preventDefault();try{await setCell(sheet,row,col,'');if(A.active===sheet)render(sheet,'jeWorkbookGrid');}catch(err){sourceStatus('Not saved: '+err.message);}
 });
 window.JCRecipeAdvanced={
+ soupPrepSteps:sheet=>jcPrepProcedures[jcPrepKey(sheet)]||[],
  soupBatchVolume:jcSoupBatchVolume,soupEditableLines:jcSoupEditableLines,soupServingSize:jcSoupServingSize,soupEdit:jcSoupEdit,
  soupPick(sheet,row,old,adding=false,scale=1){if(!jcSoupBatchIds.has(sheet?.component_id)||!canEdit())throw Error('Authorized soup master required');searchIngredient(sheet,row,old,adding,false,{scale,after:()=>window.JCRecipeCore?.refreshWorkbookTabs?.()});},
  cateringIngredientLines(sheet){const prev=protectedMain,prevMain=activeMainDish;try{protectedMain=null;activeMainDish=sheet.id;const out=liveIngredientLines(sheet),st=state(sheet);const rows=(sheet.rows||[]).filter(r=>ingredientRow(sheet,r.r)&&!(st.removed_rows||[]).map(String).includes(String(r.r)));for(const r of rows){const p=productForRow(sheet,r.r),q=cellValue(sheet,r.r,0),unit=String(cellValue(sheet,r.r,1)||'');if(p.name&&(!p.code||q===''||q==null||!Number.isFinite(Number(q))))out.push({...p,q:q===''||q==null||!Number.isFinite(Number(q))?'':Number(q),unit});}for(const row of st.added_rows||[]){const v=row.cells||{},p=addedProductLabel(v);if(p.name&&(!p.code||v[0]===''||v[0]==null||!Number.isFinite(Number(v[0]))))out.push({...p,q:v[0]===''||v[0]==null||!Number.isFinite(Number(v[0]))?'':Number(v[0]),unit:String(v[1]||'')});}return out;}finally{protectedMain=prev;activeMainDish=prevMain;}},
@@ -11533,7 +11578,7 @@ window.JCRecipeAdvanced={
  setProtectedMain:id=>{protectedMain=id||null;},
  setMainDish:id=>{activeMainDish=id||null;},
  load,render,addRow,searchIngredient,linkedMasterTabs,removeRow,restoreRows,publish,changeCode,scaleBatch,print,groupConvert,flushPending,formatNumber:fmt,
- build:'20261127-compact46',refreshPorkJelly,
+ build:'20261127-compact47',refreshPorkJelly,
  get selectedRow(){return A.selectedRow},
  get active(){return A.active},
  get productCount(){return A.products.length},
@@ -11660,7 +11705,7 @@ function jcComboPage(r){
  const cfg=jcComboConfig(r),options=cfg?.options||[],selected=jcComboSelected.filter(id=>options.some(o=>o.recipe_id===id)),valid=selected.length===2;
  if(!user())return '<section class="je-wb-clean"><div class="je-wb-unmatched">Sign in to view the protected recipe.</div></section>';
  const active=jcComboTabs(r).find(x=>x.id===state.wbSheet);
- if(active){const option=options.find(o=>o.component_id===active.component_id);return '<section class="je-wb-clean"><div class="je-wb-clean-workspace">'+jcComboTabBar(r)+'<div class="je-wb-clean-toolbar"><div><strong>'+H(active.name||active.sheet)+'</strong> · COMPACT 46</div><div class="je-wb-toolbar-actions"><button class="je-button secondary" data-combo-main="1">Back to Combo</button>'+(option?'<button class="je-button secondary" data-open="'+H(option.recipe_id)+'">Open original recipe</button>':'')+'</div></div><div class="je-alert warning" style="margin:8px">Original shared recipe · quantities shown are the existing regular order or production batch, not approved combo portions.</div><div class="je-wb-scroll"><div id="jeWorkbookGrid">Loading linked recipe…</div></div></div></section>';}
+ if(active){const option=options.find(o=>o.component_id===active.component_id);return '<section class="je-wb-clean"><div class="je-wb-clean-workspace">'+jcComboTabBar(r)+'<div class="je-wb-clean-toolbar"><div><strong>'+H(active.name||active.sheet)+'</strong> · COMPACT 47</div><div class="je-wb-toolbar-actions"><button class="je-button secondary" data-combo-main="1">Back to Combo</button>'+(option?'<button class="je-button secondary" data-open="'+H(option.recipe_id)+'">Open original recipe</button>':'')+'</div></div><div class="je-alert warning" style="margin:8px">Original shared recipe · quantities shown are the existing regular order or production batch, not approved combo portions.</div><div class="je-wb-scroll"><div id="jeWorkbookGrid">Loading linked recipe…</div></div></div></section>';}
 
  const field=(label,value)=>'<div style="margin:10px 0"><div style="font-size:11px;font-weight:700;margin-bottom:4px">'+H(label)+'</div><div style="border:1px solid #cbd5d1;border-radius:6px;padding:8px 9px;background:white;min-height:32px;color:#26352d">'+H(value)+'</div></div>';
  const panel=(title,body)=>'<div style="border:1px solid #dbe2de;border-radius:8px;overflow:hidden;background:#f9fbfa;margin:12px 0"><div style="padding:9px 10px;background:#edf1ef;font-size:12px;font-weight:700">'+H(title)+'</div><div style="padding:10px">'+body+'</div></div>';
@@ -11677,7 +11722,7 @@ function jcComboPage(r){
  step(5,'RESTAURANT365','fa-flask','Verify theoretical usage',panel('Validation checklist',['Check imported sales for each combination','Confirm two selected portions per combo','Confirm zero usage for unselected option','Check multiple combos on one ticket','Review theoretical usage and food cost'].map(t=>'<div style="padding:7px 0;border-bottom:1px solid #e3e8e5;font-size:12px">□ '+H(t)+'</div>').join('')),'Review the imported sales and theoretical usage with R365 support before activation. Confirm the correct portion and no duplicate depletion for every combination.',link('https://docs.restaurant365.com/docs/theoretical-vs-actual-report','Official variance report'))
  ].join('');
  const rules=panel('Example: Modifier Rule (if enabled)',field('Open modifier record','Marinated Tofu — combo modifier')+field('Rule name','Appetizer Combo - Marinated Tofu')+field('WHEN (primary)','Modifier is Marinated Tofu — combo modifier')+field('Optional context condition','Menu Item is Appetizer Combo')+field('THEN','Deplete Marinated Tofu — confirmed combo portion')+field('Finish','Add Rule → Save'));
- return '<section class="je-wb-clean"><div class="je-wb-clean-workspace">'+jcComboTabBar(r)+'<div class="je-wb-clean-toolbar"><div><strong>Appetizer Combo</strong> · COMPACT 46</div><button class="je-button secondary" data-go="menu" title="Return to menu"><i class="fa-solid fa-house"></i></button></div><div class="je-panel-inner" style="padding:18px"><div class="je-alert warning"><strong>Customer chooses two of three.</strong> Only the two selected portions should contribute to theoretical inventory usage. Do not assign all three appetizers as fixed ingredients.</div><div style="margin:20px 0 16px"><h2 style="font-size:25px;margin:0 0 6px"><i class="fa-solid fa-book-open" style="color:#39704b;margin-right:10px"></i>Restaurant365 Setup — Baby Steps</h2><p style="margin:0;color:#526b5b">Appetizer Combo · Recipe setup and inventory mapping · Visual examples, not live system screenshots</p></div>'+(options.length===3?'':'<div class="je-alert warning">Recipe references not loaded. Refresh before proceeding.</div>')+'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:12px;align-items:stretch">'+cards+'</div><details style="margin-top:16px;border:1px solid #dbe2de;border-radius:10px;padding:14px"><summary style="cursor:pointer;font-weight:700;color:#28664c">Restaurant365 advanced setup — Modifier Rules (if enabled)</summary><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;align-items:start"><div>'+rules+'</div><div style="font-size:13px;line-height:1.7"><p>Ask the R365 Customer Success Manager to confirm access and imported modifier records, including zero-price options. Open Sales &amp; Forecasting → Menu Items → Menu Items. Select the imported modifier, open its Rules section and click Add Rule.</p><p>Repeat for eggs and seaweed. If portion sizes differ, use confirmed combo-serving recipes and parent-specific rules where available. Confirm default depletion behavior with support. Never configure both parent depletion and modifier depletion for the same portion. If the parent cannot remain unmapped without reporting issues, ask support for the supported configuration.</p><p>Rules are a beta feature for selected customers. If absent, use direct mapping where the imported modifier is unique to a recipe, or have support configure parent-specific modifier management. Use only the applicable mapping method. If no rule matches, R365 may apply default depletion; have support verify that behavior.</p>'+link('https://docs.restaurant365.com/docs/en/menu-item-and-modifier-depletion-rules','Official rule builder screenshots')+'<br>'+link('https://docs.restaurant365.com/docs/setting-up-pos-menu-item-modifier-management','Official integration setup')+'</div></div></details><div style="margin-top:16px;border-top:1px solid #dbe2de;padding-top:16px"><h3 style="margin:0 0 8px">Kitchen serving instructions</h3><p>Prepare the two appetizers selected by the customer using the linked recipe tabs. Plate together and serve chilled. Confirm the combo portion for each choice before production approval; regular portions are reference only.</p><p style="font-size:12px;color:#526b5b">Support handoff: confirm portion sizes, imported modifier IDs, R365 recipe mapping and test results. No live R365 configuration has been performed.</p></div></div></div></section>';
+ return '<section class="je-wb-clean"><div class="je-wb-clean-workspace">'+jcComboTabBar(r)+'<div class="je-wb-clean-toolbar"><div><strong>Appetizer Combo</strong> · COMPACT 47</div><button class="je-button secondary" data-go="menu" title="Return to menu"><i class="fa-solid fa-house"></i></button></div><div class="je-panel-inner" style="padding:18px"><div class="je-alert warning"><strong>Customer chooses two of three.</strong> Only the two selected portions should contribute to theoretical inventory usage. Do not assign all three appetizers as fixed ingredients.</div><div style="margin:20px 0 16px"><h2 style="font-size:25px;margin:0 0 6px"><i class="fa-solid fa-book-open" style="color:#39704b;margin-right:10px"></i>Restaurant365 Setup — Baby Steps</h2><p style="margin:0;color:#526b5b">Appetizer Combo · Recipe setup and inventory mapping · Visual examples, not live system screenshots</p></div>'+(options.length===3?'':'<div class="je-alert warning">Recipe references not loaded. Refresh before proceeding.</div>')+'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:12px;align-items:stretch">'+cards+'</div><details style="margin-top:16px;border:1px solid #dbe2de;border-radius:10px;padding:14px"><summary style="cursor:pointer;font-weight:700;color:#28664c">Restaurant365 advanced setup — Modifier Rules (if enabled)</summary><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;align-items:start"><div>'+rules+'</div><div style="font-size:13px;line-height:1.7"><p>Ask the R365 Customer Success Manager to confirm access and imported modifier records, including zero-price options. Open Sales &amp; Forecasting → Menu Items → Menu Items. Select the imported modifier, open its Rules section and click Add Rule.</p><p>Repeat for eggs and seaweed. If portion sizes differ, use confirmed combo-serving recipes and parent-specific rules where available. Confirm default depletion behavior with support. Never configure both parent depletion and modifier depletion for the same portion. If the parent cannot remain unmapped without reporting issues, ask support for the supported configuration.</p><p>Rules are a beta feature for selected customers. If absent, use direct mapping where the imported modifier is unique to a recipe, or have support configure parent-specific modifier management. Use only the applicable mapping method. If no rule matches, R365 may apply default depletion; have support verify that behavior.</p>'+link('https://docs.restaurant365.com/docs/en/menu-item-and-modifier-depletion-rules','Official rule builder screenshots')+'<br>'+link('https://docs.restaurant365.com/docs/setting-up-pos-menu-item-modifier-management','Official integration setup')+'</div></div></details><div style="margin-top:16px;border-top:1px solid #dbe2de;padding-top:16px"><h3 style="margin:0 0 8px">Kitchen serving instructions</h3><p>Prepare the two appetizers selected by the customer using the linked recipe tabs. Plate together and serve chilled. Confirm the combo portion for each choice before production approval; regular portions are reference only.</p><p style="font-size:12px;color:#526b5b">Support handoff: confirm portion sizes, imported modifier IDs, R365 recipe mapping and test results. No live R365 configuration has been performed.</p></div></div></div></section>';
 
 }
 function jcComboExport(r){
@@ -11840,7 +11885,7 @@ function jcPackagePage(r){
  if(!user())return '<div class="je-wb-unmatched">Sign in to view the protected recipe.</div>';
  const c=jcJadeContext(r),cfg=c.cfg,o=c.option,fmt=v=>v===''||v==null||!Number.isFinite(Number(v))?'Pending':String(Number(Number(v).toFixed(3)));
  const pan=cfg?.pan_standard,panLabel=pan?.display_name||'Half pan — depth pending';
- const toolbar='<div class="je-wb-clean-toolbar"><div><strong>'+H(jcIsIndividual(r)?r.menu_category+' / ':'Catering 2027 / Package 2027 / ')+H(r.name)+'</strong> · COMPACT 46</div><button class="je-button secondary" data-go="menu"><i class="fa-solid fa-house"></i> Menu</button></div>';
+ const toolbar='<div class="je-wb-clean-toolbar"><div><strong>'+H(jcIsIndividual(r)?r.menu_category+' / ':'Catering 2027 / Package 2027 / ')+H(r.name)+'</strong> · COMPACT 47</div><button class="je-button secondary" data-go="menu"><i class="fa-solid fa-house"></i> Menu</button></div>';
  let body='';
  if(!cfg||cfg.partial||cfg.baseMissing){body='<div class="je-panel-inner"><h2>'+H(r.name)+'</h2><p>'+H(cfg?.spec_note||'Package structure registered. Recipe selections and yields are pending review.')+'</p>'+(cfg?.partial?'<p><strong>Fried Rice or Fried Noodle:</strong> 1 Full Medium Deep Pan. Remaining menu choices pending.</p>':'')+'</div>';}
  else if(c.active){body='<div class="je-alert info" style="margin:10px">Shared production master — original batch quantities, not scaled catering quantities.</div><div class="je-wb-scroll"><div id="jeWorkbookGrid">Loading shared master…</div></div>';}
@@ -12075,9 +12120,13 @@ function jcSoupServingPage(r,c){
  const yieldLabel=c.active.soupFraction?fmt(oz/32)+' qt':fmt(oz)+' fl oz';
  const button=(action,label,row='',title='')=>'<button type="button" class="jc-soup-edit" data-soup-action="'+H(action)+'" data-soup-row="'+H(row)+'" title="'+H(title||'Edit shared master')+'">'+H(label)+' <i class="fa-solid fa-pen" aria-hidden="true"></i></button>';
  const cells=lines.map(x=>'<tr><td title="'+H(x.q)+'">'+(edit?button('quantity',fmt(x.q),x.row,'Edit this quantity; updates the shared master') :H(fmt(x.q)))+'</td><td>'+(edit?button('unit',x.unit,x.row):H(x.unit))+'</td><td>'+H(x.name)+'</td><td>'+H(x.code||'Pending')+'</td><td>'+(edit?'<button type="button" class="jc-soup-edit" data-soup-action="remove" data-soup-row="'+H(x.row)+'" aria-label="Remove ingredient"><i class="fa-solid fa-trash"></i></button>':'')+'</td><td style="background:#000"></td><td style="background:#000"></td><td>'+(edit?button('product',x.code?x.code+' | '+x.name:'Select product',x.row):H(x.code?x.code+' | '+x.name:''))+'</td></tr>').join('');
- const controls=edit&&info?'<div class="jc-soup-controls"><div><b>Current yield</b>'+button('yield',yieldLabel)+'</div><div><b>Full batch target</b>'+button('target',fmt(info.target/32)+' qt')+'</div><div><b>Actual finished full batch</b>'+button('actual',info.actual?fmt(info.actual/32)+' qt':'Enter actual yield')+'</div><button type="button" class="je-button secondary" data-soup-action="add"><i class="fa-solid fa-plus"></i> Add ingredient</button><button type="button" class="je-button secondary" data-wb-sheet="'+H(c.soupBatch.id)+'"><i class="fa-solid fa-crown"></i> Full Batch</button></div>':'';
- const table='<table class="jc-soup-table"><thead><tr><th colspan="8" class="jc-soup-green">Recipe Book</th></tr><tr><th colspan="5" class="jc-soup-green">Recipe Name: '+H(spec.title)+' — '+H(c.active.sheet)+'</th><th colspan="3" class="jc-soup-green">Brand: Jeng Chi</th></tr><tr><th colspan="4" class="jc-soup-orange">YIELD / PORTION: '+H(yieldLabel)+'</th><th colspan="4" class="jc-soup-orange">'+H(info?.actual?'MEASURED MASTER YIELD: '+fmt(info.actual/32)+' qt':'MASTER TARGET: '+fmt(info?.target/32)+' qt · NOT MEASURED')+'</th></tr><tr class="jc-soup-yellow"><th>QTY</th><th>UNITS</th><th>PRODUCT</th><th>CT Product #</th><th></th><th colspan="2">PICTURE</th><th>PRODUCT SELECTOR · Code | Name</th></tr></thead><tbody>'+cells+'<tr><th colspan="8" class="jc-soup-green">Toast Button Modifiers/Notes</th></tr><tr><td>*</td><td colspan="7"></td></tr><tr><th colspan="8" class="jc-soup-green">Prep/Plating Instructions</th></tr><tr><td>*</td><td colspan="7"></td></tr></tbody></table>';
- return '<section class="je-wb-clean"><div class="je-wb-clean-head"><div><p class="je-eyebrow">JENG CHI · SOUP RECIPE BOOK</p><h1>'+H(spec.title)+'</h1><p>Linked serving sizes · Full, ½ and ¼ production batches</p></div><button class="je-button secondary" data-go="menu"><i class="fa-solid fa-house"></i> Menu</button></div><div class="je-wb-clean-workspace">'+tabs+'<div class="je-panel-inner"><div class="je-alert info">Edits on this tab update the shared master and all linked sizes. '+H(c.active.soupFraction?'Production ingredients are proportional to the full batch. Finished yield is a target, not a measured result.':info?.actual?'Using measured yield.':'Using the provisional target until actual cooked yield is measured.')+'</div>'+(error?'<div class="je-alert warning">'+H(error)+'</div>':controls+'<div class="je-wb-scroll">'+table+'</div>')+'</div></div></section>';
+ const controls=edit&&info?'<div class="jc-soup-addbar"><button type="button" class="je-button secondary" data-soup-action="add"><i class="fa-solid fa-plus"></i> Add ingredient</button></div>':'';
+ const prep=(window.JCRecipeAdvanced.soupPrepSteps(c.soupBatch)||[]).map((step,i)=>'<tr><td style="text-align:center">*</td><td colspan="7">'+(i+1)+'. '+H(step)+'</td></tr>').join('');
+ const currentYield=edit?button('yield',yieldLabel,'','Edit recipe yield'):H(yieldLabel);
+ const masterYield='FULL BATCH: '+fmt(info?.target/32)+' qt';
+ const masterDisplay=edit?button('target',masterYield,'','Edit full batch yield'):H(masterYield);
+ const table='<table class="jc-soup-table"><thead><tr><th colspan="8" class="jc-soup-green">Recipe Book</th></tr><tr><th colspan="5" class="jc-soup-green">Recipe Name: '+H(spec.title)+' — '+H(c.active.sheet)+'</th><th colspan="3" class="jc-soup-green">Brand: Jeng Chi</th></tr><tr><th colspan="4" class="jc-soup-orange">YIELD / PORTION: '+currentYield+'</th><th colspan="4" class="jc-soup-orange">'+masterDisplay+'</th></tr><tr class="jc-soup-yellow"><th>QTY</th><th>UNITS</th><th>PRODUCT</th><th>CT Product #</th><th></th><th colspan="2">PICTURE</th><th>PRODUCT SELECTOR · Code | Name</th></tr></thead><tbody>'+cells+'<tr><th colspan="8" class="jc-soup-green">Toast Button Modifiers/Notes</th></tr><tr><td>*</td><td colspan="7"></td></tr><tr><th colspan="8" class="jc-soup-green">Prep/Plating Instructions</th></tr>'+prep+'</tbody></table>';
+ return '<section class="je-wb-clean"><div class="je-wb-clean-head"><div><p class="je-eyebrow">JENG CHI · SOUP RECIPE BOOK</p><h1>'+H(spec.title)+'</h1><p>Linked serving sizes · Full, ½ and ¼ production batches</p></div><button class="je-button secondary" data-go="menu"><i class="fa-solid fa-house"></i> Menu</button></div><div class="je-wb-clean-workspace">'+tabs+'<div class="je-panel-inner"><div class="je-alert info">Edits update the shared master and all linked sizes.</div>'+(error?'<div class="je-alert warning">'+H(error)+'</div>':controls+'<div class="je-wb-scroll">'+table+'</div>')+'</div></div></section>';
 }
 
 function workbookContext(r){
@@ -12116,7 +12165,7 @@ function workbookPage(){
  html+='<div class="je-wb-clean-workspace"><div class="je-wb-tabs" role="tablist" aria-label="Recipe and supporting sub-recipe Excel tabs">';
  const ordered=[...(c.main?[c.main]:[]),...c.sheets.filter(x=>x.id!==c.main?.id)];
  ordered.forEach((x,index)=>{const main=x.id===c.main?.id;html+='<button role="tab" aria-selected="'+(x.id===s?.id)+'" class="je-tab-recipe '+(main?'je-tab-main':'je-tab-sub je-tab-palette-'+(index%5))+' '+(x.id===s?.id?'active':'')+'" data-wb-sheet="'+H(x.id)+'" title="'+H(main?'Main finished dish':'Supporting sub-recipe')+'"><i class="fa-solid '+(main?'fa-crown':'fa-link')+'"></i> '+H(x.component_id==='45995ac6-b065-5458-8849-e20525f2c464'?'Boiled Cabbage Prep 10-6':x.component_id==='f7b22836-5ff2-539a-b11e-c803b77bfd1f'?'Boiled Cabbage Prep 40-25':x.component_id==='a6e61cec-1b57-5137-a314-53899033bc59'?'Wonton in Spicy Sauce — 8 PCS':x.component_id==='151bd190-98cf-59a4-84b4-79d423b3e51a'?'Wonton Production Batch':/^Boiled Napa Prep\b/i.test(x.sheet)?'Boiled Napa Prep':x.component_id==='7ac0962c-6b81-5f67-a1ba-a895ed7db52c'?'Hot Pot Sticker Filling':x.sheet)+(main?'<span class="je-tab-main-label">MAIN DISH</span>':'')+'</button>';});
- html+='</div><div class="je-wb-clean-toolbar"><div><strong>'+H(r.name)+'</strong> <span style="font-size:10px;color:#64748b;margin-left:6px" title="Compact worksheet renderer · three spare ingredient rows">COMPACT 46</span></div><div class="je-wb-toolbar-actions"><button type="button" class="je-button secondary" data-go="menu" aria-label="Return to restaurant menu" title="Restaurant menu"><i class="fa-solid fa-house"></i></button><button type="button" class="je-button secondary" data-wb-details="1" title="Recipe controls" aria-label="Recipe controls"><i class="fa-solid fa-sliders"></i></button><span id="jeWorkbookSave" class="jc-autosave ready" role="status" aria-live="polite"><i class="fa-solid fa-cloud"></i> '+(writable()?'Auto-save ready':'Read-only worksheet')+'</span><button class="je-button secondary" data-wb-main="1" title="Main recipe" aria-label="Main recipe"><i class="fa-solid fa-crown"></i></button></div></div>';
+ html+='</div><div class="je-wb-clean-toolbar"><div><strong>'+H(r.name)+'</strong> <span style="font-size:10px;color:#64748b;margin-left:6px" title="Compact worksheet renderer · three spare ingredient rows">COMPACT 47</span></div><div class="je-wb-toolbar-actions"><button type="button" class="je-button secondary" data-go="menu" aria-label="Return to restaurant menu" title="Restaurant menu"><i class="fa-solid fa-house"></i></button><button type="button" class="je-button secondary" data-wb-details="1" title="Recipe controls" aria-label="Recipe controls"><i class="fa-solid fa-sliders"></i></button><span id="jeWorkbookSave" class="jc-autosave ready" role="status" aria-live="polite"><i class="fa-solid fa-cloud"></i> '+(writable()?'Auto-save ready':'Read-only worksheet')+'</span><button class="je-button secondary" data-wb-main="1" title="Main recipe" aria-label="Main recipe"><i class="fa-solid fa-crown"></i></button></div></div>';
  
  html+='<div class="je-wb-actionbar"><div class="je-wb-action-left">';
  if(writable()&&!jcSoupSpecs[r.id]&&r.id!=='cb3dc74e-d5d2-422c-9f36-37ca58fd4d0d'&&!secretLink(r)&&s&&s.file===c.file&&!s.menuPackage&&!c.main?.menuPackage&&c.sheets.length>1&&s.id!==c.main?.id)html+='<button class="je-button gold" data-w-main-pick="'+H(s.id)+'"><i class="fa-solid fa-crown"></i> Set as Main Dish</button>';
@@ -12157,7 +12206,7 @@ function renderWorkbook(){
  const recipe=recipeById(state.selectedId);const protectedId=c.main&&(c.nativeSheetCount??c.sheets.length)>1&&recipe?.menu_category!=='Buns'&&(/dumpling|bun|wonton|pot sticker/i.test(recipe?.menu_category||'')||/dumpling/i.test(recipe?.department||''))?c.main.id:null;
  window.JCRecipeAdvanced?.setProtectedMain?.(protectedId);
  window.JCRecipeAdvanced?.setMainDish?.(c.main?.id);
- if(window.JCRecipeAdvanced?.build!=='20261127-compact46'){el.textContent='Dynamic recipe engine unavailable. Reload this page before editing; archived values are not shown as current calculations.';return;}
+ if(window.JCRecipeAdvanced?.build!=='20261127-compact47'){el.textContent='Dynamic recipe engine unavailable. Reload this page before editing; archived values are not shown as current calculations.';return;}
  try{
   const loaded=window.JCRecipeAdvanced.render(c.active,'jeWorkbookGrid');
   if(!loaded)throw Error('Worksheet renderer returned no content');
@@ -12496,4 +12545,5 @@ if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',
 </style>
 <style id="jcSoup44">#jcCoreApp .jc-soup-table{width:100%;border-collapse:collapse;font-family:Aparajita,Georgia,serif;color:#111;font-size:18px}#jcCoreApp .jc-soup-table th,#jcCoreApp .jc-soup-table td{border:1px solid #222;padding:8px 10px;min-height:33px}#jcCoreApp .jc-soup-table td:first-child{text-align:right;background:#eef4e9}#jcCoreApp .jc-soup-green{background:#a1c48b;color:#111}#jcCoreApp .jc-soup-orange{background:#edba89;color:#111}#jcCoreApp .jc-soup-yellow{background:#fff34c;color:#111}#jcCoreApp .jc-soup-table thead tr:first-child th{font-size:25px}</style>
 <style id="jcSoup46">#jcCoreApp .jc-soup-controls{display:flex;align-items:end;flex-wrap:wrap;gap:12px;margin:14px 0;padding:12px;border:1px solid #c8d9ce;border-radius:10px;background:#f1f7f2}#jcCoreApp .jc-soup-controls>div{display:grid;gap:5px;min-width:130px}#jcCoreApp .jc-soup-controls b{font-size:13px;color:#305a43}#jcCoreApp .jc-soup-edit{font:inherit;color:inherit;background:transparent;border:1px solid transparent;border-radius:5px;padding:5px;text-align:inherit;cursor:pointer}#jcCoreApp .jc-soup-edit:hover,#jcCoreApp .jc-soup-edit:focus-visible{background:#f0f6ee;border-color:#80a88c}#jcCoreApp .jc-soup-edit i{font-size:10px;color:#4a7757;margin-left:4px}#jcCoreApp .jc-soup-controls .jc-soup-edit{border:1px solid #a9c2ad;background:white;padding:8px 12px;font-weight:700;text-align:left}</style>
+<style id="jcSoup47">#jcCoreApp .jc-soup-addbar{display:flex;justify-content:flex-start;margin:10px 0}#jcCoreApp .jc-soup-orange .jc-soup-edit{font-weight:700}#jcCoreApp .jc-row-delete{float:right;margin-left:6px;padding:4px 7px;border:1px solid transparent;border-radius:4px;background:transparent;color:#8f4848;cursor:pointer}#jcCoreApp .jc-row-delete:hover,#jcCoreApp .jc-row-delete:focus-visible{background:#fcecec;border-color:#d8adad}#jcCoreApp .jc-soup-table tbody td[colspan="7"]{white-space:normal;text-align:left;line-height:1.45}@media print{.jc-row-delete,.jc-soup-addbar{display:none!important}}</style>
 </body></html>
